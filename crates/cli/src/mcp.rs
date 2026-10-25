@@ -3264,7 +3264,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "add_memory",
-            "description": "Keep a fact for this project's agents and the person: a convention, a decision, where something lives. Kept on this machine, said to every new session in the project. One sentence or a few, at most 2048 characters; never a secret, which is refused. Replace a memory that is no longer true by naming it in `supersedes`.",
+            "description": "Keep a fact for this project's agents and the person: a convention, a decision, where something lives. Kept on this machine, said to every new session in the project, or with `roles` only to those roles' holders. One sentence or a few, at most 2048 characters; never a secret, which is refused. Replace a memory that is no longer true by naming it in `supersedes`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3272,6 +3272,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "supersedes": { "type": "string", "description": "The id of the memory this one replaces." },
                     "standing": { "type": "boolean", "description": "Said first in the profile, before the recent ones: a convention or a decision rather than news." },
                     "forget_after": { "type": "string", "format": "date-time", "description": "An RFC 3339 time after which it is no longer said." },
+                    "roles": { "type": "array", "maxItems": 8, "items": { "type": "string" }, "description": "Said only to the agents holding one of these project roles, and to the person; to everyone when absent." },
                     "links": { "type": "array", "maxItems": 8, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["content"],

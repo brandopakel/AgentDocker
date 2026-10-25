@@ -3691,8 +3691,9 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 }
                 // The memory is read on its own: a daemon from before memory,
                 // or a failure, leaves the rest of the workspace to show.
+                // Read as the person, who reads every memory.
                 workspace.memory = match client.call(&Request::MemorySearch {
-                    from: None,
+                    from: Some(agentdocker_core::HUMAN.into()),
                     project: Some(project.clone()),
                     query: String::new(),
                     limit: Some(MEMORY_PAGE),
@@ -3796,6 +3797,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 supersedes: None,
                 standing: false,
                 forget_after: None,
+                roles: Vec::new(),
             }) {
                 Ok(Response::Memory { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),

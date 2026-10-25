@@ -1080,7 +1080,8 @@ pub enum Request {
     /// Keep a fact for a project's agents: a memory, by an agent or the
     /// person, in `project` or the author's own. `supersedes` names the
     /// memory it replaces; a `standing` one is said first in the profile;
-    /// after `forget_after` it is no longer said. Answers `memory`.
+    /// after `forget_after` it is no longer said; one naming `roles` is
+    /// said only to their holders and the person. Answers `memory`.
     MemoryAdd {
         from: String,
         #[serde(default)]
@@ -1094,6 +1095,8 @@ pub enum Request {
         standing: bool,
         #[serde(default)]
         forget_after: Option<chrono::DateTime<chrono::Utc>>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        roles: Vec<String>,
     },
     /// A project's current memories that answer `query`, the best first;
     /// `from` names the project when `project` does not. Answers

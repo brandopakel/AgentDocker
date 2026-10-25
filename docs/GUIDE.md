@@ -598,7 +598,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `blame <path>` | Who changed a file, oldest first |
 | `overlap` | Paths changed in more than one checkout: what will collide |
 | `observe` / `reads` / `stale` | Record what was read, and check it is still true |
-| `memory add <text>` / `search <words>` / `profile` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one, `add --standing` keeps a convention said first, `add --forget-after <when>` (an RFC 3339 time, or `90m`, `12h`, `7d`, `2w` from now) stops saying it after then |
+| `memory add <text>` / `search <words>` / `profile` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one, `add --standing` keeps a convention said first, `add --forget-after <when>` (an RFC 3339 time, or `90m`, `12h`, `7d`, `2w` from now) stops saying it after then, `add --role reviewer` says it only to that role's holders and you; `search` and `profile` read as the agent whose session runs them, or as you, who read every memory |
 
 ### Work in isolation, then merge
 
@@ -1527,7 +1527,9 @@ Current behaviour that the sections above do not already state, by area.
   rarer ones counting for more and the newer memory first on a tie; an
   identifier such as `task_id` is one word, so `task` does not find it,
   while `-` and `:` separate words. A memory that is no longer true is
-  replaced (`--supersedes`) or forgotten. It stays on this machine; anything that
+  replaced (`--supersedes`) or forgotten. One kept for some roles only
+  (`--role reviewer`, `roles` on `add_memory`) is told to their holders and
+  to you, and never copied off the machine. It stays on this machine; anything that
   looks like a secret is refused. To keep a copy in Supermemory as well,
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is

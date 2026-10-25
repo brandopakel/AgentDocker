@@ -196,6 +196,10 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::FileDelete { from, .. } => Some(from),
         R::Subscribe { agent, .. } => agent.as_mut(),
         R::Answer { from, .. } => from.as_mut(),
+        // A memory read names its reader, which decides what a memory said
+        // only to some roles is read by; one that names nobody reads what is
+        // for everyone.
+        R::MemorySearch { from, .. } | R::MemoryProfile { from, .. } => from.as_mut(),
         R::MarkRead { reader, .. } => reader.as_mut(),
         // A digest that moves a reader's cursor acts for that reader.
         R::Journal {
@@ -275,8 +279,6 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::RoleCatalog { .. }
         | R::TaskSearch { .. }
         | R::Plans { .. }
-        | R::MemorySearch { .. }
-        | R::MemoryProfile { .. }
         | R::PlanGet { .. }
         | R::Files { .. }
         | R::FileGet { .. }
@@ -1294,6 +1296,8 @@ mod tests {
             serde_json::json!({"op": "mark_read", "conversation": "c1", "through": 4, "reader": "x"}),
             serde_json::json!({"op": "journal", "project": "p", "digest": {"reader": "x", "max_entries": 5, "max_chars": 500, "advance": true}}),
             serde_json::json!({"op": "worktree_create", "agent": "x", "path": "/w", "branch": "b", "from": "main"}),
+            serde_json::json!({"op": "memory_search", "from": "x", "query": "q"}),
+            serde_json::json!({"op": "memory_profile", "from": "x"}),
         ] {
             assert_eq!(acting(json.clone()), x, "{json}");
         }
@@ -1311,6 +1315,7 @@ mod tests {
             serde_json::json!({"op": "unbind_input", "agent": "x", "force": true}),
             serde_json::json!({"op": "attach", "agent": "x"}),
             serde_json::json!({"op": "report_commit", "checkout": "/w", "token": "t", "head": "abc", "agent": "x"}),
+            serde_json::json!({"op": "memory_search", "query": "q"}),
         ] {
             assert_eq!(acting(json.clone()), None, "{json}");
         }
