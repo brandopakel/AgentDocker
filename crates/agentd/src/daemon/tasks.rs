@@ -1014,6 +1014,21 @@ impl Daemon {
             Ok(board) => board,
             Err(response) => return *response,
         };
+        // A waiting card still naming an agent that has ended, as one its
+        // holder moved back before leaving does: named, it is free, and the
+        // pull says whom it was taken from. A working card keeps its holder
+        // until a take-over names them.
+        let ended = task.assignee.clone().filter(|holder| {
+            named
+                && task.column.waiting()
+                && !state
+                    .registry
+                    .get(holder)
+                    .is_some_and(|record| record.status.is_live())
+        });
+        if ended.is_some() {
+            task.assignee = None;
+        }
         let held = task
             .assignee
             .as_ref()
@@ -1100,7 +1115,8 @@ impl Daemon {
                 }
                 Some(from)
             }
-        };
+        }
+        .or(ended);
         if task.rank.is_empty() || task.lane.as_deref() != Some(from_lane.as_str()) {
             let cards = state.project_cards(&task.project).unwrap_or_default();
             let lane = task.lane_on(&board).slug.clone();
@@ -2885,6 +2901,91 @@ mod tests {
     /// from whom. A hand claim on the card by somebody else keeps it like
     /// any lease; the person's moves and hands end and take leases in
     /// the same commit; a failed store writes none of it.
+    /// A card its holder moved back to Ready keeps naming them: no other
+    /// agent takes it while they live, and once they have ended a named
+    /// pull takes it.
+    #[tokio::test]
+    async fn a_waiting_card_left_by_an_agent_that_ended_is_taken_by_name() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let _alice = register(&daemon, "alice", &work).await;
+        let bob = register(&daemon, "bob", &work).await;
+        let Response::Task { task } = daemon
+            .handle(Request::TaskCreate {
+                from: HUMAN.to_owned(),
+                project: Some(work.display().to_string()),
+                title: "Port the parser".to_owned(),
+                acceptance: "tests pass".to_owned(),
+                column: Some(Column::Ready),
+                links: Vec::new(),
+                board: None,
+                lane: None,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
+                plan: None,
+            })
+            .await
+        else {
+            panic!("filed")
+        };
+        let pull = |who: &str| {
+            let request = Request::TaskPull {
+                agent: who.to_owned(),
+                task: Some(task.id.to_string()),
+                take_over_from: None,
+                project: None,
+                board: None,
+            };
+            let daemon = daemon.clone();
+            async move { as_card(daemon.handle(request).await) }
+        };
+        assert!(matches!(pull("alice").await, Response::Task { .. }));
+        assert!(matches!(
+            daemon
+                .handle(Request::TaskMove {
+                    agent: "alice".to_owned(),
+                    task: task.id.to_string(),
+                    column: Some(Column::Ready),
+                    to: None,
+                    after: None,
+                    before: None,
+                    comment: None,
+                })
+                .await,
+            Response::Task { .. }
+        ));
+        assert!(
+            matches!(
+                pull("bob").await,
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    ..
+                }
+            ),
+            "alice still lives"
+        );
+        daemon
+            .handle(Request::Deregister {
+                agent: "alice".to_owned(),
+            })
+            .await;
+        let Response::Task { task: taken } = pull("bob").await else {
+            panic!("a waiting card left by an agent that ended, by name")
+        };
+        assert_eq!(
+            (taken.assignee.as_ref(), taken.column),
+            (Some(&bob.id), Column::InProgress)
+        );
+    }
+
     /// A card taken by name from Blocked goes to the pull target, so once
     /// its taker's hold lapses another agent takes it over by name, as any
     /// card in progress.

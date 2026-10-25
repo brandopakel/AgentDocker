@@ -42,7 +42,8 @@ it takes the next ready one that waits on nothing, and says so when there is
 none; it becomes yours, in progress, and nobody else can take it. A card you
 name may sit in any open lane (one the person asked you to work on, or one an
 agent that has ended left behind) and is yours when nobody holds it; if it is
-refused, somebody holds it, so pull another. The pull holds the
+refused, the answer says why: somebody holds it (pull another), it waits on
+another card or on something off the board, or its holder's hold has lapsed. The pull holds the
 card as a `task:<id>` lease for four hours: `renew` it during longer work
 (pulling your own held card renews it too); your exit releases it. A card
 whose holder's lease has lapsed is refused with `hold: lapsed`: take it over
