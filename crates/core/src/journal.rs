@@ -655,12 +655,16 @@ fn strip_markdown_line(line: &str) -> String {
 
 /// "4m ago", "2h ago", "3d ago".
 pub fn ago(now: DateTime<Utc>, then: DateTime<Utc>) -> String {
-    let secs = (now - then).num_seconds().max(0);
+    format!("{} ago", span((now - then).num_seconds().max(0)))
+}
+
+/// A number of seconds in its coarsest whole unit: "45s", "3m", "2h", "4d".
+pub fn span(secs: i64) -> String {
     match secs {
-        s if s < 60 => format!("{s}s ago"),
-        s if s < 3600 => format!("{}m ago", s / 60),
-        s if s < 86_400 => format!("{}h ago", s / 3600),
-        s => format!("{}d ago", s / 86_400),
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
     }
 }
 
@@ -727,6 +731,19 @@ fn common_dir(paths: &[PathBuf]) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One rendering of elapsed time for every surface: coarsest whole
+    /// unit, and never a negative age.
+    #[test]
+    fn spans_and_ages_read_in_their_coarsest_unit() {
+        assert_eq!(span(45), "45s");
+        assert_eq!(span(180), "3m");
+        assert_eq!(span(7200), "2h");
+        assert_eq!(span(3 * 86_400 + 5), "3d");
+        let now = DateTime::from_timestamp(1_000_000, 0).unwrap();
+        assert_eq!(ago(now, now - Duration::minutes(4)), "4m ago");
+        assert_eq!(ago(now, now + Duration::minutes(4)), "0s ago");
+    }
 
     /// A stored leave whose failure spelled out the exit report's fields
     /// reads in words, and the words say what the fields said: an exit

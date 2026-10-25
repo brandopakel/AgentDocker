@@ -200,9 +200,11 @@ fn project_event(event: &Event) -> Option<Projection> {
     })
 }
 
+/// An id as a line shows it: a hex id abbreviated to its first twelve
+/// characters, any other value (a name, a resource key) whole.
 fn short(id: &str) -> String {
     if id.len() > 12 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
-        id[..12].to_owned()
+        agentdocker_core::short(id).to_owned()
     } else {
         id.to_owned()
     }

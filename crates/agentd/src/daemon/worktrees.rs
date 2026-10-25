@@ -13,14 +13,6 @@ pub(super) async fn git(root: PathBuf, args: Vec<String>) -> anyhow::Result<comm
     .await?
     .map_err(Into::into)
 }
-async fn physical(raw: String) -> anyhow::Result<PathBuf> {
-    tokio::task::spawn_blocking(move || project::try_canonical(Path::new(&raw)))
-        .await?
-        .map_err(Into::into)
-}
-fn failure(e: impl std::fmt::Display) -> Response {
-    Response::error(ErrorCode::Invalid, e.to_string())
-}
 
 /// Holds a checkout marked as "the daemon is committing here" for as
 /// long as it lives, and lets go however the commit ends.
@@ -57,7 +49,7 @@ pub(super) async fn add_worktree(
     from: Option<&str>,
 ) -> Result<(), Box<Response>> {
     if path.exists() || path.starts_with(&root) {
-        return Err(Box::new(failure(
+        return Err(Box::new(Response::invalid(
             "worktree path must be new and outside the current checkout",
         )));
     }
@@ -72,12 +64,12 @@ pub(super) async fn add_worktree(
     .await
     {
         Ok(output) if output.success && !branch.starts_with('-') => {}
-        _ => return Err(Box::new(failure("invalid branch name"))),
+        _ => return Err(Box::new(Response::invalid("invalid branch name"))),
     }
     // The start point is a ref, never an option: `--` ends the flags.
     let start = match from {
         Some(from) if from.starts_with('-') || from.trim().is_empty() => {
-            return Err(Box::new(failure("invalid start point")));
+            return Err(Box::new(Response::invalid("invalid start point")));
         }
         Some(from) => from.to_owned(),
         None => "HEAD".to_owned(),
@@ -97,8 +89,8 @@ pub(super) async fn add_worktree(
     .await
     {
         Ok(output) if output.success => Ok(()),
-        Ok(output) => Err(Box::new(failure(output.text))),
-        Err(e) => Err(Box::new(failure(e))),
+        Ok(output) => Err(Box::new(Response::invalid(output.text))),
+        Err(e) => Err(Box::new(Response::invalid(e))),
     }
 }
 
@@ -486,15 +478,15 @@ impl Daemon {
     ) -> Response {
         // A bad name is the caller's to fix before anything is made.
         if let Err(e) = agentdocker_core::seed::check(&seed_build) {
-            return failure(e);
+            return Response::invalid(e);
         }
         let (agent, root, _) = match self.reader_checkout(reference) {
             Ok(v) => v,
             Err(e) => return *e,
         };
-        let path = match physical(path).await {
+        let path = match physical(PathBuf::from(path)).await {
             Ok(p) => p,
-            Err(e) => return failure(e),
+            Err(e) => return Response::invalid(e),
         };
         if let Err(response) = add_worktree(root.clone(), &path, &branch, from.as_deref()).await {
             return *response;
@@ -593,8 +585,8 @@ impl Daemon {
         .await
         {
             Ok(output) if output.success => Response::Diff { text: output.text },
-            Ok(output) => failure(output.text),
-            Err(e) => failure(e),
+            Ok(output) => Response::invalid(output.text),
+            Err(e) => Response::invalid(e),
         }
     }
 
@@ -624,7 +616,7 @@ impl Daemon {
             Err(e) => return *e,
         };
         if message.trim().is_empty() {
-            return failure("a commit needs a message");
+            return Response::invalid("a commit needs a message");
         }
         {
             let mut state = lock(&self.state);
@@ -665,8 +657,8 @@ impl Daemon {
         .await
         {
             Ok(output) if output.success => output,
-            Ok(output) => return failure(output.text),
-            Err(e) => return failure(e),
+            Ok(output) => return Response::invalid(output.text),
+            Err(e) => return Response::invalid(e),
         };
         let files = staged.text.lines().filter(|l| !l.is_empty()).count();
         // A pending merge can change ancestry without changing the tree.
@@ -739,7 +731,7 @@ impl Daemon {
         };
         let head = match head {
             Ok(head) => head,
-            Err(reason) => return failure(reason),
+            Err(reason) => return Response::invalid(reason),
         };
         // The full ref HEAD names, and the branch from it: never `--short`,
         // which git lengthens to `heads/<name>` once a tag shares the name.
@@ -834,12 +826,12 @@ impl Daemon {
             Ok(v) => v,
             Err(e) => return *e,
         };
-        let source = match physical(source).await {
+        let source = match physical(PathBuf::from(source)).await {
             Ok(p) => p,
-            Err(e) => return failure(e),
+            Err(e) => return Response::invalid(e),
         };
         if source == target {
-            return failure("source and target must be distinct checkouts");
+            return Response::invalid("source and target must be distinct checkouts");
         }
         let roots = (source.clone(), target.clone());
         let same_repository = tokio::task::spawn_blocking(move || {
@@ -850,7 +842,9 @@ impl Daemon {
         .await
         .unwrap_or(false);
         if !same_repository {
-            return failure("integration requires linked worktrees of the same repository");
+            return Response::invalid(
+                "integration requires linked worktrees of the same repository",
+            );
         }
         let evidence = match lock(&self.state)
             .store
@@ -946,8 +940,8 @@ impl Daemon {
                     clean: true,
                     text: output.text,
                 },
-                Ok(output) => failure(output.text),
-                Err(e) => failure(e),
+                Ok(output) => Response::invalid(output.text),
+                Err(e) => Response::invalid(e),
             };
         }
         // The integration lease remains until the caller reviews/commits and
@@ -1018,7 +1012,7 @@ impl Daemon {
                     source_head: head,
                     clean: false,
                 });
-                failure(e)
+                Response::invalid(e)
             }
         }
     }

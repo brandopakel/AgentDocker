@@ -31,7 +31,7 @@ mod teams;
 mod top;
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use agentdocker_core::contest::Direction;
 use agentdocker_core::multiplexer::Session;
@@ -5222,21 +5222,6 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
     Ok(())
 }
 
-/// Absolute, with as much of it canonical as exists.
-fn absolute_path(raw: &str) -> String {
-    let path = PathBuf::from(raw);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    };
-    agentdocker_host::project::canonical(&absolute)
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// Ledger rows, with agent ids turned into names.
 async fn print_changes(client: &Client, changes: &[Change]) -> Result<()> {
     let names: BTreeMap<String, String> = match client
@@ -6098,15 +6083,15 @@ pub(crate) fn resource_key(raw: &str) -> String {
         Some(_) => return raw.to_owned(),
         None => raw,
     };
-    let path = PathBuf::from(value);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    };
-    format!("path:{}", hooks::normalize(&absolute).display())
+    format!("path:{}", absolute_path(value))
+}
+
+/// Absolute, with as much of it canonical as exists: the host resolves a
+/// relative path against the working directory itself.
+fn absolute_path(raw: &str) -> String {
+    agentdocker_host::project::canonical(Path::new(raw))
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {

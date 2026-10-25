@@ -409,32 +409,30 @@ impl Daemon {
         }
     }
 
-    /// A refusal from the daemon's own side, before or after the offer.
-    fn unavailable(reason: impl Into<String>) -> Box<Response> {
-        Box::new(Response::error(ErrorCode::Unavailable, reason))
-    }
-
     /// Validate the installed candidate, offer the transfer, spawn the
     /// successor with the listener and lock, and wait until it says it is
     /// serving. On any failure take authority back if the store still
     /// lets us.
     async fn replace(self: &Arc<Self>, held: &Held) -> Result<(), Box<Response>> {
-        let (candidate, chosen) = candidate()
-            .map_err(|e| Self::unavailable(format!("cannot find this daemon's executable: {e}")))?;
+        let (candidate, chosen) = candidate().map_err(|e| {
+            Box::new(Response::unavailable(format!(
+                "cannot find this daemon's executable: {e}"
+            )))
+        })?;
         info!(candidate = %candidate.display(), chosen, "reload candidate");
         let (info, start) = tokio::task::spawn_blocking({
             let candidate = candidate.clone();
             move || build_info(&candidate, BUILD_INFO_WITHIN)
         })
         .await
-        .map_err(|e| Self::unavailable(e.to_string()))?
-        .map_err(Self::unavailable)?;
+        .map_err(|e| Box::new(Response::unavailable(e.to_string())))?
+        .map_err(|e| Box::new(Response::unavailable(e)))?;
         let schema = lock(&self.state).store.schema_version();
         if info.format != 1
             || info.os != std::env::consts::OS
             || info.arch != std::env::consts::ARCH
         {
-            return Err(Self::unavailable(format!(
+            return Err(Box::new(Response::unavailable(format!(
                 "candidate {} is for {}/{} (format {}); this host is {}/{}",
                 candidate.display(),
                 info.os,
@@ -442,17 +440,20 @@ impl Daemon {
                 info.format,
                 std::env::consts::OS,
                 std::env::consts::ARCH
-            )));
+            ))));
         }
         if info.state_schema < schema {
-            return Err(Self::unavailable(format!(
+            return Err(Box::new(Response::unavailable(format!(
                 "candidate state schema {} is older than the database's {schema}; a successor cannot roll the database back",
                 info.state_schema
-            )));
+            ))));
         }
         // Pair first, so a successor that cannot be spawned costs nothing.
-        let (ours, theirs) = UnixStream::pair()
-            .map_err(|e| Self::unavailable(format!("cannot make the handover socket: {e}")))?;
+        let (ours, theirs) = UnixStream::pair().map_err(|e| {
+            Box::new(Response::unavailable(format!(
+                "cannot make the handover socket: {e}"
+            )))
+        })?;
         // The offer's own refusal keeps its code: `backpressure` while a
         // mutation is still executing, `conflict` over another offer.
         let transfer = self.offer_transfer(std::process::id())?;
@@ -532,7 +533,7 @@ impl Daemon {
         }
         let ready = tokio::task::spawn_blocking(move || await_ready(&ours, READY_WITHIN))
             .await
-            .map_err(|e| Self::unavailable(e.to_string()))?;
+            .map_err(|e| Box::new(Response::unavailable(e.to_string())))?;
         match ready {
             Ok(()) => Ok(()),
             Err(reason) => {
@@ -560,7 +561,7 @@ impl Daemon {
         } else {
             "successor failed and the offer could not be withdrawn; writing remains disabled, check `daemon status`"
         };
-        Self::unavailable(format!("{outcome}: {reason}"))
+        Box::new(Response::unavailable(format!("{outcome}: {reason}")))
     }
 
     /// Resolves once a completed handover says this daemon may leave.
@@ -578,13 +579,15 @@ impl Daemon {
     fn take_held(&self) -> Result<Held, Box<Response>> {
         let mut slot = lock(&self.held);
         let held = slot.as_ref().ok_or_else(|| {
-            Self::unavailable("this daemon holds no listener or lock to hand over")
+            Box::new(Response::unavailable(
+                "this daemon holds no listener or lock to hand over",
+            ))
         })?;
         if let Some(reason) = &held.restricted_unavailable {
-            return Err(Self::unavailable(format!(
+            return Err(Box::new(Response::unavailable(format!(
                 "the container endpoint's listener cannot be handed over ({reason}); \
                  this daemon keeps serving"
-            )));
+            ))));
         }
         if held.restricted.is_none() {
             return Err(Box::new(Response::error(

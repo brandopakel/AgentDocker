@@ -24,6 +24,7 @@
 
 #[cfg(windows)]
 use agentdocker_host::procinfo::parent_id;
+use agentdocker_host::project;
 use std::cell::RefCell;
 use std::io::Read;
 #[cfg(unix)]
@@ -1165,7 +1166,7 @@ fn read_path(input: &HookInput) -> Option<PathBuf> {
         .and_then(Value::as_str)
         .unwrap_or(".");
     let base = input.cwd.clone().or_else(|| std::env::current_dir().ok())?;
-    Some(agentdocker_host::project::canonical(&base.join(raw)))
+    Some(project::canonical(&base.join(raw)))
 }
 
 /// What a runtime's name reads as in a lease note.
@@ -1246,7 +1247,7 @@ pub fn patch_paths(tool_input: &Value, cwd: Option<&Path>) -> Vec<PathBuf> {
                     },
                 }
             };
-            let path = normalize(&absolute);
+            let path = project::canonical(&absolute);
             if !paths.contains(&path) {
                 paths.push(path);
             }
@@ -1274,22 +1275,7 @@ pub fn edited_path(input: &HookInput) -> Option<PathBuf> {
             None => std::env::current_dir().ok()?.join(path),
         }
     };
-    Some(normalize(&absolute))
-}
-
-/// Canonicalize what exists; for a file about to be created, canonicalize
-/// its parent and keep the file name.
-pub fn normalize(path: &Path) -> PathBuf {
-    if let Ok(canonical) = path.canonicalize() {
-        return canonical;
-    }
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => match parent.canonicalize() {
-            Ok(parent) => parent.join(name),
-            Err(_) => path.to_path_buf(),
-        },
-        _ => path.to_path_buf(),
-    }
+    Some(project::canonical(&absolute))
 }
 
 async fn current_agent<B: Backend>(backend: &B, input: &HookInput) -> Result<Option<AgentRecord>> {
@@ -3958,8 +3944,47 @@ mod tests {
         ev.tool_input = Some(json!({ "notebook_path": "/tmp/nb.ipynb" }));
         assert_eq!(
             edited_path(&ev).unwrap(),
-            normalize(Path::new("/tmp/nb.ipynb"))
+            project::canonical(Path::new("/tmp/nb.ipynb"))
         );
+    }
+
+    /// The hooks once canonicalised a path themselves: the whole path when
+    /// it exists, else its parent with the file name kept. That is what
+    /// `project::canonical` gives for an existing path, a file about to
+    /// be created and a path reached through a symlink.
+    #[test]
+    fn edited_paths_are_canonicalised_like_the_hooks_once_did() {
+        fn former(path: &Path) -> PathBuf {
+            if let Ok(canonical) = path.canonicalize() {
+                return canonical;
+            }
+            match (path.parent(), path.file_name()) {
+                (Some(parent), Some(name)) => match parent.canonicalize() {
+                    Ok(parent) => parent.join(name),
+                    Err(_) => path.to_path_buf(),
+                },
+                _ => path.to_path_buf(),
+            }
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dir = tmp.path().join("src");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("lib.rs"), "").unwrap();
+        std::os::unix::fs::symlink(&dir, tmp.path().join("link")).unwrap();
+        for path in [
+            dir.join("lib.rs"),
+            dir.join("brand-new.rs"),
+            tmp.path().join("link/lib.rs"),
+            tmp.path().join("link/brand-new.rs"),
+            dir.join("../src/lib.rs"),
+        ] {
+            assert_eq!(
+                project::canonical(&path),
+                former(&path),
+                "{}",
+                path.display()
+            );
+        }
     }
 
     #[tokio::test]

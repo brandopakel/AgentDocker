@@ -94,12 +94,7 @@ impl ProjectId {
 
     /// Abbreviated form for tables, matching [`crate::AgentId::short`].
     pub fn short(&self) -> &str {
-        let end = self
-            .0
-            .char_indices()
-            .nth(12)
-            .map_or(self.0.len(), |(i, _)| i);
-        &self.0[..end]
+        crate::short(&self.0)
     }
 }
 

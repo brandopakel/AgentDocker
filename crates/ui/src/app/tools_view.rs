@@ -715,7 +715,7 @@ impl App {
                         format!("saved-setup-{id}"),
                         format!("{phase} · {id}"),
                         row![
-                            mono(short_id(&id).to_owned(), 12, c.text).width(Fill),
+                            mono(agentdocker_core::short(&id).to_owned(), 12, c.text).width(Fill),
                             chip(
                                 format!("saved-setup-phase-{id}"),
                                 glyph,
@@ -2295,11 +2295,6 @@ impl App {
         }
         frame(card, c)
     }
-}
-
-/// The first twelve characters of an id, enough to tell plans apart.
-fn short_id(id: &str) -> String {
-    id.chars().take(12).collect()
 }
 
 /// One file of a setup plan as a diff: its path and how many entries it
