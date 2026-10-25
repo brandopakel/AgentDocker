@@ -24,6 +24,10 @@ fn failure(e: impl std::fmt::Display) -> Response {
 
 /// Holds a checkout marked as "the daemon is committing here" for as
 /// long as it lives, and lets go however the commit ends.
+///
+/// Dropping it takes the state lock, so it must never be dropped by a
+/// holder of a state guard: every hold taken while one lives is a block
+/// or a statement of its own that ends before any return.
 pub(super) struct Committing<'a> {
     daemon: &'a Daemon,
     root: PathBuf,
@@ -760,9 +764,11 @@ impl Daemon {
         // The commit is the agent's as soon as git has made it, before any
         // push can hold it up: kept apart from the journal, so its word is
         // not taken on this branch however long the journal keeps it.
-        if let Some(error) =
-            lock(&self.state).record_daemon_commit(&agent, full_ref.as_deref(), &head)
-        {
+        // Recorded in a statement of its own: an `if let` scrutinee's
+        // guard would live through the `return`, with `_committing` to
+        // drop behind it.
+        let recorded = lock(&self.state).record_daemon_commit(&agent, full_ref.as_deref(), &head);
+        if let Some(error) = recorded {
             return error;
         }
 
