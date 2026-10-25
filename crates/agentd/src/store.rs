@@ -81,6 +81,12 @@ pub struct TaskTransition<'a> {
 // holders left, and drop `role` rewriting the channel.
 // Schema 28, unreleased, also lets a pending Codex review offer the session
 // (`for_session` on its presentation), a field an older reader refuses.
+// Schema 28, unreleased, also spells a `code_verdict` document's word
+// `pass`/`changes`/`none` and counts its findings `important`/`nit`/
+// `pre_existing`, with the reviewer's `runtime` beside them: a kept
+// `approve`/`comment` and `p1`/`p2` are read, and an older daemon cannot
+// read a verdict written this way (its project's verdicts would be
+// `storage_unavailable` to it).
 // The `authorship` and `witnessed_worktrees` tables need no bump: they are
 // new tables, no stored row changes meaning, and an older daemon leaves them
 // alone (it records no authorship while it runs; nothing it reads is wrong).

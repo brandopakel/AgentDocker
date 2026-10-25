@@ -629,8 +629,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
-| `verdict <branch> --head <commit> --approve\|--changes\|--comment [--from <commit>] [--findings P1,P2,P3] [note]` | Give your verdict on a branch at the commit you read; it counts for the roles you hold, and only for that commit |
-| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: approved at its head as it is now (exit 0), else changes asked, stale (commits since the approval) or unreviewed (exit 1). `--publish` sets the `agentdocker/review` commit status on GitHub |
+| `verdict <branch> --head <commit> --pass\|--changes\|--none [--from <commit>] [--findings important,nit,pre-existing] [note]` | Give your verdict on a branch at the commit you read, with what you found counted by severity (`0,1,0`; all zero when left out); it counts for the roles you hold, and only for that commit. Prints the verdict's id, then its parseable line (`verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`) on stderr. Refused on a branch you hold, are checked out on, or committed to |
+| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: passed at its head as it is now (exit 0), else changes asked, stale (commits since the pass) or unreviewed (exit 1). Prints what it said, then a line a job can gate on: `gate=approved branch=… head=… verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`. `--publish` sets the `agentdocker/review` commit status on GitHub, whose text carries the word, the reviewer, its runtime and the counts |
 | `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first |
 
 ### Containers
@@ -1059,17 +1059,47 @@ Current behaviour that the sections above do not already state, by area.
 - **A review counts for the commit it read.** A reviewer gives its verdict
   on a branch at the exact commit it read (`agentdocker verdict`, or the
   `review_verdict` tool), and `agentdocker gate <PR|branch>` says whether
-  the branch may land now: approved only at that commit. Any later commit,
-  a merge of main included, makes the approval stale until the reviewer
+  the branch may land now: passed only at that commit. Any later commit,
+  a merge of main included, makes the pass stale until the reviewer
   reads what came after. Whose word counts is a role you give
   (`reviewer` by default); `--publish` also sets it as a GitHub commit
   status that branch protection can require. An agent's verdict is
-  refused on the branch its checkout is on, and on any branch it
-  committed to through `agentdocker commit` or with git in a worktree
-  AgentDocker made for it, wherever its checkout is now and however
-  much of the journal is gone. Checking a branch out to read it is not
-  committing to it. Commits made with git in a checkout you made by hand
-  are not seen this way, so keep authors and reviewers separate agents.
+  refused on the branch its checkout is on, on a branch it holds (a
+  `branch:` lease), and on any branch it committed to through
+  `agentdocker commit`, with git in a worktree AgentDocker made for it,
+  or as the journal attributes a commit to it, wherever its checkout is
+  now and however much of the journal is gone. Checking a branch out to
+  read it is not committing to it. Commits made with git in a checkout
+  you made by hand are not seen this way, so keep authors and reviewers
+  separate agents.
+
+- **Verdicts have a fixed vocabulary.** A verdict is `pass`, `changes` or
+  `none` — `none` means the reviewer read the commit and gives no verdict,
+  which is not a pass with nothing found — and what it found is counted
+  as `important` (must be fixed before it lands; a pass cannot carry
+  one), `nit` (worth fixing, not blocking) and `pre-existing` (found
+  while reading, not caused by this change). Counts left out are zero.
+  Each verdict records the reviewer's runtime, so a Codex review of a
+  Claude branch is visible as such wherever the verdict appears: the
+  journal line in the app, the `gate` output and the GitHub status. A
+  review on a pull request and the check that gates on it:
+
+  ```sh
+  agentdocker verdict <branch> --head <commit> --changes --findings 1,2,0 \
+    "the lease check runs after the checkout read; nit: the test names"
+  # <verdict id>   (then, on stderr:)
+  # <branch> verdict=changes head=<commit> important=1 nit=2 pre_existing=0 runtime=codex by=reviewer-1
+
+  agentdocker gate <PR> --publish
+  # changes asked: <branch> by reviewer-1 (codex; important 1, nit 2, pre-existing 0) at <commit>
+  # gate=changes branch=<branch> head=<commit> verdict=changes head=<commit> important=1 nit=2 pre_existing=0 runtime=codex by=reviewer-1
+  ```
+
+  A job reads the second line (`gate=approved` is the only pass; every
+  field before `by=` is one `key=value` token) or `--json`; the commit
+  status `agentdocker/review` says `changes by reviewer-1 (codex;
+  important 1, nit 2, pre-existing 0)`. `--approve` and `--comment` are
+  still accepted for `--pass` and `--none`.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or

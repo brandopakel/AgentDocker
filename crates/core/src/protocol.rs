@@ -1518,9 +1518,11 @@ pub enum Request {
         #[serde(default)]
         note: Option<String>,
     },
-    /// A reviewer's word on a branch at the commit it read: `approve`,
-    /// `changes` or `comment`, with how many findings of each priority it
-    /// raised. Given by an agent holding a role in the project, or by the
+    /// A reviewer's word on a branch at the commit it read: `pass`,
+    /// `changes` or `none` (the older `approve` and `comment` are still
+    /// read), with how many findings of each severity it raised
+    /// (`important`, `nit`, `pre_existing`; none given means zero of
+    /// each). Given by an agent holding a role in the project, or by the
     /// person. Answers `code_verdict`.
     CodeVerdict {
         agent: String,

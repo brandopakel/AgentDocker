@@ -778,11 +778,19 @@ pub fn event_line(event: &Event) -> String {
             head,
             by,
             verdict,
+            findings,
+            runtime,
             ..
         } => format!(
-            "verdict          {} {verdict} on {branch} at {}",
+            "verdict          {} {verdict} on {branch} at {} ({}; {})",
             by.short(),
-            head.chars().take(8).collect::<String>()
+            head.chars().take(8).collect::<String>(),
+            if runtime.is_empty() {
+                "unknown"
+            } else {
+                runtime.as_str()
+            },
+            findings.said()
         ),
         EventKind::WatcherStarting => "watcher starting".to_owned(),
         EventKind::WatcherStarted => "watcher started".to_owned(),

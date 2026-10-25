@@ -2,18 +2,56 @@
 //! the gate over them: documents of their own kind, by project. An agent
 //! holding a role in the project, or the person, gives one; anybody may
 //! ask the gate. No agent's word is taken on the branch its checkout is
-//! on, nor on a branch the daemon saw it commit to (`daemon/authorship.rs`).
+//! on, on a branch it holds (`branch:<name>` lease), on a branch the
+//! daemon saw it commit to (`daemon/authorship.rs`), nor on one the
+//! journal says it committed to.
 use std::collections::HashMap;
 
 use super::*;
 use agentdocker_core::gate::{
-    self, CodeVerdict, Findings, GATE_ROLE, VERDICTS_PER_PROJECT, full_commit,
+    self, CodeVerdict, Findings, GATE_ROLE, VERDICTS_PER_PROJECT, Word, full_commit,
 };
-use agentdocker_core::{JournalEntry, JournalKind, SummarySource, Verdict};
+use agentdocker_core::{HUMAN_RUNTIME, JournalEntry, JournalKind, SummarySource};
 
 pub(in crate::daemon) const VERDICT: &str = "code_verdict";
 
 impl State {
+    /// Whether the journal holds a commit on `branch` in `project`
+    /// attributed to `agent` or an id folded into it: the daemon's own
+    /// `commit`, a witnessed worktree commit, or the watcher's attribution
+    /// of one to the only agent in the checkout or the `branch:` holder.
+    /// Best effort by design: pruning and retention empty the journal, and
+    /// `authorship` is the record that outlives it.
+    fn journal_says_committed(
+        &mut self,
+        project: &ProjectId,
+        agent: &AgentId,
+        branch: &str,
+    ) -> Result<bool, Box<Response>> {
+        for id in self.registry.identity_ids(agent) {
+            let query = crate::store::JournalQuery {
+                agent: Some(id),
+                branch: Some(branch.to_owned()),
+                kind: Some(JournalKind::Commit),
+                ..crate::store::JournalQuery::new(project.clone(), 1)
+            };
+            let found = self
+                .store_read("journal", |store| store.journal(&query))
+                .ok_or_else(|| {
+                    Box::new(self.storage_failure().unwrap_or_else(|| {
+                        Response::error(
+                            ErrorCode::StorageUnavailable,
+                            "what the journal says the reviewer committed could not be read",
+                        )
+                    }))
+                })?;
+            if !found.is_empty() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// A project's verdicts, oldest first.
     fn project_verdicts(&mut self, project: &ProjectId) -> Result<Vec<CodeVerdict>, Box<Response>> {
         self.store_read("verdicts", |store| {
@@ -66,11 +104,8 @@ impl Daemon {
     ) -> Response {
         // One spelling of each, checked and kept alike.
         let (branch, head) = (branch.trim(), head.trim());
-        let Some(word) = Verdict::parse(verdict) else {
-            return Response::error(
-                ErrorCode::Invalid,
-                "verdict must be approve, changes, or comment",
-            );
+        let Some(word) = Word::parse(verdict) else {
+            return Response::error(ErrorCode::Invalid, "verdict must be pass, changes, or none");
         };
         // The person names the project their word is for: where their own
         // record happens to stand says nothing about which branch is meant.
@@ -175,9 +210,35 @@ impl Daemon {
         if let Some(error) = state.write_failure() {
             return error;
         }
+        // Nor on a branch it holds: the `branch:` lease says whose the
+        // branch is now, and the author may not pass its own change.
+        if !actor.human {
+            state.expire_leases();
+            let ids = state
+                .registry
+                .identity_ids(&AgentId::from(actor.id.as_str()));
+            let key = ResourceKey::new(format!("branch:{branch}"));
+            if let Some(lease) = state
+                .leases
+                .holders_of(&key)
+                .into_iter()
+                .find(|lease| ids.contains(&lease.holder))
+            {
+                return Response::error(
+                    ErrorCode::Forbidden,
+                    format!(
+                        "an agent does not review a branch it holds: lease {} on {}",
+                        lease.id,
+                        lease.resource.value()
+                    ),
+                );
+            }
+        }
         // Nor on a branch it has committed to, wherever its checkout is now:
         // what the daemon made or witnessed it commit, read by the branch's
-        // full ref, which the journal's pruning and retention never touch.
+        // full ref, which the journal's pruning and retention never touch;
+        // and what the journal attributes to it as a commit on the branch,
+        // for as long as the journal keeps it.
         if !actor.human {
             match state.has_authored(&project, &AgentId::from(actor.id.as_str()), branch) {
                 Ok(false) => {}
@@ -185,6 +246,17 @@ impl Daemon {
                     return Response::error(
                         ErrorCode::Forbidden,
                         "an agent does not review a branch it has committed to",
+                    );
+                }
+                Err(response) => return *response,
+            }
+            match state.journal_says_committed(&project, &AgentId::from(actor.id.as_str()), branch)
+            {
+                Ok(false) => {}
+                Ok(true) => {
+                    return Response::error(
+                        ErrorCode::Forbidden,
+                        "an agent does not review a branch the journal says it committed to",
                     );
                 }
                 Err(response) => return *response,
@@ -210,6 +282,16 @@ impl Daemon {
                 .unwrap_or_else(|| actor.id.clone()),
             human: actor.human,
             roles,
+            // The person's word is the person's, whatever record it came
+            // through; an agent's names the runtime it registered as.
+            runtime: if actor.human {
+                HUMAN_RUNTIME.to_owned()
+            } else {
+                record
+                    .as_ref()
+                    .map(|r| r.spec.runtime.clone())
+                    .unwrap_or_default()
+            },
             verdict: word,
             findings,
             note: note.map(|n| n.trim().to_owned()).unwrap_or_default(),
@@ -234,6 +316,8 @@ impl Daemon {
             head: given.head.clone(),
             by: given.by.clone(),
             verdict: word,
+            findings: given.findings,
+            runtime: given.runtime.clone(),
         }];
         if let Some(error) = state.commit_change(
             "verdict",
@@ -494,22 +578,25 @@ fn checkout_branch(checkout: &std::path::Path) -> Result<Option<String>, String>
 }
 
 /// The journal's line for a verdict: who said what of which branch, at
-/// which commit, from which.
+/// which commit, from which, in which runtime, with what found. The app
+/// shows this line where a verdict appears, so it carries the counts and
+/// the runtime.
 fn journal_entry(verdict: &CodeVerdict) -> JournalEntry {
     let short = |commit: &str| commit.chars().take(8).collect::<String>();
     let word = match verdict.verdict {
-        Verdict::Approve => "approved",
-        Verdict::Changes => "asked for changes on",
-        Verdict::Comment => "commented on",
+        Word::Pass => "passed",
+        Word::Changes => "asked for changes on",
+        Word::None => "read, with no verdict,",
     };
     let range = match &verdict.from {
         Some(from) => format!("{}..{}", short(from), short(&verdict.head)),
         None => short(&verdict.head),
     };
-    let Findings { p1, p2, p3 } = verdict.findings;
     let mut summary = format!(
-        "{word} {} at {range} (P1 {p1}, P2 {p2}, P3 {p3})",
-        verdict.branch
+        "{word} {} at {range} as {} ({})",
+        verdict.branch,
+        verdict.runtime_said(),
+        verdict.findings.said()
     );
     if !verdict.note.is_empty() {
         let note: String = verdict.note.chars().take(300).collect();
@@ -679,37 +766,63 @@ mod tests {
         assert_eq!(ask(&daemon, &author, A).await, gate::Gate::Missing);
 
         give_role(&daemon, &id, "reviewer");
-        // A short commit, a bad branch, or an approval carrying a P1 is
-        // not a verdict.
+        // A short commit, a bad branch, a word outside the vocabulary, or
+        // a pass carrying an important finding is not a verdict.
         assert!(refused(
             daemon
-                .handle(verdict(&reviewer, None, "feature/x", "abc1234", "approve"))
+                .handle(verdict(&reviewer, None, "feature/x", "abc1234", "pass"))
                 .await,
             ErrorCode::Invalid
         ));
         assert!(refused(
             daemon
-                .handle(verdict(&reviewer, None, "a..b", A, "approve"))
+                .handle(verdict(&reviewer, None, "a..b", A, "pass"))
                 .await,
             ErrorCode::Invalid
         ));
-        let mut p1 = verdict(&reviewer, None, "feature/x", A, "approve");
-        if let Request::CodeVerdict { findings, .. } = &mut p1 {
-            findings.p1 = 1;
+        assert!(refused(
+            daemon
+                .handle(verdict(&reviewer, None, "feature/x", A, "lgtm"))
+                .await,
+            ErrorCode::Invalid
+        ));
+        let mut important = verdict(&reviewer, None, "feature/x", A, "pass");
+        if let Request::CodeVerdict { findings, .. } = &mut important {
+            findings.important = 1;
         }
-        assert!(refused(daemon.handle(p1).await, ErrorCode::Invalid));
+        assert!(refused(daemon.handle(important).await, ErrorCode::Invalid));
 
-        let said = daemon
-            .handle(verdict(&reviewer, None, "feature/x", A, "changes"))
-            .await;
-        assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
+        let mut changes = verdict(&reviewer, None, "feature/x", A, "changes");
+        if let Request::CodeVerdict { findings, .. } = &mut changes {
+            *findings = Findings {
+                important: 1,
+                nit: 2,
+                pre_existing: 3,
+            };
+        }
+        let said = daemon.handle(changes).await;
+        let Response::CodeVerdict { verdict: given } = said else {
+            panic!("{said:?}");
+        };
+        assert_eq!(given.verdict, Word::Changes);
+        assert_eq!(given.findings.said(), "important 1, nit 2, pre-existing 3");
+        assert_eq!(given.runtime, "", "registered with no runtime named");
         assert!(matches!(
             ask(&daemon, &author, A).await,
             gate::Gate::Changes { .. }
         ));
-        daemon
-            .handle(verdict(&reviewer, None, "feature/x", A, "approve"))
-            .await;
+        // The older spelling still reads as a pass, and a verdict given
+        // without counts has none.
+        let older: Request = serde_json::from_value(serde_json::json!({
+            "op": "code_verdict", "agent": reviewer, "branch": "feature/x",
+            "head": A, "verdict": "approve"
+        }))
+        .unwrap();
+        let Response::CodeVerdict { verdict: given } = daemon.handle(older).await else {
+            panic!("the older spelling is read");
+        };
+        assert_eq!(given.verdict, Word::Pass);
+        assert_eq!(given.findings, Findings::default());
         assert!(ask(&daemon, &author, A).await.approved());
         // A commit since, a merge of main included, makes it stale.
         assert!(matches!(
@@ -718,9 +831,12 @@ mod tests {
         ));
         // The person's word counts without a role, in the project named.
         let said = daemon
-            .handle(verdict(HUMAN, Some(&project), "feature/x", B, "approve"))
+            .handle(verdict(HUMAN, Some(&project), "feature/x", B, "pass"))
             .await;
-        assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
+        let Response::CodeVerdict { verdict: given } = said else {
+            panic!("{said:?}");
+        };
+        assert_eq!(given.runtime, HUMAN_RUNTIME);
         assert!(ask(&daemon, &author, B).await.approved());
 
         // The journal says each, against the branch and the commit read.
@@ -736,8 +852,153 @@ mod tests {
             .filter(|e| e.branch.as_deref() == Some("feature/x"))
             .collect();
         assert_eq!(lines.len(), 3, "{entries:?}");
-        assert!(lines.iter().any(|e| e.head_after.as_deref() == Some(B)
-            && e.summary.starts_with("approved feature/x at bbbbbbbb")));
+        assert!(lines.iter().any(|e| {
+            e.head_after.as_deref() == Some(B)
+                && e.summary
+                    .starts_with("passed feature/x at bbbbbbbb as human (important 0,")
+        }));
+        assert!(
+            lines.iter().any(|e| e
+                .summary
+                .contains("as unknown (important 1, nit 2, pre-existing 3)")),
+            "{lines:?}"
+        );
+    }
+
+    /// The event carries the word, the counts and the runtime, so a
+    /// listener needs no second read.
+    #[tokio::test]
+    async fn the_event_carries_the_counts_and_the_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let repo = tmp.path().join("repo");
+        repository(&repo, "main");
+        let reviewer = match daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "reviewer".into(),
+                    runtime: "codex".into(),
+                    workdir: Some(repo.clone()),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await
+        {
+            Response::Agent { agent } => agent,
+            other => panic!("{other:?}"),
+        };
+        give_role(&daemon, &reviewer.id, "reviewer");
+        let mut request = verdict(reviewer.id.as_str(), None, "feature/x", A, "none");
+        if let Request::CodeVerdict { findings, .. } = &mut request {
+            findings.nit = 2;
+        }
+        let Response::CodeVerdict { verdict: given } = daemon.handle(request).await else {
+            panic!("given");
+        };
+        assert_eq!(given.runtime, "codex");
+        assert_eq!(
+            given.line(),
+            format!(
+                "verdict=none head={A} important=0 nit=2 pre_existing=0 runtime=codex by=reviewer"
+            )
+        );
+        let events = daemon.recent_events(200);
+        let carried = events.iter().find_map(|e| match &e.kind {
+            EventKind::CodeVerdictGiven {
+                verdict,
+                findings,
+                runtime,
+                ..
+            } => Some((*verdict, *findings, runtime.clone())),
+            _ => None,
+        });
+        assert_eq!(
+            carried,
+            Some((
+                Word::None,
+                Findings {
+                    important: 0,
+                    nit: 2,
+                    pre_existing: 0
+                },
+                "codex".to_owned()
+            ))
+        );
+    }
+
+    /// The author may not pass its own change: holding the branch's lease,
+    /// or a journal line committing to the branch, refuses the word, each
+    /// saying why.
+    #[tokio::test]
+    async fn an_agent_does_not_review_a_branch_it_holds_or_the_journal_says_it_committed_to() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let repo = tmp.path().join("repo");
+        repository(&repo, "main");
+        let reviewer = register(&daemon, "reviewer", &repo).await;
+        give_role(&daemon, &reviewer.id, "reviewer");
+        let project = reviewer.project.as_ref().unwrap().id().clone();
+        let claim: Request = serde_json::from_value(serde_json::json!({
+            "op": "claim", "agent": reviewer.id.to_string(),
+            "resource": "branch:feature/x", "mode": "exclusive", "ttl_secs": 600
+        }))
+        .unwrap();
+        let Response::Lease { lease } = daemon.handle(claim).await else {
+            panic!("the lease is taken");
+        };
+        let refusal = daemon
+            .handle(verdict(reviewer.id.as_str(), None, "feature/x", A, "pass"))
+            .await;
+        assert!(
+            matches!(&refusal, Response::Error { code: ErrorCode::Forbidden, message, .. }
+                if message.contains("holds") && message.contains(lease.id.as_str())),
+            "{refusal:?}"
+        );
+        // Another branch's lease is no bar.
+        let said = daemon
+            .handle(verdict(reviewer.id.as_str(), None, "feature/y", A, "pass"))
+            .await;
+        assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
+        let release: Request = serde_json::from_value(serde_json::json!({
+            "op": "release", "agent": reviewer.id.to_string(), "lease": lease.id.as_str()
+        }))
+        .unwrap();
+        daemon.handle(release).await;
+        let said = daemon
+            .handle(verdict(reviewer.id.as_str(), None, "feature/x", A, "none"))
+            .await;
+        assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
+
+        // The journal attributes a commit on the branch to it.
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get(&reviewer.id).cloned().unwrap();
+            let mut entry = state
+                .plain_entry(
+                    &record,
+                    JournalKind::Commit,
+                    "committed aaaaaaaa: wrote it".to_owned(),
+                    SummarySource::Explicit,
+                )
+                .unwrap();
+            entry.project = project.clone();
+            entry.branch = Some("feature/x".into());
+            state.append_journal(entry);
+        }
+        let refusal = daemon
+            .handle(verdict(reviewer.id.as_str(), None, "feature/x", A, "pass"))
+            .await;
+        assert!(
+            matches!(&refusal, Response::Error { code: ErrorCode::Forbidden, message, .. }
+                if message.contains("journal")),
+            "{refusal:?}"
+        );
+        let said = daemon
+            .handle(verdict(reviewer.id.as_str(), None, "feature/y", A, "pass"))
+            .await;
+        assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
     }
 
     #[tokio::test]
@@ -759,7 +1020,7 @@ mod tests {
                     Some(&elsewhere_project),
                     "feature/x",
                     A,
-                    "approve"
+                    "pass"
                 ))
                 .await,
             ErrorCode::Forbidden
@@ -780,7 +1041,7 @@ mod tests {
             assert!(
                 refused(
                     daemon
-                        .handle(verdict(reviewer.id.as_str(), None, own, A, "approve"))
+                        .handle(verdict(reviewer.id.as_str(), None, own, A, "pass"))
                         .await,
                     ErrorCode::Forbidden
                 ),
@@ -789,13 +1050,7 @@ mod tests {
         }
         // Another branch is its to review.
         let said = daemon
-            .handle(verdict(
-                reviewer.id.as_str(),
-                None,
-                "feature/x",
-                A,
-                "approve",
-            ))
+            .handle(verdict(reviewer.id.as_str(), None, "feature/x", A, "pass"))
             .await;
         assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
     }
@@ -959,7 +1214,7 @@ mod tests {
         let repo = tmp.path().join("repo");
         repository(&repo, "main");
         let reviewer = register(&daemon, "reviewer", &repo).await;
-        let mut request = verdict("reviewer", None, "feature/x", A, "approve");
+        let mut request = verdict("reviewer", None, "feature/x", A, "pass");
         let own = Some((
             std::process::id(),
             agentdocker_host::procinfo::start_time(std::process::id()),
@@ -975,7 +1230,7 @@ mod tests {
         };
         assert_eq!(agent, &reviewer.id.to_string());
         // The person by name, with no record yet, goes on as the person.
-        let mut person = verdict(HUMAN, None, "feature/x", A, "approve");
+        let mut person = verdict(HUMAN, None, "feature/x", A, "pass");
         assert!(
             daemon
                 .authenticate_verdict(own, &mut person)
@@ -987,7 +1242,7 @@ mod tests {
         };
         assert_eq!(agent, HUMAN);
         // A name nobody has now is refused here, never looked up later.
-        let mut unknown = verdict("unused-name", None, "feature/x", A, "approve");
+        let mut unknown = verdict("unused-name", None, "feature/x", A, "pass");
         assert!(matches!(
             daemon.authenticate_verdict(own, &mut unknown).await,
             Some(Response::Error {
@@ -1011,7 +1266,7 @@ mod tests {
             .await;
         assert!(refused(
             daemon
-                .handle(verdict(HUMAN, None, "feature/x", A, "approve"))
+                .handle(verdict(HUMAN, None, "feature/x", A, "pass"))
                 .await,
             ErrorCode::Invalid
         ));
@@ -1020,13 +1275,7 @@ mod tests {
         give_role(&daemon, &reviewer.id, "reviewer");
         assert!(refused(
             daemon
-                .handle(verdict(
-                    reviewer.id.as_str(),
-                    None,
-                    "feature/x",
-                    A,
-                    "approve"
-                ))
+                .handle(verdict(reviewer.id.as_str(), None, "feature/x", A, "pass"))
                 .await,
             ErrorCode::Unavailable
         ));
@@ -1081,14 +1330,9 @@ mod tests {
             other => panic!("{other:?}"),
         };
         give_role(&daemon, &reviewer.id, "reviewer");
-        let request = serde_json::to_string(&verdict(
-            reviewer.id.as_str(),
-            None,
-            "feature/x",
-            A,
-            "approve",
-        ))
-        .unwrap();
+        let request =
+            serde_json::to_string(&verdict(reviewer.id.as_str(), None, "feature/x", A, "pass"))
+                .unwrap();
         // Another process saying it is the reviewer: refused, whichever
         // session (if any) it runs under where the tests do.
         let reply = send(spawn(), request.clone()).await;
@@ -1159,7 +1403,7 @@ mod tests {
                 "{registered:?}"
             );
             let request =
-                serde_json::to_string(&verdict(outer.id.as_str(), None, "feature/y", A, "approve"))
+                serde_json::to_string(&verdict(outer.id.as_str(), None, "feature/y", A, "pass"))
                     .unwrap();
             std::fs::write(&asked, request).unwrap();
             let mut reply = String::new();

@@ -9,11 +9,20 @@
 //! the roles its reviewer held when it was given, and the gate is asked
 //! for one of them (`reviewer` by default). The person's word always
 //! counts. Nothing here names a provider or a repository.
+//!
+//! The vocabulary is fixed so that a job can parse it: a verdict is
+//! `pass`, `changes` or `none`, and its findings are counted as
+//! `important`, `nit` and `pre_existing`. `none` is a verdict given and
+//! withheld — the reviewer read the commit and neither passes nor blocks
+//! it — which is not the same as a pass with no findings, and not the same
+//! as no verdict at all (the gate's `missing`).
+
+use std::fmt;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentId, ProjectId, Verdict};
+use crate::{AgentId, ProjectId};
 
 /// The role whose verdicts the gate counts when asked for none.
 pub const GATE_ROLE: &str = "reviewer";
@@ -22,15 +31,83 @@ pub const VERDICTS_PER_PROJECT: usize = 2000;
 /// Characters a verdict's note holds at most.
 pub const NOTE_CHARS: usize = 4000;
 
-/// How many findings of each priority the review raised.
+/// How many findings of each severity the review raised. A verdict given
+/// without counts has none: every count defaults to zero.
+///
+/// Verdicts written before this vocabulary counted priorities: their `p1`
+/// reads as `important` and `p2` as `nit`; a `p3` count was neither and
+/// is not carried.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Findings {
+    /// Must be fixed before the change lands: a pass cannot carry one.
+    #[serde(default, alias = "p1")]
+    pub important: u32,
+    /// Worth fixing, not worth blocking on.
+    #[serde(default, alias = "p2")]
+    pub nit: u32,
+    /// Found while reading, not caused by this change.
     #[serde(default)]
-    pub p1: u32,
-    #[serde(default)]
-    pub p2: u32,
-    #[serde(default)]
-    pub p3: u32,
+    pub pre_existing: u32,
+}
+
+impl Findings {
+    /// The counts as a job reads them: `important=0 nit=1 pre_existing=0`.
+    pub fn line(&self) -> String {
+        format!(
+            "important={} nit={} pre_existing={}",
+            self.important, self.nit, self.pre_existing
+        )
+    }
+
+    /// The counts as a person reads them: `important 0, nit 1, pre-existing 0`.
+    pub fn said(&self) -> String {
+        format!(
+            "important {}, nit {}, pre-existing {}",
+            self.important, self.nit, self.pre_existing
+        )
+    }
+}
+
+/// A reviewer's word on a branch at a commit: the fixed vocabulary.
+///
+/// Verdicts written before it said `approve` and `comment`; those read as
+/// `pass` and `none`, and are still accepted when spoken.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Word {
+    /// Good to land at this commit, with no important finding.
+    #[serde(alias = "approve", alias = "approved")]
+    Pass,
+    /// Not yet: the findings say what to change.
+    Changes,
+    /// Read, and no verdict given: neither passes nor blocks.
+    #[serde(alias = "comment")]
+    None,
+}
+
+impl Word {
+    pub fn parse(text: &str) -> Option<Self> {
+        Some(match text.trim() {
+            "pass" | "approve" | "approved" => Self::Pass,
+            "changes" => Self::Changes,
+            "none" | "comment" => Self::None,
+            _ => return Option::None,
+        })
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pass => "pass",
+            Self::Changes => "changes",
+            Self::None => "none",
+        }
+    }
+}
+
+impl fmt::Display for Word {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// One reviewer's word on one branch at one commit.
@@ -58,7 +135,12 @@ pub struct CodeVerdict {
     /// The roles its reviewer held when it was given.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<String>,
-    pub verdict: Verdict,
+    /// The runtime its reviewer ran in when it was given (`claude-code`,
+    /// `codex`, `human`, …), so a review by another vendor than the
+    /// author's is visible. Empty on a verdict given before it was kept.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub runtime: String,
+    pub verdict: Word,
     #[serde(default)]
     pub findings: Findings,
     pub note: String,
@@ -108,8 +190,8 @@ impl CodeVerdict {
         if self.note.chars().count() > NOTE_CHARS {
             return Err("a verdict's note is at most 4000 characters");
         }
-        if self.verdict == Verdict::Approve && self.findings.p1 > 0 {
-            return Err("an approval cannot carry a P1 finding: ask for changes");
+        if self.verdict == Word::Pass && self.findings.important > 0 {
+            return Err("a pass cannot carry an important finding: ask for changes");
         }
         Ok(())
     }
@@ -117,6 +199,31 @@ impl CodeVerdict {
     /// Whether its word counts at the gate for `role`.
     pub fn counts_for(&self, role: &str) -> bool {
         self.human || self.roles.iter().any(|r| r == role)
+    }
+
+    /// The runtime as said: `unknown` on a verdict kept before it was.
+    pub fn runtime_said(&self) -> &str {
+        if self.runtime.is_empty() {
+            "unknown"
+        } else {
+            &self.runtime
+        }
+    }
+
+    /// One line a job can parse, `key=value` fields split on spaces:
+    /// `verdict=pass head=<full commit> important=0 nit=1 pre_existing=0
+    /// runtime=codex by=<reviewer>`. Every value before `by=` has no
+    /// space in it; `by=` is last and runs to the end of the line, since a
+    /// reviewer's name may have spaces.
+    pub fn line(&self) -> String {
+        format!(
+            "verdict={} head={} {} runtime={} by={}",
+            self.verdict,
+            self.head,
+            self.findings.line(),
+            self.runtime_said(),
+            self.by_name
+        )
     }
 }
 
@@ -151,7 +258,7 @@ pub fn standing(verdicts: &[CodeVerdict]) -> std::collections::BTreeSet<&str> {
             Default::default();
         for verdict in verdicts
             .iter()
-            .filter(|v| v.verdict != Verdict::Comment && v.counts_for(role))
+            .filter(|v| v.verdict != Word::None && v.counts_for(role))
         {
             let kept = latest
                 .entry((verdict.branch.as_str(), &verdict.by))
@@ -294,6 +401,39 @@ impl Gate {
     pub fn approved(&self) -> bool {
         matches!(self, Self::Approved { .. })
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Approved { .. } => "approved",
+            Self::Changes { .. } => "changes",
+            Self::Stale { .. } => "stale",
+            Self::Missing => "missing",
+        }
+    }
+
+    /// The verdict the gate stands on, if any.
+    pub fn verdict(&self) -> Option<&CodeVerdict> {
+        match self {
+            Self::Approved { verdict } | Self::Changes { verdict } | Self::Stale { verdict } => {
+                Some(verdict)
+            }
+            Self::Missing => Option::None,
+        }
+    }
+
+    /// One line a job can gate on, `key=value` fields split on spaces:
+    /// `gate=approved branch=<branch> head=<asked commit>` followed, when
+    /// a verdict stands, by its own [`CodeVerdict::line`] (`verdict=…
+    /// head=<commit it read> … by=<reviewer>`, which runs to the end).
+    /// A `stale` gate's two heads differ: the asked one and the one read.
+    pub fn line(&self, branch: &str, head: &str) -> String {
+        let mut line = format!("gate={} branch={branch} head={head}", self.as_str());
+        if let Some(verdict) = self.verdict() {
+            line.push(' ');
+            line.push_str(&verdict.line());
+        }
+        line
+    }
 }
 
 /// The gate for `branch` at `head`, counting the verdicts of `role`
@@ -305,33 +445,33 @@ pub fn gate(verdicts: &[CodeVerdict], branch: &str, head: &str, role: &str) -> G
     let mut latest: std::collections::BTreeMap<&AgentId, &CodeVerdict> = Default::default();
     for verdict in verdicts
         .iter()
-        .filter(|v| v.branch == branch && v.verdict != Verdict::Comment && v.counts_for(role))
+        .filter(|v| v.branch == branch && v.verdict != Word::None && v.counts_for(role))
     {
         let kept = latest.entry(&verdict.by).or_insert(verdict);
         if verdict.order() > kept.order() {
             *kept = verdict;
         }
     }
-    let newest = |verdict: Verdict| {
+    let newest = |word: Word| {
         latest
             .values()
-            .filter(|v| v.verdict == verdict)
+            .filter(|v| v.verdict == word)
             .max_by_key(|v| v.order())
             .map(|v| Box::new((*v).clone()))
     };
-    if let Some(verdict) = newest(Verdict::Changes) {
+    if let Some(verdict) = newest(Word::Changes) {
         return Gate::Changes { verdict };
     }
     if let Some(verdict) = latest
         .values()
-        .filter(|v| v.verdict == Verdict::Approve && v.head == head)
+        .filter(|v| v.verdict == Word::Pass && v.head == head)
         .max_by_key(|v| v.order())
     {
         return Gate::Approved {
             verdict: Box::new((*verdict).clone()),
         };
     }
-    match newest(Verdict::Approve) {
+    match newest(Word::Pass) {
         Some(verdict) => Gate::Stale { verdict },
         None => Gate::Missing,
     }
@@ -345,7 +485,7 @@ mod tests {
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
-    fn verdict(by: &str, roles: &[&str], head: &str, word: Verdict, minutes: i64) -> CodeVerdict {
+    fn verdict(by: &str, roles: &[&str], head: &str, word: Word, minutes: i64) -> CodeVerdict {
         let at = DateTime::from_timestamp(1_700_000_000, 0).unwrap() + Duration::minutes(minutes);
         CodeVerdict {
             id: verdict_id(at),
@@ -358,6 +498,7 @@ mod tests {
             by_name: by.into(),
             human: by == "user",
             roles: roles.iter().map(|r| (*r).to_owned()).collect(),
+            runtime: if by == "user" { "human" } else { "codex" }.into(),
             verdict: word,
             findings: Findings::default(),
             note: String::new(),
@@ -367,7 +508,7 @@ mod tests {
 
     #[test]
     fn only_an_approval_of_the_head_as_it_is_now_passes() {
-        let approved = [verdict("r", &["reviewer"], A, Verdict::Approve, 0)];
+        let approved = [verdict("r", &["reviewer"], A, Word::Pass, 0)];
         assert!(gate(&approved, "feature/x", A, GATE_ROLE).approved());
         // A commit since, a merge of main included, makes it stale.
         assert!(matches!(
@@ -382,35 +523,128 @@ mod tests {
     #[test]
     fn a_request_for_changes_blocks_until_the_same_reviewer_says_otherwise() {
         let mut said = vec![
-            verdict("r", &["reviewer"], A, Verdict::Changes, 0),
-            verdict("s", &["reviewer"], B, Verdict::Approve, 1),
+            verdict("r", &["reviewer"], A, Word::Changes, 0),
+            verdict("s", &["reviewer"], B, Word::Pass, 1),
         ];
         assert!(matches!(
             gate(&said, "feature/x", B, GATE_ROLE),
             Gate::Changes { verdict } if verdict.by.as_str() == "r"
         ));
-        // A comment is not a change of mind.
-        said.push(verdict("r", &["reviewer"], B, Verdict::Comment, 2));
+        // A verdict withheld (`none`) is not a change of mind.
+        said.push(verdict("r", &["reviewer"], B, Word::None, 2));
         assert!(matches!(
             gate(&said, "feature/x", B, GATE_ROLE),
             Gate::Changes { .. }
         ));
-        said.push(verdict("r", &["reviewer"], B, Verdict::Approve, 3));
+        said.push(verdict("r", &["reviewer"], B, Word::Pass, 3));
         assert!(gate(&said, "feature/x", B, GATE_ROLE).approved());
     }
 
     #[test]
+    fn a_verdict_withheld_is_not_a_pass_with_no_findings_nor_a_missing_one() {
+        // `none` on its own leaves the gate missing: nobody passed or
+        // blocked it, though somebody read it.
+        let withheld = [verdict("r", &["reviewer"], A, Word::None, 0)];
+        assert_eq!(gate(&withheld, "feature/x", A, GATE_ROLE), Gate::Missing);
+        let clean = [verdict("r", &["reviewer"], A, Word::Pass, 0)];
+        assert_eq!(clean[0].findings, Findings::default());
+        assert!(gate(&clean, "feature/x", A, GATE_ROLE).approved());
+    }
+
+    #[test]
+    fn the_vocabulary_is_fixed_and_the_older_spellings_still_read() {
+        for (text, word) in [
+            ("pass", Word::Pass),
+            ("approve", Word::Pass),
+            ("approved", Word::Pass),
+            ("changes", Word::Changes),
+            ("none", Word::None),
+            ("comment", Word::None),
+            (" pass ", Word::Pass),
+        ] {
+            assert_eq!(Word::parse(text), Some(word), "{text:?}");
+        }
+        assert_eq!(Word::parse("lgtm"), None);
+        assert_eq!(Word::Pass.to_string(), "pass");
+        assert_eq!(serde_json::to_string(&Word::None).unwrap(), "\"none\"");
+        // A verdict kept before the vocabulary: `approve`, priorities,
+        // no runtime.
+        let kept: CodeVerdict = serde_json::from_value(serde_json::json!({
+            "id": "1", "seq": 1, "project": "p", "branch": "feature/x", "head": A,
+            "by": "r", "by_name": "reviewer-1", "roles": ["reviewer"],
+            "verdict": "approve", "findings": {"p1": 1, "p2": 2, "p3": 3},
+            "note": "", "at": "2026-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        assert_eq!(kept.verdict, Word::Pass);
+        assert_eq!(
+            kept.findings,
+            Findings {
+                important: 1,
+                nit: 2,
+                pre_existing: 0
+            }
+        );
+        assert_eq!(kept.runtime, "");
+        assert_eq!(kept.runtime_said(), "unknown");
+        // One kept without counts has none.
+        let bare: Findings = serde_json::from_str("{}").unwrap();
+        assert_eq!(bare, Findings::default());
+        let round: CodeVerdict =
+            serde_json::from_str(&serde_json::to_string(&kept).unwrap()).unwrap();
+        assert_eq!(round, kept);
+        assert!(serde_json::to_string(&kept).unwrap().contains("\"pass\""));
+    }
+
+    #[test]
+    fn the_lines_a_job_parses_say_the_word_the_counts_and_the_runtime() {
+        let mut passed = verdict("r", &["reviewer"], A, Word::Pass, 0);
+        passed.by_name = "Reviewer One".into();
+        passed.findings.nit = 2;
+        assert_eq!(
+            passed.line(),
+            format!(
+                "verdict=pass head={A} important=0 nit=2 pre_existing=0 runtime=codex by=Reviewer One"
+            )
+        );
+        assert_eq!(passed.findings.said(), "important 0, nit 2, pre-existing 0");
+        let approved = Gate::Approved {
+            verdict: Box::new(passed.clone()),
+        };
+        assert_eq!(
+            approved.line("feature/x", A),
+            format!(
+                "gate=approved branch=feature/x head={A} verdict=pass head={A} important=0 nit=2 pre_existing=0 runtime=codex by=Reviewer One"
+            )
+        );
+        let stale = Gate::Stale {
+            verdict: Box::new(passed),
+        };
+        assert!(stale.line("feature/x", B).starts_with(&format!(
+            "gate=stale branch=feature/x head={B} verdict=pass head={A}"
+        )));
+        assert_eq!(
+            Gate::Missing.line("feature/x", B),
+            format!("gate=missing branch=feature/x head={B}")
+        );
+        // Every field before `by=` is one token.
+        let line = approved.line("feature/x", A);
+        let (before, _) = line.split_once(" by=").unwrap();
+        assert!(before.split(' ').all(|field| field.contains('=')));
+    }
+
+    #[test]
     fn only_the_asked_role_and_the_person_count() {
-        let said = [verdict("t", &["tester"], A, Verdict::Approve, 0)];
+        let said = [verdict("t", &["tester"], A, Word::Pass, 0)];
         assert_eq!(gate(&said, "feature/x", A, GATE_ROLE), Gate::Missing);
         assert!(gate(&said, "feature/x", A, "tester").approved());
-        let person = [verdict("user", &[], A, Verdict::Approve, 0)];
+        let person = [verdict("user", &[], A, Word::Pass, 0)];
         assert!(gate(&person, "feature/x", A, GATE_ROLE).approved());
     }
 
     #[test]
-    fn a_verdict_names_full_commits_a_branch_and_no_approved_p1() {
-        let mut v = verdict("r", &["reviewer"], A, Verdict::Approve, 0);
+    fn a_verdict_names_full_commits_a_branch_and_no_important_finding_passed() {
+        let mut v = verdict("r", &["reviewer"], A, Word::Pass, 0);
         assert!(v.check().is_ok());
         v.head = "abc1234".into();
         assert!(v.check().is_err(), "a short id");
@@ -421,10 +655,13 @@ mod tests {
         assert!(v.check().is_err(), "from its own head");
         v.from = Some(B.into());
         assert!(v.check().is_ok());
-        v.findings.p1 = 1;
-        assert!(v.check().is_err(), "an approval with a P1");
-        v.verdict = Verdict::Changes;
+        v.findings.important = 1;
+        assert!(v.check().is_err(), "a pass with an important finding");
+        v.verdict = Word::Changes;
         assert!(v.check().is_ok());
+        v.verdict = Word::None;
+        assert!(v.check().is_ok(), "withheld, the findings stand as read");
+        v.findings = Findings::default();
         for bad in [
             "",
             "-x",
@@ -450,8 +687,8 @@ mod tests {
     #[test]
     fn the_order_given_decides_not_the_clock() {
         // Changes asked last, on a clock that ran back: it still blocks.
-        let mut approve = verdict("r", &["reviewer"], A, Verdict::Approve, 5);
-        let mut changes = verdict("r", &["reviewer"], A, Verdict::Changes, 0);
+        let mut approve = verdict("r", &["reviewer"], A, Word::Pass, 5);
+        let mut changes = verdict("r", &["reviewer"], A, Word::Changes, 0);
         approve.seq = 1;
         changes.seq = 2;
         assert!(matches!(
@@ -474,13 +711,13 @@ mod tests {
     fn forgetting_keeps_every_standing_word() {
         // R asked for changes; S approved; then comments fill the project.
         let mut all = vec![
-            verdict("r", &["reviewer"], A, Verdict::Changes, 0),
-            verdict("s", &["reviewer"], A, Verdict::Approve, 1),
+            verdict("r", &["reviewer"], A, Word::Changes, 0),
+            verdict("s", &["reviewer"], A, Word::Pass, 1),
         ];
         for minute in 2..6 {
-            all.push(verdict("s", &["reviewer"], A, Verdict::Comment, minute));
+            all.push(verdict("s", &["reviewer"], A, Word::None, minute));
         }
-        let next = verdict("s", &["reviewer"], A, Verdict::Comment, 9);
+        let next = verdict("s", &["reviewer"], A, Word::None, 9);
         let forget = to_forget(&all, &next, all.len()).unwrap();
         assert_eq!(forget.len(), 1);
         assert_eq!(
@@ -494,7 +731,7 @@ mod tests {
             "refused, not a word lost"
         );
         // A reviewer's replaced word is forgettable once replaced.
-        let replaced = verdict("r", &["reviewer"], A, Verdict::Approve, 9);
+        let replaced = verdict("r", &["reviewer"], A, Word::Pass, 9);
         assert_eq!(
             to_forget(only_standing, &replaced, 2).unwrap(),
             [all[0].id.clone()]
@@ -507,14 +744,14 @@ mod tests {
         // tester role; S approved as a reviewer. The reviewer gate is held
         // by R's changes, and must still be after forgetting.
         let all = vec![
-            verdict("r", &["reviewer"], A, Verdict::Changes, 0),
-            verdict("r", &["tester"], A, Verdict::Approve, 1),
-            verdict("s", &["reviewer"], A, Verdict::Approve, 2),
-            verdict("s", &["reviewer"], A, Verdict::Comment, 3),
+            verdict("r", &["reviewer"], A, Word::Changes, 0),
+            verdict("r", &["tester"], A, Word::Pass, 1),
+            verdict("s", &["reviewer"], A, Word::Pass, 2),
+            verdict("s", &["reviewer"], A, Word::None, 3),
         ];
         let before = gate(&all, "feature/x", A, GATE_ROLE);
         assert!(matches!(before, Gate::Changes { .. }));
-        let next = verdict("s", &["reviewer"], A, Verdict::Comment, 9);
+        let next = verdict("s", &["reviewer"], A, Word::None, 9);
         let forget = to_forget(&all, &next, all.len()).unwrap();
         assert_eq!(forget, [all[3].id.clone()], "only the comment goes");
         let after: Vec<CodeVerdict> = all
