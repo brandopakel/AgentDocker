@@ -3697,6 +3697,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     project: Some(project.clone()),
                     query: String::new(),
                     limit: Some(MEMORY_PAGE),
+                    as_of: None,
+                    include_superseded: false,
                 }) {
                     Ok(Response::Memories { memories }) => {
                         workspace.memories = memories;
@@ -3780,6 +3782,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 project: Some(project.clone()),
                 query: query.clone(),
                 limit: Some(MEMORY_PAGE),
+                as_of: None,
+                include_superseded: false,
             }) {
                 Ok(Response::Memories { memories }) => Ok(memories),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -3798,6 +3802,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 standing: false,
                 forget_after: None,
                 roles: Vec::new(),
+                valid_from: None,
             }) {
                 Ok(Response::Memory { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),

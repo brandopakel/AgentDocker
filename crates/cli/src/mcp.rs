@@ -3273,6 +3273,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "standing": { "type": "boolean", "description": "Said first in the profile, before the recent ones: a convention or a decision rather than news." },
                     "forget_after": { "type": "string", "format": "date-time", "description": "An RFC 3339 time after which it is no longer said." },
                     "roles": { "type": "array", "maxItems": 8, "items": { "type": "string" }, "description": "Said only to the agents holding one of these project roles, and to the person; to everyone when absent." },
+                    "valid_from": { "type": "string", "format": "date-time", "description": "When its fact became true, if before now (RFC 3339)." },
                     "links": { "type": "array", "maxItems": 8, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["content"],
@@ -3281,12 +3282,14 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "search_memory",
-            "description": "This project's memories that answer the words, the best first: whole words, the rarer ones counting for more, a newer memory winning a tie; superseded and expired ones are left out.",
+            "description": "This project's memories that answer the words, the best first: whole words, the rarer ones counting for more, a newer memory winning a tie; superseded and expired ones are left out, unless include_superseded lists the superseded ones too with what replaced each. as_of reads them as they stood then.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                    "as_of": { "type": "string", "format": "date-time", "description": "Read them as they stood at this RFC 3339 time." },
+                    "include_superseded": { "type": "boolean", "description": "List superseded memories that answer too, each with what replaced it." }
                 },
                 "required": ["query"],
                 "additionalProperties": false
@@ -3294,11 +3297,12 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_profile",
-            "description": "What this project's agents should know first: its standing memories, the oldest first, then the others, newest first.",
+            "description": "What this project's agents should know first: its standing memories, the oldest first, then the others, newest first; as_of as they stood then.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "max_chars": { "type": "integer", "minimum": 1, "maximum": 64000 }
+                    "max_chars": { "type": "integer", "minimum": 1, "maximum": 64000 },
+                    "as_of": { "type": "string", "format": "date-time", "description": "As they stood at this RFC 3339 time." }
                 },
                 "additionalProperties": false
             }

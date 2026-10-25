@@ -1276,7 +1276,7 @@ mod tests {
         assert!(delivery.acknowledgement.is_none() && delivery.continuation.is_none());
         assert!(matches!(
             &backend.requests.borrow()[..],
-            [Request::MemoryProfile { from: Some(from), project: None, max_chars: Some(800) }]
+            [Request::MemoryProfile { from: Some(from), project: None, max_chars: Some(800), as_of: None }]
                 if from == record.id.as_str()
         ));
 
