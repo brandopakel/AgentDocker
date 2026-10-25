@@ -528,7 +528,36 @@ fn own_cli_beside(cli: &std::path::Path, executable: &std::path::Path) -> bool {
     else {
         return false;
     };
-    real == executable && versions == theirs && same_file(&theirs.join(id).join(place), &real)
+    plain(&real) == plain(executable)
+        && versions == theirs
+        && same_file(&theirs.join(id).join(place), &real)
+}
+
+/// A path as it is compared with the one the kernel names a running
+/// program by. Windows names a process's image by its DOS path (`C:\…`),
+/// where `canonicalize` spells the same file verbatim (`\\?\C:\…`, and
+/// `\\?\UNC\server\…` for `\\server\…`) and in the file's own case:
+/// neither difference is a link, so both are set aside there, and any
+/// other one still is. Elsewhere a path is compared as it is.
+fn plain(path: &std::path::Path) -> std::ffi::OsString {
+    #[cfg(windows)]
+    {
+        plain_windows(&path.to_string_lossy()).into()
+    }
+    #[cfg(not(windows))]
+    {
+        path.as_os_str().to_owned()
+    }
+}
+
+/// [`plain`]'s Windows spelling, apart, so that every platform tests it.
+#[cfg(any(windows, test))]
+fn plain_windows(path: &str) -> String {
+    let path = match path.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_owned(),
+    };
+    path.to_lowercase()
 }
 
 /// Where `path` sits among an installation's versions, when it is
@@ -937,6 +966,50 @@ mod tests {
     use super::*;
     use agentdocker_core::AgentSpec;
     use std::collections::BTreeMap;
+
+    /// Windows names a running image by its DOS path, and `canonicalize`
+    /// the same file verbatim and in its own case: one spelling of one
+    /// path, not a link, so they compare equal; another path does not.
+    #[test]
+    fn a_windows_path_compares_by_its_dos_spelling() {
+        assert_eq!(
+            plain_windows(r"\\?\C:\Users\Me\AppData\versions\ab\agentdocker.exe"),
+            plain_windows(r"c:\users\me\appdata\VERSIONS\ab\AgentDocker.exe")
+        );
+        assert_eq!(
+            plain_windows(r"\\?\UNC\server\share\agentdocker.exe"),
+            plain_windows(r"\\server\share\agentdocker.exe")
+        );
+        assert_ne!(
+            plain_windows(r"\\?\C:\linked\agentdocker.exe"),
+            plain_windows(r"C:\Users\Me\agentdocker.exe")
+        );
+    }
+
+    /// On Windows, a retained version's CLI named by the DOS path the
+    /// kernel gives a running image is AgentDocker's.
+    #[cfg(windows)]
+    #[test]
+    fn a_retained_launcher_named_by_its_dos_path_is_agentdocker_s() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let place = r"AgentDocker\agentdocker.exe";
+        let cli = |version: String| {
+            let path = root.join("versions").join(version).join(place);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"cli").unwrap();
+            path
+        };
+        let companion = cli("a".repeat(64));
+        let retained = cli("b".repeat(64));
+        let dos = std::path::PathBuf::from(
+            retained
+                .to_string_lossy()
+                .strip_prefix(r"\\?\")
+                .expect("canonicalize spells it verbatim"),
+        );
+        assert!(own_cli_beside(&companion, &dos), "{dos:?}");
+    }
 
     /// A retained version's CLI, at the companion's place inside its own
     /// version, is AgentDocker's, by either of its names; the same name
