@@ -36,13 +36,21 @@ beside the grant for the person to read.
   listens on the network; the connector talks to it over the local socket like
   any other client.
 - Loopback only. It binds `127.0.0.1` and refuses anything else. The public
-  hostname and TLS come from a tunnel. `--tunnel tailscale` is the one to
+  hostname and TLS come from a tunnel, and the name must be one the vendors
+  reach from their side: claude.ai resolves the connector's hostname before
+  any request and rejects a name that is not globally routable — Tailscale's
+  own `100.64.0.0/10` range, loopback, link-local, a name whose results are
+  mixed or that has no IPv4 address — and ChatGPT connects from OpenAI's
+  cloud, so a tailnet-only name (Tailscale Serve) is not a vendor transport.
+  `--tunnel tailscale` is the one to
   reach for: Tailscale Funnel on this machine's own `*.ts.net` name, which is
   the same after every restart and needs no domain — the connector reads the
   name from `tailscale status`, sets `tailscale funnel --bg --https=<443|8443|10000>
   http://127.0.0.1:<port>` on the way in and clears it on the way out, on an
   error or a panic too (waiting at most three seconds for `tailscale`, then
-  killing it). A port that already serves something else is refused, never
+  killing it). Funnel terminates TLS on this machine, so Tailscale's relay
+  carries ciphertext and connection metadata only. A port that already
+  serves something else is refused, never
   taken over. The Funnel is recorded in `connector/funnel.json` (its pid,
   port and loopback address) before it is set, and the record goes only once
   the Funnel is confirmed undone, so it is never open unrecorded. A set that
@@ -124,13 +132,27 @@ beside the grant for the person to read.
    account offers it in sessions about other work too and that it acts only
    in that project, and that it has no checkout.
 
+`--authorize-url <url>` is for a tunnel whose host a browser cannot load. The
+vendor reaches the metadata, `/register`, `/token` and `/mcp` through the
+tunnel at `--public-url`; the one address the person's browser opens, the
+consent page, is published as the `authorization_endpoint` under the URL given
+instead — loopback (`http://127.0.0.1:<port>`, the connector's own listening
+address) or a host the person reaches. It is checked as `--public-url` is:
+HTTPS, or plain HTTP on loopback only. Nothing else moves: `issuer`,
+`token_endpoint`, `registration_endpoint` and the resource stay on the public
+URL, the consent ticket is bound to the request as before, and the `iss` in
+every authorization response names the public URL, so the vendor's client sees
+one issuer whichever address the browser used. `connector install` keeps the
+flag in the service definition and `connector status` shows the consent
+address beside the MCP URL.
+
 ## Endpoints
 
 | Path | Role |
 | --- | --- |
 | `GET /` | A page saying what this is and how to add it; nothing to run or fetch. |
 | `GET /.well-known/oauth-protected-resource[/mcp]` | RFC 9728: `resource` is `<public-url>/mcp`, `authorization_servers` is `[<public-url>]`, the one scope is `agentdocker`. |
-| `GET /.well-known/oauth-authorization-server[/mcp]` | RFC 8414: the three endpoints below, `code` only, `authorization_code` and `refresh_token`, PKCE `S256` only, public clients only, `client_id_metadata_document_supported` and `authorization_response_iss_parameter_supported` (RFC 9207: every authorization response, success or error, carries `iss=<public-url>`, which is what lets ChatGPT use its one stable client and callback). |
+| `GET /.well-known/oauth-authorization-server[/mcp]` | RFC 8414: the three endpoints below (`authorization_endpoint` under `--authorize-url` when given, the rest under `--public-url`), `code` only, `authorization_code` and `refresh_token`, PKCE `S256` only, public clients only, `client_id_metadata_document_supported` and `authorization_response_iss_parameter_supported` (RFC 9207: every authorization response, success or error, carries `iss=<public-url>`, which is what lets ChatGPT use its one stable client and callback). |
 | `POST /register` | RFC 7591. `redirect_uris` must all be vendors' callbacks (`https://claude.ai/api/mcp/auth_callback`, `https://chatgpt.com/connector_platform_oauth_redirect`, `https://chatgpt.com/connector/oauth/<id>`) or ones passed with `--allow-callback`; `token_endpoint_auth_method` must be `none`. At most 200 clients are kept; at the cap, the oldest client with no grant and no pending code, registered ten minutes or more ago, gives its place to the new one, so a flood of unauthenticated registrations holds the door at most ten minutes. |
 | `GET /authorize` | Validates the request. A `client_id` that is an `https://` URL with a path is a Client ID Metadata Document: it is fetched (`connector/cimd.rs`: HTTPS only, verified against the roots the system trusts, no redirects, 10 s, 64 KiB, once an hour per URL) only when its host is a vendor's (`claude.ai`, `chatgpt.com`) or the host of an `--allow-callback`, and admitted only when the document names its own URL as `client_id` and every `redirect_uris` entry is that vendor's callback — explicit token authentication methods must support the public-client `none` method. Unsupported or malformed method declarations are refused before client state changes. A bad client, host, document or callback is a page (nothing is sent to an untrusted callback); any other problem goes back to the callback as an OAuth error. Otherwise the first consent page: who asks, and the pairing code. It lists no project and asks the daemon nothing. |
 | `POST /authorize` | Two forms, both carrying the request's fields. The first carries the pairing code: ten characters, fifty random bits, compared in constant time with case, spaces and the dash forgiven. A right code is spent and answers the second page with a `consent_ticket` (ten minutes, one consent, bound to the request's client, callback, challenge and state; at most 64 open). A wrong one costs its source a strike: five within fifteen minutes and that source is refused for the rest of them. The source is the address in the header the tunnel is known to write (the one the connector's own tunnel writes, or `--client-ip-header`, with or without `--allow-from`), read as the allowlist reads it; with no such header known, or none on the request, there is no source and nobody is refused. Twenty wrong codes against one code, from anywhere, replace it, so guessing never gets further and nobody is locked out by somebody else's. Judging a code, counting it and spending or replacing it are one step under one lock, so a right code typed on several pages at once opens one, and the status file shows the codes in the order they were made. A ticket is checked again against the time when it is spent. The second carries the ticket, the project (`project`, one of the listed roots, or `project_path`, any absolute directory on this machine; a folder that is not here is refused on the page, with the choices kept) and the agent name. A name that is a live agent's is refused on the page. |
@@ -181,8 +203,8 @@ session to use its own AgentDocker tools instead.
 
 | Command | What it does |
 | --- | --- |
-| `connector serve [--public-url <https://…>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|openai\|@<file>]… [--client-ip-header <name>]` | Serve every project on this machine; `--project` is the one proposed first at consent. Prints the MCP URL, the admitted addresses and the vendors' setup steps, and the pairing code only to a terminal (a service's stderr is its log, which never gets it), and writes `$AGENTDOCKER_HOME/connector/serve.json` (created 0600; `agentdocker_host::connector::Serving`, which the desktop reads too) with the same for `status`, rewritten whenever the code is replaced. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. |
-| `connector status` | Whether a connector is serving here: its address, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many connector agents the daemon holds live. |
+| `connector serve [--public-url <https://…>] [--authorize-url <url>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|openai\|@<file>]… [--client-ip-header <name>]` | Serve every project on this machine; `--project` is the one proposed first at consent. Prints the MCP URL, the admitted addresses and the vendors' setup steps, and the pairing code only to a terminal (a service's stderr is its log, which never gets it), and writes `$AGENTDOCKER_HOME/connector/serve.json` (created 0600; `agentdocker_host::connector::Serving`, which the desktop reads too) with the same for `status`, rewritten whenever the code is replaced. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. `--authorize-url` publishes another origin as the `authorization_endpoint` alone, for a tunnel whose host a browser cannot load; checked the same way. |
+| `connector status` | Whether a connector is serving here: its address, the consent address when it differs, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many connector agents the daemon holds live. |
 | `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit (on Windows, a login task, described below) — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
 | `connector enable <serve arguments> [--dry-run]` | Install/start a new login service or start its byte-identical definition. A synced temporary file is published atomically without replacement; exact comparison refuses symlinks or different existing settings. Failed staging leaves no partial definition to block retry. The desktop uses this conservative entry point; `install` remains the explicit replacement command. |
 | `connector uninstall [--dry-run]` | Stop and remove the service. On Linux, stop/disable runs while the definition exists; a stop or disable failure preserves the installed definition for diagnosis and retry. Those failures are tolerated when the definition was already missing. Systemd reload runs after removal. |
