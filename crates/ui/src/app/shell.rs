@@ -5743,6 +5743,7 @@ mod tests {
             standing: false,
             forget_after: None,
             roles: vec![],
+            valid_from: None,
         };
         let drain = |commands: &CommandReceiver| commands.try_iter().collect::<Vec<_>>();
         app.shell
