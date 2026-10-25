@@ -30,13 +30,23 @@ impl Reading {
 }
 
 impl State {
-    fn reading(&mut self, from: Option<&str>) -> Result<Reading, Box<Response>> {
+    /// How `from` reads `project`'s memory. Roles are a project's own, so
+    /// an agent of another project holds none of them here and reads what
+    /// is for everyone.
+    fn reading(
+        &mut self,
+        from: Option<&str>,
+        project: &ProjectId,
+    ) -> Result<Reading, Box<Response>> {
         let Some(from) = from else {
             return Ok(Reading::Holding(Vec::new()));
         };
         let actor = self.actor(from)?;
         if actor.human {
             return Ok(Reading::Person);
+        }
+        if actor.project.as_ref() != Some(project) {
+            return Ok(Reading::Holding(Vec::new()));
         }
         let roles = self
             .registry
@@ -179,7 +189,7 @@ impl Daemon {
                 };
             }
         }
-        let reading = match state.reading(Some(from)) {
+        let reading = match state.reading(Some(from), &project) {
             Ok(reading) => reading,
             Err(response) => return *response,
         };
@@ -242,7 +252,7 @@ impl Daemon {
         };
         let (memories, reading) = {
             let mut state = lock(&self.state);
-            let reading = match state.reading(from.as_deref()) {
+            let reading = match state.reading(from.as_deref(), &project) {
                 Ok(reading) => reading,
                 Err(response) => return *response,
             };
@@ -284,7 +294,7 @@ impl Daemon {
         };
         let (memories, reading) = {
             let mut state = lock(&self.state);
-            let reading = match state.reading(from.as_deref()) {
+            let reading = match state.reading(from.as_deref(), &project) {
                 Ok(reading) => reading,
                 Err(response) => return *response,
             };
