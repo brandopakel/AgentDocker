@@ -2961,7 +2961,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "pull_task",
-            "description": "Take a card from the board's pull source (Ready on most boards) that nobody else holds: it becomes yours, in the pull target, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Name no card to take the next ready one: the first in board order that is free or yours and waits on nothing open; when there is none the answer says nothing_ready with what is there, which is not an error. Refused if somebody holds it, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. The answer is the card in full — its description, acceptance, comments, history and the cards it waits on — and the lease: read the acceptance before you start.",
+            "description": "Take a card nobody else holds: one you name from any open lane (one in progress or in review stays where it is; any other goes to the pull target), or with no card named the next one in the board's pull source (Ready on most boards), into the pull target. It becomes yours, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Name no card to take the next ready one: the first in board order that is free or yours and waits on nothing open; when there is none the answer says nothing_ready with what is there, which is not an error. Refused if somebody holds it, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. The answer is the card in full — its description, acceptance, comments, history and the cards it waits on — and the lease: read the acceptance before you start.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2975,7 +2975,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "move_task",
-            "description": "Move a card you hold to another lane — review when it is ready for eyes (the first Review lane), done when its acceptance text is met. Name the lane by slug, name or category; the answer lists the board's lanes when nothing matches. Say why in comment and it goes on the card in the same change. after or before put it beside another card in that lane. Only the card's holder or the person moves it.",
+            "description": "Move a card you hold to another lane — review when it is ready for eyes (the first Review lane), done when its acceptance text is met. Name the lane by slug, name or category; the answer lists the board's lanes when nothing matches. Say why in comment and it goes on the card in the same change. after or before put it beside another card in that lane. Only the card's holder or the person moves it; take a card nobody holds with pull_task by naming it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
