@@ -116,13 +116,18 @@ still disable coordination. An initialized fresh input receiver
 also stays separate: it may already have offered its queue head, so folding old
 backlog in front would change delivery order. Its old queue remains retained.
 
-So that the hooks get there first, the channel waits for them when the
-session asked to resume: the MCP server reads its parent Claude command line
-(`--resume <id>`, `-r <id>`, a bare `--resume` picker or `--continue`) and,
-when it finds one, answers the MCP handshake as usual but does not report its
-readiness — the step that binds input delivery — until the daemon's record for
-this very process (the same pid and process birth, both known) carries the
-`session_id` the hooks registered, or ten seconds have passed. Each look at
+So that the hooks get there first, the MCP server waits for them when the
+session asked to resume, within one ten-second budget. It reads its parent
+Claude command line (`--resume <id>`, `-r <id>`, a bare `--resume` picker or
+`--continue`) and, when it finds one, registers only once the daemon lists a
+live record of that very process (the same pid and process birth, both known)
+naming one session, and names that session itself, so it joins the record the
+hooks made or resumed rather than making one their registration would have to
+join (which the daemon refuses an ended session's resumption); past the budget
+it registers naming none. The channel then answers the MCP handshake as usual
+but does not report its readiness — the step that binds input delivery —
+until the daemon's record for this very process carries the `session_id` the
+hooks registered, or the rest of the budget has passed. Each look at
 the record is bounded by the transport timeout and cut at the deadline, and is
 polled beside the transport, so a slow daemon neither holds up control or
 receipts nor stretches the wait. The hook's word is followed even

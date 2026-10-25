@@ -252,6 +252,58 @@ fn parent_resume_request(start: u32) -> Option<agentdocker_host::procinfo::Resum
     None
 }
 
+/// How often a resumed session's MCP server looks for its hooks' record.
+const HOOKS_POLL: Duration = Duration::from_millis(100);
+
+/// The session the hooks adapter registered `pid`, born `born`, under: the
+/// one session the live `runtime` records of that very process name, looked
+/// for until `deadline`. None when none names one by then, or when they name
+/// several, which cannot be told apart.
+async fn hooks_session<B: Backend>(
+    backend: &B,
+    runtime: &str,
+    pid: u32,
+    born: chrono::DateTime<chrono::Utc>,
+    deadline: tokio::time::Instant,
+) -> Option<String> {
+    loop {
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let listed = tokio::time::timeout(
+            left.max(Duration::from_millis(1)),
+            backend.call(Request::List {
+                all: false,
+                project: None,
+                labels: BTreeMap::new(),
+            }),
+        )
+        .await;
+        if let Ok(Ok(Response::Agents { agents, .. })) = listed {
+            let sessions: BTreeSet<&str> = agents
+                .iter()
+                .filter(|agent| {
+                    agent.status.is_live()
+                        && agent.pid == Some(pid)
+                        && agent.process_started_at == Some(born)
+                        && agent.spec.runtime == runtime
+                })
+                .filter_map(|agent| agent.spec.labels.get("session_id"))
+                .map(String::as_str)
+                .filter(|session| !session.is_empty())
+                .collect();
+            match sessions.len() {
+                0 => {}
+                1 => return sessions.first().map(|session| (*session).to_owned()),
+                _ => return None,
+            }
+        }
+        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        tokio::time::sleep(left.min(HOOKS_POLL)).await;
+    }
+}
+
 /// What an agent without a checkout can do: find the others, talk to
 /// them, read the journal and say what it is doing. Nothing that names a
 /// file, a lease, a worktree or a commit, because there is none to name.
@@ -294,9 +346,12 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
         );
     }
     let native_context = native_identity::Context::detect(&args)?;
+    // One wait for a resumed session's hooks, shared by its registration and
+    // its channel's readiness: ten seconds from here, not ten each.
+    let hooks_deadline = tokio::time::Instant::now() + ResumeVouch::DEFAULT_WAIT;
     let identity = match &native_context {
         Some(context) => context.unbound_identity(),
-        None => establish_identity(&client, &args).await?,
+        None => establish_identity(&client, &args, hooks_deadline).await?,
     };
     eprintln!(
         "agentdocker mcp: serving as {} ({})",
@@ -310,14 +365,15 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
     if claude_channel
         && let Some(request) = server.identity.host_pid.and_then(parent_resume_request)
     {
+        let wait = hooks_deadline.saturating_duration_since(tokio::time::Instant::now());
         eprintln!(
             "agentdocker mcp: the session asked to resume {}; waiting up to {}s for its hooks to say which session runs before binding input",
             request.session.as_deref().unwrap_or("an earlier session"),
-            ResumeVouch::DEFAULT_WAIT.as_secs()
+            wait.as_secs()
         );
         server.resume_vouch = Some(ResumeVouch {
             requested: request.session,
-            wait: ResumeVouch::DEFAULT_WAIT,
+            wait,
         });
     }
     // Transport shutdown preserves a live provider identity; cleanup below
@@ -407,8 +463,13 @@ fn codex_mcp_ancestor(mut pid: u32, table: &[agentdocker_host::procinfo::Process
 }
 
 /// Reuse the identity of the agent that spawned us, or register a new one
-/// on behalf of the MCP host.
-async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity> {
+/// on behalf of the MCP host, waiting until `hooks_deadline` for a resumed
+/// host's hooks to name its session.
+async fn establish_identity(
+    client: &Client,
+    args: &McpArgs,
+    hooks_deadline: tokio::time::Instant,
+) -> Result<Identity> {
     let inherited = std::env::var("AGENTDOCKER_AGENT_ID")
         .ok()
         .filter(|id| !id.is_empty());
@@ -450,6 +511,35 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
     }
 
     let host_pid = args.pid.unwrap_or_else(parent_id);
+    // A resumed session starts its MCP servers and runs its SessionStart
+    // hooks at once, and a hook that registers second joins the record its
+    // MCP server made, which counts as another agent's: the ended session it
+    // resumes is refused it. Only the hooks name the session that runs (this
+    // process's own CLAUDE_CODE_SESSION_ID, under the picker, names a fresh
+    // one that never does), so a server whose host resumes waits for their
+    // record of the host and joins it, naming its session. Past the wait it
+    // registers naming none, as a fresh session's server does.
+    let session = match (
+        parent_resume_request(host_pid),
+        agentdocker_host::procinfo::start_time(host_pid),
+    ) {
+        (Some(_), Some(born)) => {
+            eprintln!(
+                "agentdocker mcp: the session resumes an earlier one; waiting up to {}s for its hooks to name it before registering",
+                hooks_deadline
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_secs()
+            );
+            let named = hooks_session(client, &args.runtime, host_pid, born, hooks_deadline).await;
+            if named.is_none() {
+                eprintln!(
+                    "agentdocker mcp: no hooks named the resumed session in time; registering without one"
+                );
+            }
+            named
+        }
+        _ => None,
+    };
     let name = args
         .name
         .clone()
@@ -485,6 +575,9 @@ async fn establish_identity(client: &Client, args: &McpArgs) -> Result<Identity>
                     agentdocker_core::agent::NAME_LABEL.to_owned(),
                     agentdocker_core::agent::GENERATED_NAME.to_owned(),
                 );
+            }
+            if let Some(session) = session {
+                labels.insert("session_id".to_owned(), session);
             }
             labels
         },
@@ -3309,6 +3402,93 @@ mod tests {
         table[1].ppid = 40;
         assert_eq!(codex_mcp_ancestor(40, &table), None, "cycles are bounded");
         assert_eq!(codex_mcp_ancestor(99, &table), None);
+    }
+
+    /// A resumed session's server takes the session its hooks registered the
+    /// host under, from the host's own live record of its runtime: nothing
+    /// from an earlier process on the pid, another runtime, an ended record,
+    /// another process, or a record naming none; and nothing at all where the
+    /// host's records name two sessions or none appears within the wait.
+    #[tokio::test(start_paused = true)]
+    async fn a_resumed_session_s_server_takes_the_session_its_hooks_named() {
+        let born = Utc::now();
+        let record = |runtime: &str, pid: u32, born, live: bool, session: &str| {
+            let mut record = agentdocker_core::AgentRecord::new(
+                AgentSpec {
+                    runtime: runtime.into(),
+                    labels: [("session_id".to_owned(), session.to_owned())].into(),
+                    ..Default::default()
+                },
+                false,
+                Utc::now(),
+            );
+            record.pid = Some(pid);
+            record.process_started_at = Some(born);
+            record.status = if live {
+                agentdocker_core::AgentStatus::Running
+            } else {
+                agentdocker_core::AgentStatus::Exited { code: Some(0) }
+            };
+            record
+        };
+        let listed = |agents: Vec<agentdocker_core::AgentRecord>| Response::Agents {
+            agents,
+            aliases: Default::default(),
+        };
+        let others = vec![
+            record(
+                "claude-code",
+                4242,
+                born - chrono::Duration::hours(1),
+                true,
+                "reused",
+            ),
+            record("codex", 4242, born, true, "another-runtime"),
+            record("claude-code", 4242, born, false, "ended"),
+            record("claude-code", 4343, born, true, "another-process"),
+            record("claude-code", 4242, born, true, ""),
+        ];
+        let wait = ResumeVouch::DEFAULT_WAIT;
+
+        let mut hooks = others.clone();
+        hooks.push(record("claude-code", 4242, born, true, "resumed"));
+        let backend = Mock::with(vec![
+            listed(Vec::new()),
+            listed(others.clone()),
+            listed(hooks),
+        ]);
+        let deadline = tokio::time::Instant::now() + wait;
+        let session = hooks_session(&backend, "claude-code", 4242, born, deadline).await;
+        assert_eq!(session.as_deref(), Some("resumed"));
+        assert_eq!(backend.requests().len(), 3, "taken as soon as it is there");
+        assert!(matches!(
+            &backend.requests()[0],
+            Request::List { all: false, project: None, labels } if labels.is_empty()
+        ));
+
+        let backend = Mock::with(vec![listed(others.clone()); 3]);
+        let deadline = tokio::time::Instant::now() + wait;
+        assert_eq!(
+            hooks_session(&backend, "claude-code", 4242, born, deadline).await,
+            None
+        );
+        assert!(tokio::time::Instant::now() >= deadline, "it waits it out");
+        assert!(backend.requests().len() > 3, "and keeps looking");
+
+        let mut two = others.clone();
+        two.push(record("claude-code", 4242, born, true, "one"));
+        two.push(record("claude-code", 4242, born, true, "two"));
+        let backend = Mock::with(vec![listed(two)]);
+        let deadline = tokio::time::Instant::now() + wait;
+        assert_eq!(
+            hooks_session(&backend, "claude-code", 4242, born, deadline).await,
+            None
+        );
+        assert_eq!(
+            backend.requests().len(),
+            1,
+            "two sessions are not told apart"
+        );
     }
 
     fn server(responses: Vec<Response>) -> McpServer<Mock> {
