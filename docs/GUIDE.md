@@ -655,7 +655,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
-| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let the clients of your Claude or ChatGPT account join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
+| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let the clients of your Claude or ChatGPT account join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; `--authorize-url` moves only the consent page to an address your browser can open, for a tunnel whose host a browser cannot load; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 On Windows, Ctrl-] also works when the nested console uses Win32 keyboard events; other keys keep their normal meaning.
 

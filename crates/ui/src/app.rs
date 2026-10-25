@@ -5370,6 +5370,7 @@ pub(crate) mod tests {
         let serving = agentdocker_host::connector::Serving {
             pid: 1,
             public_url: "https://node.example.ts.net".into(),
+            authorize_url: None,
             bind: "127.0.0.1:1".into(),
             default_project: None,
             pairing_code: "ABCD-EFGH".into(),
