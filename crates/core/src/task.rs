@@ -518,8 +518,9 @@ impl Task {
     /// it looks for (`named` false) must be in the board's pull source, so
     /// an agent finding work never helps itself to the person's backlog; a
     /// card it names may sit in any open lane, since taking a card nobody
-    /// holds is ordinary work, not the person's say. One waiting (Backlog,
-    /// Ready) goes to the pull target; one further on stays where it is.
+    /// holds is ordinary work, not the person's say. One in progress or in
+    /// review stays where it is; any other (Backlog, Ready, Blocked) goes
+    /// to the pull target, where a hold that lapses can be taken over.
     /// Anything else is refused, which is the whole point — a card somebody
     /// holds, or held once and lapsed, is only taken over by name, with
     /// [`Task::take_over`]. Whether its blocking cards are done is the
@@ -536,7 +537,14 @@ impl Task {
         }
         let in_source = self.lane_on(board).slug == board.pull_source;
         let reachable = in_source || (named && self.open());
-        let free = self.assignee.as_ref().is_none_or(|a| a == agent);
+        // In the source, a card still naming the caller is theirs to pull
+        // again. Anywhere else only a card naming nobody is taken by name:
+        // one still naming somebody, the caller included, held once and
+        // lapsed, and is taken back only with `take_over`.
+        let free = match &self.assignee {
+            None => true,
+            Some(holder) => holder == agent && in_source,
+        };
         if !reachable || !free {
             return Err(TaskError::Taken {
                 assignee: self.assignee.clone(),
@@ -548,7 +556,7 @@ impl Task {
                 "the card waits on something off the board",
             ));
         }
-        if in_source || self.column.waiting() {
+        if in_source || !self.column.working() {
             let target = board
                 .lane(&board.pull_target)
                 .expect("a checked board has its pull target");
@@ -1119,6 +1127,10 @@ mod tests {
         let mut held = in_lane("backlog");
         held.assignee = Some(a.clone());
         assert!(held.pull(&b, &board, true, Utc::now()).is_err());
+        // Nor by its own holder once that hold lapsed: that is a take-over.
+        let mut lapsed = in_lane("in_progress");
+        lapsed.assignee = Some(a.clone());
+        assert!(lapsed.pull(&a, &board, true, Utc::now()).is_err());
         let mut done = in_lane("done");
         assert!(done.pull(&b, &board, true, Utc::now()).is_err());
         let mut archived = in_lane("backlog");

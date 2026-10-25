@@ -2885,6 +2885,87 @@ mod tests {
     /// from whom. A hand claim on the card by somebody else keeps it like
     /// any lease; the person's moves and hands end and take leases in
     /// the same commit; a failed store writes none of it.
+    /// A card taken by name from Blocked goes to the pull target, so once
+    /// its taker's hold lapses another agent takes it over by name, as any
+    /// card in progress.
+    #[tokio::test]
+    async fn a_card_taken_from_blocked_can_be_taken_over_once_its_hold_lapses() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let alice = register(&daemon, "alice", &work).await;
+        let bob = register(&daemon, "bob", &work).await;
+        assert!(matches!(
+            daemon
+                .handle(Request::BoardCreate {
+                    from: HUMAN.to_owned(),
+                    project: Some(work.display().to_string()),
+                    name: "Agents".into(),
+                    template: "agents".into(),
+                })
+                .await,
+            Response::Board { .. }
+        ));
+        let Response::Task { task } = daemon
+            .handle(Request::TaskCreate {
+                from: HUMAN.to_owned(),
+                project: Some(work.display().to_string()),
+                title: "Port the parser".to_owned(),
+                acceptance: "tests pass".to_owned(),
+                column: Some(Column::Blocked),
+                links: Vec::new(),
+                board: Some("agents".into()),
+                lane: None,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
+                plan: None,
+            })
+            .await
+        else {
+            panic!("filed")
+        };
+        let pull = |who: &str, from: Option<&str>| {
+            let request = Request::TaskPull {
+                agent: who.to_owned(),
+                task: Some(task.id.to_string()),
+                take_over_from: from.map(str::to_owned),
+                project: None,
+                board: None,
+            };
+            let daemon = daemon.clone();
+            async move { as_card(daemon.handle(request).await) }
+        };
+        let Response::Task { task: taken } = pull("alice", None).await else {
+            panic!("a Blocked card nobody holds, by name")
+        };
+        assert_eq!(
+            (taken.assignee.as_ref(), taken.column),
+            (Some(&alice.id), Column::InProgress)
+        );
+        assert!(matches!(
+            daemon
+                .handle(Request::ReleaseAll {
+                    agent: "alice".to_owned(),
+                    summary: Some("stepping away".to_owned()),
+                    summary_source: Default::default(),
+                    only_automatic: false,
+                })
+                .await,
+            Response::Leases { .. }
+        ));
+        let Response::Task { task: taken } = pull("bob", Some("alice")).await else {
+            panic!("its lapsed hold is taken over by name")
+        };
+        assert_eq!(taken.assignee.as_ref(), Some(&bob.id));
+    }
+
     #[tokio::test]
     async fn a_lapsed_hold_is_recovered_by_name_and_the_persons_hands_move_the_lease() {
         let dir = TempDir::new().unwrap();
@@ -3001,18 +3082,21 @@ mod tests {
             Response::Leases { .. }
         ));
         assert!(holds(&daemon).await.is_empty());
-        // A plain pull is refused and told the hold lapsed; alice cannot
-        // move the card she no longer holds; a wrong name takes nothing.
-        match pull(&daemon, "bob", None).await {
-            Response::Error {
-                code: ErrorCode::Conflict,
-                details,
-                message,
-            } => {
-                assert_eq!(details.unwrap()["hold"], "lapsed");
-                assert!(message.contains("take_over_from"), "{message}");
+        // A plain pull is refused and told the hold lapsed, alice's own
+        // too: taking it back is a take-over; alice cannot move the card she
+        // no longer holds; a wrong name takes nothing.
+        for who in ["bob", "alice"] {
+            match pull(&daemon, who, None).await {
+                Response::Error {
+                    code: ErrorCode::Conflict,
+                    details,
+                    message,
+                } => {
+                    assert_eq!(details.unwrap()["hold"], "lapsed", "{who}");
+                    assert!(message.contains("take_over_from"), "{message}");
+                }
+                other => panic!("{who}: {other:?}"),
             }
-            other => panic!("{other:?}"),
         }
         match daemon
             .handle(Request::TaskMove {
