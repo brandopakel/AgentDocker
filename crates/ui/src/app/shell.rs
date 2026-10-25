@@ -5612,6 +5612,65 @@ fn exclusions_message(error: &str) -> String {
     )
 }
 
+/// The whole of a card's links, replacing its own.
+fn update_links(task: agentdocker_core::TaskId, links: Vec<agentdocker_core::Link>) -> Request {
+    Request::TaskUpdate {
+        agent: agentdocker_core::HUMAN.into(),
+        task: task.to_string(),
+        title: None,
+        acceptance: None,
+        assignee: None,
+        links: Some(links),
+        description: None,
+        priority: None,
+        size: None,
+        due: None,
+        external_blocker: None,
+        parent: None,
+        blocked_by: None,
+        tags: None,
+        plan: None,
+        expected_updated_at: None,
+    }
+}
+
+/// Where opening a link goes.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum LinkDestination {
+    /// A URL, or a path, opened with the system's app for it.
+    Open(String),
+    /// Another card, opened in place.
+    Card(agentdocker_core::TaskId),
+    /// Something with nowhere to open (a commit, a message, a memory):
+    /// its words go to the clipboard.
+    Copy(String),
+}
+
+/// Where a link opens: a URL or a pull request URL in the browser, a path
+/// (relative to the project) in its app, a card in place; anything else is
+/// copied.
+pub(super) fn link_destination(
+    link: &agentdocker_core::Link,
+    project: Option<&str>,
+) -> LinkDestination {
+    use agentdocker_core::LinkKind;
+    let target = link.target.trim();
+    let web = target.starts_with("https://") || target.starts_with("http://");
+    match link.kind {
+        LinkKind::Url | LinkKind::Pr if web => LinkDestination::Open(target.to_owned()),
+        LinkKind::Path => {
+            let path = std::path::Path::new(target);
+            let path = match project {
+                Some(root) if path.is_relative() => std::path::Path::new(root).join(path),
+                _ => path.to_path_buf(),
+            };
+            LinkDestination::Open(path.display().to_string())
+        }
+        LinkKind::Task => LinkDestination::Card(agentdocker_core::TaskId::from(target.to_owned())),
+        _ => LinkDestination::Copy(target.to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -11258,64 +11317,5 @@ mod tests {
         let _ = app.update(Message::CommandPalette);
         let _ = app.update(Message::GoBack);
         assert_eq!(on(&app), (Screen::Agents, None));
-    }
-}
-
-/// The whole of a card's links, replacing its own.
-fn update_links(task: agentdocker_core::TaskId, links: Vec<agentdocker_core::Link>) -> Request {
-    Request::TaskUpdate {
-        agent: agentdocker_core::HUMAN.into(),
-        task: task.to_string(),
-        title: None,
-        acceptance: None,
-        assignee: None,
-        links: Some(links),
-        description: None,
-        priority: None,
-        size: None,
-        due: None,
-        external_blocker: None,
-        parent: None,
-        blocked_by: None,
-        tags: None,
-        plan: None,
-        expected_updated_at: None,
-    }
-}
-
-/// Where opening a link goes.
-#[derive(Debug, PartialEq, Eq)]
-pub(super) enum LinkDestination {
-    /// A URL, or a path, opened with the system's app for it.
-    Open(String),
-    /// Another card, opened in place.
-    Card(agentdocker_core::TaskId),
-    /// Something with nowhere to open (a commit, a message, a memory):
-    /// its words go to the clipboard.
-    Copy(String),
-}
-
-/// Where a link opens: a URL or a pull request URL in the browser, a path
-/// (relative to the project) in its app, a card in place; anything else is
-/// copied.
-pub(super) fn link_destination(
-    link: &agentdocker_core::Link,
-    project: Option<&str>,
-) -> LinkDestination {
-    use agentdocker_core::LinkKind;
-    let target = link.target.trim();
-    let web = target.starts_with("https://") || target.starts_with("http://");
-    match link.kind {
-        LinkKind::Url | LinkKind::Pr if web => LinkDestination::Open(target.to_owned()),
-        LinkKind::Path => {
-            let path = std::path::Path::new(target);
-            let path = match project {
-                Some(root) if path.is_relative() => std::path::Path::new(root).join(path),
-                _ => path.to_path_buf(),
-            };
-            LinkDestination::Open(path.display().to_string())
-        }
-        LinkKind::Task => LinkDestination::Card(agentdocker_core::TaskId::from(target.to_owned())),
-        _ => LinkDestination::Copy(target.to_owned()),
     }
 }

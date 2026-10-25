@@ -18,6 +18,7 @@ mod server;
 mod sqlite_windows;
 mod store;
 mod supervisor;
+mod sync;
 #[cfg(unix)]
 mod takeover;
 pub mod usage_storage;

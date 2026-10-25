@@ -169,8 +169,10 @@ It does not implement JWT client assertions.
 
 `whoami`, `list_agents`, `inspect_agent`, `send_message`, `read_inbox`,
 `acknowledge_messages`, `ask_human`, `open_questions`, `read_journal`,
-`journal_note`, `report_activity`. Everything else — leases, observations,
-worktrees, commits, hand-offs, tasks, channels, `wait_for_messages` — is refused
+`journal_note`, `report_activity`, and the board read-only: `list_tasks`,
+`get_task`, `search_tasks`, `comment_task`, `list_plans`, `get_plan`. Everything
+else — leases, observations, worktrees, commits, hand-offs, pulling or moving
+cards, channels, `wait_for_messages` — is refused
 by name with the reason: the agent has no checkout here, and a long wait would
 hold an HTTP request. Messages the connector's agent sends are attributed
 input to their recipients, never instructions; its own instructions say the

@@ -13661,3 +13661,27 @@ async fn a_full_watcher_flush_queue_cannot_block_release_indefinitely() {
     .expect("queue admission must share the flush timeout");
     assert!(matches!(response, Response::Leases { .. }));
 }
+
+#[test]
+fn concurrent_state_timing_samples_stop_at_the_limit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let samples = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    (0..100)
+                        .filter(|_| claim_state_timing_sample(&samples))
+                        .count()
+                })
+            })
+            .collect();
+        let accepted: usize = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .sum();
+        assert_eq!(accepted, 256);
+    });
+    assert_eq!(samples.load(Ordering::Relaxed), 256);
+    assert!(!claim_state_timing_sample(&samples));
+}

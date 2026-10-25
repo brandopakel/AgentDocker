@@ -87,7 +87,7 @@ mod tests {
             webhook: "team".into(),
             delivery: "0123456789abcdef0123456789abcdef".into(),
             seq: 41,
-            event: "question_asked".into(),
+            event: "question_opened".into(),
             attempt: 1,
             at: DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
                 .unwrap()

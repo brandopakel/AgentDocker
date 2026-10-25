@@ -16,6 +16,8 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
+
+use crate::sync::lock;
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -222,7 +224,7 @@ impl Session {
     /// What the agent printed lately, as bytes, and the window it printed
     /// into: enough to draw its screen as it stands.
     pub fn screen(&self) -> (Vec<u8>, (u16, u16)) {
-        let bytes = lock_scrollback(&self.scrollback).iter().copied().collect();
+        let bytes = lock(&self.scrollback).iter().copied().collect();
         let size = *self
             .size
             .lock()
@@ -233,7 +235,7 @@ impl Session {
     /// What to show now, and what comes next, taken together under one
     /// lock so a byte cannot fall between them or arrive twice.
     pub fn attach(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
-        let history = lock_scrollback(&self.scrollback);
+        let history = lock(&self.scrollback);
         let seen: Vec<u8> = history.iter().copied().collect();
         let live = self
             .output
@@ -243,14 +245,6 @@ impl Session {
         drop(history);
         (seen, live)
     }
-}
-
-fn lock_scrollback(
-    scrollback: &std::sync::Mutex<VecDeque<u8>>,
-) -> std::sync::MutexGuard<'_, VecDeque<u8>> {
-    scrollback
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn launch_for(daemon: &Daemon, record: &AgentRecord) -> Launch {
@@ -644,7 +638,7 @@ impl Spawned {
 
     fn show(&self, bytes: &[u8]) {
         if let (Some(scrollback), Some(output)) = (&self.scrollback, &self.output) {
-            let mut history = lock_scrollback(scrollback);
+            let mut history = lock(scrollback);
             history.extend(bytes.iter().copied());
             let excess = history.len().saturating_sub(SCROLLBACK);
             history.drain(..excess);
