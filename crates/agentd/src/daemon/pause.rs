@@ -68,6 +68,7 @@ impl Daemon {
                 by: pause.by.clone(),
                 reason: pause.reason.clone(),
             },
+            closes: None,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
             Response::Sent { .. } => {
@@ -108,6 +109,7 @@ impl Daemon {
                 project: project.clone(),
                 by: from,
             },
+            closes: None,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
             Response::Sent { .. } => {

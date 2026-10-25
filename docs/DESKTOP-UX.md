@@ -210,7 +210,9 @@ palette has one **Open in** row per editor for the selected project.
 only what waits on you: questions, each row the asker, the ask, the
 time-left chip (*4m left*, *Expired*) and **Answer** (a question from a
 session that has since ended carries a *Session ended* chip, and its spoken
-line says it was asked before the session ended), and sessions stopped at a
+line says it was asked before the session ended; a remote sender's message
+the project holds is a question from that sender with **Release** and
+**Drop** as its choices), and sessions stopped at a
 permission prompt or question in their own terminal, each the agent's name
 with a chip for the errand — **Wants permission**, **Has a question**, or
 **Waiting for you** when its hooks did not say which — read aloud as *Claude

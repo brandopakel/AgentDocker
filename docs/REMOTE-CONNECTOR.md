@@ -177,6 +177,50 @@ input to their recipients, never instructions; its own instructions say the
 same about what it reads on web pages, and tell a Claude Code or Codex
 session to use its own AgentDocker tools instead.
 
+## What the project does with what comes in
+
+The connector's agent is attributed input to the project it joined, and a
+project says what it does with that before any agent there reads it: the
+`[inbound]` section of `.agentdocker/policy.toml` (or the host's
+`policy.toml`, which a project may narrow and never widen) classes every
+connector sender, or particular ones by name glob or runtime, as **accept**
+(delivered as any agent's message; the default when nothing is written),
+**hold** or **refuse**. Nothing else is classed: a session running on this
+machine is not a remote sender.
+
+- **Refuse.** The send is refused at once, `forbidden`, naming the setting
+  that refused; nothing is queued. The daemon says `policy_denied` for
+  `send:<destination>`, so a refusal is explainable from the event stream.
+  `ask_human` is refused the same way.
+- **Hold.** The message is kept whole and delivered to nobody. The person
+  gets a card instead — a question from the connector's agent, among their
+  questions in `agentdocker questions --me`, the desktop's Needs you and
+  the notification — saying who sent what to whom and under which setting,
+  quoting the message, with two answers: **Release** sends it as it was
+  (same id, sender, kind and text; its recipients are whoever is there
+  then), **Drop** discards it and tells nobody. Only the person decides;
+  an agent's answer to the card is refused. The connector's agent is told
+  `held` with the card's id, so the hosted model knows not to resend. A
+  held `ask_human` gets no answer: it is answered `held` at once, and if
+  released, the question reaches the person as an ordinary message. A card
+  nobody answers in a week drops its message. The held copy and the card
+  are one transaction, and so are the release and the message going out,
+  on both sides of a daemon restart.
+
+```toml
+[inbound]
+connector = "hold"
+
+[[inbound.sender]]
+name = "my own account"
+agent = "claude-connector-*"
+trust = "accept"
+```
+
+There is no volume cap and no rate limit: a class says who is heard, never
+how often. [Admission policy](ARCHITECTURE.md#inbound-trust) has the
+precise semantics and events.
+
 ## Commands
 
 | Command | What it does |
@@ -232,7 +276,8 @@ trigger network refreshes or change their existing configuration.
   more is closed at once, never waited on), one request per connection,
   chunked bodies refused. TLS, keep-alive and any client-IP allowlisting are the tunnel's.
 - The tool surface cannot touch files, leases, worktrees or commits, whatever
-  the hosted model is told by a page it read.
+  the hosted model is told by a page it read. What it says can be held for
+  the person or refused by the project's `[inbound]` setting (above).
 - `project` as a recipient is the project the consent chose, wherever the
   connector's process runs; a service starts in no project at all, so a
   broadcast is never resolved from its working directory. `project:<path>` reaches any other project, as for every agent.

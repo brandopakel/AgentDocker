@@ -525,7 +525,7 @@ each one by pid.
 | `watch` | Stream messages for an agent or matching topics. Topics keep their messages: `watch --as <agent> 'repo/#'` first shows what each matching topic kept since the last topic message that agent acknowledged there (everything kept, the first time), then streams live; `inbox --as <agent> --ack <id>` on a topic message moves that topic on past it. A topic line shows its `seq:`; without an agent, topics are live only unless `--after-seq <n>` replays from that point. One watch replays at most a topic's newest 500, 5,000 in all, and says how many older ones it did not replay |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
-| `answer` | Answer a question somebody is waiting on |
+| `answer` | Answer a question somebody is waiting on. A card for a remote sender's held message takes `Release` or `Drop` |
 | `questions` | Questions waiting for an answer |
 | `conversations` | What you can read: every conversation with its unread count, newest first |
 | `history <conversation>` | What was said in one conversation, oldest first; `--read` marks it read through the last line shown, for you or for `--as <agent>` (the agent's own shell, through `AGENTDOCKER_AGENT_ID`), never the other |
@@ -1581,6 +1581,21 @@ Current behaviour that the sections above do not already state, by area.
 
 - Every MCP tool carries annotations (read-only, destructive, idempotent,
   open-world), so a host that asks before risky calls lets the reads through.
+
+- **What a connector's agent says can be held for you or refused.** An
+  `[inbound]` section in the project's `.agentdocker/policy.toml` (or your
+  `~/.agentdocker/policy.toml`; the project may narrow yours, never widen
+  it) sets `connector = "accept" | "hold" | "refuse"` for every connector
+  sender, and `[[inbound.sender]]` entries with `agent = "<name glob>"` or
+  `runtime = "claude-browser" | "chatgpt-browser"` and a `trust` for
+  particular ones. Refused sends fail at once, naming the setting. A held
+  message reaches nobody until you release it: it appears among your
+  questions — Needs you in the app, `agentdocker questions --me`, the
+  notification — as a card from the sender quoting the message, and
+  **Release** delivers it as sent while **Drop** discards it
+  (`agentdocker answer <card> Release`). Cards nobody answers in a week
+  drop their message. Nothing is written by default, and a session running
+  on this machine is never held or refused by it.
 
 ### Daemon
 

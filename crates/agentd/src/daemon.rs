@@ -60,6 +60,7 @@ mod handoff;
 pub(crate) mod herdr;
 pub mod humans;
 mod images;
+mod inbound;
 mod inbox;
 mod journal;
 mod judge;
@@ -171,6 +172,10 @@ pub(crate) struct DocumentTransition {
     /// The document to put, or none to delete it.
     pub value: Option<serde_json::Value>,
     pub event: EventKind,
+    /// A question settled without an answer in the same commit — the card
+    /// a held message rode on, once the message goes out — closed with
+    /// `question_closed {answer: None}`.
+    pub closes: Option<MessageId>,
 }
 
 /// What became of a write.
@@ -544,6 +549,10 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// Remote senders' messages held for the person, by the id of the
+    /// question that carries each; kept as `held_message` documents in
+    /// the same transaction as their questions.
+    held_messages: HashMap<MessageId, agentdocker_core::HeldMessage>,
     secret_reviews: HashMap<String, secret_reviews::Entry>,
     /// The projects told to hold, and why; kept as documents.
     pauses: HashMap<ProjectId, agentdocker_core::Pause>,
@@ -1610,6 +1619,46 @@ impl Daemon {
             questions.len() <= humans::MAX_QUESTIONS,
             "too many stored pending questions"
         );
+        // A held message rides on its question: one whose question has
+        // gone (expired at this start, above) is dropped as expired too,
+        // when writes are open; while fenced it is left for the tick.
+        let mut held_messages: HashMap<MessageId, agentdocker_core::HeldMessage> = store
+            .documents::<agentdocker_core::HeldMessage>(inbound::DOCUMENT, None)?
+            .into_iter()
+            .map(|held| (held.question.clone(), held))
+            .collect();
+        let orphaned: Vec<_> = held_messages
+            .values()
+            .filter(|held| !questions.contains_key(&held.question))
+            .map(|held| (held.question.clone(), held.envelope.id.clone()))
+            .collect();
+        if !fenced && !orphaned.is_empty() {
+            let mut events: Vec<_> = orphaned
+                .iter()
+                .map(|(question, message)| {
+                    Event::new(
+                        EventKind::HeldMessageDropped {
+                            message: message.clone(),
+                            question: question.clone(),
+                            by: inbound::EXPIRY.to_owned(),
+                        },
+                        now,
+                    )
+                })
+                .collect();
+            for (index, event) in events.iter_mut().enumerate() {
+                event.seq = next_seq + index as u64;
+            }
+            next_seq += events.len() as u64;
+            let delete: Vec<(&str, String)> = orphaned
+                .iter()
+                .map(|(question, _)| (inbound::DOCUMENT, question.as_str().to_owned()))
+                .collect();
+            store.documents_change(&[], &delete, &events)?;
+            for (question, _) in &orphaned {
+                held_messages.remove(question);
+            }
+        }
 
         let (bus, _) = broadcast::channel(1024);
         let (events, _) = broadcast::channel(1024);
@@ -1668,6 +1717,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions,
+                held_messages,
                 secret_reviews: HashMap::new(),
                 pauses,
                 waiting: agentdocker_core::WaitQueue::new(),
@@ -3309,8 +3359,17 @@ impl Daemon {
                 "pause and resume notices require a project lifecycle request",
             );
         }
+        // What the project does with a remote sender's word, decided
+        // before anything is routed: refused here, or held whole once the
+        // destination is known. A held word to a role goes to the role's
+        // holder rather than its room, as an `ask` to a role does.
+        let inbound = match self.inbound_ruling(&from, to).await {
+            Ok(ruling) => ruling,
+            Err(response) => return *response,
+        };
         // An agent's word to a role goes to that role's room in its project.
-        if let Some(role) = to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX)
+        if inbound.is_none()
+            && let Some(role) = to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX)
             && let Some(response) = lock(&self.state).send_to_role(
                 &from,
                 role,
@@ -3351,6 +3410,9 @@ impl Daemon {
         }
         let mut envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
         envelope.links = links;
+        if let Some(ruling) = inbound {
+            return state.hold_message(envelope, ruling);
+        }
         state.publish(envelope)
     }
 
@@ -5237,6 +5299,18 @@ impl State {
         if let Some(document) = &document {
             kinds.push(document.event.clone());
         }
+        // A question the document settles without an answer: a held
+        // message's card, closed as its message goes out.
+        let settled = document
+            .as_ref()
+            .and_then(|d| d.closes.clone())
+            .filter(|id| self.questions.contains_key(id));
+        if let Some(settled) = &settled {
+            kinds.push(EventKind::QuestionClosed {
+                question: settled.clone(),
+                answer: None,
+            });
+        }
         kinds.push(EventKind::MessageSent {
             message: envelope.id.clone(),
             from: envelope.from.clone(),
@@ -5278,7 +5352,7 @@ impl State {
                     INBOX_CAPACITY,
                     sender.as_ref(),
                     question.as_ref(),
-                    closed.as_ref(),
+                    closed.as_ref().or(settled.as_ref()),
                     events,
                     channel.as_ref().map(|channel| (channel, journal.as_ref())),
                     document
@@ -5317,6 +5391,9 @@ impl State {
                 }
                 if let Some(closed) = &closed {
                     state.questions.remove(closed);
+                }
+                if let Some(settled) = &settled {
+                    state.questions.remove(settled);
                 }
             },
         );

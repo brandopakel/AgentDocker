@@ -63,9 +63,9 @@ pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind
 pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ResourceKey};
 pub use link::{Link, LinkKind};
 pub use message::{
-    ALLOW_FOR_SESSION, AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId,
-    Question, QuestionFileChange, QuestionFileChangeKind, QuestionOption, QuestionPresentation,
-    mcp_url_authority, topic_matches,
+    ALLOW_FOR_SESSION, AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, HeldDecision,
+    HeldMessage, MessageId, Question, QuestionFileChange, QuestionFileChangeKind, QuestionOption,
+    QuestionPresentation, mcp_url_authority, topic_matches,
 };
 pub use notification::NotificationTarget;
 pub use permissions::{
@@ -84,7 +84,7 @@ pub use task::{
 pub use topic::{TopicCursor, TopicPost};
 
 pub mod policy;
-pub use policy::{Policy, Ruling};
+pub use policy::{InboundRuling, Policy, Ruling, Trust};
 
 pub mod editor;
 pub mod multiplexer;
