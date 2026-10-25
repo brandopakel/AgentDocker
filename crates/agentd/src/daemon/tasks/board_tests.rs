@@ -1273,6 +1273,55 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
         found(d.handle(profile(f.agent.id.as_str())).await),
         [old.id.as_str()]
     );
+
+    // Roles are a project's own: a reviewer of another project reads this
+    // one's memory as anybody would, and cannot replace a memory said only
+    // to this project's reviewers.
+    let elsewhere = f._dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let stranger = register(d, "carol", &elsewhere).await;
+    assert!(matches!(
+        d.handle(Request::RoleAssign {
+            from: HUMAN.into(),
+            agent: stranger.id.to_string(),
+            add: vec!["reviewer".into()],
+            remove: vec![],
+        })
+        .await,
+        Response::Agent { .. }
+    ));
+    assert_eq!(
+        found(d.handle(search(Some(stranger.id.to_string()))).await),
+        [old.id.as_str()]
+    );
+    assert_eq!(
+        found(
+            d.handle(Request::MemoryProfile {
+                from: Some(stranger.id.to_string()),
+                project: Some(f.work.clone()),
+                max_chars: None,
+            })
+            .await
+        ),
+        [old.id.as_str()]
+    );
+    assert!(matches!(
+        d.handle(Request::MemoryAdd {
+            from: stranger.id.to_string(),
+            project: Some(f.work.clone()),
+            text: "Review against a tag".into(),
+            links: vec![],
+            supersedes: Some(new.id.clone()),
+            standing: false,
+            forget_after: None,
+            roles: vec![],
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
 }
 
 /// An agent keeps a memory in its own project; another finds it by its
