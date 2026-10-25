@@ -151,22 +151,20 @@ fn field_row<'a>(
 /// controls the shared ladder does not draw: a switch, a stepper's halves,
 /// a palette swatch. Same keyboard and accessibility behaviour as every
 /// other button.
-#[allow(clippy::too_many_arguments)]
 fn bare<'a>(
     id: impl Into<String>,
     label: impl Into<String>,
     content: impl Into<Element<'a, Message>>,
     message: Option<Message>,
     pad: impl Into<Padding>,
-    width: Length,
-    height: Length,
+    size: iced::Size<Length>,
     style: impl Fn(&iced::Theme, ButtonStatus) -> ButtonStyle + 'a,
 ) -> Element<'a, Message> {
     let (id, label) = (id.into(), label.into());
     let button = iced::widget::button(content)
         .padding(pad)
-        .width(width)
-        .height(height)
+        .width(size.width)
+        .height(size.height)
         .on_press_maybe(message.clone())
         .style(style);
     crate::controls::Control {
@@ -215,8 +213,7 @@ fn switch<'a>(
         lane,
         message,
         2,
-        Length::Fixed(36.0),
-        Length::Fixed(20.0),
+        iced::Size::new(Length::Fixed(36.0), Length::Fixed(20.0)),
         move |_, status| {
             let base = if on { c.accent } else { off_track };
             let track = match status {
@@ -257,8 +254,7 @@ fn stepper<'a>(
             text(glyph).size(16).font(MEDIUM).center().width(Fill),
             message,
             [5, 0],
-            Length::Fixed(32.0),
-            Length::Fixed(30.0),
+            iced::Size::new(Length::Fixed(32.0), Length::Fixed(30.0)),
             move |_, status| {
                 let radius = RADIUS_SM - 1.0;
                 ButtonStyle {
@@ -1496,8 +1492,7 @@ impl App {
             preview,
             Some(Message::Palette(palette.name.into())),
             2,
-            Length::Shrink,
-            Length::Shrink,
+            iced::Size::new(Length::Shrink, Length::Shrink),
             move |_, status| ButtonStyle {
                 background: None,
                 text_color: c.text,

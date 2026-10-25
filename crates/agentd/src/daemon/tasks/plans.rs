@@ -158,6 +158,16 @@ impl State {
     }
 }
 
+/// A file to keep: its name and type, its content as text or base64, and
+/// the card it is for.
+pub(in crate::daemon) struct FilePutArgs {
+    pub name: String,
+    pub media_type: Option<String>,
+    pub text: Option<String>,
+    pub base64: Option<String>,
+    pub task: Option<String>,
+}
+
 impl Daemon {
     pub(in crate::daemon) async fn plans(
         self: &Arc<Self>,
@@ -195,7 +205,6 @@ impl Daemon {
         Response::Plan { plan, tasks }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn plan_save(
         self: &Arc<Self>,
         from: &str,
@@ -307,17 +316,20 @@ impl Daemon {
 
     /// Keep a file: a name the project has already is a new version of
     /// it, its links kept.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn file_put(
         self: &Arc<Self>,
         from: &str,
         project: Option<String>,
-        name: &str,
-        media_type: Option<String>,
-        text: Option<String>,
-        base64: Option<String>,
-        task: Option<String>,
+        file: FilePutArgs,
     ) -> Response {
+        let FilePutArgs {
+            name,
+            media_type,
+            text,
+            base64,
+            task,
+        } = file;
+        let name = name.as_str();
         if !plan::valid_file_name(name) {
             return Response::error(
                 ErrorCode::Invalid,

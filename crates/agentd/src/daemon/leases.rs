@@ -1,21 +1,31 @@
 use super::*;
 use agentdocker_core::wait::{self, Priority};
-use agentdocker_core::{Blocked, WaitOutcome};
+use agentdocker_core::{Blocked, ClaimRequest, WaitOutcome};
+
+/// What a claim asks for, as the request spelt it.
+pub(super) struct ClaimArgs {
+    pub resource: String,
+    pub mode: LeaseMode,
+    pub amount: Option<u64>,
+    pub ttl_secs: u64,
+    pub note: Option<String>,
+    pub wait_secs: u64,
+    pub priority: Priority,
+    pub automatic: bool,
+}
 
 impl Daemon {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn claim(
-        self: &Arc<Self>,
-        reference: &str,
-        resource: String,
-        mode: LeaseMode,
-        amount: Option<u64>,
-        ttl_secs: u64,
-        note: Option<String>,
-        wait_secs: u64,
-        priority: Priority,
-        automatic: bool,
-    ) -> Response {
+    pub(super) async fn claim(self: &Arc<Self>, reference: &str, args: ClaimArgs) -> Response {
+        let ClaimArgs {
+            resource,
+            mode,
+            amount,
+            ttl_secs,
+            note,
+            wait_secs,
+            priority,
+            automatic,
+        } = args;
         if !wait::valid_priority(priority) {
             return Response::error(
                 ErrorCode::Invalid,
@@ -153,20 +163,22 @@ impl Daemon {
                     }
                     let result = if state.may_attempt(waiting.ticket()) {
                         state.leases.clone().claim_as(
-                            resource.clone(),
-                            holder.clone(),
-                            // A quota is shared by construction: it is spent,
-                            // not occupied, so exclusivity would make every
-                            // budget a lock on itself.
-                            if resource.kind() == "quota" {
-                                LeaseMode::Shared
-                            } else {
-                                mode
+                            ClaimRequest {
+                                resource: resource.clone(),
+                                holder: holder.clone(),
+                                // A quota is shared by construction: it is
+                                // spent, not occupied, so exclusivity would
+                                // make every budget a lock on itself.
+                                mode: if resource.kind() == "quota" {
+                                    LeaseMode::Shared
+                                } else {
+                                    mode
+                                },
+                                ttl: ttl(ttl_secs),
+                                note: note.clone(),
+                                automatic,
                             },
-                            ttl(ttl_secs),
-                            note.clone(),
                             now,
-                            automatic,
                         )
                     } else {
                         Err(LeaseError::Conflict {

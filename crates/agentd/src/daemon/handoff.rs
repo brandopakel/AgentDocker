@@ -27,22 +27,33 @@ async fn tracked_diff(root: PathBuf) -> anyhow::Result<String> {
     })
 }
 
+/// What a handoff carries, as the request spelt it: who it is for, the
+/// task and note for them, the links, whether the leases go with it, and
+/// the retry key.
+pub(super) struct HandoffArgs {
+    pub to: Option<String>,
+    pub task: Option<String>,
+    pub note: Option<String>,
+    pub links: Vec<agentdocker_core::Link>,
+    pub transfer_leases: bool,
+    pub key: Option<String>,
+}
+
 impl Daemon {
     /// Make a bundle for `agent`'s work, addressed to `to` when given. The
     /// checkpoint underneath is made through the checkpoint path, so it
     /// has the same barrier, idempotency and release semantics; the bundle
     /// document, the `handoff` message, and the journal entry follow.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn handoff(
-        &self,
-        reference: &str,
-        to: Option<&str>,
-        task: Option<String>,
-        note: Option<String>,
-        links: Vec<agentdocker_core::Link>,
-        transfer_leases: bool,
-        key: Option<String>,
-    ) -> Response {
+    pub(super) async fn handoff(&self, reference: &str, args: HandoffArgs) -> Response {
+        let HandoffArgs {
+            to,
+            task,
+            note,
+            links,
+            transfer_leases,
+            key,
+        } = args;
+        let to = to.as_deref();
         let (from, record) = {
             let mut state = lock(&self.state);
             let id = match state.resolve(reference) {
@@ -138,12 +149,14 @@ impl Daemon {
         let checkpoint = match self
             .checkpoint(
                 reference,
-                key,
-                task,
-                Vec::new(),
-                Vec::new(),
-                links,
-                !transfer_leases,
+                super::recovery::CheckpointArgs {
+                    key,
+                    task,
+                    assumptions: Vec::new(),
+                    next_steps: Vec::new(),
+                    links,
+                    release: !transfer_leases,
+                },
             )
             .await
         {

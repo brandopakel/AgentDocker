@@ -28,7 +28,7 @@ use sha2::{Digest, Sha256};
 
 #[cfg(windows)]
 use super::windows::{Layout, perform};
-use super::{Activation, inspect};
+use super::{Activation, Install, inspect};
 #[cfg(not(windows))]
 use super::{Layout, perform};
 
@@ -979,14 +979,16 @@ fn run_with_home(
     let expect_current = Some(active.map_or("none", |a| a.current.id.as_str()).to_owned());
     let performed = perform(
         layout,
-        active.cloned(),
-        source,
-        candidate.clone(),
-        !options.apply,
-        accept_ad_hoc,
-        Some(candidate.id.clone()),
-        expect_current,
-        options.socket.clone(),
+        Install {
+            active: active.cloned(),
+            source,
+            candidate: candidate.clone(),
+            preview: !options.apply,
+            local_preview: accept_ad_hoc,
+            expect_release: Some(candidate.id.clone()),
+            expect_current,
+            socket: options.socket.clone(),
+        },
     );
     // perform copies into the immutable version store. Dispose of this owned
     // extraction after preview/apply, including errors; retain only the archive.
