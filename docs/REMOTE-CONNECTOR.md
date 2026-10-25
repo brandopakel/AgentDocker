@@ -169,7 +169,7 @@ It does not implement JWT client assertions.
 
 `whoami`, `list_agents`, `inspect_agent`, `send_message`, `read_inbox`,
 `acknowledge_messages`, `ask_human`, `open_questions`, `read_journal`,
-`journal_note`, `report_activity`, and the board read-only: `list_tasks`,
+`journal_note`, `report_activity`, and board reads plus comments: `list_tasks`,
 `get_task`, `search_tasks`, `comment_task`, `list_plans`, `get_plan`. Everything
 else — leases, observations, worktrees, commits, hand-offs, pulling or moving
 cards, channels, `wait_for_messages` — is refused

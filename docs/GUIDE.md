@@ -628,7 +628,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one; `channel prune --older-than <duration>` forgets channels closed longer ago than that |
+| `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one; `channel prune --before <seconds>` forgets channels closed longer ago than that (two weeks by default) |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
 | `verdict <branch> --head <commit> --approve\|--changes\|--comment [--from <commit>] [--findings P1,P2,P3] [note]` | Give your verdict on a branch at the commit you read; it counts for the roles you hold, and only for that commit |
 | `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: approved at its head as it is now (exit 0), else changes asked, stale (commits since the approval) or unreviewed (exit 1). `--publish` sets the `agentdocker/review` commit status on GitHub |
