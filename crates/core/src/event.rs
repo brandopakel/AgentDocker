@@ -967,6 +967,164 @@ pub enum EventKind {
     Unknown,
 }
 
+impl EventKind {
+    /// Every kind's wire name — the `event` tag serde writes, the
+    /// variant in snake_case — in the enum's order, once, so a place
+    /// that takes kinds by name (`[[webhooks]] events`) can refuse a
+    /// name that is not one instead of waiting for an event that never
+    /// comes. `unknown` is left out: it is the reader's catch-all for a
+    /// newer daemon's kinds and is never emitted. A test holds this list
+    /// to the enum in both directions.
+    pub const WIRE_NAMES: &'static [&'static str] = &[
+        "usage_emission_recorded",
+        "usage_recorded",
+        "usage_reconciled",
+        "secret_review_changed",
+        "question_opened",
+        "question_closed",
+        "answer_routed",
+        "question_cancelled",
+        "agent_activity_reported",
+        "agent_renamed",
+        "agent_launched_by",
+        "role_set",
+        "adapter_contact_reported",
+        "input_delivery_reported",
+        "input_held_for_typing",
+        "input_bound",
+        "input_unbound",
+        "input_controller_ended",
+        "input_controller_launched",
+        "input_controller_launch_failed",
+        "input_restarts_exhausted",
+        "input_restarts_reset",
+        "input_controller_upgraded",
+        "input_resumed",
+        "session_resumed",
+        "session_duplicates_folded",
+        "session_relaunched",
+        "provider_availability_reported",
+        "container_updated",
+        "image_built",
+        "worktree_created",
+        "worktree_witnessed",
+        "authorship_recorded",
+        "committed",
+        "branch_merged",
+        "worktree_cleanup",
+        "integration_prepared",
+        "access_granted",
+        "access_revoked",
+        "checkpoint_saved",
+        "handoff_accepted",
+        "handoff_sent",
+        "handoff_imported",
+        "lease_transferred",
+        "validation_started",
+        "validation_finished",
+        "watcher_gap",
+        "watcher_starting",
+        "watcher_started",
+        "watcher_unavailable",
+        "restricted_endpoint_listening",
+        "restricted_endpoint_unavailable",
+        "reads_observed",
+        "agent_stale",
+        "inbox_acknowledged",
+        "messages_caught_up",
+        "agent_discovered",
+        "agent_vanished",
+        "discovery_unavailable",
+        "discovery_available",
+        "agent_created",
+        "human_location_changed",
+        "agent_started",
+        "agent_session_bound",
+        "agent_reconciled",
+        "contest_opened",
+        "contest_entered",
+        "contest_submitted",
+        "contest_closed",
+        "lease_waiting",
+        "lease_wait_ended",
+        "lease_deadlock",
+        "task_created",
+        "task_pulled",
+        "task_moved",
+        "task_updated",
+        "task_archived",
+        "task_unarchived",
+        "task_commented",
+        "task_comment_changed",
+        "board_changed",
+        "rule_changed",
+        "rule_fired",
+        "tag_changed",
+        "role_changed",
+        "memory_added",
+        "memory_forgotten",
+        "memory_mirrored",
+        "plan_changed",
+        "project_file_changed",
+        "webhook_failed",
+        "agent_judged_needs_you",
+        "agent_judgment_cleared",
+        "judge_status_changed",
+        "judge_failed",
+        "project_paused",
+        "project_resumed",
+        "policy_denied",
+        "policy_updated",
+        "agent_restarted",
+        "agent_restart_cleared",
+        "agent_restore_cleared",
+        "agent_restoring",
+        "agent_restored",
+        "agent_stopping",
+        "agent_exited",
+        "agent_output_failed",
+        "agent_removed",
+        "message_sent",
+        "lease_claimed",
+        "lease_renewed",
+        "lease_released",
+        "lease_expired",
+        "lease_conflict",
+        "project_discovered",
+        "file_changed",
+        "channel_opened",
+        "conversation_read",
+        "messages_pruned",
+        "topic_messages_pruned",
+        "topic_cursors_advanced",
+        "agents_pruned",
+        "channel_invited",
+        "channel_joined",
+        "channel_closed",
+        "channels_pruned",
+        "review_submitted",
+        "code_verdict_given",
+        "journal_appended",
+        "journal_read",
+        "journal_pruned",
+        "agent_owner_reattached",
+        "agent_input_dropped",
+        "agent_owner_lost",
+        "checkpoints_pruned",
+        "agent_vcs_changed",
+        "daemon_stopping",
+        "daemon_transfer_offered",
+        "daemon_transfer_readdressed",
+        "daemon_transfer_accepted",
+        "daemon_transfer_aborted",
+    ];
+
+    /// Whether `name` is the wire name of a kind the daemon emits.
+    pub fn is_wire_name(name: &str) -> bool {
+        Self::WIRE_NAMES.contains(&name)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     /// Position in the daemon's event log: strictly increasing, assigned by
@@ -1046,5 +1204,86 @@ mod tests {
         let kind: EventKind = serde_json::from_value(omitted.clone()).unwrap();
         assert_eq!(serde_json::from_value::<EventKind>(legacy).unwrap(), kind);
         assert_eq!(serde_json::to_value(kind).unwrap(), omitted);
+    }
+
+    /// `WIRE_NAMES` is the enum, by name: every variant's snake_case tag
+    /// is listed, nothing else is, and nothing twice. The enum's source
+    /// is the authority, so the test reads it rather than keeping a
+    /// second list.
+    #[test]
+    fn wire_names_are_the_enum_in_snake_case() {
+        let source = include_str!("event.rs");
+        let body = source
+            .split_once("pub enum EventKind {\n")
+            .expect("the enum")
+            .1
+            .split_once("\n}\n")
+            .expect("its end")
+            .0;
+        let from_source: Vec<String> = body
+            .lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("    ")?;
+                if rest.starts_with(' ') || !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    return None;
+                }
+                let variant: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                let mut snake = String::new();
+                for (i, c) in variant.chars().enumerate() {
+                    if c.is_ascii_uppercase() && i > 0 {
+                        snake.push('_');
+                    }
+                    snake.push(c.to_ascii_lowercase());
+                }
+                Some(snake)
+            })
+            .filter(|name| name != "unknown")
+            .collect();
+        assert!(
+            from_source.len() > 100,
+            "the enum was found: {}",
+            from_source.len()
+        );
+        assert_eq!(
+            EventKind::WIRE_NAMES,
+            from_source,
+            "WIRE_NAMES follows the enum, variant for variant"
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for name in EventKind::WIRE_NAMES {
+            assert!(seen.insert(*name), "{name} is listed twice");
+            // Serde knows each name as a kind: a tag it recognises is read
+            // as that variant (or fails on its missing fields), never as
+            // the catch-all.
+            let probe = format!(r#"{{"event":"{name}"}}"#);
+            let parsed = serde_json::from_str::<EventKind>(&probe);
+            assert!(
+                !matches!(parsed, Ok(EventKind::Unknown)),
+                "serde does not know `{name}`"
+            );
+        }
+        assert!(EventKind::is_wire_name("question_opened"));
+        assert!(!EventKind::is_wire_name("question_asked"));
+        assert!(!EventKind::is_wire_name("unknown"));
+        for kind in [
+            EventKind::DaemonStopping {
+                reason: "signal".to_owned(),
+            },
+            EventKind::WebhookFailed {
+                name: "team".to_owned(),
+                kind: "question_opened".to_owned(),
+                reason: String::new(),
+                dropped: 0,
+            },
+        ] {
+            let tag = serde_json::to_value(&kind).unwrap()["event"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert!(EventKind::is_wire_name(&tag), "{tag}");
+        }
     }
 }

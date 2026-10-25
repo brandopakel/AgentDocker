@@ -4,6 +4,7 @@
 //! agents may do. `agentd.toml` decides how the daemon keeps house for itself.
 //! Reading the file is host work; what it means is decided here.
 
+use crate::event::EventKind;
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 
@@ -217,8 +218,9 @@ pub struct WebhookConfig {
     /// A private file (a regular file of this user, mode 0600) whose
     /// trimmed content is the HMAC secret.
     pub secret_file: std::path::PathBuf,
-    /// Event kinds to post, by their wire names (`question_asked`,
-    /// `agent_exited`, `lease_deadlock`…). Empty posts nothing.
+    /// Event kinds to post, by their wire names (`question_opened`,
+    /// `agent_exited`, `lease_deadlock`…, [`EventKind::WIRE_NAMES`]).
+    /// Empty posts nothing; a name that is no kind is refused.
     #[serde(default)]
     pub events: Vec<String>,
     /// Only events of this project (id, root or unique prefix), when set.
@@ -264,22 +266,71 @@ impl WebhookConfig {
             ));
         }
         for kind in &self.events {
-            if kind.is_empty()
-                || kind.len() > 64
-                || !kind
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b == b'_' || b.is_ascii_digit())
-            {
-                return Err(format!("webhook {name}: `{kind}` is not an event kind"));
-            }
+            // Said back for correction, bounded: a name is at most 64 bytes
+            // when it is a kind, so a longer one is not a kind and is not
+            // echoed whole.
+            let shown: String = kind.chars().take(64).collect();
             if kind.starts_with("webhook_") {
                 return Err(format!(
-                    "webhook {name}: `{kind}` is a webhook's own event and is never posted"
+                    "webhook {name}: `{shown}` is a webhook's own event and is never posted"
+                ));
+            }
+            if !EventKind::is_wire_name(kind) {
+                let near = closest_wire_names(kind);
+                let hint = if near.is_empty() {
+                    "the wire names are the EventKind variants in snake_case; \
+                     see Events in docs/ARCHITECTURE.md"
+                        .to_owned()
+                } else {
+                    let named: Vec<String> = near.iter().map(|n| format!("`{n}`")).collect();
+                    format!("did you mean {}?", named.join(" or "))
+                };
+                return Err(format!(
+                    "webhook {name}: `{shown}` is not an event kind; {hint}"
                 ));
             }
         }
         Ok(())
     }
+}
+
+/// The emitted kinds nearest `name` by edit distance, when any is near
+/// enough to be the one meant — within a third of the name's length,
+/// at least two edits — so a misspelt or renamed name is answered with
+/// the right one and an invented one is not answered with a guess.
+/// Kinds within an edit of the nearest are named too, up to three, since
+/// `question_asked` is as near `question_closed` as `question_opened`.
+fn closest_wire_names(name: &str) -> Vec<&'static str> {
+    let budget = (name.chars().count() / 3).max(2);
+    let mut near: Vec<(usize, &'static str)> = EventKind::WIRE_NAMES
+        .iter()
+        .map(|candidate| (edit_distance(name, candidate), *candidate))
+        .filter(|(distance, _)| *distance <= budget)
+        .collect();
+    near.sort_unstable();
+    let Some(&(best, _)) = near.first() else {
+        return Vec::new();
+    };
+    near.iter()
+        .take_while(|(distance, _)| *distance <= best + 1)
+        .take(3)
+        .map(|(_, candidate)| *candidate)
+        .collect()
+}
+
+/// Levenshtein distance over characters; both inputs are short.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut current = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let substitute = previous[j] + usize::from(ca != *cb);
+            current.push(substitute.min(previous[j + 1] + 1).min(current[j] + 1));
+        }
+        previous = current;
+    }
+    previous[b.len()]
 }
 
 /// The shape of an address the daemon sends to: a host, no credentials
@@ -897,7 +948,7 @@ mod tests {
             name: "team-slack".into(),
             url: url.into(),
             secret_file: secret.clone(),
-            events: vec!["question_asked".into(), "lease_deadlock".into()],
+            events: vec!["question_opened".into(), "lease_deadlock".into()],
             project: None,
             format: WebhookFormat::Slack,
         };
@@ -931,6 +982,52 @@ mod tests {
         let mut sink = good("https://example.com/hook");
         sink.events = vec!["Question Asked".into()];
         assert!(sink.check().is_err(), "not a kind");
+        // A misspelt or renamed wire name used to pass on its characters
+        // alone and that kind then never posted; it is refused by name,
+        // with the kind meant.
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["question_asked".into()];
+        let error = sink.check().unwrap_err();
+        assert!(
+            error.contains("`question_asked` is not an event kind")
+                && error.contains("did you mean `question_closed` or `question_opened`?"),
+            "{error}"
+        );
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["lease_dedlock".into()];
+        assert!(
+            sink.check()
+                .unwrap_err()
+                .contains("did you mean `lease_deadlock`?")
+        );
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["unknown".into()];
+        assert!(
+            sink.check().is_err(),
+            "the reader's catch-all is never emitted"
+        );
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["zzzzzzzzzzzzzzzzzzzz".into()];
+        let error = sink.check().unwrap_err();
+        assert!(
+            error.contains("is not an event kind") && error.contains("docs/ARCHITECTURE.md"),
+            "no guess for a name near nothing: {error}"
+        );
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["x".repeat(400)];
+        let error = sink.check().unwrap_err();
+        assert!(
+            error.len() < 300,
+            "a long name is not echoed whole: {error}"
+        );
+        for name in EventKind::WIRE_NAMES {
+            if name.starts_with("webhook_") {
+                continue;
+            }
+            let mut sink = good("https://example.com/hook");
+            sink.events = vec![(*name).into()];
+            assert!(sink.check().is_ok(), "{name}");
+        }
         let text = format!(
             r#"
 [[webhooks]]
