@@ -2972,6 +2972,14 @@ mod tests {
         let mut expected = REMOTE_TOOLS.to_vec();
         expected.sort_unstable();
         assert_eq!(names, expected);
+        // The browser's tools carry their hints, so a host that asks before
+        // writes lets the reads through, and none of them is destructive.
+        for tool in listed["result"]["tools"].as_array().unwrap() {
+            let hints = &tool["annotations"];
+            assert!(hints["readOnlyHint"].is_boolean(), "{}", tool["name"]);
+            assert_eq!(hints["destructiveHint"], false, "{}", tool["name"]);
+            assert_eq!(hints["openWorldHint"], false, "{}", tool["name"]);
+        }
         let sent = connector
             .handle(post(
                 "/mcp",

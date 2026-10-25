@@ -169,13 +169,21 @@ It does not implement JWT client assertions.
 
 `whoami`, `list_agents`, `inspect_agent`, `send_message`, `read_inbox`,
 `acknowledge_messages`, `ask_human`, `open_questions`, `read_journal`,
-`journal_note`, `report_activity`. Everything else — leases, observations,
-worktrees, commits, hand-offs, tasks, channels, `wait_for_messages` — is refused
-by name with the reason: the agent has no checkout here, and a long wait would
-hold an HTTP request. Messages the connector's agent sends are attributed
-input to their recipients, never instructions; its own instructions say the
-same about what it reads on web pages, and tell a Claude Code or Codex
-session to use its own AgentDocker tools instead.
+`journal_note`, `report_activity`, and the board and plans to read and comment
+on: `list_tasks`, `get_task`, `search_tasks`, `comment_task`, `list_plans`,
+`get_plan` (`REMOTE_TOOLS` in `crates/cli/src/mcp.rs`). Everything else —
+leases, observations, worktrees, commits, hand-offs, moving cards, channels,
+`wait_for_messages` — is refused by name with the reason: the agent has no
+checkout here, and a long wait would hold an HTTP request. Each tool carries
+its MCP annotations, the same ones the local server gives it, and the browser
+client reads them: ChatGPT's developer mode confirms every call that is not
+`readOnlyHint`, Claude's connectors read the same hints, so the listings and
+reads go through unasked and a message, a question, a note or a comment is
+confirmed. Nothing a browser client is offered is destructive or open-world.
+Messages the connector's agent sends are attributed input to their
+recipients, never instructions; its own instructions say the same about what
+it reads on web pages, and tell a Claude Code or Codex session to use its own
+AgentDocker tools instead.
 
 ## Commands
 

@@ -2458,30 +2458,35 @@ fn render_whole(response: Response) -> Value {
 fn annotations(name: &str) -> Value {
     // (read-only, destructive, idempotent, open-world)
     let (read_only, destructive, idempotent, open_world) = match name {
-        // Looking: nothing changes.
+        // Looking: nothing changes. `read_journal` moves the reader's own
+        // cursor, a bookmark, and nothing else.
         "whoami" | "list_agents" | "inspect_agent" | "list_leases" | "activity" | "overlap"
-        | "open_questions" | "read_journal" | "wait_for_messages" | "check_stale" | "read_set"
-        | "list_checkpoints" | "list_handoffs" | "list_channels" | "contests" | "list_tasks"
-        | "get_task" | "my_tasks" | "worktree_diff" | "validation_results" | "usage"
-        | "search_tasks" | "list_tags" | "list_roles" | "list_plans" | "get_plan"
-        | "list_files" | "get_file" | "search_memory" | "get_profile" => (true, false, true, false),
+        | "open_questions" | "read_journal" | "check_stale" | "read_set" | "list_checkpoints"
+        | "list_handoffs" | "list_channels" | "contests" | "list_tasks" | "get_task"
+        | "my_tasks" | "worktree_diff" | "validation_results" | "usage" | "search_tasks"
+        | "list_tags" | "list_roles" | "list_plans" | "get_plan" | "list_files" | "get_file"
+        | "search_memory" | "get_profile" => (true, false, true, false),
         // Saying and recording: additive, repeatable.
         "report_activity" | "report_provider_status" | "observe_paths" | "renew" => {
             (false, false, true, false)
         }
-        // Reading with an option to consume, or acknowledging: never
-        // destructive, and the same call twice changes nothing more.
-        "read_inbox" | "acknowledge_messages" => (false, false, true, false),
+        // Reading the queue, which records the offer, waiting on it, or
+        // acknowledging: never destructive, and the same call twice
+        // changes nothing more.
+        "read_inbox" | "wait_for_messages" | "acknowledge_messages" => (false, false, true, false),
         // Additive writes: a message, a note, a lease, a checkpoint, a
         // card, a channel, a review, an entry.
         "send_message" | "ask_human" | "answer_question" | "journal_note" | "claim" | "release"
         | "save_checkpoint" | "handoff" | "resume_checkpoint" | "commit" | "create_worktree"
-        | "open_channel" | "close_channel" | "request_review" | "review" | "enter_contest"
-        | "submit_entry" | "create_task" | "create_tasks" | "move_task" | "pull_task"
-        | "update_task" | "comment_task" | "archive_task" | "create_tag" | "save_plan"
-        | "put_file" | "link_file" | "add_memory" => (false, false, false, false),
-        // Gone for good.
-        "forget_memory" => (false, true, true, false),
+        | "open_channel" | "request_review" | "review" | "enter_contest" | "submit_entry"
+        | "create_task" | "create_tasks" | "move_task" | "pull_task" | "update_task"
+        | "comment_task" | "create_tag" | "save_plan" | "put_file" | "link_file" | "add_memory" => {
+            (false, false, false, false)
+        }
+        // Taking things away: a card off the board (the person can put it
+        // back), a channel closed for good, a memory gone. Doing it again
+        // changes nothing more.
+        "archive_task" | "close_channel" | "forget_memory" => (false, true, true, false),
         // Changes files in a checkout: an uncommitted merge.
         "integrate_worktree" => (false, true, false, false),
         // The gate is a reading; a verdict is one more word on record.
@@ -4058,6 +4063,13 @@ mod tests {
         assert_eq!(by("send_message")["destructiveHint"], false);
         assert_eq!(by("claim")["destructiveHint"], false);
         assert_eq!(by("integrate_worktree")["destructiveHint"], true);
+        for name in ["archive_task", "close_channel", "forget_memory"] {
+            assert_eq!(by(name)["destructiveHint"], true, "{name}");
+            assert_eq!(by(name)["idempotentHint"], true, "{name}");
+        }
+        // The queue records the offer: reading or waiting on it writes.
+        assert_eq!(by("read_inbox")["readOnlyHint"], false);
+        assert_eq!(by("wait_for_messages")["readOnlyHint"], false);
         assert_eq!(by("validate")["openWorldHint"], true);
         // The browser agent's tools: every read is read-only, nothing is
         // destructive, so a host's "low-risk" default lets the reads through.
@@ -4073,6 +4085,111 @@ mod tests {
         ] {
             assert_eq!(by(name)["readOnlyHint"], true, "{name}");
         }
+    }
+
+    /// Arguments that satisfy a tool's own input schema: every required
+    /// property filled with the plainest value of its type, so the call
+    /// gets past parsing and reaches the daemon.
+    fn arguments_from(schema: &Value) -> Value {
+        fn value_for(property: &Value) -> Value {
+            if let Some(first) = property["enum"].as_array().and_then(|e| e.first()) {
+                return first.clone();
+            }
+            let kind = match &property["type"] {
+                Value::String(kind) => kind.as_str(),
+                Value::Array(kinds) => kinds.first().and_then(Value::as_str).unwrap_or("object"),
+                _ => "object",
+            };
+            match kind {
+                "string" => json!("x"),
+                "integer" | "number" => json!(property["minimum"].as_i64().unwrap_or(0).max(1)),
+                "boolean" => json!(true),
+                "array" => json!([value_for(&property["items"])]),
+                _ => arguments_from(property),
+            }
+        }
+        let mut object = serde_json::Map::new();
+        if let Some(required) = schema["required"].as_array() {
+            for name in required.iter().filter_map(Value::as_str) {
+                object.insert(name.to_owned(), value_for(&schema["properties"][name]));
+            }
+        }
+        Value::Object(object)
+    }
+
+    /// The read-only hint is checked against what each tool sends. Called
+    /// with arguments from its own schema, a tool marked read-only must
+    /// send the daemon nothing it admits as a mutation, and a tool marked
+    /// otherwise must send something it does. The daemon's own classifier
+    /// is the reference, so a hint cannot drift from the protocol: a tool
+    /// that starts writing loses its hint here first. The one reading the
+    /// daemon counts as a write is the journal digest, which moves the
+    /// reader's own cursor; it is named here and nowhere else.
+    #[tokio::test]
+    async fn read_only_hints_agree_with_the_requests_the_tools_send() {
+        let mut findings = Vec::new();
+        for tool in tool_definitions() {
+            let name = tool["name"].as_str().unwrap();
+            let arguments = match name {
+                // The queue is read without draining, and the wait returns
+                // on the first answer: the retaining paths, which the
+                // daemon still records as an offer.
+                "read_inbox" => json!({ "drain": false }),
+                "wait_for_messages" => json!({ "timeout_secs": 0 }),
+                // A block names its issue, which the schema leaves to the
+                // state chosen.
+                "report_provider_status" => {
+                    json!({ "state": "blocked", "issue": { "kind": "usage" } })
+                }
+                // Text or a payload: one of two, which `required` cannot say.
+                "send_message" => json!({ "to": "x", "text": "x" }),
+                _ => arguments_from(&tool["inputSchema"]),
+            };
+            let mut s = server(vec![]);
+            // A provider report is bound to the process that made it.
+            s.identity.host_started_at = Some(chrono::Utc::now());
+            s.handle(rpc(
+                1,
+                "tools/call",
+                json!({ "name": name, "arguments": arguments }),
+            ))
+            .await
+            .unwrap();
+            // The adapter's first contact is the session's own bookkeeping,
+            // sent on whichever tool comes first, not the tool's doing.
+            let requests: Vec<Request> = s
+                .backend
+                .requests()
+                .into_iter()
+                .filter(|request| !matches!(request, Request::ReportAdapter { .. }))
+                .collect();
+            if requests.is_empty() {
+                findings.push(format!("{name} reached no request with {arguments}"));
+                continue;
+            }
+            let mutating: Vec<&Request> = requests
+                .iter()
+                .filter(|request| match request {
+                    // A digest moves the reader's own cursor, a bookmark the
+                    // daemon writes for the caller: still a reading.
+                    Request::Journal {
+                        digest: Some(digest),
+                        ..
+                    } if digest.reader == "abc123" => false,
+                    _ => agentd::daemon::mutates(request),
+                })
+                .collect();
+            if tool["annotations"]["readOnlyHint"] == true {
+                if !mutating.is_empty() {
+                    findings.push(format!("{name} is marked read-only but sent {mutating:?}"));
+                }
+            } else if mutating.is_empty() {
+                findings.push(format!(
+                    "{name} is not marked read-only but sent only {requests:?}"
+                ));
+            }
+        }
+        assert!(findings.is_empty(), "{}", findings.join("\n"));
     }
 
     #[tokio::test]

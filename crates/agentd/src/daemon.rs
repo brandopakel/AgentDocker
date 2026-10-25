@@ -229,8 +229,9 @@ enum Coordination {
 /// everything else answers `transferring` until a coordinator owns the
 /// database again. `Shutdown` and `Reload` steer the daemon itself
 /// rather than its data: neither is fenced, and neither counts as a
-/// mutation in flight, or a reload would refuse itself.
-fn mutates(request: &Request) -> bool {
+/// mutation in flight, or a reload would refuse itself. Public because
+/// the MCP server's tests check each tool's `readOnlyHint` against it.
+pub fn mutates(request: &Request) -> bool {
     !matches!(
         request,
         Request::Shutdown
