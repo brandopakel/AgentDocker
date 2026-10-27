@@ -215,8 +215,13 @@ longer exists (a detached checkout counts as merged when its commit is in
 with nothing of its own merged, and stays), no running process names the worktree on its
 command line, works in it or runs a file from it (every process's working
 directory and executable, from `/proc` or `lsof`; a command started as
-`target/debug/app` or `python3 server.py` names no worktree, so when they cannot
-be read every worktree counts as busy), and no Cargo build holds the cache's
+`target/debug/app` or `python3 server.py` names no worktree). Another user's
+processes and zombies do not build in this user's worktrees and are left out,
+and so is a pid that exited meanwhile; a live process of this user whose places
+cannot be read is blind unless its command line names an absolute executable
+(the executable is then known, its directory not), and one blind process keeps
+every worktree; when no process or place can be read at all, every worktree
+counts as busy. The last condition is that no Cargo build holds the cache's
 `.cargo-lock`. The current worktree (the checkout the script runs from, and
 whatever Cargo reports as its target directory), the project's main checkout
 and a `target` that is a symbolic link are never touched; only the cache goes,

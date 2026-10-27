@@ -9,6 +9,7 @@ into origin/main (or gone), and no build running in them. `--prune
 end of every run and never prunes on its own.
 """
 import argparse
+from collections import namedtuple
 from contextlib import nullcontext
 import json
 import os
@@ -25,6 +26,12 @@ CACHE_NAMES = ("target", "fuzz/target")
 # The slot one local build campaign holds at a time; a real prune holds it
 # too, so no build starts under a cache while it goes.
 CAMPAIGN = "task:local-cargo-campaign"
+
+# One running process as the prune sees it: `places` are the paths the kernel
+# knows it by (working directory, executable); `blind` says one of them could
+# not be read and the command line gives no absolute executable either, so
+# nothing can rule the process out of any worktree.
+Process = namedtuple("Process", "pid command places blind", defaults=(False,))
 
 
 class BudgetError(Exception):
@@ -175,42 +182,64 @@ def lease_resources():
 
 
 def process_table():
-    """Running processes as (pid, command line, places): the places are the
-    paths the kernel knows the process by — its working directory and the
+    """This user's live processes as `Process` records: the places are the
+    paths the kernel knows a process by — its working directory and the
     files it executes — since a command started as `target/debug/app` or
-    `python3 server.py` names no worktree on its command line. None when
-    the processes or their places cannot be read: then every worktree may
-    be busy.
+    `python3 server.py` names no worktree on its command line. A process
+    whose places cannot be read is `blind` unless its command line names
+    an absolute executable (its directory then stays unknown; the
+    executable does not). Another user's processes and zombies do not
+    build in this user's worktrees and are left out; so is a pid that has
+    exited by the time its places are read. None when the processes or
+    their places cannot be read at all: then every worktree may be busy.
     """
     try:
-        listing = subprocess.check_output(["ps", "-e", "-ww", "-o", "pid=,command="], text=True, stderr=subprocess.PIPE)
+        listing = subprocess.check_output(["ps", "-e", "-ww", "-o", "pid=,uid=,stat=,command="],
+                                          text=True, stderr=subprocess.PIPE)
     except (OSError, subprocess.SubprocessError):
         return None
     processes = []
     for line in listing.splitlines():
-        parts = line.strip().split(None, 1)
-        if parts and parts[0].isdigit() and int(parts[0]) != os.getpid():
-            processes.append((int(parts[0]), parts[1] if len(parts) > 1 else ""))
-    places = process_places([pid for pid, _ in processes])
-    if places is None:
+        parts = line.split(None, 3)
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        pid, uid, stat = int(parts[0]), int(parts[1]), parts[2]
+        if pid == os.getpid() or uid != os.getuid() or "Z" in stat:
+            continue
+        processes.append((pid, parts[3] if len(parts) > 3 else ""))
+    read = process_places([pid for pid, _ in processes])
+    if read is None:
         return None
-    return [(pid, command, tuple(places.get(pid, ()))) for pid, command in processes]
+    places, unread, exited = read
+    table = []
+    for pid, command in processes:
+        if pid in exited:
+            continue
+        absolute = command.split(None, 1)[0].startswith("/") if command.strip() else False
+        table.append(Process(pid, command, tuple(places.get(pid, ())), pid in unread and not absolute))
+    return table
 
 
 def process_places(pids, proc=Path("/proc")):
-    """pid -> the paths each process works in and executes, for the pids
-    whose places can be read: /proc on Linux, `lsof -d cwd,txt` elsewhere.
-    None when neither can be asked at all."""
-    found = {}
+    """What the kernel says of each pid's places: (places, unread, exited) —
+    pid -> the paths it works in and executes; the pids with a place that
+    could not be read while the process lives; the pids that have exited.
+    /proc on Linux, `lsof -d cwd,txt` elsewhere; None when neither can be
+    asked at all."""
+    places, unread, exited = {}, set(), set()
     if proc.is_dir():
         for pid in pids:
             for name in ("cwd", "exe"):
                 try:
                     place = Path(os.readlink(proc / str(pid) / name))
                 except OSError:
+                    if (proc / str(pid)).is_dir():
+                        unread.add(pid)
+                    else:
+                        exited.add(pid)
                     continue
-                found.setdefault(pid, []).append(place)
-        return found
+                places.setdefault(pid, []).append(place)
+        return places, unread, exited
     if not shutil.which("lsof"):
         return None
     try:
@@ -226,8 +255,19 @@ def process_places(pids, proc=Path("/proc")):
         if line.startswith("p"):
             pid = int(line[1:])
         elif line.startswith("n") and pid is not None:
-            found.setdefault(pid, []).append(Path(line[1:]))
-    return found
+            places.setdefault(pid, []).append(Path(line[1:]))
+    for pid in pids:
+        if pid in places:
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            exited.add(pid)
+        except OSError:
+            unread.add(pid)
+        else:
+            unread.add(pid)
+    return places, unread, exited
 
 
 def within(path, base):
@@ -306,9 +346,10 @@ def decide(record, owned, *, current_root, current_target, main_root, leases, pr
     """Why this worktree's caches stay, or (None, why they may go).
 
     `leases` is the set of live lease resources, or None when no daemon
-    answers — then every worktree may be active. `processes` is (pid,
-    command line, places) per running process, or None when they cannot be
-    listed — then every worktree may be busy. `branch_state(record)` and
+    answers — then every worktree may be active. `processes` is a `Process`
+    (pid, command line, places, blind) per running process, or None when
+    they cannot be listed — then every worktree may be busy; a blind
+    process keeps every worktree. `branch_state(record)` and
     `lock_held(cache)` are asked only once the cheaper checks pass.
     """
     root = record["path"].resolve()
@@ -326,10 +367,13 @@ def decide(record, owned, *, current_root, current_target, main_root, leases, pr
                   or (record["branch"] is not None and resource == "branch:" + record["branch"]))
     if held:
         return f"lease {held[0]} is live", None
-    for pid, command, places in processes:
+    for entry in processes:
+        pid, command, places, blind = Process(*entry)
+        name = os.path.basename(command.split(None, 1)[0]) if command.strip() else "?"
         if mentions(command, root) or any(within(place, root) for place in places):
-            name = os.path.basename(command.split(None, 1)[0]) if command.strip() else "?"
             return f"process {pid} ({name}) runs in it", None
+        if blind:
+            return f"process {pid} ({name}) runs somewhere that cannot be read; it may be here", None
     state = branch_state(record)
     if state == "unmerged":
         return f"branch {label} is not merged into origin/main", None

@@ -208,6 +208,19 @@ class PruneSelection(unittest.TestCase):
         self.assertEqual(reasons[by_exe], "process 12 (app) runs in it")
         self.assertEqual(reasons[relative], "process 13 (python3) runs in it")
 
+    def test_a_live_process_nothing_can_place_keeps_every_worktree(self):
+        first = self.worktree("first", "feature/a")
+        second = self.worktree("second", "feature/b")
+        blind = STORAGE.Process(20, "python3 server.py", (), True)
+        prunable, kept = self.plan(processes=[blind])
+        self.assertEqual(prunable, [])
+        self.assertEqual({root: reason for root, _, reason in kept},
+                         {root: "process 20 (python3) runs somewhere that cannot be read; it may be here" for root in (first, second)})
+        # A process placed elsewhere, or one the kernel could read, rules nothing in.
+        prunable, _ = self.plan(processes=[STORAGE.Process(21, "/usr/bin/python3 server.py", (), False),
+                                           STORAGE.Process(22, "python3 server.py", (Path("/elsewhere"),), False)])
+        self.assertEqual(self.roots(prunable), [first, second])
+
     def test_an_unmerged_current_or_unknown_checkout_keeps_its_cache(self):
         unmerged = self.worktree("unmerged", "feature/wip", "unmerged")
         current = self.worktree("current", "feature/new", "current")
@@ -305,35 +318,105 @@ class PruneParsing(unittest.TestCase):
         self.assertFalse(STORAGE.mentions("bash with-cargo.sh /wt/ad-93 cargo test", Path("/wt/ad-9")))
         self.assertFalse(STORAGE.mentions("bash with-cargo.sh /wt/ad-9x", Path("/wt/ad-9")))
 
+    def listing(self, *rows):
+        me = os.getuid()
+        return "".join(f"{pid:>6} {me if uid is None else uid:>4} {stat:<4} {command}\n" for pid, uid, stat, command in rows) \
+            + f"{os.getpid():>6} {me:>4} S+   python3 build_storage.py\n"
+
     def test_every_process_gets_its_working_directory_and_executable(self):
-        listing = f" 10 target/debug/app --serve\n 11 python3 server.py\n{os.getpid()} python3 build_storage.py\n"
+        listing = self.listing((10, None, "S+", "target/debug/app --serve"), (11, None, "S", "python3 server.py"),
+                               (12, 0, "Ss", "/usr/libexec/rootd"), (13, None, "Z", "<defunct>"), (14, None, "S", "cargo test"))
         places = {10: [Path("/wt/a"), Path("/wt/a/target/debug/app")], 11: [Path("/wt/b"), Path("/usr/bin/python3")]}
         with patch.object(STORAGE.subprocess, "check_output", return_value=listing), \
-                patch.object(STORAGE, "process_places", return_value=places) as asked:
+                patch.object(STORAGE, "process_places", return_value=(places, set(), {14})) as asked:
             self.assertEqual(STORAGE.process_table(), [
-                (10, "target/debug/app --serve", (Path("/wt/a"), Path("/wt/a/target/debug/app"))),
-                (11, "python3 server.py", (Path("/wt/b"), Path("/usr/bin/python3")))])
-            self.assertEqual(asked.call_args.args[0], [10, 11], "this process is left out")
+                STORAGE.Process(10, "target/debug/app --serve", (Path("/wt/a"), Path("/wt/a/target/debug/app")), False),
+                STORAGE.Process(11, "python3 server.py", (Path("/wt/b"), Path("/usr/bin/python3")), False)])
+            self.assertEqual(asked.call_args.args[0], [10, 11, 14],
+                             "this process, another user's and a zombie are left out; the exited pid is dropped")
         with patch.object(STORAGE.subprocess, "check_output", return_value=listing), \
                 patch.object(STORAGE, "process_places", return_value=None):
             self.assertIsNone(STORAGE.process_table(), "unreadable places make every worktree busy")
-        # /proc: cwd and exe links per pid; a pid that cannot be read is left out.
+
+    def test_a_live_pid_whose_places_cannot_be_read_is_blind_unless_its_command_is_absolute(self):
+        listing = self.listing((10, None, "S", "python3 server.py"), (11, None, "S", "/usr/bin/python3 server.py"),
+                               (12, None, "S", "target/debug/app"))
+        # One place read, one not, for a live pid: blind when the command
+        # says nothing absolute; a pid that has gone is no process at all.
+        read = ({10: [Path("/usr/bin/python3")], 11: [Path("/usr/bin/python3")]}, {10, 11}, {12})
+        with patch.object(STORAGE.subprocess, "check_output", return_value=listing), \
+                patch.object(STORAGE, "process_places", return_value=read):
+            self.assertEqual(STORAGE.process_table(), [
+                STORAGE.Process(10, "python3 server.py", (Path("/usr/bin/python3"),), True),
+                STORAGE.Process(11, "/usr/bin/python3 server.py", (Path("/usr/bin/python3"),), False)])
+
+    def test_proc_reads_each_place_and_tells_unreadable_from_exited(self):
         with tempfile.TemporaryDirectory() as temporary:
             proc = Path(temporary)
             (proc / "10").mkdir()
             os.symlink("/wt/a", proc / "10/cwd")
             os.symlink("/wt/a/target/debug/app", proc / "10/exe")
-            self.assertEqual(STORAGE.process_places([10, 11], proc=proc),
-                             {10: [Path("/wt/a"), Path("/wt/a/target/debug/app")]})
-        # lsof: one block per pid; an exit status of 1 still carries the listing.
+            # 11 lives, but its cwd cannot be read (as a permission error leaves it).
+            (proc / "11").mkdir()
+            os.symlink("/usr/bin/python3", proc / "11/exe")
+            self.assertEqual(STORAGE.process_places([10, 11, 12], proc=proc),
+                             ({10: [Path("/wt/a"), Path("/wt/a/target/debug/app")], 11: [Path("/usr/bin/python3")]}, {11}, {12}))
+
+    def test_lsof_omitting_a_live_pid_leaves_it_unread_and_an_exited_one_dropped(self):
         lsof = "p10\nfcwd\nn/wt/a\nftxt\nn/wt/a/target/debug/app\np11\nfcwd\nn/wt/b\n"
         failing = subprocess.CalledProcessError(1, ["lsof"], output=lsof)
+
+        def kill(pid, signal):
+            if pid == 13:
+                raise ProcessLookupError(pid)
+            if pid == 14:
+                raise PermissionError(pid)
+        no_proc = Path(tempfile.gettempdir()) / "no-proc-here"
         with patch.object(STORAGE.shutil, "which", return_value="/usr/sbin/lsof"), \
-                patch.object(STORAGE.subprocess, "check_output", side_effect=failing):
-            self.assertEqual(STORAGE.process_places([10, 11], proc=Path(tempfile.gettempdir()) / "no-proc-here"),
-                             {10: [Path("/wt/a"), Path("/wt/a/target/debug/app")], 11: [Path("/wt/b")]})
+                patch.object(STORAGE.subprocess, "check_output", side_effect=failing), \
+                patch.object(STORAGE.os, "kill", kill):
+            self.assertEqual(STORAGE.process_places([10, 11, 12, 13, 14], proc=no_proc),
+                             ({10: [Path("/wt/a"), Path("/wt/a/target/debug/app")], 11: [Path("/wt/b")]}, {12, 14}, {13}))
         with patch.object(STORAGE.shutil, "which", return_value=None):
-            self.assertIsNone(STORAGE.process_places([10], proc=Path(tempfile.gettempdir()) / "no-proc-here"))
+            self.assertIsNone(STORAGE.process_places([10], proc=no_proc))
+
+    def test_partial_reads_keep_every_cache_through_process_table_and_decide(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            (base / "gone/target").mkdir(parents=True)
+            records = [record(base / "main", "main"), record(base / "gone", "feature/a")]
+            caches = {base / "gone/target": STORAGE.GIB}
+
+            def judge(processes):
+                return STORAGE.plan_prune(records, caches, current_root=base / "elsewhere", current_target=base / "elsewhere/target",
+                                          leases=set(), processes=processes, branch_state=lambda entry: "merged",
+                                          lock_held=lambda cache: False)
+            listing = self.listing((10, None, "S", "python3 server.py"))
+            places = STORAGE.process_places
+            # /proc: exe read, cwd not, the process alive.
+            proc = base / "proc"
+            (proc / "10").mkdir(parents=True)
+            os.symlink("/usr/bin/python3", proc / "10/exe")
+            with patch.object(STORAGE.subprocess, "check_output", return_value=listing), \
+                    patch.object(STORAGE, "process_places", lambda pids: places(pids, proc=proc)):
+                prunable, kept = judge(STORAGE.process_table())
+            self.assertEqual(prunable, [])
+            self.assertIn("process 10 (python3) runs somewhere that cannot be read", kept[0][2])
+            # lsof: the live pid is not in the listing at all.
+            with patch.object(STORAGE.subprocess, "check_output", side_effect=[listing, subprocess.CalledProcessError(1, ["lsof"], output="")]), \
+                    patch.object(STORAGE.shutil, "which", return_value="/usr/sbin/lsof"), \
+                    patch.object(STORAGE.os, "kill", lambda pid, signal: None), \
+                    patch.object(STORAGE, "process_places", lambda pids: places(pids, proc=base / "no-proc")):
+                prunable, kept = judge(STORAGE.process_table())
+            self.assertEqual(prunable, [])
+            self.assertIn("cannot be read", kept[0][2])
+            # The same pid gone by then is no process: the cache may go.
+            with patch.object(STORAGE.subprocess, "check_output", side_effect=[listing, subprocess.CalledProcessError(1, ["lsof"], output="")]), \
+                    patch.object(STORAGE.shutil, "which", return_value="/usr/sbin/lsof"), \
+                    patch.object(STORAGE.os, "kill", lambda pid, signal: (_ for _ in ()).throw(ProcessLookupError(pid))), \
+                    patch.object(STORAGE, "process_places", lambda pids: places(pids, proc=base / "no-proc")):
+                prunable, kept = judge(STORAGE.process_table())
+            self.assertEqual(len(prunable), 1)
 
     def test_a_cargo_lock_somebody_holds_is_seen(self):
         fcntl = __import__("fcntl")
