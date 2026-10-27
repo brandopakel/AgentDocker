@@ -805,6 +805,87 @@ mod tests {
         );
     }
 
+    /// A held reply to a question closes two questions when released: the
+    /// one it answers and the card it rode on. Both deletions are in the
+    /// release's transaction, so a daemon restored from the store has
+    /// neither a card with nothing to release nor a question already
+    /// answered.
+    #[tokio::test]
+    async fn a_released_reply_closes_its_question_and_its_card_durably() {
+        let dir = TempDir::new().unwrap();
+        let root = checkout(&dir, "[inbound]\nconnector = \"hold\"\n");
+        let daemon = open(&dir);
+        let (_, local, remote) = cast(&daemon, &root).await;
+        // The local agent asks the remote one, without waiting.
+        let Response::Sent { message: asked, .. } = daemon
+            .handle(Request::PostQuestion {
+                from: local.id.to_string(),
+                to: remote.id.to_string(),
+                question: "which flag?".into(),
+                presentation: None,
+                timeout_secs: 600,
+            })
+            .await
+        else {
+            panic!("asked")
+        };
+        // The remote's reply is held.
+        let Response::Held {
+            message,
+            question: card,
+        } = daemon
+            .handle(Request::Send {
+                from: remote.id.to_string(),
+                to: local.id.to_string(),
+                kind: "message".into(),
+                payload: json!({ "text": "--verbose" }),
+                reply_to: Some(asked.clone()),
+                links: Vec::new(),
+            })
+            .await
+        else {
+            panic!("held")
+        };
+        assert_eq!(lock(&daemon.state).questions.len(), 2);
+        // Released, it answers the question and closes the card.
+        let Response::Sent {
+            message: released, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: None,
+                message: card.clone(),
+                text: "Release".into(),
+            })
+            .await
+        else {
+            panic!("released")
+        };
+        assert_eq!(released, message);
+        let answers = inbox(&daemon, &local).await;
+        let answer = answers.iter().find(|m| m.id == message).expect("delivered");
+        assert_eq!(
+            (answer.kind.as_str(), answer.reply_to.as_ref()),
+            ("answer", Some(&asked))
+        );
+        assert!(lock(&daemon.state).questions.is_empty());
+        assert!(lock(&daemon.state).held_messages.is_empty());
+        let events = kinds(&daemon);
+        assert!(events.iter().any(|kind| matches!(kind, EventKind::QuestionClosed { question, answer: Some(a) } if *question == asked && *a == message)));
+        assert!(events.iter().any(|kind| matches!(kind, EventKind::QuestionClosed { question, answer: None } if *question == card)));
+
+        // Restored from the store, nothing of either remains.
+        drop(daemon);
+        let daemon = open(&dir);
+        let state = lock(&daemon.state);
+        assert!(state.questions.is_empty(), "{:?}", state.questions);
+        assert!(state.held_messages.is_empty());
+        let questions: Vec<agentdocker_core::Question> =
+            state.store.documents("question", None).unwrap();
+        assert!(questions.is_empty(), "{questions:?}");
+        let held: Vec<HeldMessage> = state.store.documents(DOCUMENT, None).unwrap();
+        assert!(held.is_empty());
+    }
+
     /// The host's file holds what a project would accept: a repository
     /// cannot vote a remote sender in.
     #[tokio::test]

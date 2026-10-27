@@ -5341,6 +5341,10 @@ impl State {
         // The person's own messages are followed per recipient, so they can
         // see where each stands; agents' traffic is not.
         let tracked = self.is_human_id(&AgentId::from(envelope.from.as_str()));
+        // A released reply to a question closes two: the question it
+        // answers and the card it rode on. The store deletes every one it
+        // is given, so memory and disk agree after a restart.
+        let closing: Vec<MessageId> = closed.iter().chain(settled.iter()).cloned().collect();
         let mut post = None;
         let _ = self.commit(
             "message",
@@ -5352,7 +5356,7 @@ impl State {
                     INBOX_CAPACITY,
                     sender.as_ref(),
                     question.as_ref(),
-                    closed.as_ref().or(settled.as_ref()),
+                    &closing,
                     events,
                     channel.as_ref().map(|channel| (channel, journal.as_ref())),
                     document
