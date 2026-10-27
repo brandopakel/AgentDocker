@@ -139,6 +139,16 @@ impl Envelope {
 pub const HUMAN: &str = "user";
 pub const HUMAN_RUNTIME: &str = "human";
 
+/// The message an agent gets when another asks it to let go of a resource
+/// it holds (`request_release`); its payload names the `request` (this
+/// message's id), the `resource`, the `leases` and the requester's
+/// `reason`. Answered with `respond_release`, never by a plain reply.
+pub const RELEASE_REQUEST_KIND: &str = "release_request";
+/// The holder's answer, sent back to the requester by the daemon with
+/// `reply_to` naming the request: `accepted`, the `released` lease ids
+/// and the holder's `summary` or `reason`.
+pub const RELEASE_RESPONSE_KIND: &str = "release_response";
+
 /// A question waiting for an answer.
 ///
 /// `ask` blocks its caller until the answer comes back, so the daemon has

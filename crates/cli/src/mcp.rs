@@ -1757,6 +1757,25 @@ impl<B: Backend> McpServer<B> {
                 })
                 .await
             }
+            "request_release" => {
+                let args: RequestReleaseArgs = parse(arguments)?;
+                self.forward(Request::RequestRelease {
+                    from: me,
+                    resource: crate::resource_key(&args.resource),
+                    reason: args.reason,
+                })
+                .await
+            }
+            "respond_release" => {
+                let args: RespondReleaseArgs = parse(arguments)?;
+                self.forward(Request::RespondRelease {
+                    from: me,
+                    request: MessageId::from(args.request),
+                    accept: args.accept,
+                    text: args.text,
+                })
+                .await
+            }
             "read_journal" => {
                 let args: ReadJournalArgs = parse(arguments)?;
                 let budget = agentdocker_core::DigestBudget::SESSION_START;
@@ -2148,6 +2167,21 @@ struct ReleaseArgs {
 }
 
 #[derive(Deserialize)]
+struct RequestReleaseArgs {
+    resource: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RespondReleaseArgs {
+    request: String,
+    accept: bool,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct JournalNoteArgs {
     summary: String,
 }
@@ -2480,11 +2514,13 @@ fn annotations(name: &str) -> Value {
         // Additive writes: a message, a note, a lease, a checkpoint, a
         // card, a channel, a review, an entry.
         "send_message" | "ask_human" | "answer_question" | "journal_note" | "claim" | "release"
-        | "save_checkpoint" | "handoff" | "resume_checkpoint" | "commit" | "create_worktree"
-        | "open_channel" | "close_channel" | "request_review" | "review" | "enter_contest"
-        | "submit_entry" | "create_task" | "create_tasks" | "move_task" | "pull_task"
-        | "update_task" | "comment_task" | "archive_task" | "create_tag" | "save_plan"
-        | "put_file" | "link_file" | "add_memory" => (false, false, false, false),
+        | "request_release" | "respond_release" | "save_checkpoint" | "handoff"
+        | "resume_checkpoint" | "commit" | "create_worktree" | "open_channel" | "close_channel"
+        | "request_review" | "review" | "enter_contest" | "submit_entry" | "create_task"
+        | "create_tasks" | "move_task" | "pull_task" | "update_task" | "comment_task"
+        | "archive_task" | "create_tag" | "save_plan" | "put_file" | "link_file" | "add_memory" => {
+            (false, false, false, false)
+        }
         // Gone for good.
         "forget_memory" => (false, true, true, false),
         // Changes files in a checkout: an uncommitted merge.
@@ -2885,6 +2921,33 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "summary": { "type": "string", "description": "One or two sentences: what changed under this lease and why." }
                 },
                 "required": ["lease"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "request_release",
+            "description": "Ask whoever holds a resource to let go of it, when claim was refused or a commit over it was. Each holder gets a `release_request` message naming the resource, their leases and your reason; they answer with respond_release, and the answer reaches your inbox as a `release_response` in reply to the request (accepted, with the leases released for you to claim, or declined with a reason). Asking again for the same resource returns the same pending request. `not_found` when nobody else holds it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "resource": { "type": "string", "description": "`path:`, `branch:`, `task:`... as claim takes it; a bare path is a `path:`." },
+                    "reason": { "type": "string", "description": "Why you need it, for the holder to read (at most 400 characters)." }
+                },
+                "required": ["resource"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "respond_release",
+            "description": "Answer a `release_request` message put to you, by its id (the message's `request` field). accept=true has the daemon release the request's leases you still hold, journaled with `text` as the summary of what you changed under them; accept=false keeps them and sends `text` as your reason. Only the holder may answer; an answered request is gone.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "request": { "type": "string", "description": "The release request's message id." },
+                    "accept": { "type": "boolean" },
+                    "text": { "type": "string", "description": "The summary for the journal (accept) or the reason (decline); at most 400 characters." }
+                },
+                "required": ["request", "accept"],
                 "additionalProperties": false
             }
         }),
@@ -4346,6 +4409,8 @@ mod tests {
                 "claim",
                 "renew",
                 "release",
+                "request_release",
+                "respond_release",
                 "journal_note",
                 "read_journal",
                 "list_leases",

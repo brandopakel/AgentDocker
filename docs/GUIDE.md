@@ -582,6 +582,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `claim` | Claim a lease on `path:`, `branch:`, `task:`, or anything |
 | `renew` / `release` | Extend or give up a lease you hold |
+| `request-release <resource>` | Ask whoever holds it to let go: each holder gets a `release_request` message with your `--reason`; the answer comes back to you as a `release_response` message. Asking again for the same resource repeats the pending request rather than sending another |
+| `respond-release <request>` | Answer a release request put to you, by its message id: `--accept --summary "…"` has the daemon release those leases for you and journal the summary; `--decline --reason "…"` keeps them and says why |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, in the order they will be served: higher priority first, then oldest |
 | `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card, from any open lane when nobody holds it; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds, and takes one nobody holds by pulling it by name; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off\|rule-on\|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|mine\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts); `--assignee mine` is your cards together with those held by your agents — launched with `run` or `up` from your own terminal, the app's launch, or `task start` and start rules, or a Claude Code or Codex session you started yourself in a terminal app or IDE (root's install, or one whose signature verifies), or over SSH, with no agent's session anywhere above it (their records carry `launched_by=user`, so `ps --label launched_by=user` lists them; a session inside a multiplexer server such as tmux cannot be told apart from an agent's and is not counted) — and, with `--as <agent>`, that agent's own |
@@ -645,7 +647,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | Command | What it does |
 |---|---|
 | `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
-| `setup` | Wire us in: MCP registration, and hooks for Claude Code |
+| `setup` | Wire us in: MCP registration, and hooks for Claude Code; `--git-hook` the pre-commit backstop for this repository (below) |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches. Only the agent's own output is shown while attached; dropped output or a replaced daemon is said once you detach or it ends |
 | `daemon` | Install, start, stop, reload, inspect or `vacuum` `agentd` |
@@ -708,7 +710,8 @@ about us:
 `send_message` · `read_inbox` · `wait_for_messages` · `acknowledge_messages` ·
 `ask_human` · `open_questions` · `answer_question` · `report_activity`
 
-`claim` · `renew` · `release` · `list_leases`
+`claim` · `renew` · `release` · `list_leases` · `request_release` ·
+`respond_release`
 
 `read_journal` · `journal_note` · `observe_paths` · `check_stale` ·
 `read_set` · `overlap`
@@ -794,6 +797,33 @@ file about to be edited and `Stop` gives those edit leases back when the
 turn ends; a lease the session claimed itself — a worktree, a branch, the
 build campaign — is not touched until the session releases it, its TTL runs
 out, or the session ends.
+
+Those refusals exist only where an adapter runs: Claude Code's hooks, the
+OpenCode plugin, Codex's hooks. An agent with none (Gemini CLI, a shell
+script, you at the keyboard) can still commit over a held path. `agentdocker
+setup --git-hook`, run inside a repository, plans a backstop in its git
+`pre-commit` hook — a marked block in POSIX `sh`, keeping any hook you already
+have, saved as a plan you apply with `agentdocker setup --apply <id>` and undo
+like every other setup change — that pipes the staged paths to `agentdocker
+hook pre-commit`. Ordinary `agentdocker setup`, run inside a repository whose
+hook lacks it, says it is there to have. A commit touching a path
+another live agent holds exclusively is refused, naming the holder, its note
+and when the lease ends, and the `request-release` command that asks them to
+let go; your own leases pass (a session's `AGENTDOCKER_AGENT_ID`, or the
+provider session the command runs under). A daemon that cannot be reached
+lets the commit through and says so on stderr: that is deliberate — a backstop
+must never block you when the daemon is down, and without a daemon there are
+no leases to protect. `git commit --no-verify` skips it, and `agentdocker
+setup --remove --git-hook` takes the block out. The block is POSIX `sh`;
+Windows is not covered yet.
+
+Rather than wait a lease out, the refused agent can ask: `request_release`
+(the `request-release` command) sends the holder a `release_request` message
+naming the resource, the leases and the reason, and the holder answers with
+`respond_release` — accept, and the daemon releases those leases for it,
+journaled with the summary it gives; decline, with a reason. The answer
+reaches the asker's inbox as a `release_response` in reply to the request. A
+request nobody answers is dropped after a day.
 
 A session's read set — every file and folder it observed — holds up to 2,000
 observations, far more than sessions use. Past that, a new observation is
@@ -1295,6 +1325,13 @@ Current behaviour that the sections above do not already state, by area.
   **Wake terminal sessions**, and the MCP server reads the flag from its
   parent `claude`, so `AGENTDOCKER_CLAUDE_CHANNEL_INPUT` is not required
   from a terminal.
+
+- `agentdocker setup --git-hook`, run inside a repository, plans the
+  pre-commit backstop for it (see [Hooks](#hooks)): one reviewable change to
+  its git `pre-commit` hook, saved with a receipt like every other plan, that
+  `setup --apply <id>` applies and `setup --undo` or `setup --remove
+  --git-hook` takes back. It protects that
+  repository alone; run it in each checkout that needs it.
 
 - Agents that work inside a browser are inventoried: `runtimes` lists each
   vendor's extension per browser profile (`claude-browser`, `chatgpt-browser`)

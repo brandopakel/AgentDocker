@@ -73,6 +73,7 @@ mod provider;
 mod read_content;
 mod recovery;
 mod relay;
+mod release_requests;
 pub mod reload;
 mod restarts;
 mod restore;
@@ -547,6 +548,9 @@ struct State {
     secret_reviews: HashMap<String, secret_reviews::Entry>,
     /// The projects told to hold, and why; kept as documents.
     pauses: HashMap<ProjectId, agentdocker_core::Pause>,
+    /// Requests to let go of a resource that wait for the holder's answer,
+    /// by the request message's id; kept as documents.
+    release_requests: HashMap<MessageId, agentdocker_core::ReleaseRequest>,
     /// Claims waiting for a resource, in arrival order. Connection-scoped
     /// and never persisted: a restart drops every waiting client, which
     /// reconnects and takes a new place.
@@ -1331,6 +1335,7 @@ impl Daemon {
         let mut state = lock(&self.state);
         state.expire_leases();
         state.expire_questions(Utc::now());
+        state.expire_release_requests(Utc::now());
         state.expire_secret_reviews();
     }
     /// Send the stale and contested notices that accumulated since the
@@ -1564,6 +1569,11 @@ impl Daemon {
             .into_iter()
             .map(|pause| (pause.project.clone(), pause))
             .collect();
+        let release_requests: HashMap<MessageId, agentdocker_core::ReleaseRequest> = store
+            .documents::<agentdocker_core::ReleaseRequest>("release_request", None)?
+            .into_iter()
+            .map(|request| (request.message.clone(), request))
+            .collect();
         let mut questions: HashMap<_, _> = store
             .documents::<agentdocker_core::Question>("question", None)?
             .into_iter()
@@ -1670,6 +1680,7 @@ impl Daemon {
                 questions,
                 secret_reviews: HashMap::new(),
                 pauses,
+                release_requests,
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
                 host_policy: policies::Loaded::default(),
@@ -2933,6 +2944,17 @@ impl Daemon {
                 self.flush_release_watcher(&agent, None).await;
                 lock(&self.state).release_all(&agent, summary, summary_source, only_automatic)
             }
+            Request::RequestRelease {
+                from,
+                resource,
+                reason,
+            } => self.request_release(from, resource, reason).await,
+            Request::RespondRelease {
+                from,
+                request,
+                accept,
+                text,
+            } => self.respond_release(from, request, accept, text).await,
             Request::JournalAdd { agent, summary } => {
                 lock(&self.state).journal_add(&agent, summary)
             }

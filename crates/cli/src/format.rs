@@ -943,6 +943,35 @@ pub fn event_line(event: &Event) -> String {
                 holders.join(", ")
             )
         }
+        EventKind::ReleaseRequested { request } => format!(
+            "release asked    {} of {} by {} ({})",
+            resource(&request.resource),
+            request.holder.short(),
+            request.requester.short(),
+            request.message
+        ),
+        EventKind::ReleaseAnswered { request } => {
+            let answer = request.answer.as_ref();
+            format!(
+                "release {:<8} {} by {} for {} ({})",
+                if answer.is_some_and(|a| a.accepted) {
+                    "granted"
+                } else {
+                    "declined"
+                },
+                resource(&request.resource),
+                request.holder.short(),
+                request.requester.short(),
+                request.message
+            )
+        }
+        EventKind::ReleaseRequestExpired { request } => format!(
+            "release unasked  {} of {} by {} ({}): no answer in a day",
+            resource(&request.resource),
+            request.holder.short(),
+            request.requester.short(),
+            request.message
+        ),
         EventKind::ProjectDiscovered { project } => format!(
             "project found    {} {} ({})",
             project.id().short(),

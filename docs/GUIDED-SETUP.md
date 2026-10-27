@@ -52,6 +52,37 @@ documented loader; desktop inventory alone does not imply skill support.
 Provider trust, skill policy and tool permissions still apply. No AGENTS.md,
 CLAUDE.md or global approval settings are rewritten.
 
+## The git pre-commit backstop
+
+`agentdocker setup --git-hook`, run inside a repository, plans one change to
+that repository's git `pre-commit` hook (where `git rev-parse --git-path hooks`
+says it is, so `core.hooksPath` and a linked worktree's shared hooks directory
+are honoured): a marked block, in POSIX `sh`, that pipes the staged paths to
+`agentdocker hook pre-commit`. A shell hook you already have keeps every line
+and gains the block first, right after its `#!` line, so a hook that ends in
+`exec` or `exit` still runs it; it gains the execute bit too if it lacked one
+(the plan says so: lines git was skipping will run from then on). A hook in
+another language is left alone, with a note saying what to add to it; no hook
+becomes a new executable script; a block an earlier executable planned is replaced in
+place. When `core.hooksPath` puts the hooks outside the repository's git
+directory — a directory shared by every repository, or one in the working tree
+that is committed — the plan says that too. Like `--shell`, `--git-hook` saves
+the plan and prints `agentdocker setup --apply PLAN_ID`; `setup --undo
+PLAN_ID` restores the hook to the byte and to its earlier mode. `setup --remove
+--git-hook` takes the block out without the receipt, leaving your lines or
+deleting a file that was only ours; it touches no tool's configuration.
+Ordinary `agentdocker setup`, run inside a repository whose hook lacks the
+block, adds a note that `--git-hook` offers it; it never plans the hook
+unasked.
+
+The hook refuses a commit over a path another live agent holds exclusively,
+naming the holder, its note and when the lease ends, and lets your own leases
+pass. It never starts a daemon and waits at most three seconds for one: when
+the daemon cannot be reached it says so on stderr and lets the commit through.
+That is deliberate — a backstop must never block the person when the daemon is
+down, and with no daemon there are no leases to protect. `git commit
+--no-verify` skips it. The block is POSIX `sh`; Windows is not covered yet.
+
 ## Apply, recovery and undo
 
 Saved plans live in `$AGENTDOCKER_HOME/setup` (default `~/.agentdocker/setup`), with directory mode 0700 and receipt mode 0600. Receipts contain before/after configuration snapshots, which may include secrets already in those files: keep that directory private and out of source control, exports and shared diagnostics. Existing configuration files also keep the private backups used by the legacy setup writer.

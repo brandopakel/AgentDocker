@@ -165,6 +165,8 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::Review { agent, .. } => Some(agent),
         R::MergeBranch { from, .. }
         | R::Send { from, .. }
+        | R::RequestRelease { from, .. }
+        | R::RespondRelease { from, .. }
         | R::AnswerSecretReview { from, .. }
         | R::CancelSecretReview { from, .. }
         | R::Ask { from, .. }
