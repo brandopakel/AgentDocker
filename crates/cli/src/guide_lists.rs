@@ -21,11 +21,26 @@ use clap::CommandFactory;
 
 use crate::mcp::{REMOTE_TOOLS, tool_names};
 
-const GUIDE: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/GUIDE.md"));
-const REMOTE_CONNECTOR: &str = include_str!(concat!(
+const GUIDE_RAW: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../docs/GUIDE.md"));
+const REMOTE_CONNECTOR_RAW: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/REMOTE-CONNECTOR.md"
 ));
+
+/// A document as the parsers read it: one line ending. A checkout with
+/// `core.autocrlf` keeps CRLF in the file `include_str!` embeds, and the
+/// section and paragraph lookups below are written for LF.
+fn load(raw: &str) -> String {
+    raw.replace("\r\n", "\n")
+}
+
+fn guide() -> String {
+    load(GUIDE_RAW)
+}
+
+fn remote_connector() -> String {
+    load(REMOTE_CONNECTOR_RAW)
+}
 
 /// The body of one `## heading` section: the lines after the heading up to
 /// the next `## ` heading. Panics when the heading is missing, since a
@@ -111,7 +126,8 @@ fn assert_same(what: &str, documented: &BTreeSet<String>, in_code: &BTreeSet<Str
 /// defines, and nothing else.
 #[test]
 fn the_guide_names_every_mcp_tool_and_no_other() {
-    let documented = identifiers(section(GUIDE, "## MCP tools"));
+    let guide = guide();
+    let documented = identifiers(section(&guide, "## MCP tools"));
     let in_code: BTreeSet<String> = tool_names().into_iter().collect();
     assert_same("docs/GUIDE.md `## MCP tools`", &documented, &in_code);
 }
@@ -119,7 +135,8 @@ fn the_guide_names_every_mcp_tool_and_no_other() {
 /// The guide's "which every agent keeps" paragraph names `ALWAYS_TOOLS`.
 #[test]
 fn the_guide_names_the_tools_every_agent_keeps() {
-    let paragraphs = paragraphs(section(GUIDE, "## MCP tools"));
+    let guide = guide();
+    let paragraphs = paragraphs(section(&guide, "## MCP tools"));
     let keeps = paragraph_with(&paragraphs, "which every agent keeps");
     // The paragraph opens with `roles set <role> --tools …`, which has
     // spaces and is not an identifier; the identifiers are the tools.
@@ -136,7 +153,8 @@ fn the_guide_names_the_tools_every_agent_keeps() {
 /// check; the connector document carries the exact list.
 #[test]
 fn the_guide_connector_paragraph_names_only_remote_tools() {
-    let paragraphs = paragraphs(section(GUIDE, "## MCP tools"));
+    let guide = guide();
+    let paragraphs = paragraphs(section(&guide, "## MCP tools"));
     let paragraph = paragraph_with(&paragraphs, "remote connector");
     let documented = identifiers(paragraph);
     let remote = set(REMOTE_TOOLS);
@@ -152,7 +170,8 @@ fn the_guide_connector_paragraph_names_only_remote_tools() {
 /// connector refuses.
 #[test]
 fn the_connector_document_lists_the_remote_tools_exactly() {
-    let paragraphs = paragraphs(section(REMOTE_CONNECTOR, "## Tools"));
+    let connector = remote_connector();
+    let paragraphs = paragraphs(section(&connector, "## Tools"));
     let paragraph = paragraph_with(&paragraphs, "Everything else");
     let (served, refused) = paragraph.split_once("Everything else").unwrap();
     assert_same(
@@ -189,8 +208,8 @@ fn backticked_words(cell: &str) -> Option<Vec<&str>> {
 /// later alternative that is a subcommand of the row's command (`connector
 /// serve` / `status`) documents that subcommand and is checked to exist;
 /// one that is neither fails.
-fn documented_commands(cli: &clap::Command) -> BTreeSet<String> {
-    let reference = section(GUIDE, "## Command reference");
+fn documented_commands(guide: &str, cli: &clap::Command) -> BTreeSet<String> {
+    let reference = section(guide, "## Command reference");
     // The environment tables follow the commands in the same section.
     let commands = reference
         .split("### Environment")
@@ -244,7 +263,7 @@ fn documented_commands(cli: &clap::Command) -> BTreeSet<String> {
 #[test]
 fn the_guide_documents_every_visible_command_and_no_other() {
     with_cli(|cli| {
-        let documented = documented_commands(cli);
+        let documented = documented_commands(&guide(), cli);
         let existing: BTreeSet<String> = cli
             .get_subcommands()
             .flat_map(|c| {
@@ -272,7 +291,8 @@ fn the_guide_documents_every_visible_command_and_no_other() {
 #[test]
 fn the_guide_bullet_names_the_hidden_commands() {
     with_cli(|cli| {
-        let bullet = GUIDE
+        let guide = guide();
+        let bullet = guide
             .lines()
             .skip_while(|l| !l.contains("lists the commands a person types"))
             .take_while(|l| !l.trim().is_empty())
@@ -310,4 +330,42 @@ fn the_guide_bullet_names_the_hidden_commands() {
             "docs/GUIDE.md's hidden-command bullet names {visible_but_named:?}, which are not hidden; the hidden commands {hidden_unnamed:?} are not named"
         );
     });
+}
+
+/// A CRLF copy of the guide, as an `autocrlf` checkout embeds it, parses
+/// to the same sections, paragraphs, names and command rows as the LF
+/// one, so the comparisons above do not depend on the checkout's line
+/// endings.
+#[test]
+fn a_crlf_checkout_parses_the_same_as_an_lf_one() {
+    let lf = guide();
+    let crlf_raw = lf.replace('\n', "\r\n");
+    assert!(crlf_raw.contains("\r\n"), "the fixture carries CRLF");
+    let crlf = load(&crlf_raw);
+    assert_eq!(crlf, lf);
+    for heading in ["## MCP tools", "## Command reference"] {
+        assert_eq!(section(&crlf, heading), section(&lf, heading), "{heading}");
+        assert_eq!(
+            paragraphs(section(&crlf, heading)),
+            paragraphs(section(&lf, heading)),
+            "{heading}"
+        );
+        assert_eq!(
+            identifiers(section(&crlf, heading)),
+            identifiers(section(&lf, heading)),
+            "{heading}"
+        );
+    }
+    with_cli(move |cli| {
+        assert_eq!(
+            documented_commands(&crlf, cli),
+            documented_commands(&lf, cli)
+        );
+    });
+    let connector = remote_connector();
+    let connector_crlf = load(&connector.replace('\n', "\r\n"));
+    assert_eq!(
+        paragraphs(section(&connector_crlf, "## Tools")),
+        paragraphs(section(&connector, "## Tools"))
+    );
 }
