@@ -1971,9 +1971,12 @@ mod tests {
         stop(&daemon, &agent).await;
     }
 
-    /// A tmux that never answers is given up on at the capture's deadline:
-    /// a managed terminal is still judged in the same pass, and switching
-    /// the judge off is seen while a capture hangs.
+    /// A tmux that hangs holds up neither a managed terminal, judged in
+    /// the same pass once the capture ends, nor the switch-off, seen while
+    /// the capture hangs. The stand-in writes its pid and then blocks on a
+    /// fifo until the test lets it go, so the test waits on what it
+    /// controls and never on a deadline: the capture's own is left as the
+    /// bound a stand-in never let go would meet.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_hanging_tmux_holds_neither_a_terminal_nor_the_switch_off() {
@@ -1983,17 +1986,44 @@ mod tests {
         configure(&dir, &url, "");
         let daemon = open(&dir);
         let marker = dir.path().join("hung");
+        let gate = dir.path().join("gate");
+        let name = std::ffi::CString::new(gate.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a valid nul-terminated path is passed to mkfifo.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
         let stand_in = dir.path().join("tmux");
         std::fs::write(
             &stand_in,
-            format!("#!/bin/sh\necho $$ > {}\nexec sleep 30\n", marker.display()),
+            format!(
+                "#!/bin/sh\necho $$ > {}\nread line < {}\nexit 1\n",
+                marker.display(),
+                gate.display()
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
         {
             let mut judge = lock(&daemon.judge);
             judge.tmux = stand_in;
-            judge.capture_deadline = StdDuration::from_millis(500);
+            judge.capture_deadline = TMUX_BOUND;
+        }
+        /// The stand-in is running and blocked on its gate: its pid, once
+        /// the marker holds all of it.
+        async fn hanging(marker: &Path) -> u32 {
+            eventually(async || std::fs::read_to_string(marker).ok()?.trim().parse().ok()).await
+        }
+        /// Let the stand-in go: opening the gate to write waits for its
+        /// reader, and closing it ends the read.
+        async fn release(gate: &Path) {
+            let gate = gate.to_path_buf();
+            tokio::time::timeout(
+                TMUX_BOUND,
+                tokio::task::spawn_blocking(move || {
+                    drop(std::fs::OpenOptions::new().write(true).open(gate).unwrap());
+                }),
+            )
+            .await
+            .expect("the stand-in reads its gate")
+            .unwrap();
         }
         let mut guest = std::process::Command::new("sleep")
             .arg("60")
@@ -2021,30 +2051,31 @@ mod tests {
         };
         let managed = showing(&daemon, &dir, "managed", DIALOG).await;
 
-        let started = Instant::now();
-        daemon.judge_once().await;
-        assert!(started.elapsed() < StdDuration::from_secs(5));
+        let pass = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { daemon.judge_once().await })
+        };
+        let hung = hanging(&marker).await;
+        assert!(!pass.is_finished(), "the capture hangs");
+        assert!(
+            record(&daemon, &managed).judged.is_none(),
+            "nothing judged while the pass reads"
+        );
+        release(&gate).await;
+        pass.await.unwrap();
         assert!(
             record(&daemon, &managed).judged.is_some(),
-            "the terminal was judged"
+            "the terminal was judged in the same pass"
         );
         assert_eq!(calls(&fake), 1, "nothing from the pane was sent");
-        let hung: u32 = std::fs::read_to_string(&marker)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert!(
-            !agentdocker_host::procinfo::alive(hung),
-            "killed and reaped"
-        );
+        assert!(!agentdocker_host::procinfo::alive(hung), "reaped");
 
         std::fs::remove_file(&marker).unwrap();
         let pass = {
             let daemon = daemon.clone();
             tokio::spawn(async move { daemon.judge_once().await })
         };
-        eventually(async || marker.exists().then_some(())).await;
+        let hung = hanging(&marker).await;
         std::fs::remove_file(dir.path().join(agentdocker_core::config::FILE_NAME)).unwrap();
         let switched = tokio::time::timeout(StdDuration::from_secs(2), daemon.judge_setup())
             .await
@@ -2055,8 +2086,11 @@ mod tests {
             record(&daemon, &managed).judged.is_none(),
             "taken off with it"
         );
+        assert!(!pass.is_finished(), "the capture still hangs");
+        release(&gate).await;
         pass.await.unwrap();
         assert_eq!(calls(&fake), 1);
+        assert!(!agentdocker_host::procinfo::alive(hung), "reaped");
         let _ = guest.kill();
         let _ = guest.wait();
         stop(&daemon, &managed).await;
@@ -3107,11 +3141,12 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
-        {
-            let mut judge = lock(&daemon.judge);
-            judge.tmux = stand_in;
-            judge.capture_deadline = StdDuration::from_millis(300);
-        }
+        // A stand-in that answers is given the bound, so a slow start on a
+        // loaded machine is not taken for a hang; only the hanging phase
+        // shortens the deadline, which is then what ends the stand-in.
+        let bound = |deadline| lock(&daemon.judge).capture_deadline = deadline;
+        lock(&daemon.judge).tmux = stand_in;
+        bound(TMUX_BOUND);
         let Response::Agent { agent } = daemon
             .handle(Request::Register {
                 spec: AgentSpec {
@@ -3142,6 +3177,7 @@ mod tests {
 
         // tmux runs past its deadline: its server, not the pane.
         set("hang");
+        bound(StdDuration::from_millis(300));
         for _ in 1..judgment::OUTAGE_PASSES {
             daemon.judge_once().await;
         }
@@ -3154,6 +3190,7 @@ mod tests {
             [(agent.clone(), UNREADABLE.to_owned())]
         );
 
+        bound(TMUX_BOUND);
         for (how, calls_before) in [("gone", 2), ("replaced", 3)] {
             set("ok");
             daemon.judge_once().await;
