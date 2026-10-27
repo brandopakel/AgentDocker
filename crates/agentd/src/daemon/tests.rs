@@ -9387,6 +9387,122 @@ async fn an_ended_member_is_neither_recipient_nor_listed() {
     );
 }
 
+/// The notices an invitation, a review request, a review and a close
+/// send go to the room's live members too: each stages the stored room,
+/// which keeps an ended member for its return, and routes to the live
+/// ones, so a dead session's full queue can never block them.
+#[tokio::test]
+async fn channel_actions_notify_live_members_only() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let workdir = dir.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let opener = register_in(&daemon, "opener", &workdir).await;
+    let stays = register_in(&daemon, "stays", &workdir).await;
+    let leaves = register_in(&daemon, "leaves", &workdir).await;
+    let latecomer = register_in(&daemon, "latecomer", &workdir).await;
+    let Response::Channel { channel } = daemon
+        .handle(Request::ChannelOpen {
+            agent: opener.id.to_string(),
+            task: "notices".into(),
+            members: vec![stays.id.to_string(), leaves.id.to_string()],
+            name: None,
+            project: None,
+        })
+        .await
+    else {
+        panic!("channel failed")
+    };
+    daemon
+        .handle(Request::Deregister {
+            agent: leaves.id.to_string(),
+        })
+        .await;
+    // Its queue is full: a notice routed to it would be refused.
+    {
+        let mut state = lock(&daemon.state);
+        let queue = state.inboxes.entry(leaves.id.clone()).or_default();
+        for n in 0..INBOX_CAPACITY {
+            queue.push_back(Envelope::new(
+                "agentd",
+                Destination::Agent(leaves.id.clone()),
+                "chat",
+                json!({"text": format!("filler {n}")}),
+                None,
+                Utc::now(),
+            ));
+        }
+    }
+    let queued = |daemon: Arc<Daemon>, id: AgentId| async move {
+        lock(&daemon.state)
+            .inboxes
+            .get(&id)
+            .map_or(0, VecDeque::len)
+    };
+    let dead_before = queued(daemon.clone(), leaves.id.clone()).await;
+    let live_before = queued(daemon.clone(), stays.id.clone()).await;
+
+    let expect_channel = |response: Response| match response {
+        Response::Channel { channel } => channel,
+        other => panic!("{other:?}"),
+    };
+    expect_channel(
+        daemon
+            .handle(Request::ChannelInvite {
+                agent: opener.id.to_string(),
+                channel: channel.id.to_string(),
+                member: latecomer.id.to_string(),
+            })
+            .await,
+    );
+    expect_channel(
+        daemon
+            .handle(Request::ReviewRequest {
+                agent: opener.id.to_string(),
+                channel: channel.id.to_string(),
+                note: Some("ready".into()),
+            })
+            .await,
+    );
+    expect_channel(
+        daemon
+            .handle(Request::Review {
+                agent: stays.id.to_string(),
+                channel: channel.id.to_string(),
+                of: Some(opener.id.to_string()),
+                verdict: "approve".into(),
+                note: None,
+            })
+            .await,
+    );
+    let Response::Channel { channel: closed } = daemon
+        .handle(Request::ChannelClose {
+            agent: opener.id.to_string(),
+            channel: channel.id.to_string(),
+            resolution: Some("landed".into()),
+        })
+        .await
+    else {
+        panic!("close failed")
+    };
+    assert!(!closed.is_open());
+    // The invitation, the review request and the close reached a live
+    // member (the review is its own word, not queued back to it); none
+    // reached the ended one, whose membership the stored room kept.
+    assert_eq!(
+        queued(daemon.clone(), stays.id.clone()).await,
+        live_before + 3
+    );
+    assert_eq!(queued(daemon.clone(), leaves.id.clone()).await, dead_before);
+    let stored: agentdocker_core::Channel = lock(&daemon.state)
+        .store
+        .document("channel", channel.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert!(stored.has(&leaves.id));
+    assert!(stored.has(&latecomer.id));
+}
+
 /// A room that still lists records the daemon has forgotten is cleared
 /// on the tick: each leaves with `channel_left`, an ended record whose
 /// session may still come back stays, and a room left with nobody
