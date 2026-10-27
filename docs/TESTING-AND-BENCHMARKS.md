@@ -213,14 +213,24 @@ a `branch:` lease on its branch), its branch is merged into `origin/main` or no
 longer exists (a detached checkout counts as merged when its commit is in
 `origin/main`; a checkout at `origin/main`'s tip, branch or detached, is current
 with nothing of its own merged, and stays), no running process names the worktree on its
-command line or, for `cargo`, `rustc` and `rustdoc`, has its working directory
-in it, and no Cargo build holds the cache's `.cargo-lock`. The current worktree
-(the checkout the script runs from, and whatever Cargo reports as its target
-directory), the project's main checkout and a `target` that is a symbolic link
-are never touched; only the cache goes, never the worktree. The leases are the
-machine's own daemon's, asked without starting one; when no daemon answers,
-every worktree may be active and nothing is pruned. `--prune --dry-run` lists
-what would go, with sizes and the reason, and what stays and why. `verify.sh`
+command line, works in it or runs a file from it (every process's working
+directory and executable, from `/proc` or `lsof`; a command started as
+`target/debug/app` or `python3 server.py` names no worktree, so when they cannot
+be read every worktree counts as busy), and no Cargo build holds the cache's
+`.cargo-lock`. The current worktree (the checkout the script runs from, and
+whatever Cargo reports as its target directory), the project's main checkout
+and a `target` that is a symbolic link are never touched; only the cache goes,
+never the worktree. The leases are the machine's own daemon's, asked without
+starting one; when no daemon answers, every worktree may be active and nothing
+is pruned. A real prune holds `task:local-cargo-campaign` while it removes,
+as `verify.sh` holds it for a run (as the session when the daemon knows it,
+otherwise as a transient agent of its own; `AGENTDOCKER_CAMPAIGN_LEASE=off`
+when the caller already holds it), so no build starts under a cache on its way
+out, and a slot it cannot hold means nothing is pruned; nothing is held between
+the plan and the removals, so each worktree is judged again on fresh leases and
+processes right before its own caches go, and one that changed since the plan
+is skipped and said so. `--prune --dry-run` lists what would go, with sizes and
+the reason, and what stays and why, and holds no slot. `verify.sh`
 prints that report at the end of every run that started a step — the cache
 totals and the prunable candidates — and never prunes on its own; a report that
 cannot be produced is noted and does not fail the run.

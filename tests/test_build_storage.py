@@ -187,17 +187,26 @@ class PruneSelection(unittest.TestCase):
         short = self.worktree("ad-9", "feature/short")
         longer = self.worktree("ad-93", "feature/long")
         by_cwd = self.worktree("cwd", "feature/cwd")
+        by_exe = self.worktree("exe", "feature/exe")
+        relative = self.worktree("relative", "feature/relative")
         idle = self.worktree("idle", "feature/idle")
         processes = [
-            (10, f"/usr/bin/rustc --crate-name x --out-dir {longer}/target/debug/deps", None),
-            (11, "cargo test -p agentdocker", by_cwd / "crates/cli"),
-            (12, f"zsh -c cd {idle}-other && make", None),
+            (10, f"/usr/bin/rustc --crate-name x --out-dir {longer}/target/debug/deps", ()),
+            (11, "cargo test -p agentdocker", (by_cwd / "crates/cli", Path("/usr/bin/cargo"))),
+            # Started as `target/debug/app` from the worktree: the command line
+            # names nothing, the kernel knows its executable's path.
+            (12, "target/debug/app --serve", (Path("/elsewhere"), by_exe / "target/debug/app")),
+            # `python3 server.py` in the worktree: only its working directory says so.
+            (13, "python3 server.py", (relative, Path("/usr/bin/python3"))),
+            (14, f"zsh -c cd {idle}-other && make", (Path("/elsewhere"),)),
         ]
         prunable, kept = self.plan(processes=processes)
         self.assertEqual(self.roots(prunable), [short, idle])
         reasons = {root: reason for root, _, reason in kept}
         self.assertEqual(reasons[longer], "process 10 (rustc) runs in it")
         self.assertEqual(reasons[by_cwd], "process 11 (cargo) runs in it")
+        self.assertEqual(reasons[by_exe], "process 12 (app) runs in it")
+        self.assertEqual(reasons[relative], "process 13 (python3) runs in it")
 
     def test_an_unmerged_current_or_unknown_checkout_keeps_its_cache(self):
         unmerged = self.worktree("unmerged", "feature/wip", "unmerged")
@@ -295,9 +304,36 @@ class PruneParsing(unittest.TestCase):
         self.assertTrue(STORAGE.mentions("rustc --out-dir=/wt/ad-9/target/debug", Path("/wt/ad-9")))
         self.assertFalse(STORAGE.mentions("bash with-cargo.sh /wt/ad-93 cargo test", Path("/wt/ad-9")))
         self.assertFalse(STORAGE.mentions("bash with-cargo.sh /wt/ad-9x", Path("/wt/ad-9")))
-        self.assertTrue(STORAGE.is_build_tool("/Users/me/.rustup/toolchains/stable/bin/cargo test"))
-        self.assertTrue(STORAGE.is_build_tool("/opt/homebrew/bin/cargo-nextest nextest run"))
-        self.assertFalse(STORAGE.is_build_tool("python3 scripts/build_storage.py"))
+
+    def test_every_process_gets_its_working_directory_and_executable(self):
+        listing = f" 10 target/debug/app --serve\n 11 python3 server.py\n{os.getpid()} python3 build_storage.py\n"
+        places = {10: [Path("/wt/a"), Path("/wt/a/target/debug/app")], 11: [Path("/wt/b"), Path("/usr/bin/python3")]}
+        with patch.object(STORAGE.subprocess, "check_output", return_value=listing), \
+                patch.object(STORAGE, "process_places", return_value=places) as asked:
+            self.assertEqual(STORAGE.process_table(), [
+                (10, "target/debug/app --serve", (Path("/wt/a"), Path("/wt/a/target/debug/app"))),
+                (11, "python3 server.py", (Path("/wt/b"), Path("/usr/bin/python3")))])
+            self.assertEqual(asked.call_args.args[0], [10, 11], "this process is left out")
+        with patch.object(STORAGE.subprocess, "check_output", return_value=listing), \
+                patch.object(STORAGE, "process_places", return_value=None):
+            self.assertIsNone(STORAGE.process_table(), "unreadable places make every worktree busy")
+        # /proc: cwd and exe links per pid; a pid that cannot be read is left out.
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            (proc / "10").mkdir()
+            os.symlink("/wt/a", proc / "10/cwd")
+            os.symlink("/wt/a/target/debug/app", proc / "10/exe")
+            self.assertEqual(STORAGE.process_places([10, 11], proc=proc),
+                             {10: [Path("/wt/a"), Path("/wt/a/target/debug/app")]})
+        # lsof: one block per pid; an exit status of 1 still carries the listing.
+        lsof = "p10\nfcwd\nn/wt/a\nftxt\nn/wt/a/target/debug/app\np11\nfcwd\nn/wt/b\n"
+        failing = subprocess.CalledProcessError(1, ["lsof"], output=lsof)
+        with patch.object(STORAGE.shutil, "which", return_value="/usr/sbin/lsof"), \
+                patch.object(STORAGE.subprocess, "check_output", side_effect=failing):
+            self.assertEqual(STORAGE.process_places([10, 11], proc=Path(tempfile.gettempdir()) / "no-proc-here"),
+                             {10: [Path("/wt/a"), Path("/wt/a/target/debug/app")], 11: [Path("/wt/b")]})
+        with patch.object(STORAGE.shutil, "which", return_value=None):
+            self.assertIsNone(STORAGE.process_places([10], proc=Path(tempfile.gettempdir()) / "no-proc-here"))
 
     def test_a_cargo_lock_somebody_holds_is_seen(self):
         fcntl = __import__("fcntl")
@@ -327,17 +363,32 @@ class PruneRun(unittest.TestCase):
     """main() with --prune: a dry run removes nothing and names sizes; a real
     run removes exactly the prunable caches."""
 
-    def run_main(self, argv, records, caches, leases, processes, state):
+    def run_main(self, argv, records, caches, leases, processes, state, leases_later=None, cli=None):
         out, err = io.StringIO(), io.StringIO()
+        self.calls = []
+
+        def fake_cli(*args, **kwargs):
+            self.calls.append(list(args))
+            return cli(*args) if cli else {"claim": "lease-known\n"}.get(args[0], "")
+
         with patch.object(STORAGE.sys, "argv", ["build_storage.py", *argv]), \
                 patch.object(STORAGE, "measure", return_value=(Path("/nowhere/target"), records, caches)), \
-                patch.object(STORAGE, "lease_resources", return_value=leases), \
+                patch.object(STORAGE, "lease_resources", side_effect=[leases, *(leases_later or [leases] * 8)]), \
                 patch.object(STORAGE, "process_table", return_value=processes), \
                 patch.object(STORAGE, "Branches", lambda: SimpleNamespace(state=lambda entry: state)), \
                 patch.object(STORAGE, "build_lock_held", return_value=False), \
+                patch.object(STORAGE, "cli", fake_cli), \
+                patch.dict(os.environ, {"AGENTDOCKER_CAMPAIGN_WAIT": "1"}), \
                 redirect_stdout(out), redirect_stderr(err):
+            os.environ.pop("AGENTDOCKER_CAMPAIGN_LEASE", None)
+            os.environ.pop("AGENTDOCKER_AGENT_ID", None)
             code = STORAGE.main()
         return code, out.getvalue(), err.getvalue()
+
+    def tree(self, base, names):
+        for name in names:
+            (base / name / "target/debug").mkdir(parents=True)
+            (base / name / "target/debug/out").write_text("x")
 
     def test_dry_run_lists_sizes_and_removes_nothing_and_a_real_run_removes_only_the_candidates(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -355,6 +406,7 @@ class PruneRun(unittest.TestCase):
             self.assertIn(f"would remove   2.00 GiB  {gone}  (target)", out)
             self.assertIn(f"keeping        1.00 GiB  {busy}  (target): lease path:{busy} is live", out)
             self.assertTrue((gone / "target/debug/out").exists(), "a dry run removed something")
+            self.assertEqual(self.calls, [], "a dry run takes no build slot")
             code, out, err = self.run_main(["--prune"], records, caches, leases, [], "merged")
             self.assertEqual(code, 0, err)
             self.assertIn(f"removed   2.00 GiB  {gone / 'target'}", out)
@@ -362,6 +414,76 @@ class PruneRun(unittest.TestCase):
             self.assertFalse((gone / "target").exists())
             self.assertTrue((busy / "target/debug/out").exists(), "a leased cache was removed")
             self.assertTrue(gone.exists(), "only the cache goes, never the worktree")
+            # The slot was held across the removal, as the session when the
+            # daemon knows it, and released after.
+            self.assertEqual([call[0] for call in self.calls], ["claim", "release"])
+            self.assertEqual(self.calls[0][1], STORAGE.CAMPAIGN)
+            self.assertEqual(self.calls[1][1], "lease-known")
+
+    def test_a_lease_appearing_between_the_plan_and_the_removal_keeps_the_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            self.tree(base, ["first", "second"])
+            first, second = base / "first", base / "second"
+            records = [record(base / "main", "main"), record(first, "feature/a"), record(second, "feature/b")]
+            caches = {first / "target": STORAGE.GIB, second / "target": STORAGE.GIB}
+            # Nobody holds anything at the plan; by the time the second
+            # worktree's turn comes, somebody has taken it.
+            code, out, err = self.run_main(["--prune"], records, caches, set(), [], "merged",
+                                           leases_later=[set(), {f"path:{second}"}])
+            self.assertEqual(code, 0, err)
+            self.assertFalse((first / "target").exists())
+            self.assertTrue((second / "target/debug/out").exists(), "a cache leased after the plan was removed")
+            self.assertIn(f"skipped   1.00 GiB  {second}: lease path:{second} is live (changed since the plan)", out)
+            self.assertIn("freed 1.0 GiB", out)
+            self.assertIn(f"keeping        1.00 GiB  {second}", out)
+
+    def test_an_unnamed_prune_registers_itself_for_the_slot_and_ends_its_agent(self):
+        def daemon(*args):
+            if args[0] == "claim" and "--as" not in args:
+                raise subprocess.CalledProcessError(2, args, stderr="Error: cannot tell which agent this is; give --as\n")
+            return {"register": "transient-id\n", "claim": "lease-1\n"}.get(args[0], "")
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            self.tree(base, ["gone"])
+            records = [record(base / "main", "main"), record(base / "gone", "feature/a")]
+            code, _, err = self.run_main(["--prune"], records, {base / "gone/target": STORAGE.GIB}, set(), [], "merged", cli=daemon)
+            self.assertEqual(code, 0, err)
+            self.assertFalse((base / "gone/target").exists())
+            self.assertEqual([call[:1] + [a for a in call if a in ("--as", "transient-id", "lease-1")] for call in self.calls],
+                             [["claim"], ["register"], ["claim", "--as", "transient-id"],
+                              ["release", "lease-1", "--as", "transient-id"], ["deregister", "--as", "transient-id"]])
+
+    def test_a_slot_somebody_holds_or_no_daemon_prunes_nothing(self):
+        def held(*args):
+            if args[0] == "claim":
+                raise subprocess.CalledProcessError(3, args, stderr="Error: task:local-cargo-campaign is held by somebody (conflict)\n")
+            return ""
+        def gone(*args):
+            raise FileNotFoundError("agentdocker")
+        for daemon, message in ((held, "held by another campaign"), (gone, "no daemon answers")):
+            with tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary).resolve()
+                self.tree(base, ["gone"])
+                records = [record(base / "main", "main"), record(base / "gone", "feature/a")]
+                code, _, err = self.run_main(["--prune"], records, {base / "gone/target": STORAGE.GIB}, set(), [], "merged", cli=daemon)
+                self.assertEqual(code, 1)
+                self.assertIn(message, err)
+                self.assertIn("nothing pruned", err)
+                self.assertTrue((base / "gone/target/debug/out").exists(), "a cache went without the slot")
+                self.assertNotIn("release", [call[0] for call in self.calls])
+
+    def test_a_slot_the_caller_holds_is_not_taken_again(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary).resolve()
+            self.tree(base, ["gone"])
+            records = [record(base / "main", "main"), record(base / "gone", "feature/a")]
+            with patch.dict(os.environ, {"AGENTDOCKER_CAMPAIGN_LEASE": "off"}):
+                with patch.object(STORAGE.os.environ, "pop", lambda key, default=None: None):
+                    code, _, err = self.run_main(["--prune"], records, {base / "gone/target": STORAGE.GIB}, set(), [], "merged")
+            self.assertEqual(code, 0, err)
+            self.assertFalse((base / "gone/target").exists())
+            self.assertEqual(self.calls, [])
 
     def test_no_daemon_prunes_nothing_and_says_so(self):
         with tempfile.TemporaryDirectory() as temporary:
