@@ -1987,6 +1987,7 @@ mod fence_tests {
                 payload: serde_json::json!({"text": "no"}),
                 reply_to: Some(question),
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(matches!(answered, Response::Sent { .. }), "{answered:?}");

@@ -3154,6 +3154,7 @@ mod tests {
                 payload: json!("for B alone"),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(!matches!(sent, Response::Error { .. }), "{sent:?}");
@@ -3403,6 +3404,7 @@ mod tests {
                         payload: json!("for B alone"),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await;
                 assert!(!matches!(sent, Response::Error { .. }), "{sent:?}");

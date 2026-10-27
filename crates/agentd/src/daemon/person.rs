@@ -1929,6 +1929,7 @@ mod tests {
             payload: serde_json::json!({"text": "hello"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         };
         let running = |exe: &std::path::Path, sub: &str| Running {
             executable: Some(exe.to_owned()),

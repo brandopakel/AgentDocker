@@ -1140,6 +1140,7 @@ mod tests {
                     payload: json!({"text":"a peer comment"}),
                     reply_to: Some(message.clone()),
                     links: Vec::new(),
+                    idempotency_key: None
                 })
                 .await,
             Response::Sent { .. }
@@ -1440,6 +1441,7 @@ mod tests {
                 payload: serde_json::json!({ "text": "Mono" }),
                 reply_to: Some(font.id.clone()),
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
         else {
@@ -1515,6 +1517,7 @@ mod tests {
                 payload: serde_json::json!({ "text": "by the way" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
         else {

@@ -420,7 +420,8 @@ async fn session(
                             kind: "chat".into(),
                             payload: json!({"text":text}),
                             reply_to: None,
-                            links: Vec::new()
+                            links: Vec::new(),
+                            idempotency_key: None
                         }
                     )
                     .await?,

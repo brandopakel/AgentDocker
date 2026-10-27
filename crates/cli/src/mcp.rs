@@ -1551,6 +1551,7 @@ impl<B: Backend> McpServer<B> {
                     payload,
                     reply_to: args.reply_to.map(MessageId::from),
                     links: args.links,
+                    idempotency_key: args.idempotency_key,
                 })
                 .await
             }
@@ -2051,6 +2052,8 @@ struct SendMessageArgs {
     reply_to: Option<String>,
     #[serde(default)]
     links: Vec<agentdocker_core::Link>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2721,7 +2724,8 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
                     "reply_to": { "type": "string", "description": "Id of the message this answers." },
-                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
+                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
+                    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Your own token for this one send (a UUID). Retrying with the same key after a lost result queues nothing and returns the first message_id again, for 24 hours." }
                 },
                 "required": ["to"],
                 "additionalProperties": false
@@ -4584,7 +4588,7 @@ mod tests {
             .handle(rpc(
                 5,
                 "tools/call",
-                json!({ "name": "send_message", "arguments": { "to": "reviewer", "text": "hi" } }),
+                json!({ "name": "send_message", "arguments": { "to": "reviewer", "text": "hi", "idempotency_key": "send-1" } }),
             ))
             .await
             .unwrap();
@@ -4604,6 +4608,7 @@ mod tests {
                 payload: json!({ "text": "hi" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: Some("send-1".to_owned()),
             }
         );
     }

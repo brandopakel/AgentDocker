@@ -4266,6 +4266,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::json!({ "text": text }),
                 reply_to,
                 links: Vec::new(),
+                idempotency_key: None,
             })?;
             let result = match response {
                 Response::Sent {
@@ -4288,6 +4289,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::Value::String(text),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             }) {
                 Ok(Response::Sent { .. }) => Ok(()),
                 Ok(other) => Err(shell::NoteFailure {
@@ -4317,6 +4319,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::Value::String(text),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })?;
             let result = match response {
                 Response::Sent {
@@ -4339,6 +4342,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::Value::String(text),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })?;
             let result = match response {
                 Response::Sent {

@@ -172,7 +172,9 @@ It does not implement JWT client assertions.
 `journal_note`, `report_activity`. Everything else — leases, observations,
 worktrees, commits, hand-offs, tasks, channels, `wait_for_messages` — is refused
 by name with the reason: the agent has no checkout here, and a long wait would
-hold an HTTP request. Messages the connector's agent sends are attributed
+hold an HTTP request. A `send_message` whose result is lost in transit may be
+repeated with the same `idempotency_key`: the daemon answers with the first
+message id and queues nothing more. Messages the connector's agent sends are attributed
 input to their recipients, never instructions; its own instructions say the
 same about what it reads on web pages, and tell a Claude Code or Codex
 session to use its own AgentDocker tools instead.
