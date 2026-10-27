@@ -760,6 +760,38 @@ fn prepare_remove(roots: &Roots, names: &[String]) -> Result<Plan> {
     Ok(plan)
 }
 
+/// The daemon's `[usage]` section as it stands, for the telemetry note;
+/// none when there is no file or it does not read.
+fn daemon_usage_config() -> Option<agentdocker_core::config::UsageConfig> {
+    let path = dirs::home().join(agentdocker_core::config::FILE_NAME);
+    let text = std::fs::read_to_string(path).ok()?;
+    toml::from_str::<agentdocker_core::config::DaemonConfig>(&text)
+        .ok()
+        .map(|config| config.usage)
+}
+
+/// The environment Claude Code needs to send its cost and token events
+/// to the daemon, shown for the person to add themselves: setup writes
+/// neither their shell nor their Claude settings for it. When the daemon
+/// has no receiver configured, the note says what to set first.
+fn telemetry_note(usage: Option<&agentdocker_core::config::UsageConfig>) -> String {
+    match usage.and_then(|usage| usage.otlp_listen().ok().flatten()) {
+        Some(address) => format!(
+            "claude-code: to count each response's exact cost and tokens per card, lease and role, \
+             turn Claude Code's telemetry towards the daemon's receiver at {address}. Add to the \
+             `env` object of ~/.claude/settings.json, or export in your shell: \
+             CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_LOGS_EXPORTER=otlp \
+             OTEL_EXPORTER_OTLP_PROTOCOL=http/json OTEL_EXPORTER_OTLP_ENDPOINT=http://{address}. \
+             Setup does not write these for you; new sessions pick them up."
+        ),
+        None => "claude-code: the daemon takes Claude Code's telemetry (exact cost and tokens per \
+                 response) once agentd.toml sets `[usage] otlp_listen = \"127.0.0.1:4318\"`; run \
+                 `agentdocker setup claude-code --preview` again afterwards for the environment \
+                 lines to add."
+            .to_owned(),
+    }
+}
+
 /// What `--shell` asks for: every terminal `claude` carrying the channel
 /// flag, through a marked block in the shell's startup file.
 fn prepare_shell(plan: &mut Plan, roots: &Roots) -> Result<()> {
@@ -925,6 +957,10 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
         }
         if spec.name == "codex" {
             prepare_codex_activity(&mut plan, roots, executable)?;
+        }
+        if spec.name == "claude-code" {
+            plan.notes
+                .push(telemetry_note(daemon_usage_config().as_ref()));
         }
     }
     // Skills use the same private preview, mutation locks and undo snapshots
@@ -1459,6 +1495,31 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The telemetry note shows the lines a person adds, with the daemon's
+    /// configured receiver in them, and says what to configure first when
+    /// there is none. It is a note: no file of theirs is in the plan for it.
+    #[test]
+    fn the_telemetry_note_previews_the_environment_and_never_writes_it() {
+        let configured: agentdocker_core::config::DaemonConfig =
+            toml::from_str("[usage]\notlp_listen = \"127.0.0.1:4318\"\n").unwrap();
+        let note = telemetry_note(Some(&configured.usage));
+        for line in [
+            "CLAUDE_CODE_ENABLE_TELEMETRY=1",
+            "OTEL_LOGS_EXPORTER=otlp",
+            "OTEL_EXPORTER_OTLP_PROTOCOL=http/json",
+            "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318",
+            "does not write these",
+        ] {
+            assert!(note.contains(line), "{line}: {note}");
+        }
+        let unset = telemetry_note(None);
+        assert!(unset.contains("otlp_listen") && !unset.contains("OTEL_EXPORTER_OTLP_ENDPOINT="));
+        assert_eq!(
+            telemetry_note(Some(&agentdocker_core::config::UsageConfig::default())),
+            unset
+        );
+    }
 
     /// `--shell` is one reviewable change to the shell's startup file:
     /// previewed with the person's other lines untouched, applied with

@@ -15,6 +15,14 @@ pub(super) use tracking::init as tracking_init;
 pub(crate) struct Attribution {
     pub agent: Option<String>,
     pub project: Option<String>,
+    /// The card (`task:<id>` lease) the agent held when the sample was
+    /// recorded, by task id. Left out of the bucket key when absent, so
+    /// buckets written before cards were stamped keep their keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<String>,
+    /// The agent's roles then, as its `role` label (`reviewer,tester`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +39,15 @@ struct Contribution {
     bucket: Bucket,
     session: String,
     counters: Counters,
+    /// The price the sample carried, in micro-dollars, once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost_usd_micros: Option<u64>,
 }
+
+/// The fingerprint of a `usage_samples` row that is another row's name
+/// for the same response: `alias:` and the row it stands for. Such a row
+/// has no contribution of its own; a sample met under its id is a replay.
+const ALIAS: &str = "alias:";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct FileProgress {
@@ -67,6 +83,19 @@ fn fingerprint<T: Serialize>(value: &T) -> Result<String> {
 
 fn text(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
+}
+
+/// One report row from a merged bucket: its counters, its price and the
+/// cache share the counters give.
+fn row(key: Option<String>, value: &Aggregate, complete: bool) -> Row {
+    let counters = CounterReports::new(value, complete);
+    Row {
+        key,
+        samples: value.samples(),
+        cache_read_share_percent: Row::cache_read_share(&counters),
+        counters,
+        cost_usd_micros: value.cost(complete),
+    }
 }
 
 impl Store {
@@ -168,14 +197,17 @@ impl Store {
             let mut contribution: Contribution = serde_json::from_str(&value)?;
             let mut destination = contribution.bucket.clone();
             destination.attribution = attribution.clone();
-            let Ok(next) = self.usage_bucket(&destination)?.add(&contribution.counters) else {
+            let Ok(next) = self
+                .usage_bucket(&destination)?
+                .add_priced(&contribution.counters, contribution.cost_usd_micros)
+            else {
                 // An unrepresentable merge stays visibly unattributed. It must
                 // not disable unrelated coordination or lose the old total.
                 continue;
             };
             let previous = self
                 .usage_bucket(&contribution.bucket)?
-                .remove(&contribution.counters)
+                .remove_priced(&contribution.counters, contribution.cost_usd_micros)
                 .map_err(anyhow::Error::msg)?;
             if self
                 .usage_bounded_write(|| {
@@ -318,6 +350,112 @@ impl Store {
         Ok(accepted)
     }
 
+    /// One received telemetry export: its samples through the same dedupe,
+    /// baseline and bucket rules as a collected batch, under the tracking
+    /// budget, with one `usage_recorded` event. No file cursor moves: the
+    /// events came over the wire, not from a file.
+    pub(crate) fn usage_ingest_telemetry(
+        &self,
+        samples: &[(Sample, Attribution)],
+        retained_since: DateTime<Utc>,
+        now: DateTime<Utc>,
+        seq: u64,
+    ) -> Result<Event> {
+        anyhow::ensure!(
+            samples.len() <= agentdocker_host::usage::otlp::MAX_RECORDS,
+            "telemetry batch exceeds bounds"
+        );
+        let tx = write_transaction(&self.conn)?;
+        let retained_since = self.usage_retained_since(retained_since)?;
+        let mut accepted = 0;
+        let mut gaps = 0;
+        let mut samples: Vec<_> = samples.iter().collect();
+        samples.sort_by_key(|(sample, _)| sample.at);
+        for (sample, attribution) in samples {
+            match self.usage_bounded_write(|| {
+                self.usage_ingest_sample(sample, attribution, retained_since)
+            })? {
+                Some((count, missing)) => {
+                    accepted += count;
+                    gaps += missing;
+                }
+                None => gaps += self.usage_tracking_gap(now.max(sample.at))?,
+            }
+        }
+        self.prune_usage(retained_since)?;
+        let mut event = Event::new(
+            EventKind::UsageRecorded {
+                generation: self
+                    .usage_collection()?
+                    .and_then(|c| c.discovery_generation)
+                    .unwrap_or(0),
+                samples: accepted,
+                gaps,
+            },
+            now,
+        );
+        event.seq = seq;
+        self.append_event(&event)?;
+        tx.commit()?;
+        Ok(event)
+    }
+
+    /// A response already counted under another of its names: the row
+    /// the alias stands for, with its contribution when still retained.
+    fn usage_aliased(&self, ids: &[String]) -> Result<Option<(String, Option<String>)>> {
+        for id in ids {
+            let found: Option<(String, String, Option<String>)> = self
+                .conn
+                .query_row(
+                    "SELECT source_id,fingerprint,contribution FROM usage_samples WHERE source_id=?1",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )
+                .optional()?;
+            let Some((source_id, fingerprint, contribution)) = found else {
+                continue;
+            };
+            // An alias row points at the row that holds the accounting.
+            if let Some(target) = fingerprint.strip_prefix(ALIAS) {
+                let contribution: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT contribution FROM usage_samples WHERE source_id=?1",
+                        [target],
+                        |r| r.get(0),
+                    )
+                    .optional()?
+                    .flatten();
+                return Ok(Some((target.to_owned(), contribution)));
+            }
+            return Ok(Some((source_id, contribution)));
+        }
+        Ok(None)
+    }
+
+    /// A price learnt for a response counted without one (its telemetry
+    /// event arrived after its transcript record): the bucket takes it,
+    /// the contribution remembers it, tokens unchanged.
+    fn usage_price(&self, source_id: &str, contribution: Option<&str>, cost: u64) -> Result<()> {
+        let Some(text) = contribution else {
+            return Ok(());
+        };
+        let mut contribution: Contribution = serde_json::from_str(text)?;
+        if contribution.cost_usd_micros.is_some() {
+            return Ok(());
+        }
+        let Ok(priced) = self.usage_bucket(&contribution.bucket)?.price(cost) else {
+            return Ok(());
+        };
+        self.write_usage_bucket(&contribution.bucket, &priced)?;
+        contribution.cost_usd_micros = Some(cost);
+        self.conn.execute(
+            "UPDATE usage_samples SET contribution=?1 WHERE source_id=?2",
+            params![serde_json::to_string(&contribution)?, source_id],
+        )?;
+        Ok(())
+    }
+
     fn usage_ingest_sample(
         &self,
         sample: &Sample,
@@ -331,6 +469,9 @@ impl Store {
         // a replay. Keep compatibility with draft stores that hashed it.
         let mut accounting = sample.clone();
         accounting.proves_zero_baseline = false;
+        // The other names a response goes by are dedupe evidence, not
+        // accounting: a record first met without them is the same record.
+        accounting.aliases = Vec::new();
         if sample.semantics == Semantics::Response {
             // Claude emits several content records for one response, each
             // with its own observation time. The first accepted record
@@ -347,6 +488,18 @@ impl Store {
             )
             .optional()?;
         if let Some((old, first_at)) = old {
+            // Met before under another source's name: a replay of that,
+            // whatever this source says, except that a price it brings
+            // joins the counted response.
+            if let Some(target) = old.strip_prefix(ALIAS) {
+                if let Some(cost) = sample.cost_usd_micros
+                    && let Some((target, contribution)) =
+                        self.usage_aliased(&[target.to_owned()])?
+                {
+                    self.usage_price(&target, contribution.as_deref(), cost)?;
+                }
+                return Ok((0, gaps));
+            }
             if old != hash {
                 let mut legacy = sample.clone();
                 if sample.semantics == Semantics::Response {
@@ -364,6 +517,23 @@ impl Store {
                         "source identity has conflicting accounting",
                     )?;
                 }
+            }
+            return Ok((0, gaps));
+        }
+        // The same response already counted by another of its names: this
+        // record is its replay from the other source. Remember this name
+        // for it, take a price the first source did not have, count nothing.
+        if let Some((target, contribution)) = self.usage_aliased(&sample.aliases)? {
+            self.conn.execute(
+                "INSERT INTO usage_samples VALUES (?1,?2,?3,NULL)",
+                params![
+                    sample.source_id,
+                    format!("{ALIAS}{target}"),
+                    text(sample.at)
+                ],
+            )?;
+            if let Some(cost) = sample.cost_usd_micros {
+                self.usage_price(&target, contribution.as_deref(), cost)?;
             }
             return Ok((0, gaps));
         }
@@ -427,11 +597,12 @@ impl Store {
                 },
                 session: sample.session_id.clone(),
                 counters,
+                cost_usd_micros: sample.cost_usd_micros,
             });
         let counted = if let Some(contribution) = &contribution {
             match self
                 .usage_bucket(&contribution.bucket)?
-                .add(&contribution.counters)
+                .add_priced(&contribution.counters, contribution.cost_usd_micros)
             {
                 Ok(aggregate) => {
                     self.write_usage_bucket(&contribution.bucket, &aggregate)?;
@@ -466,7 +637,47 @@ impl Store {
                     .transpose()?,
             ],
         )?;
+        // Its other names, so the other source's record is its replay.
+        for alias in &sample.aliases {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO usage_samples VALUES (?1,?2,?3,NULL)",
+                params![
+                    alias,
+                    format!("{ALIAS}{}", sample.source_id),
+                    text(sample.at)
+                ],
+            )?;
+        }
         Ok((1, gaps))
+    }
+
+    /// Everything stamped with one card over the retained window, as one
+    /// report row keyed by the card: what it has cost to date. None when
+    /// no retained sample was made while the card was held.
+    pub(crate) fn usage_card_row(&self, card: &str) -> Result<Option<Row>> {
+        let retained_since = self.usage_retained_since(DateTime::<Utc>::UNIX_EPOCH)?;
+        let mut statement = self.conn.prepare(
+            "SELECT json FROM usage_buckets WHERE hour>=?1 AND json_extract(key,'$.attribution.card')=?2 LIMIT 10001",
+        )?;
+        let mut total = Aggregate::default();
+        let mut any = false;
+        for (index, record) in statement
+            .query_map(params![text(retained_since), card], |r| {
+                r.get::<_, String>(0)
+            })?
+            .enumerate()
+        {
+            if index >= 10_000 {
+                return Ok(None);
+            }
+            let value: Aggregate = serde_json::from_str(&record?)?;
+            total = total.merge(&value).map_err(anyhow::Error::msg)?;
+            any = true;
+        }
+        if !any {
+            return Ok(None);
+        }
+        Ok(Some(row(Some(card.to_owned()), &total, false)))
     }
 
     fn usage_gap(
@@ -569,6 +780,8 @@ impl Store {
                 Group::Model => key.model,
                 Group::Provider => key.provider,
                 Group::Hour => Some(text(key.hour)),
+                Group::Card => key.attribution.card,
+                Group::Role => key.attribution.role,
             };
             let aggregate = grouped.entry(group).or_default();
             let Ok(merged) = aggregate.merge(&value) else {
@@ -592,11 +805,7 @@ impl Store {
                 .is_some_and(|at| range.effective_until <= at);
         let rows = grouped
             .into_iter()
-            .map(|(key, value)| Row {
-                key,
-                samples: value.samples(),
-                counters: CounterReports::new(&value, complete),
-            })
+            .map(|(key, value)| row(key, &value, complete))
             .collect();
         Ok(Some(Report {
             rows,
@@ -655,6 +864,8 @@ mod tests {
                 Semantics::Response
             },
             proves_zero_baseline: false,
+            cost_usd_micros: None,
+            aliases: Vec::new(),
         }
     }
 
@@ -715,6 +926,168 @@ mod tests {
             .conn
             .execute("UPDATE usage_tracking SET capacity=?1", [capacity])
             .unwrap();
+    }
+
+    /// One response, two sources: the transcript record (by message id,
+    /// with the request id as an alias) and the telemetry event (by request
+    /// id, with the price). Whichever comes first counts it; the other adds
+    /// only a price the first lacked; replays of either add nothing; and
+    /// the card and role stamped at ingestion group the usage.
+    #[test]
+    fn a_response_reported_by_transcript_and_telemetry_counts_once_with_its_price() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let held = Attribution {
+            agent: Some("agent-a".into()),
+            project: Some("project-p".into()),
+            card: Some("card-1".into()),
+            role: Some("reviewer".into()),
+        };
+        let transcript = |message: &str, request: &str| {
+            let mut sample = sample(message, 3, 100, false);
+            sample.runtime = "claude-code".into();
+            sample.aliases = vec![request.to_owned()];
+            sample
+        };
+        let telemetry = |request: &str, cost: u64| {
+            let mut sample = sample(request, 3, 100, false);
+            sample.runtime = "claude-code".into();
+            sample.cost_usd_micros = Some(cost);
+            sample
+        };
+        // Transcript first, then the event: the price joins the counted response.
+        ingest(
+            &store,
+            &progress,
+            "transcript",
+            vec![(transcript("msg-1", "req-1"), held.clone())],
+            at(0),
+        )
+        .unwrap();
+        let event = store
+            .usage_ingest_telemetry(
+                &[(telemetry("req-1", 2_500), held.clone())],
+                at(0),
+                at(20),
+                store.max_event_seq().unwrap() + 1,
+            )
+            .unwrap();
+        assert!(matches!(
+            event.kind,
+            EventKind::UsageRecorded { samples: 0, .. }
+        ));
+        let rows = report(&store, 0, 20).rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].samples, 1, "one response, not two");
+        assert_eq!(rows[0].counters.input_tokens.sum, Some(100));
+        assert_eq!(rows[0].cost_usd_micros.sum, Some(2_500));
+        assert_eq!(rows[0].cost_usd_micros.known_samples, 1);
+        // The event first, then the transcript record: counted once, priced.
+        store
+            .usage_ingest_telemetry(
+                &[(telemetry("req-2", 1_000), held.clone())],
+                at(0),
+                at(20),
+                store.max_event_seq().unwrap() + 1,
+            )
+            .unwrap();
+        ingest(
+            &store,
+            &progress,
+            "transcript",
+            vec![(transcript("msg-2", "req-2"), held.clone())],
+            at(0),
+        )
+        .unwrap();
+        let rows = report(&store, 0, 20).rows;
+        assert_eq!(rows[0].samples, 2);
+        assert_eq!(rows[0].cost_usd_micros.sum, Some(3_500));
+        assert_eq!(
+            rows[0].cost_usd_micros.coverage,
+            usage::Coverage::Partial,
+            "collection unfinished"
+        );
+        // Replays from both sources, in both orders, change nothing.
+        for _ in 0..2 {
+            ingest(
+                &store,
+                &progress,
+                "transcript",
+                vec![
+                    (transcript("msg-1", "req-1"), held.clone()),
+                    (transcript("msg-2", "req-2"), held.clone()),
+                ],
+                at(0),
+            )
+            .unwrap();
+            store
+                .usage_ingest_telemetry(
+                    &[
+                        (telemetry("req-1", 2_500), held.clone()),
+                        (telemetry("req-2", 1_000), held.clone()),
+                    ],
+                    at(0),
+                    at(20),
+                    store.max_event_seq().unwrap() + 1,
+                )
+                .unwrap();
+        }
+        let after = report(&store, 0, 20);
+        assert_eq!(after.rows[0].samples, 2);
+        assert_eq!(after.rows[0].cost_usd_micros.sum, Some(3_500));
+        assert_eq!(after.coverage.source_gaps, 0, "a replay is not a conflict");
+        // An unpriced response beside them keeps the price partial, and the
+        // card and role group the same usage.
+        ingest(
+            &store,
+            &progress,
+            "transcript",
+            vec![(
+                transcript("msg-3", "req-3"),
+                Attribution {
+                    card: None,
+                    ..held.clone()
+                },
+            )],
+            at(0),
+        )
+        .unwrap();
+        let by_card = store
+            .usage_report(
+                Range::new(Some(at(0)), Some(at(20)), at(23), at(0)).unwrap(),
+                Group::Card,
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let keys: Vec<_> = by_card.rows.iter().map(|r| r.key.clone()).collect();
+        assert_eq!(keys, [None, Some("card-1".to_owned())]);
+        assert_eq!(by_card.rows[1].samples, 2);
+        assert_eq!(by_card.rows[1].cost_usd_micros.sum, Some(3_500));
+        let by_role = store
+            .usage_report(
+                Range::new(Some(at(0)), Some(at(20)), at(23), at(0)).unwrap(),
+                Group::Role,
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_role.rows[0].key.as_deref(), Some("reviewer"));
+        assert_eq!(by_role.rows[0].samples, 3);
+        assert_eq!(by_role.rows[0].cost_usd_micros.known_samples, 2);
+        let card = store.usage_card_row("card-1").unwrap().unwrap();
+        assert_eq!(card.key.as_deref(), Some("card-1"));
+        assert_eq!(card.samples, 2);
+        assert_eq!(card.cost_usd_micros.sum, Some(3_500));
+        assert_eq!(card.counters.input_tokens.sum, Some(200));
+        assert_eq!(
+            card.cache_read_share_percent, None,
+            "no cache counter reported"
+        );
+        assert!(store.usage_card_row("card-9").unwrap().is_none());
     }
 
     #[test]
@@ -812,6 +1185,7 @@ mod tests {
         let attribution = Attribution {
             agent: Some("new-agent".repeat(100)),
             project: Some("project".into()),
+            ..Attribution::default()
         };
         let event = store
             .usage_reconcile(
@@ -1151,6 +1525,7 @@ mod tests {
         let to = |agent: &str| Attribution {
             agent: Some(agent.into()),
             project: Some("project".into()),
+            ..Attribution::default()
         };
         for (agent, window) in [
             ("ended", (None, Some(at(3)))),
@@ -1196,6 +1571,7 @@ mod tests {
         let attribution = Attribution {
             agent: Some("agent".into()),
             project: Some("project".into()),
+            ..Attribution::default()
         };
         let before = store.max_event_seq().unwrap();
         store.conn.execute_batch("CREATE TRIGGER fail_usage_reconcile BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'event refused'); END;").unwrap();
@@ -1371,6 +1747,7 @@ mod tests {
         let attribution = Attribution {
             agent: Some("agent".into()),
             project: Some("project".into()),
+            ..Attribution::default()
         };
         let event = store
             .usage_reconcile(

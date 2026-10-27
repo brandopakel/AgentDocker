@@ -326,6 +326,9 @@ impl State {
             .and_then(|id| self.plan_by_id(id).ok())
             .map(|p| p.summary());
         let files = self.card_files(&task.id);
+        let usage = self
+            .store_read("card usage", |store| store.usage_card_row(task.id.as_str()))
+            .flatten();
         Response::TaskDetail {
             task,
             board,
@@ -336,6 +339,7 @@ impl State {
             lease,
             plan,
             files,
+            usage,
         }
     }
 
@@ -349,6 +353,19 @@ impl State {
             .into_iter()
             .find(|l| &l.holder == holder && l.mode == LeaseMode::Exclusive)
             .cloned()
+    }
+
+    /// Whether `id` names a card on a board. A `task:` lease on one is a
+    /// card held; a `task:` lease on anything else is a resource of
+    /// another kind (a build campaign, say), never a card. A store that
+    /// cannot say counts as no: usage stays uncharged rather than charged
+    /// to a card that may not exist.
+    pub(in crate::daemon) fn is_card(&self, id: &str) -> bool {
+        self.store
+            .document::<serde_json::Value>(DOCUMENT, id)
+            .ok()
+            .flatten()
+            .is_some()
     }
 
     /// Every live lease on a card: its holder's, and any taken by hand.

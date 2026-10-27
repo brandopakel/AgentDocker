@@ -11,7 +11,7 @@ use agentdocker_host::usage::{
 };
 use std::sync::Weak;
 
-fn configuration(home: &Path) -> Result<UsageConfig, String> {
+pub(super) fn configuration(home: &Path) -> Result<UsageConfig, String> {
     use agentdocker_host::policy_file::{self, ReadPolicy};
     let config =
         match policy_file::read_changed(&home.join(agentdocker_core::config::FILE_NAME), None)
@@ -65,7 +65,7 @@ fn roots(config: &UsageConfig) -> Result<Vec<Root>, String> {
     Ok(roots)
 }
 
-fn retained(now: DateTime<Utc>, config: &UsageConfig) -> DateTime<Utc> {
+pub(super) fn retained(now: DateTime<Utc>, config: &UsageConfig) -> DateTime<Utc> {
     usage::hour(now - Duration::days(i64::from(config.retention_days)))
 }
 
@@ -256,6 +256,7 @@ impl Daemon {
                             &mut row.counters.cache_write_input_tokens,
                             &mut row.counters.output_tokens,
                             &mut row.counters.reasoning_output_tokens,
+                            &mut row.cost_usd_micros,
                         ] {
                             if counter.coverage == usage::Coverage::Complete {
                                 counter.coverage = usage::Coverage::Partial;
@@ -264,6 +265,17 @@ impl Daemon {
                     }
                 }
                 report.coverage.collection.enabled = Some(config.enabled);
+                // What the receiver is doing, not what the file asks of it:
+                // an address another program holds is not listening.
+                match &state.otlp_status {
+                    super::otlp::Status::Listening(address) => {
+                        report.coverage.collection.otlp_listen = Some(address.to_string());
+                    }
+                    super::otlp::Status::Refused(reason) => {
+                        report.coverage.collection.otlp_error = Some(reason.clone());
+                    }
+                    super::otlp::Status::Off => {}
+                }
                 Response::Usage { report }
             }
             Some(None) => Response::error(
@@ -316,11 +328,7 @@ impl Daemon {
             .samples
             .iter()
             .map(|sample| {
-                let attribution = usage::registration_at(
-                    &registrations(&state, &sample.runtime, &sample.session_id),
-                    sample.at,
-                )
-                .unwrap_or_default();
+                let attribution = attribution_at(&state, sample);
                 (sample.clone(), attribution)
             })
             .collect();
@@ -349,6 +357,99 @@ impl Daemon {
         );
         result == Persisted::Committed
     }
+}
+
+/// What became of one telemetry export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Received {
+    /// Committed, with how many samples were new.
+    Recorded { accepted: u64 },
+    /// Storage is fenced or failed; the exporter may try again.
+    Unavailable,
+}
+
+impl Daemon {
+    /// Record the samples one received telemetry export decoded to: each
+    /// attributed to the agent whose session it names, as a collected
+    /// transcript record would be, stamped with the card and roles that
+    /// agent holds, and committed through the usage transaction with its
+    /// `usage_recorded` event. Replays of responses already counted, by
+    /// this route or from a transcript, add nothing but a price the first
+    /// record lacked.
+    pub(crate) fn record_telemetry(&self, samples: &[agentdocker_host::usage::Sample]) -> Received {
+        let config = configuration(&self.home).unwrap_or_default();
+        let now = Utc::now();
+        let mut state = lock(&self.state);
+        let samples: Vec<_> = samples
+            .iter()
+            .map(|sample| (sample.clone(), attribution_at(&state, sample)))
+            .collect();
+        let mut accepted = 0;
+        let result = state.commit_produced(
+            "usage telemetry",
+            |store, seq| {
+                let event =
+                    store.usage_ingest_telemetry(&samples, retained(now, &config), now, seq)?;
+                let count = match &event.kind {
+                    EventKind::UsageRecorded { samples, .. } => *samples,
+                    _ => 0,
+                };
+                Ok((vec![event], count))
+            },
+            |_, _, count| accepted = count,
+        );
+        if result == Persisted::Committed {
+            Received::Recorded { accepted }
+        } else {
+            Received::Unavailable
+        }
+    }
+}
+
+/// The attribution a sample takes at ingestion: the registration of its
+/// session current at its time, with the card and roles that agent held.
+fn attribution_at(state: &State, sample: &agentdocker_host::usage::Sample) -> UsageAttribution {
+    let mut attribution = usage::registration_at(
+        &registrations(state, &sample.runtime, &sample.session_id),
+        sample.at,
+    )
+    .unwrap_or_default();
+    stamp(state, &mut attribution, sample.at);
+    attribution
+}
+
+/// The card and roles an attributed agent holds, onto its sample: of the
+/// live exclusive `task:` leases it already held at the sample's time (a
+/// card taken afterwards was not being worked then) on a card that is on
+/// a board (a `task:` lease on a build campaign is not one), the latest
+/// taken; and its `role` label as it stands. Nothing for an unattributed
+/// sample.
+fn stamp(state: &State, attribution: &mut UsageAttribution, at: DateTime<Utc>) {
+    let Some(agent) = attribution.agent.as_deref() else {
+        return;
+    };
+    let id = AgentId::from(agent.to_owned());
+    let now = Utc::now();
+    attribution.card = state
+        .leases
+        .by_holder(&id)
+        .into_iter()
+        .filter(|lease| {
+            lease.mode == LeaseMode::Exclusive && !lease.is_expired(now) && lease.acquired_at <= at
+        })
+        .filter_map(|lease| {
+            let card = lease.resource.as_str().strip_prefix("task:")?;
+            Some((lease.acquired_at, card))
+        })
+        .filter(|(_, card)| state.is_card(card))
+        .max_by_key(|(acquired, _)| *acquired)
+        .map(|(_, card)| card.to_owned());
+    attribution.role = state
+        .registry
+        .get(&id)
+        .and_then(|record| record.spec.labels.get(agentdocker_core::agent::ROLE_LABEL))
+        .filter(|label| !label.is_empty())
+        .cloned();
 }
 
 fn alive_wait(weak: &Weak<Daemon>, ticks: usize) -> bool {
@@ -1036,6 +1137,8 @@ fn registrations(
                 UsageAttribution {
                     agent: Some(id.to_string()),
                     project: agent.project.as_ref().map(|p| p.id().to_string()),
+                    card: None,
+                    role: None,
                 },
                 created,
             ))

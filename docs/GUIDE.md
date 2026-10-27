@@ -298,12 +298,22 @@ actual provider delivery requires a real round trip.
 
 **Projects → Usage** and `agentdocker usage` report the tokens providers reported.
 Choose the last day, week or month and group reported tokens by agent, model,
-provider, project or hour. `~` marks a partial count; `—` means the source did
-not report that counter. These are token totals, not a bill. The report shows
+provider, project or hour; the CLI and the MCP tool also group by **card**
+(`--by card`: the board card, as a `task:<id>` lease, the agent held when each
+response was recorded) and by **role** (`--by role`: the agent's roles then, as
+one label such as `reviewer`). `~` marks a partial count; `—` means the source did
+not report that counter. The CACHED column is each row's share of input tokens
+read from the prompt cache. The COST column is what the provider itself said the
+responses cost, summed only over the responses that carried a price: Claude Code's
+telemetry events do (below); transcripts do not, so a row fed from transcripts
+alone shows `—`, and one fed from both shows its sum marked `~`. Where no price
+was reported, these are token totals, not a bill. The report shows
 the available time range, gaps and whether collection has caught up. The CLI
-names each agent or project row (`codex-<pid>`, `<project>`) while AgentDocker
-still knows it, and shows its ID once it is gone; `(unattributed)` is usage no
-session could be matched to.
+names each agent, project or card row (`codex-<pid>`, `<project>`, `AD-12`) while
+AgentDocker still knows it, and shows its ID once it is gone; `(unattributed)` is
+usage no session could be matched to, and a null card or role row is usage made
+while the agent held no card or no role. `agentdocker task show <card>` (and the
+`get_task` tool) says what a card has cost to date from the same records.
 Local-output instrumentation records successful hook, stdio MCP and
 managed/native Codex input writes and authenticated browser MCP response bodies
 when collection is enabled. The separate
@@ -347,6 +357,49 @@ fixed tracking budget cannot be increased through configuration. Do not
 delete accounting tables to make space: doing so can invalidate deduplication.
 AgentDocker's emitted-byte coverage is partial when collection is enabled;
 without matching output records, overhead is **not measured**.
+
+#### Exact cost from Claude Code's telemetry
+
+Claude Code can send its own accounting as OpenTelemetry events: one
+`api_request` event per API response with the exact `cost_usd`, the input,
+output, cache-read and cache-creation tokens, the model, the request id and the
+session id. The daemon can take them, on this machine only. In `agentd.toml`:
+
+```toml
+[usage]
+otlp_listen = "127.0.0.1:4318"
+```
+
+The address must be loopback (`127.0.0.1` or `[::1]`) with a port; anything a
+peer on the network could reach is refused, nothing listens, and `agentdocker
+usage` answers with the reason until the line is fixed. The running daemon binds
+the address within thirty seconds and follows later edits the same way. Under its
+table `agentdocker usage` says where the receiver is taking events, or why it is
+not (a port another program holds, which it tries again every thirty seconds). It is independent of `enabled`, which governs the
+transcript collector: either alone works, and with both on a response reported
+by both is counted once, taking its price from the event and its tokens from
+whichever arrived first.
+
+Then tell Claude Code where to send: in the `env` object of
+`~/.claude/settings.json`, or exported in the shell that starts it,
+
+```
+CLAUDE_CODE_ENABLE_TELEMETRY=1
+OTEL_LOGS_EXPORTER=otlp
+OTEL_EXPORTER_OTLP_PROTOCOL=http/json
+OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318
+```
+
+`agentdocker setup claude-code --preview` prints these lines, with the daemon's
+configured address in them, as a note in its plan; it writes neither your shell
+nor your Claude settings for them. New sessions pick the environment up;
+running ones do not. The receiver keeps the `api_request` events as usage
+samples — attributed to the agent whose session the event names, exactly as a
+transcript record is, and stamped with the card and roles that agent held — and
+acknowledges every other event and the `/v1/metrics` export without reading
+them. No prompt, tool argument or other event content is kept. It takes the JSON
+encoding only (`http/json`); protobuf or compressed exports are refused with a
+message that says what to set.
 
 ### Accounting storage
 
@@ -489,7 +542,7 @@ each one by pid.
 | `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds the one fix for each session that cannot take messages now |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
-| `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
+| `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour\|card\|role`: card is the board card held when each response was recorded, role the agent's roles then), each count with its coverage (`~` where some samples did not say, `—` where none did), the share of input read from cache, the provider's own price where its telemetry said, and under the table what the totals cover: the range answered, retention, gaps, whether collection is on and where the telemetry receiver listens, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output, at most 16 MiB kept per agent (the newest 8 MiB and the 8 MiB before them); `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
