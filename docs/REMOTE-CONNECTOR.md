@@ -173,8 +173,9 @@ It does not implement JWT client assertions.
 on: `list_tasks`, `get_task`, `search_tasks`, `comment_task`, `list_plans`,
 `get_plan` (`REMOTE_TOOLS` in `crates/cli/src/mcp.rs`). Everything else —
 leases, observations, worktrees, commits, hand-offs, moving cards, channels,
-`wait_for_messages` — is refused by name with the reason: the agent has no
-checkout here, and a long wait would hold an HTTP request. Each tool carries
+`mark_journal_read`, `wait_for_messages` — is refused by name with the
+reason: the agent has no checkout here, and a long wait would hold an HTTP
+request. Each tool carries
 its MCP annotations, the same ones the local server gives it, and the browser
 client reads them: ChatGPT's developer mode confirms every call that is not
 `readOnlyHint`, Claude's connectors read the same hints, so the listings and

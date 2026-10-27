@@ -1757,9 +1757,12 @@ impl<B: Backend> McpServer<B> {
                 })
                 .await
             }
-            "read_journal" => {
+            "read_journal" | "mark_journal_read" => {
                 let args: ReadJournalArgs = parse(arguments)?;
                 let budget = agentdocker_core::DigestBudget::SESSION_START;
+                // The same digest either way; only the marking tool moves
+                // the reader's cursor past it, which is why it is its own
+                // tool with its own hints.
                 self.forward(Request::Journal {
                     project: String::new(),
                     since_seq: args.since,
@@ -1775,7 +1778,7 @@ impl<B: Backend> McpServer<B> {
                         max_entries: budget.max_entries,
                         max_chars: budget.max_chars,
                         all_branches: args.all_branches,
-                        advance: args.advance,
+                        advance: name == "mark_journal_read",
                     }),
                 })
                 .await
@@ -2164,8 +2167,6 @@ struct ReadJournalArgs {
     since: Option<u64>,
     #[serde(default)]
     all_branches: bool,
-    #[serde(default)]
-    advance: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -2460,18 +2461,21 @@ fn render_whole(response: Response) -> Value {
 fn annotations(name: &str) -> Value {
     // (read-only, destructive, idempotent, open-world)
     let (read_only, destructive, idempotent, open_world) = match name {
-        // Looking: nothing changes (`read_journal` moves the reader's
-        // cursor only when asked to with `advance`).
+        // Looking: nothing changes (`read_journal` never moves the
+        // reader's cursor; `mark_journal_read` is the tool that does).
         "whoami" | "list_agents" | "inspect_agent" | "list_leases" | "activity" | "overlap"
         | "open_questions" | "read_journal" | "check_stale" | "read_set" | "list_checkpoints"
         | "list_handoffs" | "list_channels" | "contests" | "list_tasks" | "get_task"
         | "my_tasks" | "worktree_diff" | "validation_results" | "usage" | "search_tasks"
         | "list_tags" | "list_roles" | "list_plans" | "get_plan" | "list_files" | "get_file"
         | "search_memory" | "get_profile" => (true, false, true, false),
-        // Saying and recording: additive, repeatable.
-        "report_activity" | "report_provider_status" | "observe_paths" | "renew" => {
-            (false, false, true, false)
-        }
+        // Saying and recording: additive, repeatable. Marking the journal
+        // read moves the reader's cursor forward, never back.
+        "report_activity"
+        | "report_provider_status"
+        | "observe_paths"
+        | "renew"
+        | "mark_journal_read" => (false, false, true, false),
         // Reading the queue, which records the offer, waiting on it, or
         // acknowledging: never destructive, and the same call twice
         // changes nothing more.
@@ -2902,13 +2906,23 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "read_journal",
-            "description": "What changed in this project and why since this agent last read it: one line per release, note, commit, or arrival, oldest first, within a budget. Reading changes nothing: `advance` marks what was shown as seen, so the next read starts after it; `since` re-reads from a sequence number instead.",
+            "description": "What changed in this project and why since this agent last read it: one line per release, note, commit, or arrival, oldest first, within a budget. Reading changes nothing: the same read comes back until something is added or `mark_journal_read` marks it seen; `since` re-reads from a sequence number instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "since": { "type": "integer", "minimum": 0, "description": "Sequence number to read from instead of this agent's cursor." },
-                    "all_branches": { "type": "boolean", "default": false, "description": "Show entries from every branch instead of counting the other branches." },
-                    "advance": { "type": "boolean", "default": false, "description": "Move this agent's cursor to what was shown, so the next read without `since` starts after it. Off, the same read comes back until something is added." }
+                    "all_branches": { "type": "boolean", "default": false, "description": "Show entries from every branch instead of counting the other branches." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "mark_journal_read",
+            "description": "Mark what read_journal shows now as seen, so the next read_journal starts after it. Returns that digest.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "all_branches": { "type": "boolean", "default": false, "description": "Count what read_journal shows with all_branches as seen." }
                 },
                 "additionalProperties": false
             }
@@ -4094,23 +4108,6 @@ mod tests {
     /// property filled with the plainest value of its type, so the call
     /// gets past parsing and reaches the daemon.
     fn arguments_from(schema: &Value) -> Value {
-        fn value_for(property: &Value) -> Value {
-            if let Some(first) = property["enum"].as_array().and_then(|e| e.first()) {
-                return first.clone();
-            }
-            let kind = match &property["type"] {
-                Value::String(kind) => kind.as_str(),
-                Value::Array(kinds) => kinds.first().and_then(Value::as_str).unwrap_or("object"),
-                _ => "object",
-            };
-            match kind {
-                "string" => json!("x"),
-                "integer" | "number" => json!(property["minimum"].as_i64().unwrap_or(0).max(1)),
-                "boolean" => json!(true),
-                "array" => json!([value_for(&property["items"])]),
-                _ => arguments_from(property),
-            }
-        }
         let mut object = serde_json::Map::new();
         if let Some(required) = schema["required"].as_array() {
             for name in required.iter().filter_map(Value::as_str) {
@@ -4120,18 +4117,65 @@ mod tests {
         Value::Object(object)
     }
 
-    /// The read-only hint is checked against what each tool sends. Called
-    /// with arguments from its own schema, a tool marked read-only must
-    /// send the daemon nothing it admits as a mutation, and a tool marked
-    /// otherwise must send something it does. The daemon's own classifier
-    /// is the reference, so a hint cannot drift from the protocol: a tool
-    /// that starts writing loses its hint here first.
+    /// The plainest value a schema property allows.
+    fn value_for(property: &Value) -> Value {
+        if let Some(first) = property["enum"].as_array().and_then(|e| e.first()) {
+            return first.clone();
+        }
+        let kind = match &property["type"] {
+            Value::String(kind) => kind.as_str(),
+            Value::Array(kinds) => kinds.first().and_then(Value::as_str).unwrap_or("object"),
+            _ => "object",
+        };
+        match kind {
+            "string" => json!("x"),
+            "integer" | "number" => json!(property["minimum"].as_i64().unwrap_or(0).max(1)),
+            "boolean" => json!(true),
+            "array" => json!([value_for(&property["items"])]),
+            _ => arguments_from(property),
+        }
+    }
+
+    /// The calls a tool's schema allows, one property at a time: the
+    /// base arguments, then each property the schema names set on top of
+    /// them to every value it can take (both ways for a boolean, every
+    /// member of an enum, one value otherwise). An annotation covers the
+    /// tool's whole input space, so every switch is tried.
+    fn argument_variants(schema: &Value, base: &Value) -> Vec<Value> {
+        let mut variants = vec![base.clone()];
+        if let Some(properties) = schema["properties"].as_object() {
+            for (name, property) in properties {
+                let values: Vec<Value> = if let Some(members) = property["enum"].as_array() {
+                    members.clone()
+                } else if property["type"] == "boolean" {
+                    vec![json!(true), json!(false)]
+                } else {
+                    vec![value_for(property)]
+                };
+                for value in values {
+                    let mut variant = base.as_object().cloned().unwrap_or_default();
+                    variant.insert(name.clone(), value);
+                    variants.push(Value::Object(variant));
+                }
+            }
+        }
+        variants
+    }
+
+    /// The read-only hint is checked against what each tool sends, over
+    /// its whole input space: the arguments from its own schema and every
+    /// switch the schema offers, one at a time. A tool marked read-only
+    /// must send the daemon nothing it admits as a mutation on any of
+    /// them, and a tool marked otherwise must send something it does on
+    /// at least one. The daemon's own classifier is the reference, so a
+    /// hint cannot drift from the protocol: a tool that starts writing,
+    /// on any argument, loses its hint here first.
     #[tokio::test]
     async fn read_only_hints_agree_with_the_requests_the_tools_send() {
         let mut findings = Vec::new();
         for tool in tool_definitions() {
             let name = tool["name"].as_str().unwrap();
-            let arguments = match name {
+            let base = match name {
                 // The queue is read without draining, and the wait returns
                 // on the first answer: the retaining paths, which the
                 // daemon still records as an offer.
@@ -4146,56 +4190,70 @@ mod tests {
                 "send_message" => json!({ "to": "x", "text": "x" }),
                 _ => arguments_from(&tool["inputSchema"]),
             };
-            let mut s = server(vec![]);
-            // A provider report is bound to the process that made it.
-            s.identity.host_started_at = Some(chrono::Utc::now());
-            s.handle(rpc(
-                1,
-                "tools/call",
-                json!({ "name": name, "arguments": arguments }),
-            ))
-            .await
-            .unwrap();
-            // The adapter's first contact is the session's own bookkeeping,
-            // sent on whichever tool comes first, not the tool's doing.
-            let requests: Vec<Request> = s
-                .backend
-                .requests()
+            let read_only = tool["annotations"]["readOnlyHint"] == true;
+            let mut wrote = false;
+            for (index, arguments) in argument_variants(&tool["inputSchema"], &base)
                 .into_iter()
-                .filter(|request| !matches!(request, Request::ReportAdapter { .. }))
-                .collect();
-            if requests.is_empty() {
-                findings.push(format!("{name} reached no request with {arguments}"));
-                continue;
-            }
-            let mutating: Vec<&Request> = requests
-                .iter()
-                .filter(|request| agentd::daemon::mutates(request))
-                .collect();
-            if tool["annotations"]["readOnlyHint"] == true {
-                if !mutating.is_empty() {
-                    findings.push(format!("{name} is marked read-only but sent {mutating:?}"));
+                .enumerate()
+            {
+                let mut s = server(vec![]);
+                // A provider report is bound to the process that made it.
+                s.identity.host_started_at = Some(chrono::Utc::now());
+                s.handle(rpc(
+                    1,
+                    "tools/call",
+                    json!({ "name": name, "arguments": arguments }),
+                ))
+                .await
+                .unwrap();
+                // The adapter's first contact is the session's own
+                // bookkeeping, sent on whichever tool comes first, not the
+                // tool's doing.
+                let requests: Vec<Request> = s
+                    .backend
+                    .requests()
+                    .into_iter()
+                    .filter(|request| !matches!(request, Request::ReportAdapter { .. }))
+                    .collect();
+                if requests.is_empty() {
+                    // The base arguments must reach the daemon; a variant
+                    // the tool refuses before any request wrote nothing.
+                    if index == 0 {
+                        findings.push(format!("{name} reached no request with {arguments}"));
+                    }
+                    continue;
                 }
-            } else if mutating.is_empty() {
+                let mutating: Vec<&Request> = requests
+                    .iter()
+                    .filter(|request| agentd::daemon::mutates(request))
+                    .collect();
+                if read_only && !mutating.is_empty() {
+                    findings.push(format!(
+                        "{name} is marked read-only but with {arguments} sent {mutating:?}"
+                    ));
+                }
+                wrote |= !mutating.is_empty();
+            }
+            if !read_only && !wrote {
                 findings.push(format!(
-                    "{name} is not marked read-only but sent only {requests:?}"
+                    "{name} is not marked read-only but never sent a mutation"
                 ));
             }
         }
         assert!(findings.is_empty(), "{}", findings.join("\n"));
     }
 
-    /// The default read leaves the cursor where it is; `advance` is the
-    /// one way the tool writes, and asking for it is what the daemon
-    /// admits as a mutation.
+    /// Reading never moves the cursor; marking the journal read is the
+    /// one tool that does, and it is what the daemon admits as a
+    /// mutation, so each carries its own hint.
     #[tokio::test]
-    async fn read_journal_moves_the_cursor_only_when_asked() {
-        for (advance, expected) in [(false, false), (true, true)] {
+    async fn reading_the_journal_and_marking_it_read_are_two_tools() {
+        for (tool, advance) in [("read_journal", false), ("mark_journal_read", true)] {
             let s = server(vec![]);
             s.handle(rpc(
                 1,
                 "tools/call",
-                json!({ "name": "read_journal", "arguments": { "advance": advance } }),
+                json!({ "name": tool, "arguments": {} }),
             ))
             .await
             .unwrap();
@@ -4205,13 +4263,10 @@ mod tests {
                 .find(|request| matches!(request, Request::Journal { .. }))
                 .expect("a journal request");
             assert!(
-                matches!(journal, Request::Journal { digest: Some(digest), .. } if digest.advance == advance)
+                matches!(journal, Request::Journal { digest: Some(digest), .. } if digest.advance == advance),
+                "{tool}"
             );
-            assert_eq!(
-                agentd::daemon::mutates(journal),
-                expected,
-                "advance={advance}"
-            );
+            assert_eq!(agentd::daemon::mutates(journal), advance, "{tool}");
         }
     }
 
@@ -4463,6 +4518,7 @@ mod tests {
                 "release",
                 "journal_note",
                 "read_journal",
+                "mark_journal_read",
                 "list_leases",
                 "list_tasks",
                 "usage",
