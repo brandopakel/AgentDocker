@@ -247,6 +247,19 @@ impl Claimed {
     }
 }
 
+/// What a claim asks for: the lease to make, before the table says
+/// whether it can.
+#[derive(Clone, Debug)]
+pub struct ClaimRequest {
+    pub resource: ResourceKey,
+    pub holder: AgentId,
+    pub mode: LeaseMode,
+    pub ttl: Duration,
+    pub note: Option<String>,
+    /// An adapter's automatic lease, not one the agent asked for.
+    pub automatic: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LeaseTable {
     leases: HashMap<LeaseId, Lease>,
@@ -268,21 +281,34 @@ impl LeaseTable {
         note: Option<String>,
         now: DateTime<Utc>,
     ) -> Result<Claimed, LeaseError> {
-        self.claim_as(resource, holder, mode, ttl, note, now, false)
+        self.claim_as(
+            ClaimRequest {
+                resource,
+                holder,
+                mode,
+                ttl,
+                note,
+                automatic: false,
+            },
+            now,
+        )
     }
 
-    /// [`Self::claim`], with the lease marked as an adapter's automatic one.
-    #[allow(clippy::too_many_arguments)]
+    /// [`Self::claim`], with the lease marked as an adapter's automatic one
+    /// when the request says so.
     pub fn claim_as(
         &mut self,
-        resource: ResourceKey,
-        holder: AgentId,
-        mode: LeaseMode,
-        ttl: Duration,
-        note: Option<String>,
+        request: ClaimRequest,
         now: DateTime<Utc>,
-        automatic: bool,
     ) -> Result<Claimed, LeaseError> {
+        let ClaimRequest {
+            resource,
+            holder,
+            mode,
+            ttl,
+            note,
+            automatic,
+        } = request;
         self.expire(now);
 
         if let Some(existing) = self
@@ -505,13 +531,15 @@ mod tests {
         ] {
             table
                 .claim_as(
-                    ResourceKey::new(resource),
-                    me.clone(),
-                    LeaseMode::Exclusive,
-                    ttl,
-                    None,
+                    ClaimRequest {
+                        resource: ResourceKey::new(resource),
+                        holder: me.clone(),
+                        mode: LeaseMode::Exclusive,
+                        ttl,
+                        note: None,
+                        automatic,
+                    },
                     now,
-                    automatic,
                 )
                 .unwrap();
         }
@@ -536,36 +564,42 @@ mod tests {
         // Deliberately claiming what was automatic makes it deliberate.
         table
             .claim_as(
-                ResourceKey::new("path:/repo/src/c.rs"),
-                me.clone(),
-                LeaseMode::Exclusive,
-                ttl,
-                None,
+                ClaimRequest {
+                    resource: ResourceKey::new("path:/repo/src/c.rs"),
+                    holder: me.clone(),
+                    mode: LeaseMode::Exclusive,
+                    ttl,
+                    note: None,
+                    automatic: true,
+                },
                 now,
-                true,
             )
             .unwrap();
         table
             .claim_as(
-                ResourceKey::new("path:/repo/src/c.rs"),
-                me.clone(),
-                LeaseMode::Exclusive,
-                ttl,
-                None,
+                ClaimRequest {
+                    resource: ResourceKey::new("path:/repo/src/c.rs"),
+                    holder: me.clone(),
+                    mode: LeaseMode::Exclusive,
+                    ttl,
+                    note: None,
+                    automatic: false,
+                },
                 now,
-                false,
             )
             .unwrap();
         // An automatic re-claim of a deliberate lease leaves it deliberate.
         table
             .claim_as(
-                ResourceKey::new("branch:feature"),
-                me.clone(),
-                LeaseMode::Exclusive,
-                ttl,
-                None,
+                ClaimRequest {
+                    resource: ResourceKey::new("branch:feature"),
+                    holder: me.clone(),
+                    mode: LeaseMode::Exclusive,
+                    ttl,
+                    note: None,
+                    automatic: true,
+                },
                 now,
-                true,
             )
             .unwrap();
         assert!(

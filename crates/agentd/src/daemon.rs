@@ -2008,12 +2008,14 @@ impl Daemon {
             } => {
                 self.checkpoint(
                     &agent,
-                    key,
-                    task,
-                    assumptions,
-                    next_steps,
-                    links,
-                    release_leases,
+                    recovery::CheckpointArgs {
+                        key,
+                        task,
+                        assumptions,
+                        next_steps,
+                        links,
+                        release: release_leases,
+                    },
                 )
                 .await
             }
@@ -2034,12 +2036,14 @@ impl Daemon {
             } => {
                 self.handoff(
                     &agent,
-                    to.as_deref(),
-                    task,
-                    note,
-                    links,
-                    transfer_leases,
-                    key,
+                    handoff::HandoffArgs {
+                        to,
+                        task,
+                        note,
+                        links,
+                        transfer_leases,
+                        key,
+                    },
                 )
                 .await
             }
@@ -2488,11 +2492,13 @@ impl Daemon {
             } => self.task_move(
                 &agent,
                 &task,
-                column,
-                to.as_deref(),
-                after.as_deref(),
-                before.as_deref(),
-                comment.as_deref(),
+                tasks::TaskMoveArgs {
+                    column,
+                    to: to.as_deref(),
+                    after: after.as_deref(),
+                    before: before.as_deref(),
+                    comment: comment.as_deref(),
+                },
             ),
             Request::TaskUpdate {
                 agent,
@@ -2583,8 +2589,18 @@ impl Daemon {
                 description,
                 tools,
             } => {
-                self.role_save(&from, project, role, &name, color, description, tools)
-                    .await
+                self.role_save(
+                    &from,
+                    project,
+                    tasks::RoleSaveArgs {
+                        existing: role,
+                        name,
+                        color,
+                        description,
+                        tools,
+                    },
+                )
+                .await
             }
             Request::RoleDelete {
                 from,
@@ -2652,8 +2668,18 @@ impl Daemon {
                 base64,
                 task,
             } => {
-                self.file_put(&from, project, &name, media_type, text, base64, task)
-                    .await
+                self.file_put(
+                    &from,
+                    project,
+                    tasks::FilePutArgs {
+                        name,
+                        media_type,
+                        text,
+                        base64,
+                        task,
+                    },
+                )
+                .await
             }
             Request::FileGet { file } => self.file_get(&file),
             Request::FileLink {
@@ -2710,10 +2736,12 @@ impl Daemon {
                     &from,
                     project.as_deref(),
                     &board,
-                    name,
-                    lanes,
-                    pull_source,
-                    pull_target,
+                    tasks::BoardChange {
+                        name,
+                        lanes,
+                        pull_source,
+                        pull_target,
+                    },
                 )
                 .await
             }
@@ -2904,7 +2932,17 @@ impl Daemon {
                 automatic,
             } => {
                 self.claim(
-                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, priority, automatic,
+                    &agent,
+                    leases::ClaimArgs {
+                        resource,
+                        mode,
+                        amount,
+                        ttl_secs,
+                        note,
+                        wait_secs,
+                        priority,
+                        automatic,
+                    },
                 )
                 .await
             }
@@ -2947,7 +2985,18 @@ impl Daemon {
                 digest,
             } => {
                 self.journal(
-                    &project, since_seq, until_seq, agent, branch, kind, path, grep, limit, digest,
+                    &project,
+                    journal::JournalArgs {
+                        since_seq,
+                        until_seq,
+                        agent,
+                        branch,
+                        kind,
+                        path,
+                        grep,
+                        limit,
+                        digest,
+                    },
                 )
                 .await
             }
@@ -5272,20 +5321,20 @@ impl State {
             "message",
             events,
             |store, events| {
-                store.publish_message_with_channel(
-                    &envelope,
-                    &recipients,
-                    INBOX_CAPACITY,
-                    sender.as_ref(),
-                    question.as_ref(),
-                    closed.as_ref(),
+                store.publish_message_with_channel(crate::store::Publication {
+                    message: &envelope,
+                    recipients: &recipients,
+                    capacity: INBOX_CAPACITY,
+                    sender: sender.as_ref(),
+                    question: question.as_ref(),
+                    closed: closed.as_ref(),
                     events,
-                    channel.as_ref().map(|channel| (channel, journal.as_ref())),
-                    document
+                    channel: channel.as_ref().map(|channel| (channel, journal.as_ref())),
+                    document: document
                         .as_ref()
                         .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
                     tracked,
-                )
+                })
             },
             |state, _, kept| {
                 post = kept;

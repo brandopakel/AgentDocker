@@ -955,14 +955,16 @@ impl Daemon {
         match self
             .claim(
                 reference,
-                format!("path:{}", target.display()),
-                LeaseMode::Exclusive,
-                None,
-                600,
-                Some(format!("integrating verified source {head}")),
-                0,
-                0,
-                false,
+                super::leases::ClaimArgs {
+                    resource: format!("path:{}", target.display()),
+                    mode: LeaseMode::Exclusive,
+                    amount: None,
+                    ttl_secs: 600,
+                    note: Some(format!("integrating verified source {head}")),
+                    wait_secs: 0,
+                    priority: 0,
+                    automatic: false,
+                },
             )
             .await
         {

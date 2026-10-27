@@ -370,6 +370,19 @@ fn visual_status(enabled: bool, tree: &Tree, layout: Layout<'_>, cursor: mouse::
     }
 }
 
+/// What a composer is made of: its id and the destination its words go
+/// to, the label read for it, the words so far, what typing sends, whether
+/// it takes input, and what Enter sends.
+pub struct ComposerSpec<'a> {
+    pub id: String,
+    pub destination: String,
+    pub label: &'a str,
+    pub value: &'a str,
+    pub change: Arc<dyn Fn(String) -> Message + Send + Sync>,
+    pub enabled: bool,
+    pub submit: Option<Message>,
+}
+
 pub fn composer<'a>(
     id: impl Into<String>,
     destination: impl Into<String>,
@@ -380,13 +393,15 @@ pub fn composer<'a>(
     submit: Option<Message>,
 ) -> Element<'a, Message> {
     build(
-        id.into(),
-        destination.into(),
-        label,
-        value,
-        Arc::new(change),
-        enabled,
-        submit,
+        ComposerSpec {
+            id: id.into(),
+            destination: destination.into(),
+            label,
+            value,
+            change: Arc::new(change),
+            enabled,
+            submit,
+        },
         false,
     )
 }
@@ -396,27 +411,12 @@ pub fn composer<'a>(
 /// is the surface and the edge, so focus shows on the whole of it, not
 /// on the field alone. Typing, Enter and the accessibility node are the
 /// plain [`composer`]'s.
-#[allow(clippy::too_many_arguments)]
 pub fn framed_composer<'a>(
-    id: impl Into<String>,
-    destination: impl Into<String>,
-    label: &str,
-    value: &str,
-    change: impl Fn(String) -> Message + Send + Sync + 'static,
-    enabled: bool,
-    submit: Option<Message>,
+    field: ComposerSpec<'_>,
     footer: Element<'a, Message>,
 ) -> Element<'a, Message> {
-    let field = build(
-        id.into(),
-        destination.into(),
-        label,
-        value,
-        Arc::new(change),
-        enabled,
-        submit,
-        true,
-    );
+    let enabled = field.enabled;
+    let field = build(field, true);
     let hairline =
         iced::widget::container(iced::widget::Space::new().width(Length::Fill).height(1))
             .padding([0, 1])
@@ -427,17 +427,16 @@ pub fn framed_composer<'a>(
     })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build<'a>(
-    id: String,
-    destination: String,
-    label: &str,
-    value: &str,
-    change: Arc<dyn Fn(String) -> Message + Send + Sync>,
-    enabled: bool,
-    submit: Option<Message>,
-    bare: bool,
-) -> Element<'a, Message> {
+fn build<'a>(field: ComposerSpec<'_>, bare: bool) -> Element<'a, Message> {
+    let ComposerSpec {
+        id,
+        destination,
+        label,
+        value,
+        change,
+        enabled,
+        submit,
+    } = field;
     let mut semantic = Semantic::input(
         id.clone(),
         format!("{label} Enter to send. Shift+Enter for a new line."),
@@ -736,13 +735,15 @@ mod tests {
     #[test]
     fn a_framed_composer_shows_its_editors_focus_on_the_frame() {
         let element = framed_composer(
-            "room",
-            "room",
-            "Message",
-            "words",
-            Message::ConsoleInput,
-            true,
-            Some(Message::RunConsole),
+            ComposerSpec {
+                id: "room".into(),
+                destination: "room".into(),
+                label: "Message",
+                value: "words",
+                change: Arc::new(Message::ConsoleInput),
+                enabled: true,
+                submit: Some(Message::RunConsole),
+            },
             iced::widget::text("footer").into(),
         );
         let mut tree = Tree::new(&element);

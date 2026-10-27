@@ -83,6 +83,7 @@ impl Daemon {
         actor.ok_or_else(|| Box::new(Response::error(ErrorCode::Invalid, "name a project")))
     }
 
+    // Kept as the request spells it while the memory work in flight changes this signature.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn memory_add(
         self: &Arc<Self>,

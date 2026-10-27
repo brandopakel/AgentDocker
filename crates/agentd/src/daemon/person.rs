@@ -212,6 +212,16 @@ impl Starter {
     }
 }
 
+/// The questions [`starter`] asks of the system about a process in the
+/// table: when it was born, why it is not there, and whether it is a root
+/// (a login or SSH session leader, or a signed application of the
+/// person's); each a function so the tests can answer them.
+struct Probes<B, U, R> {
+    born: B,
+    unseen: U,
+    root: R,
+}
+
 /// Who started the session whose process is `pid`, born `birth`, walking
 /// every parent from its own up to the top: an agent's session anywhere on
 /// the way makes it [`Starter::Agent`]; a root on the way (`root`) is
@@ -224,17 +234,20 @@ impl Starter {
 /// out) and when the daemon's own process is the session or among its
 /// parents, whose launches are said at launch: nothing is decided, and the
 /// next registration traces again.
-#[allow(clippy::too_many_arguments)]
-fn starter(
+fn starter<B, U, R>(
     pid: u32,
     birth: DateTime<Utc>,
     own: u32,
     table: &[procinfo::Process],
     agents: &HashMap<u32, DateTime<Utc>>,
-    born: impl Fn(u32) -> Option<DateTime<Utc>>,
-    unseen: impl Fn(u32) -> Unseen,
-    root: impl Fn(&procinfo::Process) -> Option<bool>,
-) -> Option<Starter> {
+    probes: Probes<B, U, R>,
+) -> Option<Starter>
+where
+    B: Fn(u32) -> Option<DateTime<Utc>>,
+    U: Fn(u32) -> Unseen,
+    R: Fn(&procinfo::Process) -> Option<bool>,
+{
+    let Probes { born, unseen, root } = probes;
     if pid == own || born(pid) != Some(birth) {
         return None;
     }
@@ -873,9 +886,11 @@ impl Daemon {
                 std::process::id(),
                 &table,
                 &agents,
-                procinfo::start_time,
-                procinfo::unseen,
-                session_root,
+                Probes {
+                    born: procinfo::start_time,
+                    unseen: procinfo::unseen,
+                    root: session_root,
+                },
             )
         })
         .await
@@ -1247,7 +1262,14 @@ mod tests {
         };
         let started = |pid: u32, agents: &HashMap<u32, DateTime<Utc>>| {
             let birth = if pid == 61 { at(5) } else { at(i64::from(pid)) };
-            starter(pid, birth, 50, &table, agents, born, unseen, root)
+            starter(
+                pid,
+                birth,
+                50,
+                &table,
+                agents,
+                Probes { born, unseen, root },
+            )
         };
         let none = HashMap::new();
         let agent = HashMap::from([(30, at(30))]);
@@ -1306,7 +1328,7 @@ mod tests {
             "a reused pid is not the agent"
         );
         assert_eq!(
-            starter(12, at(99), 50, &table, &none, born, unseen, root),
+            starter(12, at(99), 50, &table, &none, Probes { born, unseen, root }),
             None,
             "another process now"
         );
@@ -1370,9 +1392,7 @@ mod tests {
                 50,
                 &table,
                 &none,
-                born,
-                unseen,
-                root,
+                Probes { born, unseen, root },
             )
         };
         assert_eq!(started(302), None, "the check timed out: nothing decided");

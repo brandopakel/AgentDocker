@@ -696,6 +696,7 @@ async fn deliver(
 /// event path. The count is taken under the one guard that decides to
 /// say it, so a loss the intake counts meanwhile is never lost twice
 /// over.
+// The sink loop's own locals, borrowed one notice at a time; a struct would outlive none of them.
 #[allow(clippy::too_many_arguments)]
 fn announce(
     daemon: &Daemon,

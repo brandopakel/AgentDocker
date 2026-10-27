@@ -264,18 +264,17 @@ fn flush_payload(root: &Path) -> Result<()> {
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn perform(
-    layout: &Layout,
-    active: Option<Activation>,
-    source: PathBuf,
-    candidate: Release,
-    preview: bool,
-    local_preview: bool,
-    expect_release: Option<String>,
-    expect_current: Option<String>,
-    socket: Option<PathBuf>,
-) -> Result<serde_json::Value> {
+pub(super) fn perform(layout: &Layout, install: Install) -> Result<serde_json::Value> {
+    let Install {
+        active,
+        source,
+        candidate,
+        preview,
+        local_preview,
+        expect_release,
+        expect_current,
+        socket,
+    } = install;
     validate(&candidate)?;
     ensure!(
         local_preview,
@@ -463,14 +462,16 @@ pub(super) fn run(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
         };
     let report = perform(
         &layout,
-        active,
-        source,
-        candidate,
-        preview,
-        local_preview,
-        expect_release,
-        expect_current,
-        socket,
+        Install {
+            active,
+            source,
+            candidate,
+            preview,
+            local_preview,
+            expect_release,
+            expect_current,
+            socket,
+        },
     )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())

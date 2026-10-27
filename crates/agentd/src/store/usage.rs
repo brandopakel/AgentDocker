@@ -69,6 +69,17 @@ fn text(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
 }
 
+/// Which retained samples one attribution pass takes: a runtime session's,
+/// to `attribution` (none attributes nothing and only moves the cursor),
+/// within `window` and no older than `retained_since`.
+pub(crate) struct UsageReconcile<'a> {
+    pub runtime: &'a str,
+    pub session: &'a str,
+    pub attribution: Option<&'a Attribution>,
+    pub window: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
+    pub retained_since: DateTime<Utc>,
+}
+
 impl Store {
     pub(crate) fn usage_snapshot(
         &self,
@@ -127,17 +138,19 @@ impl Store {
     /// attributed samples are immutable history, even if the live agent moves.
     /// The caller resolves an unambiguous runtime/session before this operation,
     /// and `window` bounds the sample times this attribution takes.
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn usage_reconcile(
         &self,
-        runtime: &str,
-        session: &str,
-        attribution: Option<&Attribution>,
-        window: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
-        retained_since: DateTime<Utc>,
+        reconcile: UsageReconcile<'_>,
         now: DateTime<Utc>,
         seq: u64,
     ) -> Result<Option<Event>> {
+        let UsageReconcile {
+            runtime,
+            session,
+            attribution,
+            window,
+            retained_since,
+        } = reconcile;
         let tx = write_transaction(&self.conn)?;
         // The scheduling cursor commits with the accounting/event, including
         // a no-op. A failed cursor write must roll the entire operation back.
@@ -815,11 +828,13 @@ mod tests {
         };
         let event = store
             .usage_reconcile(
-                "codex",
-                "session",
-                Some(&attribution),
-                (None, None),
-                at(0),
+                UsageReconcile {
+                    runtime: "codex",
+                    session: "session",
+                    attribution: Some(&attribution),
+                    window: (None, None),
+                    retained_since: at(0),
+                },
                 at(20),
                 store.max_event_seq().unwrap() + 1,
             )
@@ -843,11 +858,13 @@ mod tests {
             assert!(
                 store
                     .usage_reconcile(
-                        "codex",
-                        "session",
-                        Some(&attribution),
-                        (None, None),
-                        at(0),
+                        UsageReconcile {
+                            runtime: "codex",
+                            session: "session",
+                            attribution: Some(&attribution),
+                            window: (None, None),
+                            retained_since: at(0),
+                        },
                         at(20) + chrono::Duration::seconds(tick),
                         last_event + 1,
                     )
@@ -861,11 +878,13 @@ mod tests {
         set_tracking_capacity(&store, 1_000_000);
         let recovered = store
             .usage_reconcile(
-                "codex",
-                "session",
-                Some(&attribution),
-                (None, None),
-                at(0),
+                UsageReconcile {
+                    runtime: "codex",
+                    session: "session",
+                    attribution: Some(&attribution),
+                    window: (None, None),
+                    retained_since: at(0),
+                },
                 at(21),
                 store.max_event_seq().unwrap() + 1,
             )
@@ -1158,11 +1177,13 @@ mod tests {
         ] {
             store
                 .usage_reconcile(
-                    "codex",
-                    "session",
-                    Some(&to(agent)),
-                    window,
-                    at(0),
+                    UsageReconcile {
+                        runtime: "codex",
+                        session: "session",
+                        attribution: Some(&to(agent)),
+                        window,
+                        retained_since: at(0),
+                    },
                     at(20),
                     store.max_event_seq().unwrap() + 1,
                 )
@@ -1202,13 +1223,15 @@ mod tests {
         assert!(
             store
                 .usage_reconcile(
-                    "codex",
-                    "session",
-                    Some(&attribution),
-                    (None, None),
-                    at(0),
+                    UsageReconcile {
+                        runtime: "codex",
+                        session: "session",
+                        attribution: Some(&attribution),
+                        window: (None, None),
+                        retained_since: at(0),
+                    },
                     at(20),
-                    before + 1
+                    before + 1,
                 )
                 .is_err()
         );
@@ -1231,13 +1254,15 @@ mod tests {
         assert!(
             store
                 .usage_reconcile(
-                    "codex",
-                    "session",
-                    Some(&attribution),
-                    (None, None),
-                    at(0),
+                    UsageReconcile {
+                        runtime: "codex",
+                        session: "session",
+                        attribution: Some(&attribution),
+                        window: (None, None),
+                        retained_since: at(0),
+                    },
                     at(20),
-                    before + 1
+                    before + 1,
                 )
                 .is_err()
         );
@@ -1255,11 +1280,13 @@ mod tests {
             .unwrap();
         store
             .usage_reconcile(
-                "codex",
-                "session",
-                Some(&attribution),
-                (None, None),
-                at(0),
+                UsageReconcile {
+                    runtime: "codex",
+                    session: "session",
+                    attribution: Some(&attribution),
+                    window: (None, None),
+                    retained_since: at(0),
+                },
                 at(20),
                 before + 1,
             )
@@ -1374,11 +1401,13 @@ mod tests {
         };
         let event = store
             .usage_reconcile(
-                "codex",
-                "session",
-                Some(&attribution),
-                (None, None),
-                at(0),
+                UsageReconcile {
+                    runtime: "codex",
+                    session: "session",
+                    attribution: Some(&attribution),
+                    window: (None, None),
+                    retained_since: at(0),
+                },
                 at(20),
                 store.max_event_seq().unwrap() + 1,
             )
@@ -1391,13 +1420,15 @@ mod tests {
         assert!(
             store
                 .usage_reconcile(
-                    "codex",
-                    "session",
-                    Some(&attribution),
-                    (None, None),
-                    at(0),
+                    UsageReconcile {
+                        runtime: "codex",
+                        session: "session",
+                        attribution: Some(&attribution),
+                        window: (None, None),
+                        retained_since: at(0),
+                    },
                     at(20),
-                    store.max_event_seq().unwrap() + 1
+                    store.max_event_seq().unwrap() + 1,
                 )
                 .unwrap()
                 .is_none()
@@ -1419,13 +1450,15 @@ mod tests {
         assert!(
             store
                 .usage_reconcile(
-                    "codex",
-                    "session",
-                    Some(&moved),
-                    (None, None),
-                    at(0),
+                    UsageReconcile {
+                        runtime: "codex",
+                        session: "session",
+                        attribution: Some(&moved),
+                        window: (None, None),
+                        retained_since: at(0),
+                    },
                     at(20),
-                    store.max_event_seq().unwrap() + 1
+                    store.max_event_seq().unwrap() + 1,
                 )
                 .unwrap()
                 .is_none()

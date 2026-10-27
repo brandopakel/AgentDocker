@@ -8,6 +8,17 @@ use agentdocker_host::content;
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 
+/// What a checkpoint keeps, as the request spelt it; `release` ends the
+/// agent's leases once it is durable.
+pub(super) struct CheckpointArgs {
+    pub key: String,
+    pub task: String,
+    pub assumptions: Vec<String>,
+    pub next_steps: Vec<String>,
+    pub links: Vec<agentdocker_core::Link>,
+    pub release: bool,
+}
+
 impl Daemon {
     pub(super) fn checkpoints(&self, reference: Option<&str>) -> Response {
         let mut state = lock(&self.state);
@@ -96,17 +107,15 @@ impl Daemon {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn checkpoint(
-        &self,
-        reference: &str,
-        key: String,
-        task: String,
-        assumptions: Vec<String>,
-        next_steps: Vec<String>,
-        links: Vec<agentdocker_core::Link>,
-        release: bool,
-    ) -> Response {
+    pub(super) async fn checkpoint(&self, reference: &str, args: CheckpointArgs) -> Response {
+        let CheckpointArgs {
+            key,
+            task,
+            assumptions,
+            next_steps,
+            links,
+            release,
+        } = args;
         if let Err(reason) = agentdocker_core::link::check(&links) {
             return Response::error(ErrorCode::Invalid, reason);
         }
@@ -1033,12 +1042,14 @@ mod tests {
         let result = daemon
             .checkpoint(
                 "original",
-                "rollback".into(),
-                "task".into(),
-                vec![],
-                vec![],
-                vec![],
-                true,
+                CheckpointArgs {
+                    key: "rollback".into(),
+                    task: "task".into(),
+                    assumptions: vec![],
+                    next_steps: vec![],
+                    links: vec![],
+                    release: true,
+                },
             )
             .await;
         assert!(matches!(
@@ -1072,12 +1083,14 @@ mod tests {
         let Response::Checkpoint { checkpoint } = daemon
             .checkpoint(
                 "original",
-                "accept-rollback".into(),
-                "task".into(),
-                vec![],
-                vec![],
-                vec![],
-                false,
+                CheckpointArgs {
+                    key: "accept-rollback".into(),
+                    task: "task".into(),
+                    assumptions: vec![],
+                    next_steps: vec![],
+                    links: vec![],
+                    release: false,
+                },
             )
             .await
         else {
@@ -1206,12 +1219,14 @@ mod tests {
             daemon
                 .checkpoint(
                     "original",
-                    "barrier".into(),
-                    "task".into(),
-                    vec![],
-                    vec![],
-                    vec![],
-                    true
+                    CheckpointArgs {
+                        key: "barrier".into(),
+                        task: "task".into(),
+                        assumptions: vec![],
+                        next_steps: vec![],
+                        links: vec![],
+                        release: true,
+                    },
                 )
                 .await,
             Response::Checkpoint { .. }

@@ -22,6 +22,9 @@ mod roles;
 mod rules;
 pub(in crate::daemon) mod verdicts;
 
+pub(in crate::daemon) use plans::FilePutArgs;
+pub(in crate::daemon) use roles::RoleSaveArgs;
+
 const DOCUMENT: &str = "task";
 const BOARD: &str = "board";
 const COMMENT: &str = "task_comment";
@@ -677,6 +680,25 @@ pub(super) struct Filing {
     pub cards: Vec<BatchCard>,
 }
 
+/// Where a card goes: a lane, a holder, a place in the lane, and a word
+/// about why.
+pub(super) struct TaskMoveArgs<'a> {
+    pub column: Option<Column>,
+    pub to: Option<&'a str>,
+    pub after: Option<&'a str>,
+    pub before: Option<&'a str>,
+    pub comment: Option<&'a str>,
+}
+
+/// What a board update changes; a field left `None` keeps what the board
+/// has.
+pub(super) struct BoardChange {
+    pub name: Option<String>,
+    pub lanes: Option<Vec<Lane>>,
+    pub pull_source: Option<String>,
+    pub pull_target: Option<String>,
+}
+
 impl Daemon {
     /// File one card or a batch, all or none. A batch's cards may name
     /// each other by `ref` as the card they are part of or wait on; every
@@ -1169,17 +1191,19 @@ impl Daemon {
             .collect()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn task_move(
         self: &Arc<Self>,
         reference: &str,
         task: &str,
-        column: Option<Column>,
-        to: Option<&str>,
-        after: Option<&str>,
-        before: Option<&str>,
-        comment: Option<&str>,
+        args: TaskMoveArgs<'_>,
     ) -> Response {
+        let TaskMoveArgs {
+            column,
+            to,
+            after,
+            before,
+            comment,
+        } = args;
         let mut state = lock(&self.state);
         let actor = match state.actor(reference) {
             Ok(actor) => actor,
@@ -1350,7 +1374,6 @@ impl Daemon {
         Response::Task { task }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn task_update(
         self: &Arc<Self>,
         reference: &str,
@@ -1943,17 +1966,19 @@ impl Daemon {
         Response::Board { board }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn board_update(
         self: &Arc<Self>,
         from: &str,
         project: Option<&str>,
         selector: &str,
-        name: Option<String>,
-        lanes: Option<Vec<Lane>>,
-        pull_source: Option<String>,
-        pull_target: Option<String>,
+        change: BoardChange,
     ) -> Response {
+        let BoardChange {
+            name,
+            lanes,
+            pull_source,
+            pull_target,
+        } = change;
         let named = match project {
             Some(selector) => match self.resolve_project(selector).await {
                 Ok(id) => Some(id),

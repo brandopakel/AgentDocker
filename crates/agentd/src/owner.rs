@@ -538,6 +538,7 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
     Ok(code)
 }
 
+// Each argument is one channel or handle the supervisor owns for the child's life; bundling them would only move the list.
 #[allow(clippy::too_many_arguments)]
 async fn supervise(
     shared: Arc<Shared>,
