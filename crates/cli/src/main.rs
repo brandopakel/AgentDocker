@@ -4513,21 +4513,29 @@ async fn run() -> Result<()> {
                 reply_to: args.reply_to.map(MessageId::from),
                 links: args.links,
             };
-            if let Response::Sent {
-                message,
-                subscribers: _,
-                recipient_readiness,
-            } = client.call(&request).await?
-            {
-                println!("{message}");
-                eprintln!(
-                    "accepted by AgentDocker; provider receipt unconfirmed (`agentdocker delivery {message}` shows where it stands)"
-                );
-                if let Some(readiness) = recipient_readiness {
-                    format::send_readiness(&readiness);
-                } else {
-                    eprintln!("recipient input readiness unavailable from this daemon");
+            match client.call(&request).await? {
+                Response::Sent {
+                    message,
+                    subscribers: _,
+                    recipient_readiness,
+                } => {
+                    println!("{message}");
+                    eprintln!(
+                        "accepted by AgentDocker; provider receipt unconfirmed (`agentdocker delivery {message}` shows where it stands)"
+                    );
+                    if let Some(readiness) = recipient_readiness {
+                        format::send_readiness(&readiness);
+                    } else {
+                        eprintln!("recipient input readiness unavailable from this daemon");
+                    }
                 }
+                Response::Held { message, question } => {
+                    println!("{message}");
+                    eprintln!(
+                        "held for the person by this project's inbound trust; nobody has it until they release it from question {question} (`agentdocker answer {question} Release`, or Drop)"
+                    );
+                }
+                _ => {}
             }
         }
         Command::Me => {
@@ -4567,6 +4575,12 @@ async fn run() -> Result<()> {
             match client.call(&request).await? {
                 Response::Answer { from, text, .. } => println!("{}: {text}", format::short(&from)),
                 Response::Sent { message, .. } => println!("{message}"),
+                Response::Held { message, question } => {
+                    println!("{message}");
+                    eprintln!(
+                        "held for the person by this project's inbound trust; no answer will come: if released from question {question}, it reaches its recipient as a message"
+                    );
+                }
                 _ => bail!("unexpected question response"),
             }
         }

@@ -1973,6 +1973,17 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recipient_readiness: Option<crate::SendReadiness>,
     },
+    /// A `send`, `ask` or `post_question` the recipients' project holds for
+    /// the person (inbound trust `hold`): `message` is the sender's
+    /// message, kept whole and delivered to nobody yet; `question` is the
+    /// card put to the person, whose answer `Release` delivers it as sent
+    /// and `Drop` discards it. No answer comes back to an `ask` held this
+    /// way: its question reaches its recipient as an ordinary message if
+    /// released.
+    Held {
+        message: MessageId,
+        question: MessageId,
+    },
     Message {
         message: Envelope,
         /// A topic message's sequence in the topic log, for a later

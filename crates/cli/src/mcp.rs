@@ -2427,6 +2427,12 @@ fn render_whole(response: Response) -> Value {
                 false,
             )
         }
+        Response::Held { message, question } => text_result(
+            &json!({ "sent": false, "held": true, "message_id": message, "question_id": question,
+            "delivery": "held_for_the_person",
+            "note": "This project holds what you send until the person releases it from the question put to them; nobody has it yet. Do not resend." }),
+            false,
+        ),
         Response::Messages { messages } => text_result(&json!({ "messages": messages }), false),
         Response::Answer {
             message,
@@ -4674,6 +4680,26 @@ mod tests {
             text["recipient_readiness"]["details"][0]["fix"]["kind"],
             "reconnect"
         );
+    }
+
+    /// A held send says so plainly, with the card to watch, and never
+    /// reads as sent: the hosted model must neither resend nor assume
+    /// delivery.
+    #[test]
+    fn a_held_send_is_rendered_as_held_not_sent() {
+        let result = render_whole(Response::Held {
+            message: "0123456789abcdef".to_owned().into(),
+            question: "fedcba9876543210".to_owned().into(),
+        });
+        let text: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text["sent"], false);
+        assert_eq!(text["held"], true);
+        assert_eq!(text["message_id"], "0123456789abcdef");
+        assert_eq!(text["question_id"], "fedcba9876543210");
+        assert_eq!(text["delivery"], "held_for_the_person");
+        assert!(text["note"].as_str().unwrap().contains("Do not resend"));
+        assert_eq!(result["isError"], false);
     }
 
     /// Sessions in every readiness state, of the runtimes that differ, and
