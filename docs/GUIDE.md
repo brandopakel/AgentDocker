@@ -524,9 +524,9 @@ each one by pid.
 | `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
 | `watch` | Stream messages for an agent or matching topics. Topics keep their messages: `watch --as <agent> 'repo/#'` first shows what each matching topic kept since the last topic message that agent acknowledged there (everything kept, the first time), then streams live; `inbox --as <agent> --ack <id>` on a topic message moves that topic on past it. A topic line shows its `seq:`; without an agent, topics are live only unless `--after-seq <n>` replays from that point. One watch replays at most a topic's newest 500, 5,000 in all, and says how many older ones it did not replay |
 | `inbox` | Messages queued while an agent was not watching |
-| `ask` | Ask an agent — or the human — and wait for the answer |
-| `answer` | Answer a question somebody is waiting on |
-| `questions` | Questions waiting for an answer |
+| `ask` | Ask an agent — or the human — and wait for the answer. `--kind question\|permission\|access` says what is being decided; `--option "Label: what it means"` (repeat) offers choices, `--multi` lets several be chosen, `--no-other` takes only those; `--stale-after <secs> --stale-action keep_waiting\|withdraw\|answer:<label>` says what happens when nobody answers in that time; see [Three kinds of question](#three-kinds-of-question) |
+| `answer` | Answer a question somebody is waiting on: words, or `--choice <label or number>` (repeat for a multi-select) with `--note` for your own words beside it |
+| `questions` | Questions waiting for an answer, each with its kind, `[stale]` when its window passed, and its options numbered |
 | `conversations` | What you can read: every conversation with its unread count, newest first |
 | `history <conversation>` | What was said in one conversation, oldest first; `--read` marks it read through the last line shown, for you or for `--as <agent>` (the agent's own shell, through `AGENTDOCKER_AGENT_ID`), never the other |
 | `thread <message>` | One message and the replies under it |
@@ -707,6 +707,14 @@ about us:
 
 `send_message` · `read_inbox` · `wait_for_messages` · `acknowledge_messages` ·
 `ask_human` · `open_questions` · `answer_question` · `report_activity`
+
+`ask_human` takes `kind`, `options` (labels, or `{label, description}`),
+`multi_select`, `allow_other`, `stale_after_secs` and `stale_action` beside the
+question; `answer_question` takes `choices` (labels or numbers) and `note`
+beside `text`; `open_questions` returns each question's `prompt`, the words
+with the options numbered, so a reader that renders only text offers the same
+choices the desktop draws as buttons. See
+[Three kinds of question](#three-kinds-of-question).
 
 `claim` · `renew` · `release` · `list_leases`
 
@@ -1104,6 +1112,39 @@ Current behaviour that the sections above do not already state, by area.
 
 
 ### Messaging and delivery
+
+- Three kinds of question. A question an agent puts to you (or to another
+  agent) is free text, and may say more: its kind, its options and what
+  happens when nobody answers in time. The three kinds get the same answer
+  controls and their own chip (*Permission*, *Access*; a plain question
+  carries none), so the eye finds the destructive decisions. An example of
+  each:
+
+  ```sh
+  # A question: a choice only the person can make.
+  agentdocker ask --to user --option "Blue: the current theme" \
+      --option "Green: the one in the mock-ups" "Which theme for the beta?"
+  # A permission: leave to do one operation once; stale after ten minutes,
+  # and then denied by default rather than left hanging.
+  agentdocker ask --to user --kind permission --option Allow --option Deny \
+      --no-other --stale-after 600 --stale-action answer:Deny \
+      "Run the migration against the staging database?"
+  # An access request: standing access to a resource; withdrawn if nobody
+  # answers within the hour, so the agent moves on.
+  agentdocker ask --to user --kind access --option "Read only" \
+      --option "Read and write" --stale-after 3600 --stale-action withdraw \
+      "Which access to the deploy credentials should agent-1 have?"
+  ```
+
+  The options show as buttons in the desktop, as a numbered list with an
+  *Other* line in a terminal and in the connector, and the answer is the
+  same wherever it is given: `agentdocker answer <id> 2`, `--choice Green`,
+  or words of your own where the question allows them. A question with a
+  stale window goes **stale** once the window passes: by default it stays
+  open and is marked so; `answer:<label>` takes that option as the answer,
+  attributed to the daemon as the default; `withdraw` closes it and the
+  asker's wait ends with a timeout. Without a window nothing changes: the
+  question waits until it is answered, cancelled or expires.
 
 - Conversations: every message is archived in the one conversation its
   destination names (`everyone:<project>`, `all`, `channel:<id>`,

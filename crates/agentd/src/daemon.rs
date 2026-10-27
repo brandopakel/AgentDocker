@@ -2365,15 +2365,17 @@ impl Daemon {
                 to,
                 question,
                 timeout_secs,
-            } => self.ask(from, to, question, timeout_secs).await,
+                form,
+            } => self.ask(from, to, question, timeout_secs, form).await,
             Request::PostQuestion {
                 from,
                 to,
                 question,
                 presentation,
                 timeout_secs,
+                form,
             } => {
-                self.post_question(from, to, question, presentation, timeout_secs)
+                self.post_question(from, to, question, presentation, timeout_secs, form)
                     .await
             }
             Request::CancelQuestion { agent, message } => self.cancel_question(&agent, &message),
@@ -2381,7 +2383,9 @@ impl Daemon {
                 from,
                 message,
                 text,
-            } => self.answer(from, message, text).await,
+                choices,
+                note,
+            } => self.answer(from, message, text, choices, note).await,
             Request::Questions { agent } => self.questions(agent),
             Request::Activity {
                 agent,
@@ -5098,6 +5102,17 @@ impl State {
         self.publish_with_channel(envelope, question, None, None)
     }
 
+    /// The daemon's own answer to a question whose stale window passed:
+    /// it closes `question` although no recipient sent it, and is
+    /// attributed to `agentd` as the default.
+    pub(super) fn publish_default_answer(
+        &mut self,
+        envelope: Envelope,
+        question: &MessageId,
+    ) -> Response {
+        self.publish_routed(envelope, None, None, None, Some(question.clone()))
+    }
+
     /// Prepare channel state and ancillary effects without changing live state;
     /// publish the complete transition only after the message transaction commits.
     /// `document` is one more thing that lands with the message or not at
@@ -5109,6 +5124,20 @@ impl State {
         question: Option<agentdocker_core::Question>,
         channel: Option<(Channel, Vec<EventKind>, Option<JournalEntry>)>,
         document: Option<DocumentTransition>,
+    ) -> Response {
+        self.publish_routed(envelope, question, channel, document, None)
+    }
+
+    /// [`State::publish_with_channel`], with `default_for` naming the open
+    /// question this envelope closes as the daemon's default answer: the
+    /// one closure that no addressed recipient sent.
+    fn publish_routed(
+        &mut self,
+        envelope: Envelope,
+        question: Option<agentdocker_core::Question>,
+        channel: Option<(Channel, Vec<EventKind>, Option<JournalEntry>)>,
+        document: Option<DocumentTransition>,
+        default_for: Option<MessageId>,
     ) -> Response {
         let (channel, transition, mut journal) = match channel {
             Some((channel, events, journal)) => (Some(channel), events, journal),
@@ -5161,10 +5190,13 @@ impl State {
         // kind says so before it is sized, stored or routed, and the route
         // is chosen here for both. With an `ask` waiting the answer is held
         // for it; otherwise the queue is its route, said at once.
-        let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
-            .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
-            .filter(|pending| self.put_to(pending, &AgentId::from(envelope.from.as_str())))
-            .map(|pending| pending.id.clone());
+        let closed = match default_for {
+            Some(question) => self.questions.contains_key(&question).then_some(question),
+            None => envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
+                .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
+                .filter(|pending| self.put_to(pending, &AgentId::from(envelope.from.as_str())))
+                .map(|pending| pending.id.clone()),
+        };
         if let Some(
             presentation @ (agentdocker_core::QuestionPresentation::McpUrl { .. }
             | agentdocker_core::QuestionPresentation::McpForm { .. }),

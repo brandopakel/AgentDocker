@@ -87,7 +87,11 @@ pub struct TaskTransition<'a> {
 // Nor do `topic_messages` and `topic_cursors`, by the same rule: an older
 // daemon keeps no topic messages and moves no cursor while it runs, so a
 // reader may later be replayed less or again, never anything wrong.
-pub(crate) const SCHEMA_VERSION: i64 = 28;
+// Schema 29 types a pending question: its kind, options, stale window and
+// stale action, and the moment it went stale. An older daemon reloading one
+// would drop them, answer a withdrawn or defaulted question as still open,
+// and never apply the default its asker chose.
+pub(crate) const SCHEMA_VERSION: i64 = 29;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS usage_emissions (

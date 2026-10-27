@@ -158,6 +158,371 @@ pub struct Question {
     /// When the asker gives up. An answer after this is still delivered as
     /// an ordinary message; it just has nobody blocked on it.
     pub expires_at: DateTime<Utc>,
+    /// What the asker asked for beyond the words: the kind of decision,
+    /// the choices, and what happens when nobody answers in time. Every
+    /// field has a default, so a question with none of them is the free
+    /// text it always was.
+    #[serde(flatten)]
+    pub form: QuestionForm,
+    /// When the question went stale: its `stale_after_secs` passed with
+    /// no answer. Set once, by the daemon, with the `question_stale`
+    /// event; `None` while the question is fresh or when it never set a
+    /// stale window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_since: Option<DateTime<Utc>>,
+}
+
+/// The kind of decision a question asks for. Each kind gets its own chip
+/// in the desktop and its own word in a terminal; the daemon treats them
+/// alike otherwise.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuestionKind {
+    /// A choice or a piece of information only the recipient has.
+    #[default]
+    Question,
+    /// Leave to do one operation once: run a command, change these files.
+    Permission,
+    /// Standing access to a resource: a credential, a service, a path.
+    Access,
+}
+
+impl QuestionKind {
+    pub const ALL: [QuestionKind; 3] = [Self::Question, Self::Permission, Self::Access];
+
+    /// The wire name, which is also the word a chip shows in lower case.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Question => "question",
+            Self::Permission => "permission",
+            Self::Access => "access",
+        }
+    }
+
+    /// The chip's word.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Question => "Question",
+            Self::Permission => "Permission",
+            Self::Access => "Access",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|kind| kind.as_str().eq_ignore_ascii_case(value.trim()))
+    }
+
+    fn is_question(&self) -> bool {
+        *self == Self::Question
+    }
+}
+
+impl std::fmt::Display for QuestionKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// What the daemon does when a question's stale window passes with no
+/// answer. The default keeps waiting: the question stays open until it is
+/// answered, cancelled or expires, exactly as a question with no window.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum StaleAction {
+    /// Mark it stale and keep it open.
+    #[default]
+    KeepWaiting,
+    /// Answer it with this option, attributed to the daemon as the default.
+    AnswerDefault { label: String },
+    /// Close it unanswered; a waiting `ask` gets `error(timeout)`.
+    Withdraw,
+}
+
+impl StaleAction {
+    /// Parse the one-line spelling the CLI and the MCP tools take:
+    /// `keep_waiting`, `withdraw`, or `answer:<label>`.
+    pub fn parse(value: &str) -> Option<Self> {
+        let value = value.trim();
+        if value.eq_ignore_ascii_case("keep_waiting") || value.eq_ignore_ascii_case("keep-waiting")
+        {
+            return Some(Self::KeepWaiting);
+        }
+        if value.eq_ignore_ascii_case("withdraw") {
+            return Some(Self::Withdraw);
+        }
+        let label = value
+            .strip_prefix("answer:")
+            .or_else(|| value.strip_prefix("answer="))?
+            .trim();
+        (!label.is_empty()).then(|| Self::AnswerDefault {
+            label: label.to_owned(),
+        })
+    }
+
+    fn is_keep_waiting(&self) -> bool {
+        *self == Self::KeepWaiting
+    }
+}
+
+impl std::fmt::Display for StaleAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::KeepWaiting => f.write_str("keep_waiting"),
+            Self::Withdraw => f.write_str("withdraw"),
+            Self::AnswerDefault { label } => write!(f, "answer:{label}"),
+        }
+    }
+}
+
+/// The typed part of a question: its kind, its options and its stale
+/// rule. Shared by the `ask` and `post_question` requests, which carry it
+/// flattened beside the text, and by the stored [`Question`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionForm {
+    #[serde(default, skip_serializing_if = "QuestionKind::is_question")]
+    pub kind: QuestionKind,
+    /// The choices offered; empty means free text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<QuestionOption>,
+    /// Several options may be chosen at once.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi_select: bool,
+    /// Besides the options, an answer in the recipient's own words is
+    /// taken. On by default; meaningless without options.
+    #[serde(default = "true_by_default", skip_serializing_if = "Clone::clone")]
+    pub allow_other: bool,
+    /// How long after it is asked the question goes stale, if ever. Must
+    /// be shorter than the timeout: stale comes before expired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_after_secs: Option<u64>,
+    #[serde(default, skip_serializing_if = "StaleAction::is_keep_waiting")]
+    pub stale_action: StaleAction,
+}
+
+fn true_by_default() -> bool {
+    true
+}
+
+impl Default for QuestionForm {
+    fn default() -> Self {
+        Self {
+            kind: QuestionKind::Question,
+            options: Vec::new(),
+            multi_select: false,
+            allow_other: true,
+            stale_after_secs: None,
+            stale_action: StaleAction::KeepWaiting,
+        }
+    }
+}
+
+impl QuestionForm {
+    /// As many options as a person can take in at once, and as a Codex
+    /// choice presentation allows.
+    pub const MAX_OPTIONS: usize = 16;
+
+    /// Whether this form asks for anything beyond free text.
+    pub fn is_plain(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The form is sound for a question that expires `timeout_secs` after
+    /// it is asked: every option label is distinct and trimmed, a choice
+    /// needs options, the default answer is one of the options (or some
+    /// words, for a free-text question), and the stale window, when there
+    /// is one, is shorter than the timeout.
+    pub fn validate(&self, timeout_secs: u64) -> Result<(), String> {
+        let bounded = |s: &str| !s.trim().is_empty() && s.len() <= 16_000;
+        if self.options.len() > Self::MAX_OPTIONS {
+            return Err(format!("at most {} options", Self::MAX_OPTIONS));
+        }
+        let mut labels = std::collections::HashSet::new();
+        for option in &self.options {
+            if option.label != option.label.trim() || !bounded(&option.label) {
+                return Err("an option label needs words, without surrounding space".to_owned());
+            }
+            if option.description.len() > 16_000 {
+                return Err("an option description is too long".to_owned());
+            }
+            if !labels.insert(option.label.as_str()) {
+                return Err(format!("option {:?} is offered twice", option.label));
+            }
+        }
+        if self.multi_select && self.options.is_empty() {
+            return Err("multi_select needs options to choose from".to_owned());
+        }
+        match self.stale_after_secs {
+            Some(0) => return Err("stale_after_secs must be at least 1".to_owned()),
+            Some(secs) if secs >= timeout_secs => {
+                return Err("a question goes stale before it expires: stale_after_secs must be shorter than the timeout".to_owned());
+            }
+            None if self.stale_action != StaleAction::KeepWaiting => {
+                return Err("a stale action needs stale_after_secs".to_owned());
+            }
+            _ => {}
+        }
+        if let StaleAction::AnswerDefault { label } = &self.stale_action {
+            if self.options.is_empty() {
+                if label != label.trim() || !bounded(label) {
+                    return Err("the default answer needs words".to_owned());
+                }
+            } else if !labels.contains(label.as_str()) {
+                return Err(format!(
+                    "the default answer {label:?} is not one of the options"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// The options as a numbered list, with the Other line when the
+    /// recipient may answer in their own words. What a terminal, the
+    /// connector and a text-only reader show under the question; `None`
+    /// without options.
+    pub fn options_text(&self) -> Option<String> {
+        if self.options.is_empty() {
+            return None;
+        }
+        let mut text = String::from(if self.multi_select {
+            "Choose any that apply, by number or label:"
+        } else {
+            "Choose one, by number or label:"
+        });
+        for (index, option) in self.options.iter().enumerate() {
+            text.push_str(&format!("\n{}. {}", index + 1, option.label));
+            if !option.description.trim().is_empty() {
+                text.push_str(&format!(" — {}", option.description.trim()));
+            }
+        }
+        if self.allow_other {
+            text.push_str("\nOther: answer in your own words.");
+        }
+        Some(text)
+    }
+
+    /// The option `value` names: its 1-based number, or its label (case
+    /// does not matter, surrounding space does not either).
+    pub fn resolve_choice(&self, value: &str) -> Option<&QuestionOption> {
+        let value = value.trim();
+        if let Ok(number) = value.parse::<usize>()
+            && number >= 1
+            && let Some(option) = self.options.get(number - 1)
+        {
+            return Some(option);
+        }
+        self.options
+            .iter()
+            .find(|option| option.label.eq_ignore_ascii_case(value))
+    }
+}
+
+/// An answer as it was given: the options chosen, by label, a note in the
+/// answerer's words, and the text a reader that knows neither sees. The
+/// daemon builds one from an `answer` request against the question it
+/// answers, so a number becomes its label and a choice outside the options
+/// is refused unless the question allows Other.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionAnswer {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Nobody answered: the daemon applied the question's default.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub default: bool,
+}
+
+impl QuestionAnswer {
+    /// Resolve what was given against `form`. `choices` are labels or
+    /// numbers; with none, `text` is read as one choice when the form has
+    /// options, and as the answer itself otherwise.
+    pub fn resolve(
+        form: &QuestionForm,
+        text: &str,
+        choices: &[String],
+        note: Option<&str>,
+    ) -> Result<Self, String> {
+        let note = note
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+            .map(str::to_owned);
+        let text = text.trim();
+        if form.options.is_empty() {
+            if !choices.is_empty() {
+                return Err("this question offers no options; answer in words".to_owned());
+            }
+            let text = match (text.is_empty(), &note) {
+                (false, _) => text.to_owned(),
+                (true, Some(note)) => note.clone(),
+                (true, None) => return Err("an answer needs some text".to_owned()),
+            };
+            return Ok(Self {
+                text,
+                choices: Vec::new(),
+                note,
+                default: false,
+            });
+        }
+        let given: Vec<&str> = if choices.is_empty() {
+            if text.is_empty() {
+                return Err("choose an option, or answer in words".to_owned());
+            }
+            vec![text]
+        } else {
+            choices.iter().map(|c| c.trim()).collect()
+        };
+        let mut resolved: Vec<String> = Vec::new();
+        for value in given {
+            let label = match form.resolve_choice(value) {
+                Some(option) => option.label.clone(),
+                None if form.allow_other && !value.is_empty() => value.to_owned(),
+                None if value.is_empty() => return Err("an empty choice".to_owned()),
+                None => {
+                    return Err(format!(
+                        "{value:?} is not one of the options; this question takes no other answer"
+                    ));
+                }
+            };
+            if !resolved.contains(&label) {
+                resolved.push(label);
+            }
+        }
+        if !form.multi_select && resolved.len() > 1 {
+            return Err("this question takes one choice".to_owned());
+        }
+        let mut text = resolved.join(", ");
+        if let Some(note) = &note {
+            text.push_str(" — ");
+            text.push_str(note);
+        }
+        Ok(Self {
+            text,
+            choices: resolved,
+            note,
+            default: false,
+        })
+    }
+
+    /// The payload of the `answer` message that carries this.
+    pub fn payload(&self) -> serde_json::Value {
+        serde_json::to_value(self).unwrap_or_else(|_| serde_json::json!({"text": self.text}))
+    }
+
+    /// Read an answer back from a message payload; a payload with only
+    /// text is a text-only answer.
+    pub fn from_payload(payload: &serde_json::Value) -> Self {
+        serde_json::from_value(payload.clone()).unwrap_or_else(|_| Self {
+            text: payload
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| payload.to_string()),
+            ..Self::default()
+        })
+    }
 }
 
 /// Which way an answer reached its asker. A synchronous `ask` waiting on
@@ -547,6 +912,43 @@ impl Question {
         now >= self.expires_at
     }
 
+    pub fn kind(&self) -> QuestionKind {
+        self.form.kind
+    }
+
+    /// When the stale window closes, if the question set one.
+    pub fn stale_at(&self) -> Option<DateTime<Utc>> {
+        self.form
+            .stale_after_secs
+            .and_then(|secs| i64::try_from(secs).ok())
+            .map(|secs| self.asked_at + chrono::Duration::seconds(secs))
+    }
+
+    /// Whether the question has gone stale: marked so by the daemon, or
+    /// past its window and not yet swept.
+    pub fn stale(&self, now: DateTime<Utc>) -> bool {
+        self.stale_since.is_some() || self.stale_at().is_some_and(|at| now >= at)
+    }
+
+    /// The question as a text-only reader sees it: the words, then the
+    /// numbered options when there are any.
+    pub fn prompt(&self) -> String {
+        match self.form.options_text() {
+            Some(options) => format!("{}\n\n{options}", self.text.trim_end()),
+            None => self.text.clone(),
+        }
+    }
+
+    /// Whether `value` is one of this question's offered choices: an
+    /// option label, or a choice its presentation permits.
+    pub fn permits_choice(&self, value: &str) -> bool {
+        self.form.options.iter().any(|o| o.label == value)
+            || self
+                .presentation
+                .as_ref()
+                .is_some_and(|p| p.valid_for(&self.text) && p.permits_choice(value))
+    }
+
     /// Whether this question was put to `agent` — directly, or as one of
     /// the recipients of a wider destination it belongs to. `project` is
     /// the one `agent` works in: a question put to a project reaches its
@@ -595,6 +997,8 @@ mod tests {
             presentation: None,
             asked_at: now,
             expires_at: now,
+            form: Default::default(),
+            stale_since: None,
         };
         let agent = AgentId::from("agent");
         let to_alpha = question(Destination::Project(alpha.clone()));
@@ -803,5 +1207,326 @@ mod tests {
         assert_eq!(json, r#"{"kind":"topic","value":"x"}"#);
         let json = serde_json::to_string(&Destination::Broadcast).unwrap();
         assert_eq!(json, r#"{"kind":"broadcast"}"#);
+    }
+}
+
+#[cfg(test)]
+mod form_tests {
+    use super::*;
+
+    fn option(label: &str, description: &str) -> QuestionOption {
+        QuestionOption {
+            label: label.into(),
+            description: description.into(),
+        }
+    }
+
+    fn colours() -> QuestionForm {
+        QuestionForm {
+            options: vec![option("Blue", "the current theme"), option("Green", "")],
+            ..QuestionForm::default()
+        }
+    }
+
+    fn question(form: QuestionForm) -> Question {
+        let now = Utc::now();
+        Question {
+            id: MessageId::generate(),
+            from: "asker".into(),
+            to: Destination::Agent(AgentId::from("user")),
+            text: "Which theme?".into(),
+            presentation: None,
+            asked_at: now,
+            expires_at: now + chrono::Duration::seconds(300),
+            form,
+            stale_since: None,
+        }
+    }
+
+    /// A question that says nothing beyond its words is on the wire what
+    /// it always was, and one stored before forms existed reads back as a
+    /// plain question that keeps waiting.
+    #[test]
+    fn a_plain_form_adds_nothing_to_the_wire_and_an_old_question_reads_back_plain() {
+        let plain = question(QuestionForm::default());
+        let value = serde_json::to_value(&plain).unwrap();
+        for key in [
+            "kind",
+            "options",
+            "multi_select",
+            "allow_other",
+            "stale_after_secs",
+            "stale_action",
+            "stale_since",
+        ] {
+            assert!(
+                value.get(key).is_none(),
+                "{key} must be absent on a plain question"
+            );
+        }
+        // What a daemon stored before questions had a form: the same
+        // seven fields, nothing else.
+        assert_eq!(value.as_object().map(|o| o.len()), Some(6), "{value}");
+        let read: Question = serde_json::from_value(value).unwrap();
+        assert!(read.form.is_plain());
+        assert!(read.form.allow_other);
+        assert_eq!(read.kind(), QuestionKind::Question);
+        assert_eq!(read.stale_at(), None);
+        assert!(!read.stale(Utc::now()));
+        assert_eq!(read.prompt(), "Which theme?");
+    }
+
+    /// The typed fields survive a round trip, flattened beside the text.
+    #[test]
+    fn a_typed_form_round_trips_flattened() {
+        let mut form = colours();
+        form.kind = QuestionKind::Permission;
+        form.multi_select = true;
+        form.allow_other = false;
+        form.stale_after_secs = Some(60);
+        form.stale_action = StaleAction::AnswerDefault {
+            label: "Blue".into(),
+        };
+        let asked = question(form.clone());
+        let value = serde_json::to_value(&asked).unwrap();
+        assert_eq!(value["kind"], "permission");
+        assert_eq!(value["options"][1]["label"], "Green");
+        assert_eq!(value["multi_select"], true);
+        assert_eq!(value["allow_other"], false);
+        assert_eq!(value["stale_after_secs"], 60);
+        assert_eq!(value["stale_action"]["action"], "answer_default");
+        assert_eq!(value["stale_action"]["label"], "Blue");
+        let read: Question = serde_json::from_value(value).unwrap();
+        assert_eq!(read.form, form);
+        assert_eq!(
+            read.stale_at(),
+            Some(asked.asked_at + chrono::Duration::seconds(60))
+        );
+        assert!(read.stale(asked.asked_at + chrono::Duration::seconds(60)));
+        assert!(!read.stale(asked.asked_at + chrono::Duration::seconds(59)));
+    }
+
+    #[test]
+    fn validation_holds_labels_choices_and_the_stale_window_to_their_rules() {
+        assert_eq!(QuestionForm::default().validate(300), Ok(()));
+        assert_eq!(colours().validate(300), Ok(()));
+        let twice = QuestionForm {
+            options: vec![option("Blue", ""), option("Blue", "")],
+            ..QuestionForm::default()
+        };
+        assert!(twice.validate(300).is_err(), "a repeated label");
+        let padded = QuestionForm {
+            options: vec![option(" Blue", "")],
+            ..QuestionForm::default()
+        };
+        assert!(padded.validate(300).is_err(), "surrounding space");
+        let blank = QuestionForm {
+            options: vec![option("", "")],
+            ..QuestionForm::default()
+        };
+        assert!(blank.validate(300).is_err(), "a blank label");
+        let many = QuestionForm {
+            options: (0..=QuestionForm::MAX_OPTIONS)
+                .map(|n| option(&n.to_string(), ""))
+                .collect(),
+            ..QuestionForm::default()
+        };
+        assert!(many.validate(300).is_err(), "too many options");
+        let multi_without = QuestionForm {
+            multi_select: true,
+            ..QuestionForm::default()
+        };
+        assert!(
+            multi_without.validate(300).is_err(),
+            "multi_select needs options"
+        );
+        let zero = QuestionForm {
+            stale_after_secs: Some(0),
+            ..QuestionForm::default()
+        };
+        assert!(zero.validate(300).is_err(), "a zero window");
+        let late = QuestionForm {
+            stale_after_secs: Some(300),
+            ..QuestionForm::default()
+        };
+        assert!(late.validate(300).is_err(), "stale must come before expiry");
+        let early = QuestionForm {
+            stale_after_secs: Some(299),
+            ..QuestionForm::default()
+        };
+        assert_eq!(early.validate(300), Ok(()));
+        let action_without_window = QuestionForm {
+            stale_action: StaleAction::Withdraw,
+            ..QuestionForm::default()
+        };
+        assert!(
+            action_without_window.validate(300).is_err(),
+            "an action needs a window"
+        );
+        let default_outside = QuestionForm {
+            stale_after_secs: Some(10),
+            stale_action: StaleAction::AnswerDefault {
+                label: "Red".into(),
+            },
+            ..colours()
+        };
+        assert!(
+            default_outside.validate(300).is_err(),
+            "the default must be an option"
+        );
+        let default_inside = QuestionForm {
+            stale_after_secs: Some(10),
+            stale_action: StaleAction::AnswerDefault {
+                label: "Green".into(),
+            },
+            ..colours()
+        };
+        assert_eq!(default_inside.validate(300), Ok(()));
+        let free_default = QuestionForm {
+            stale_after_secs: Some(10),
+            stale_action: StaleAction::AnswerDefault {
+                label: "carry on".into(),
+            },
+            ..QuestionForm::default()
+        };
+        assert_eq!(
+            free_default.validate(300),
+            Ok(()),
+            "a free-text question may default to words"
+        );
+        let blank_default = QuestionForm {
+            stale_after_secs: Some(10),
+            stale_action: StaleAction::AnswerDefault { label: " ".into() },
+            ..QuestionForm::default()
+        };
+        assert!(blank_default.validate(300).is_err());
+    }
+
+    /// The text a terminal shows numbers the options and offers Other
+    /// exactly when the form does; the prompt puts it under the words.
+    #[test]
+    fn options_render_as_a_numbered_list_with_an_other_line() {
+        assert_eq!(QuestionForm::default().options_text(), None);
+        let asked = question(colours());
+        assert_eq!(
+            asked.prompt(),
+            "Which theme?\n\nChoose one, by number or label:\n1. Blue — the current theme\n2. Green\nOther: answer in your own words."
+        );
+        let strict = question(QuestionForm {
+            multi_select: true,
+            allow_other: false,
+            ..colours()
+        });
+        assert_eq!(
+            strict.form.options_text().unwrap(),
+            "Choose any that apply, by number or label:\n1. Blue — the current theme\n2. Green"
+        );
+    }
+
+    #[test]
+    fn a_choice_is_found_by_number_or_label() {
+        let form = colours();
+        assert_eq!(
+            form.resolve_choice("1").map(|o| o.label.as_str()),
+            Some("Blue")
+        );
+        assert_eq!(
+            form.resolve_choice(" green ").map(|o| o.label.as_str()),
+            Some("Green")
+        );
+        assert_eq!(form.resolve_choice("3"), None);
+        assert_eq!(form.resolve_choice("0"), None);
+        assert_eq!(form.resolve_choice("Red"), None);
+        let asked = question(form);
+        assert!(asked.permits_choice("Blue"));
+        assert!(!asked.permits_choice("Red"));
+    }
+
+    #[test]
+    fn an_answer_resolves_against_the_form() {
+        let plain = QuestionForm::default();
+        assert_eq!(
+            QuestionAnswer::resolve(&plain, "yes", &[], None)
+                .unwrap()
+                .text,
+            "yes"
+        );
+        assert!(QuestionAnswer::resolve(&plain, " ", &[], None).is_err());
+        assert!(
+            QuestionAnswer::resolve(&plain, "", &["1".into()], None).is_err(),
+            "no options to choose from"
+        );
+        let colours = colours();
+        let by_number = QuestionAnswer::resolve(&colours, "2", &[], None).unwrap();
+        assert_eq!(by_number.choices, vec!["Green".to_owned()]);
+        assert_eq!(by_number.text, "Green");
+        let by_label =
+            QuestionAnswer::resolve(&colours, "", &["blue".into()], Some(" please ")).unwrap();
+        assert_eq!(by_label.choices, vec!["Blue".to_owned()]);
+        assert_eq!(by_label.note.as_deref(), Some("please"));
+        assert_eq!(by_label.text, "Blue — please");
+        let other = QuestionAnswer::resolve(&colours, "Red", &[], None).unwrap();
+        assert_eq!(
+            other.choices,
+            vec!["Red".to_owned()],
+            "Other is allowed by default"
+        );
+        assert!(
+            QuestionAnswer::resolve(&colours, "", &["1".into(), "2".into()], None).is_err(),
+            "one choice unless multi_select"
+        );
+        let strict = QuestionForm {
+            allow_other: false,
+            multi_select: true,
+            ..colours.clone()
+        };
+        assert!(QuestionAnswer::resolve(&strict, "Red", &[], None).is_err());
+        let both =
+            QuestionAnswer::resolve(&strict, "", &["2".into(), "Blue".into(), "2".into()], None)
+                .unwrap();
+        assert_eq!(
+            both.choices,
+            vec!["Green".to_owned(), "Blue".to_owned()],
+            "deduplicated, in order"
+        );
+        assert_eq!(both.text, "Green, Blue");
+        assert!(QuestionAnswer::resolve(&strict, "", &[" ".into()], None).is_err());
+        let payload = both.payload();
+        assert_eq!(QuestionAnswer::from_payload(&payload), both);
+        let bare = QuestionAnswer::from_payload(&serde_json::json!({"text": "ok"}));
+        assert_eq!(bare.text, "ok");
+        assert!(bare.choices.is_empty() && bare.note.is_none() && !bare.default);
+    }
+
+    #[test]
+    fn kinds_and_stale_actions_parse_their_one_line_spellings() {
+        assert_eq!(
+            QuestionKind::parse(" Permission "),
+            Some(QuestionKind::Permission)
+        );
+        assert_eq!(QuestionKind::parse("access"), Some(QuestionKind::Access));
+        assert_eq!(QuestionKind::parse("prompt"), None);
+        assert_eq!(QuestionKind::Access.label(), "Access");
+        assert_eq!(QuestionKind::Access.to_string(), "access");
+        assert_eq!(
+            StaleAction::parse("keep_waiting"),
+            Some(StaleAction::KeepWaiting)
+        );
+        assert_eq!(StaleAction::parse("Withdraw"), Some(StaleAction::Withdraw));
+        assert_eq!(
+            StaleAction::parse("answer: Deny"),
+            Some(StaleAction::AnswerDefault {
+                label: "Deny".into()
+            })
+        );
+        assert_eq!(StaleAction::parse("answer:"), None);
+        assert_eq!(StaleAction::parse("drop"), None);
+        assert_eq!(
+            StaleAction::AnswerDefault {
+                label: "Deny".into()
+            }
+            .to_string(),
+            "answer:Deny"
+        );
     }
 }
