@@ -646,7 +646,17 @@ fn file_removal(
 /// plugin and the shell block — only entries that run AgentDocker, and
 /// only installed files still as installed. Previewed, applied and undone
 /// like any setup plan, without needing the receipt that wired them.
+#[cfg(test)]
 fn prepare_remove(roots: &Roots, names: &[String]) -> Result<Plan> {
+    prepare_remove_for(roots, names, None)
+}
+
+/// `prepare_remove`, with the Docker Agent YAML file `--agent` named: the
+/// one place its toolset can be taken out of.
+fn prepare_remove_for(roots: &Roots, names: &[String], agent: Option<&Path>) -> Result<Plan> {
+    if agent.is_some() {
+        super::ensure_agent_names_docker_agent(names)?;
+    }
     let mut plan = Plan {
         format: 2,
         id: uuid::Uuid::new_v4().to_string(),
@@ -722,6 +732,13 @@ fn prepare_remove(roots: &Roots, names: &[String]) -> Result<Plan> {
                     }
                 }
             }
+            _ if spec.mcp == McpWiring::AgentConfig => match agent {
+                Some(path) => docker_agent_removal(&mut plan, path)?,
+                None => plan.notes.push(format!(
+                    "{}: its MCP toolset lives in each agent's YAML file; `agentdocker setup --remove {name} --agent <file>` takes it out of one",
+                    runtime.label
+                )),
+            },
             _ => {
                 if let Some(path) = runtimes::mcp_config_path(spec, roots) {
                     let key = runtimes::servers_key(spec);
@@ -805,7 +822,22 @@ fn prepare_shell(plan: &mut Plan, roots: &Roots) -> Result<()> {
 }
 
 /// Plan edits from injectable provider roots, without changing their files.
+#[cfg(test)]
 fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> Result<Plan> {
+    prepare_for(roots, names, executable, shell, None)
+}
+
+/// `prepare`, with the Docker Agent YAML file `--agent` named, when it did.
+fn prepare_for(
+    roots: &Roots,
+    names: &[String],
+    executable: &Path,
+    shell: bool,
+    agent: Option<&Path>,
+) -> Result<Plan> {
+    if agent.is_some() {
+        super::ensure_agent_names_docker_agent(names)?;
+    }
     if shell {
         let mut plan = Plan {
             format: 1,
@@ -868,6 +900,9 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
             (runtimes::hook_config_path(spec, roots), "hooks")
         } else if let Some(path) = runtimes::mcp_config_path(spec, roots) {
             (path, "mcp")
+        } else if spec.mcp == McpWiring::AgentConfig {
+            docker_agent_change(&mut plan, runtime, executable, agent)?;
+            continue;
         } else {
             plan.notes.push(format!(
                 "{}: no supported setup adapter; discovery alone does not enable coordination",
@@ -903,7 +938,7 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
                 McpWiring::OpencodeJson { .. } => {
                     super::opencode_edit(&path, before.as_deref(), executable)?
                 }
-                McpWiring::None => unreachable!(),
+                McpWiring::AgentConfig | McpWiring::None => unreachable!(),
             }
         };
         if let Some(after) = after {
@@ -1018,7 +1053,84 @@ fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> R
 
 /// Ordinary setup must not report success after silently omitting Claude MCP.
 /// An explicit preview can still offer hooks for a partially configured tool.
+/// The one change Docker Agent takes: our MCP toolset in the first agent
+/// of the YAML file named with `--agent`, read and rewritten like any
+/// other configuration file. Without a file there is nothing to plan, and
+/// the note says what to pass.
+fn docker_agent_change(
+    plan: &mut Plan,
+    runtime: &RuntimeInfo,
+    executable: &Path,
+    agent: Option<&Path>,
+) -> Result<()> {
+    let Some(path) = agent else {
+        plan.notes.push(format!(
+            "{}: MCP servers are declared in each agent's YAML file, not in a file of its own; `agentdocker setup {} --agent <file>` adds the toolset to that file's first agent, and `agentdocker setup {} --dry-run` prints the entry to add by hand",
+            runtime.label, runtime.name, runtime.name
+        ));
+        return Ok(());
+    };
+    let before =
+        read_config(path)?.with_context(|| format!("no agent file at {}", path.display()))?;
+    let (after, target) = super::docker_agent_edit(path, &before, executable)?;
+    if target.harness {
+        plan.notes.push(format!(
+            "{}: agent `{}` runs a harness (an external coding CLI), and {} ignores the toolsets of such an agent; the harness's own session joins through that tool's adapter",
+            runtime.label, target.agent, runtime.label
+        ));
+    }
+    match after {
+        Some(after) => plan.changes.push(Change {
+            runtime: runtime.name.clone(),
+            channel: "mcp".into(),
+            target: project::try_canonical(path)?,
+            path: path.to_owned(),
+            before: Some(before),
+            after: Some(after),
+            removal: false,
+        }),
+        None => plan.notes.push(format!(
+            "{}: agent `{}` in {} already lists the toolset; connection is not yet verified",
+            runtime.label,
+            target.agent,
+            path.display()
+        )),
+    }
+    Ok(())
+}
+
+/// The removal of our toolset from the first agent of a Docker Agent
+/// YAML file, when it lists one.
+fn docker_agent_removal(plan: &mut Plan, path: &Path) -> Result<()> {
+    let Some(before) = read_config(path)? else {
+        return Ok(());
+    };
+    if let Some(after) = super::docker_agent_removal(path, &before)? {
+        plan.changes.push(Change {
+            runtime: agentdocker_core::docker_agent::RUNTIME.into(),
+            channel: "mcp".into(),
+            target: project::try_canonical(path)?,
+            path: path.to_owned(),
+            before: Some(before),
+            after: Some(after),
+            removal: true,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn prepare_install(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
+    prepare_install_for(roots, names, executable, None)
+}
+
+/// `prepare_install`, with the Docker Agent YAML file `--agent` named.
+fn prepare_install_for(
+    roots: &Roots,
+    names: &[String],
+    executable: &Path,
+    agent: Option<&Path>,
+) -> Result<Plan> {
     for runtime in selected_inventory(roots, names)? {
         let selected = if names.is_empty() {
             runtime.installed()
@@ -1037,7 +1149,7 @@ fn prepare_install(roots: &Roots, names: &[String], executable: &Path) -> Result
             "Claude Code CLI is needed to register MCP; nothing changed. Install Claude Code first, or use `agentdocker setup claude-code --preview` to review the available hooks-only changes"
         );
     }
-    prepare(roots, names, executable, false)
+    prepare_for(roots, names, executable, false, agent)
 }
 
 fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> Result<()> {
@@ -1344,6 +1456,7 @@ pub async fn run(
     action: Action<'_>,
     json_output: bool,
     shell: bool,
+    agent: Option<&Path>,
 ) -> Result<()> {
     let remove = matches!(action, Action::Remove | Action::RemovePreview);
     let install = matches!(action, Action::Install | Action::Remove);
@@ -1415,11 +1528,17 @@ pub async fn run(
         let mut plan = if let Some(id) = apply_id.or(undo_id) {
             load(&directory, id)?
         } else if remove {
-            prepare_remove(&roots, names)?
+            prepare_remove_for(&roots, names, agent)?
         } else if install {
-            prepare_install(&roots, names, &crate::desktop::setup_executable()?)?
+            prepare_install_for(&roots, names, &crate::desktop::setup_executable()?, agent)?
         } else {
-            prepare(&roots, names, &crate::desktop::setup_executable()?, shell)?
+            prepare_for(
+                &roots,
+                names,
+                &crate::desktop::setup_executable()?,
+                shell,
+                agent,
+            )?
         };
         if install {
             // Keep an addressable receipt even when apply's preflight refuses.
@@ -1536,6 +1655,104 @@ mod tests {
             shell: None,
             versions: false,
         }
+    }
+
+    /// Docker Agent's setup is one reviewable change to the agent file
+    /// named with `--agent`: planned with the rest of the file untouched,
+    /// applied, undone to the byte, and taken out by a removal of its own;
+    /// without the file it is a note, and the file is Docker Agent's alone.
+    #[test]
+    fn docker_agent_setup_edits_the_named_agent_file_and_undoes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let yaml = tmp.path().join("team.yaml");
+        let before = "# the team\nagents:\n  root:\n    model: openai/gpt-5-mini\n    toolsets:\n      - type: filesystem\n  writer:\n    model: openai/gpt-5-mini\n";
+        std::fs::write(&yaml, before).unwrap();
+        let executable = tmp.path().join("bin/agentdocker");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let names = vec!["docker-agent".to_owned()];
+
+        let without = prepare(&roots, &names, &executable, false).unwrap();
+        assert!(without.changes.is_empty());
+        assert!(
+            without
+                .notes
+                .iter()
+                .any(|note| note.contains("--agent <file>")),
+            "{:?}",
+            without.notes
+        );
+        assert!(prepare_for(&roots, &[], &executable, false, Some(&yaml)).is_err());
+        assert!(prepare_for(&roots, &["codex".into()], &executable, false, Some(&yaml)).is_err());
+
+        let mut plan = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].channel, "mcp");
+        assert_eq!(plan.changes[0].runtime, "docker-agent");
+        assert_eq!(plan.changes[0].path, yaml);
+        let after = plan.changes[0].after.clone().unwrap();
+        assert_eq!(
+            after,
+            format!(
+                "# the team\nagents:\n  root:\n    model: openai/gpt-5-mini\n    toolsets:\n      - type: filesystem\n      - type: mcp\n        command: \"{}\"\n        args: [\"mcp\", \"--runtime\", \"docker-agent\"]\n  writer:\n    model: openai/gpt-5-mini\n",
+                executable.display()
+            )
+        );
+        assert!(
+            !plan.view().to_string().contains("gpt-5-mini"),
+            "snapshots stay private"
+        );
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
+        let again = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        assert!(again.changes.is_empty());
+        assert!(
+            again
+                .notes
+                .iter()
+                .any(|note| note.contains("already lists the toolset"))
+        );
+        apply(&directory, &mut plan, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), before);
+
+        // A removal of its own takes out exactly what setup added.
+        let mut fresh = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        save(&directory, &fresh).unwrap();
+        apply(&directory, &mut fresh, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
+        let mut removal = prepare_remove_for(&roots, &names, Some(&yaml)).unwrap();
+        assert_eq!(removal.changes.len(), 1);
+        assert!(removal.changes[0].removal);
+        assert_eq!(removal.changes[0].after.as_deref(), Some(before));
+        save(&directory, &removal).unwrap();
+        apply(&directory, &mut removal, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), before);
+        apply(&directory, &mut removal, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
+        let nothing = prepare_remove(&roots, &names).unwrap();
+        assert!(nothing.changes.is_empty());
+        assert!(
+            nothing
+                .notes
+                .iter()
+                .any(|note| note.contains("--agent <file>"))
+        );
+
+        // A missing file is refused before anything is planned.
+        assert!(
+            prepare_for(
+                &roots,
+                &names,
+                &executable,
+                false,
+                Some(&tmp.path().join("none.yaml"))
+            )
+            .is_err()
+        );
     }
 
     /// A removal takes out only AgentDocker's own wiring, across the tools

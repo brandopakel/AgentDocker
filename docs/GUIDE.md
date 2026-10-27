@@ -645,7 +645,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | Command | What it does |
 |---|---|
 | `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
-| `setup` | Wire us in: MCP registration, and hooks for Claude Code |
+| `setup` | Wire us in: MCP registration, and hooks for Claude Code. Docker Agent keeps its MCP servers in each agent's YAML, so `setup docker-agent --agent <file>` adds the toolset to that file's first agent and `setup --remove docker-agent --agent <file>` takes it out |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches. Only the agent's own output is shown while attached; dropped output or a replaced daemon is said once you detach or it ends |
 | `daemon` | Install, start, stop, reload, inspect or `vacuum` `agentd` |
@@ -1202,6 +1202,30 @@ Current behaviour that the sections above do not already state, by area.
   one, even when that conversation is already open.
 
 ### Agents, roles and setup
+
+- **Docker Agent joins per agent file.** Docker Agent (`docker agent`, or
+  `docker-agent` and its earlier name `cagent` on their own) runs the model
+  loop itself from a YAML file per agent and reads that agent's MCP servers
+  from the file's `toolsets`, so there is no file of its own for setup to
+  register in. `agentdocker runtimes` finds it on `PATH`, in the standard
+  directories and in the Docker CLI plugin directories, and counts its `run`
+  and `new` processes as sessions nobody registered; its `serve` and `board`
+  processes are helpers `adopt` refuses. `agentdocker setup docker-agent
+  --agent <path/to/agent.yaml>` adds AgentDocker's toolset to the file's
+  first agent — the one `docker agent run` runs unless `--agent` names
+  another — after its last toolset, or under a new `toolsets:` key, with
+  every other line of the file as it was; the plan is saved like any other
+  setup change, `setup --undo <id>` puts the file back to the byte, and
+  `setup --remove docker-agent --agent <file>` takes exactly that entry out.
+  `setup docker-agent --dry-run` prints the entry to paste when you would
+  rather edit the file yourself, or when the file is written in a way the
+  edit refuses (an inline `toolsets: [...]`, tabs). Every run of an agent
+  whose file lists it then appears as a `docker-agent` agent with the
+  coordination tools: it can claim, release, message and ask like any
+  other, and reads its messages at its next tool call; nothing wakes it
+  while it is idle. An agent with `harness:` set runs an external coding
+  CLI, whose toolsets Docker Agent ignores: that CLI's own session joins
+  through its own adapter (Claude Code's hooks, Codex's), and setup says so.
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   has its own record, by its thread: its AgentDocker tools work as it, and
