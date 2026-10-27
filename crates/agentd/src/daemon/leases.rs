@@ -225,14 +225,20 @@ impl Daemon {
                                 let holders = held_by
                                     .iter()
                                     .map(|l| {
-                                        let name = state
-                                            .registry
-                                            .get(&l.holder)
+                                        let holder = state.registry.get(&l.holder);
+                                        let name = holder
                                             .map(|a| a.spec.name.as_str())
                                             .filter(|n| !n.is_empty())
                                             .unwrap_or("an unknown agent");
+                                        // A teammate of a Claude Code team by
+                                        // the name its lead gave it: the name
+                                        // the team's other agents know.
+                                        let team = holder
+                                            .and_then(|a| a.team.as_ref())
+                                            .map(|t| format!(", {}", t.describe()))
+                                            .unwrap_or_default();
                                         format!(
-                                            "{name} ({}; {} on {})",
+                                            "{name}{team} ({}; {} on {})",
                                             l.holder.short(),
                                             l.mode,
                                             l.resource

@@ -812,6 +812,59 @@ pub(super) fn role_chip<'a>(
     .into()
 }
 
+/// An agent's place in a Claude Code team, as one labelled chip: an icon
+/// and the words *Lead of <team>* or *Teammate of <lead>*, in the colour
+/// the lead gave the teammate (one of Claude Code's eight, so the same
+/// tones as a role) and the quiet tones otherwise. The full relation —
+/// the teammate's own name, its lead and its team — is the detail on the
+/// pointer and the accessible value. Nothing for an agent in no team.
+pub(super) fn team_chip<'a>(agent: &AgentRecord, c: Colors) -> Option<Element<'a, Message>> {
+    use agentdocker_core::team::TeamRole;
+    let team = agent.team.as_ref()?;
+    let (wash, ink) = team.role_color().map_or_else(
+        || c.chip(super::chip::Tone::Neutral),
+        |color| super::style::role_tone(color, c.dark),
+    );
+    let glyph = match team.role {
+        TeamRole::Lead => Icon::Sessions,
+        TeamRole::Teammate => Icon::Join,
+    };
+    let words = team.chip_words();
+    let detail = team.describe();
+    let look = container(
+        row![
+            icon(glyph, ink, 10.0),
+            text(words.clone())
+                .size(11)
+                .line_height(iced::Pixels(14.0))
+                .font(weight(iced::font::Weight::Medium))
+                .color(ink)
+                .wrapping(iced::widget::text::Wrapping::None),
+        ]
+        .spacing(4)
+        .align_y(Center),
+    )
+    .padding([0, 7])
+    .height(super::chip::HEIGHT)
+    .align_y(iced::alignment::Vertical::Center)
+    .style(move |_| c.pill(wash, ink));
+    let control: Element<'a, Message> = crate::controls::Control {
+        content: look.into(),
+        semantic: crate::accessibility::Semantic {
+            role: accesskit::Role::Label,
+            value: Some(detail.clone()),
+            ..crate::accessibility::Semantic::button(
+                format!("session-team-{}", agent.id),
+                words,
+                None,
+            )
+        },
+        button: false,
+    }
+    .into();
+    Some(tip(control, detail, c))
+}
+
 /// A menu's frame: the overlay surface with a little room inside.
 pub(super) fn menu<'a>(items: impl Into<Element<'a, Message>>, c: Colors) -> Element<'a, Message> {
     container(items)
@@ -3025,6 +3078,9 @@ impl App {
             if let Some(chips) = self.role_chips(agent, Some(2), c) {
                 named = named.push(chips);
             }
+            if let Some(team) = team_chip(agent, c) {
+                named = named.push(team);
+            }
             // The name is cut before the chips are: the state always shows.
             let mut content = row![
                 agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 20.0, c),
@@ -3138,6 +3194,9 @@ impl App {
         let paused = delivery.is_some_and(|d| d.paused_for(agent.process_started_at));
         if let Some(roles) = self.roles_control(agent, c) {
             body = body.push(roles);
+        }
+        if let Some(team) = team_chip(agent, c) {
+            body = body.push(row![team].align_y(Center));
         }
         if let Some(model) = model_and_effort(agent) {
             body = body.push(small(model, c));
@@ -4353,6 +4412,48 @@ pub(super) fn split_style(c: Colors) -> iced::widget::pane_grid::Style {
 
 #[cfg(test)]
 mod tests {
+    /// A Claude Code team is said as one chip: the lead's names the team,
+    /// a teammate's names its lead and is tinted in its own colour, and
+    /// the full relation is what the chip's detail reads. An agent in no
+    /// team has none.
+    #[test]
+    fn a_team_is_one_labelled_chip() {
+        use super::super::view::testing::seen;
+        use super::*;
+        use agentdocker_core::team::{TeamMembership, TeamRole};
+        let c = Colors::new(false);
+        let mut agent = crate::app::tests::record("claude-1a2b3c4d", "claude-code", Some(42));
+        assert!(team_chip(&agent, c).is_none(), "no team, no chip");
+        let id = agent.id.to_string();
+        agent.team = Some(TeamMembership {
+            team: "orchard".into(),
+            role: TeamRole::Teammate,
+            name: "pruner".into(),
+            lead_name: "team-lead".into(),
+            colour: Some("blue".into()),
+            agent_id: Some("pruner@orchard".into()),
+        });
+        let view = seen(team_chip(&agent, c).unwrap());
+        assert_eq!(
+            view.control(&format!("session-team-{id}")).unwrap().1,
+            "Teammate of team-lead"
+        );
+        assert!(view.reads("Teammate of team-lead"));
+        agent.team = Some(TeamMembership {
+            team: "orchard".into(),
+            role: TeamRole::Lead,
+            name: "team-lead".into(),
+            lead_name: "team-lead".into(),
+            colour: None,
+            agent_id: None,
+        });
+        let view = seen(team_chip(&agent, c).unwrap());
+        assert_eq!(
+            view.control(&format!("session-team-{id}")).unwrap().1,
+            "Lead of orchard"
+        );
+    }
+
     /// A role is the person's to give, from the inspector: an agent with
     /// none shows no label, the tag opens its project's roles, a pick gives
     /// or takes one, the row and the inspector show what it holds in the

@@ -406,6 +406,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
             if ticks.is_multiple_of(5) {
                 daemon.refresh_project_checkouts().await;
                 daemon.refresh_vcs(None).await;
+                daemon.refresh_teams().await;
                 if daemon.discovery_watched() {
                     let _ = daemon.scan_agents().await;
                 }

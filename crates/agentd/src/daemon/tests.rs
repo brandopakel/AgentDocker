@@ -9660,6 +9660,7 @@ fn discovery_row(pid: u32, started_at: chrono::DateTime<Utc>) -> DiscoveredProce
         project: None,
         started_at: Some(started_at),
         session: None,
+        team: None,
     }
 }
 
@@ -13660,4 +13661,239 @@ async fn a_full_watcher_flush_queue_cannot_block_release_indefinitely() {
     .await
     .expect("queue admission must share the flush timeout");
     assert!(matches!(response, Response::Leases { .. }));
+}
+
+/// A Claude Code agent team is read onto its sessions' records: the lead
+/// by the session id its hooks report, which Claude's team file names as
+/// `leadSessionId`; a teammate by the options Claude starts it with, with
+/// the colour and id the team file gives it. Reading the same team again
+/// says nothing; the lead loses the team when its file goes, while a
+/// teammate's command line still says what it is. A refused claim names
+/// the teammate as its lead named it, so a Codex agent in the checkout is
+/// told whose edit it would overwrite. Nothing is written into Claude's
+/// directories.
+#[tokio::test]
+async fn a_claude_code_team_is_read_onto_its_records_and_names_the_teammate_in_a_refusal() {
+    use agentdocker_core::team::{INBOXES_DIR, TEAM_FILE, TEAMS_DIR, TeamRole};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = TempDir::new().unwrap();
+    let checkout_path = std::fs::canonicalize(checkout.path()).unwrap();
+    let config = TempDir::new().unwrap();
+    lock(&daemon.state).claude_config_dir = Some(config.path().to_path_buf());
+    let orchard = config.path().join(TEAMS_DIR).join("orchard");
+    std::fs::create_dir_all(orchard.join(INBOXES_DIR)).unwrap();
+    std::fs::write(orchard.join(INBOXES_DIR).join("pruner.json"), "[]").unwrap();
+    std::fs::write(
+        orchard.join(TEAM_FILE),
+        format!(
+            r#"{{"name":"orchard","createdAt":1,"leadAgentId":"team-lead@orchard","leadSessionId":"lead-session-0001",
+                "members":[{{"agentId":"team-lead@orchard","name":"team-lead","agentType":"team-lead","joinedAt":1,
+                "tmuxPaneId":"leader","cwd":{cwd},"subscriptions":[],"backendType":"in-process"}},
+                {{"agentId":"pruner@orchard","name":"pruner","color":"blue","joinedAt":2,"tmuxPaneId":"%3",
+                "cwd":{cwd},"subscriptions":[],"backendType":"tmux"}}]}}"#,
+            cwd = serde_json::to_string(&checkout_path.to_string_lossy()).unwrap()
+        ),
+    )
+    .unwrap();
+    let entries = |dir: &Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = (entries(&orchard), entries(&orchard.join(INBOXES_DIR)));
+    let mut events = daemon.subscribe_events();
+    let team_events = |events: &mut broadcast::Receiver<Event>| {
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentTeamChanged { agent, team } = event.kind {
+                seen.push((agent, team));
+            }
+        }
+        seen
+    };
+    let agent = |response: Response| match response {
+        Response::Agent { agent } => agent,
+        other => panic!("{other:?}"),
+    };
+    let inspect = |id: &AgentId| {
+        lock(&daemon.state)
+            .registry
+            .get(id)
+            .cloned()
+            .expect("registered")
+    };
+
+    // A teammate's process, as Claude starts one: by its options.
+    let mut teammate_process = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "read -r held",
+            "sh",
+            "--agent-name",
+            "pruner",
+            "--team-name",
+            "orchard",
+            "--parent-session-id",
+            "lead-session-0001",
+        ])
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // The lead, by the session id its hooks report. The registration
+    // itself reads the team, so the record carries it at once.
+    let lead = agent(
+        register_session(
+            &daemon,
+            "claude-lead0001",
+            &checkout_path,
+            Some("lead-session-0001"),
+        )
+        .await,
+    );
+    let lead_now = inspect(&lead.id);
+    let membership = lead_now
+        .team
+        .clone()
+        .expect("the lead is placed on registration");
+    assert_eq!(membership.role, TeamRole::Lead);
+    assert_eq!(membership.team, "orchard");
+    assert_eq!(membership.name, "team-lead");
+    assert_eq!(membership.describe(), "lead of orchard");
+
+    let mut mate_spec = spec("claude-mate0002");
+    mate_spec.runtime = "claude-code".to_owned();
+    mate_spec.workdir = Some(checkout_path.clone());
+    mate_spec
+        .labels
+        .insert("session_id".to_owned(), "mate-session-0002".to_owned());
+    let teammate = agent(
+        daemon
+            .handle(Request::Register {
+                spec: mate_spec,
+                pid: Some(teammate_process.id()),
+                session: None,
+            })
+            .await,
+    );
+    let mate_now = inspect(&teammate.id);
+    let membership = mate_now
+        .team
+        .clone()
+        .expect("the teammate is placed by its command line");
+    assert_eq!(membership.role, TeamRole::Teammate);
+    assert_eq!(membership.name, "pruner");
+    assert_eq!(membership.lead_name, "team-lead");
+    assert_eq!(
+        membership.colour.as_deref(),
+        Some("blue"),
+        "the colour comes from the team file when the command line has none"
+    );
+    assert_eq!(membership.agent_id.as_deref(), Some("pruner@orchard"));
+    let announced = team_events(&mut events);
+    assert_eq!(
+        announced
+            .iter()
+            .map(|(id, team)| (id.clone(), team.as_ref().map(|t| t.name.clone())))
+            .collect::<Vec<_>>(),
+        [
+            (lead.id.clone(), Some("team-lead".to_owned())),
+            (teammate.id.clone(), Some("pruner".to_owned())),
+        ]
+    );
+    // The same team read again is not news, and is served by `list`.
+    daemon.refresh_teams().await;
+    assert!(team_events(&mut events).is_empty());
+    let Response::Agents { agents, .. } = daemon
+        .handle(Request::List {
+            all: false,
+            project: None,
+            labels: Default::default(),
+        })
+        .await
+    else {
+        panic!("list");
+    };
+    assert_eq!(
+        agents.iter().filter(|a| a.team.is_some()).count(),
+        2,
+        "both records say their place"
+    );
+
+    // The teammate's lease refuses a Codex agent by the teammate's name.
+    let mut codex_spec = spec("codex-reviewer");
+    codex_spec.runtime = "codex".to_owned();
+    codex_spec.workdir = Some(checkout_path.clone());
+    let codex = agent(
+        daemon
+            .handle(Request::Register {
+                spec: codex_spec,
+                pid: None,
+                session: None,
+            })
+            .await,
+    );
+    let file = format!(
+        "path:{}",
+        checkout_path.join("src").join("lib.rs").display()
+    );
+    assert!(matches!(
+        claim(&daemon, teammate.id.as_str(), &file).await,
+        Response::Lease { .. }
+    ));
+    let Response::Error {
+        code: ErrorCode::Conflict,
+        message,
+        ..
+    } = claim(&daemon, codex.id.as_str(), &file).await
+    else {
+        panic!("a conflicting claim is refused");
+    };
+    assert!(
+        message.contains("claude-mate0002, pruner, teammate of team-lead in orchard"),
+        "{message}"
+    );
+
+    // Nothing of AgentDocker's was written under Claude's directories: the
+    // team's directory and its inboxes hold exactly what the test wrote,
+    // and the checkout has no `.claude/`.
+    assert_eq!(
+        (entries(&orchard), entries(&orchard.join(INBOXES_DIR))),
+        before
+    );
+    assert!(before.0.contains(&TEAM_FILE.to_owned()));
+    assert!(!checkout_path.join(".claude").exists());
+
+    // The team ends: the lead's file is gone, so the lead is in no team;
+    // the teammate's command line still says what it is.
+    std::fs::remove_dir_all(&orchard).unwrap();
+    daemon.refresh_teams().await;
+    assert!(inspect(&lead.id).team.is_none());
+    let still = inspect(&teammate.id)
+        .team
+        .expect("a teammate by its options stays one");
+    assert_eq!(still.name, "pruner");
+    assert_eq!(
+        still.colour, None,
+        "with no file the colour is unknown, never kept from before"
+    );
+    let announced = team_events(&mut events);
+    assert_eq!(announced.len(), 2, "{announced:?}");
+    assert!(
+        announced
+            .iter()
+            .any(|(id, team)| id == &lead.id && team.is_none())
+    );
+    assert!(
+        announced
+            .iter()
+            .any(|(id, team)| id == &teammate.id
+                && team.as_ref().is_some_and(|t| t.colour.is_none()))
+    );
+    let _ = teammate_process.kill();
+    let _ = teammate_process.wait();
 }

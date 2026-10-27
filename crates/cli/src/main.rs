@@ -5644,6 +5644,13 @@ fn print_agents(
     };
     let in_session =
         agents.iter().any(|a| a.session.is_some()) || unadopted.iter().any(|p| p.session.is_some());
+    // Said only where a Claude Code team is: the column is noise otherwise.
+    let in_team =
+        agents.iter().any(|a| a.team.is_some()) || unadopted.iter().any(|p| p.team.is_some());
+    let team_cell = |team: Option<&agentdocker_core::TeamMembership>| {
+        team.map(agentdocker_core::TeamMembership::describe)
+            .unwrap_or_else(|| "-".to_owned())
+    };
     let session_cell = |session: Option<&Session>| {
         session
             .map(Session::describe)
@@ -5700,6 +5707,9 @@ fn print_agents(
             if in_session {
                 row.push(session_cell(a.session.as_ref()));
             }
+            if in_team {
+                row.push(team_cell(a.team.as_ref()));
+            }
             row.push(
                 a.pid
                     .map(|p| p.to_string())
@@ -5732,6 +5742,9 @@ fn print_agents(
         if in_session {
             row.push(session_cell(p.session.as_ref()));
         }
+        if in_team {
+            row.push(team_cell(p.team.as_ref()));
+        }
         row.push(p.pid.to_string());
         row.push(
             p.started_at
@@ -5749,6 +5762,9 @@ fn print_agents(
     }
     if in_session {
         headers.push("LIVES IN");
+    }
+    if in_team {
+        headers.push("TEAM");
     }
     headers.extend(["PID", "CREATED"]);
     format::table_dimming(&headers, &rows, |i| i >= first_unadopted);

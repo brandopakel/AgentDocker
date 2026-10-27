@@ -1,4 +1,5 @@
 use super::*;
+use agentdocker_core::team;
 
 impl Daemon {
     /// Return the last successful scan only while it is fresh and healthy.
@@ -213,6 +214,13 @@ impl Daemon {
                         cwd,
                         started_at: procinfo::start_time(p.pid),
                         session: multiplexer::of(p.pid, &by_pid, None),
+                        team: team::membership(
+                            &team::SessionFacts {
+                                argv: Some(&p.argv),
+                                ..Default::default()
+                            },
+                            &[],
+                        ),
                     })
                 })
                 .collect();

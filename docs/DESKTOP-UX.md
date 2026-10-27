@@ -189,6 +189,14 @@ its next colour (Claude Code's eight), its cross deletes it — pressed twice, a
 the second press takes it from every agent holding it and says how many — and
 **New role** adds one by name. The person is given no roles. With a daemon that
 has no palette, none of this is shown.
+
+An agent in a **Claude Code agent team** shows one more chip after its name
+in the session list and in its panel: **Lead of &lt;team&gt;** for the lead,
+**Teammate of &lt;lead&gt;** for a teammate, each an icon and its words, in the
+colour the lead gave the teammate (the same eight as roles) and the quiet
+tones otherwise. The full relation — the teammate's own name, its lead and its
+team — is the chip's tooltip and its spoken value. Nothing of the team is
+edited here: its names, colours and inboxes are Claude's.
 **Open in…** (the code icon beside the terminal icon in the header) opens the project's folder in an editor
 installed on this computer: a small menu lists the ones found (the one chosen
 last first, remembered with the workspace preferences), and with only one

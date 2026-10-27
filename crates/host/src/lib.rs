@@ -58,5 +58,6 @@ pub mod relay;
 
 pub mod files;
 pub mod seed;
+pub mod teams;
 
 pub mod ipc;

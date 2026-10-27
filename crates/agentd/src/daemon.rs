@@ -81,6 +81,7 @@ mod review;
 mod roles;
 mod secret_reviews;
 mod tasks;
+mod teams;
 mod topics;
 mod transport;
 mod usage;
@@ -500,6 +501,14 @@ struct State {
     /// its linked worktrees. Refreshed off the lock on the same tick as
     /// the VCS sweep, because enumerating them runs git.
     project_checkouts: HashMap<ProjectId, Vec<PathBuf>>,
+    /// Claude Code's configuration directory, where its team files are
+    /// (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), as read when the daemon
+    /// started; `None` where neither could be told.
+    claude_config_dir: Option<PathBuf>,
+    /// Each live Claude Code process's command line as last read, by pid
+    /// and birth, so a teammate's options are read from the process table
+    /// once rather than on every tick.
+    teammate_argv: teams::ArgvCache,
     /// Checkouts the daemon is committing in right now. The watcher polls
     /// on its own schedule and will see HEAD move part-way through, so
     /// without this it writes its own guessed-at entry for a commit the
@@ -1657,6 +1666,8 @@ impl Daemon {
                 last_branch: HashMap::new(),
                 worktree_creators: HashMap::new(),
                 project_checkouts: HashMap::new(),
+                claude_config_dir: agentdocker_host::teams::claude_config_dir(),
+                teammate_argv: HashMap::new(),
                 committing: std::collections::BTreeSet::new(),
                 controller_pins: HashMap::new(),
                 question_waiters: HashSet::new(),
@@ -2164,6 +2175,7 @@ impl Daemon {
             Request::Register { spec, pid, session } => {
                 let registered = self.register(spec, pid, session, authorized).await;
                 self.trace_starter(&registered);
+                self.note_team(&registered).await;
                 registered
             }
             Request::SessionAttach {
@@ -2186,6 +2198,7 @@ impl Daemon {
             Request::Adopt { pid, name, runtime } => {
                 let adopted = self.adopt(pid, name, runtime, authorized).await;
                 self.trace_starter(&adopted);
+                self.note_team(&adopted).await;
                 adopted
             }
             Request::Stop { agent, force } => self.stop_agent(&agent, force).await,

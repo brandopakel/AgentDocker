@@ -1006,6 +1006,12 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentVcsChanged { agent, vcs } => {
             format!("checkout moved   {} {}", agent.short(), vcs.describe())
         }
+        EventKind::AgentTeamChanged { agent, team } => format!(
+            "team changed     {} {}",
+            agent.short(),
+            team.as_ref()
+                .map_or_else(|| "no team".to_owned(), |t| t.describe())
+        ),
         EventKind::DaemonStopping { reason } => format!("daemon stopping  ({reason})"),
         EventKind::DaemonTransferOffered {
             transfer,
