@@ -557,37 +557,7 @@ async fn establish_identity(
     let workdir = std::env::current_dir()
         .ok()
         .map(|dir| dir.canonicalize().unwrap_or(dir));
-    let spec = AgentSpec {
-        name,
-        runtime: args.runtime.clone(),
-        provider: args.provider.clone(),
-        model: args.model.clone(),
-        command: Vec::new(),
-        workdir,
-        env: BTreeMap::new(),
-        labels: {
-            let mut labels = BTreeMap::from([
-                ("via".to_owned(), "mcp".to_owned()),
-                ("registrar".to_owned(), registrar.clone()),
-            ]);
-            if args.name.is_none() {
-                labels.insert(
-                    agentdocker_core::agent::NAME_LABEL.to_owned(),
-                    agentdocker_core::agent::GENERATED_NAME.to_owned(),
-                );
-            }
-            if let Some(session) = session {
-                labels.insert("session_id".to_owned(), session);
-            }
-            labels
-        },
-        isolate: false,
-        tty: false,
-        restore: false,
-        in_pane: false,
-        restart: Default::default(),
-        depends_on: Vec::new(),
-    };
+    let spec = registration_spec(args, name, &registrar, session, workdir);
     match client
         .call(&Request::Register {
             spec,
@@ -614,6 +584,52 @@ async fn establish_identity(
             name: agent.spec.name,
         }),
         other => bail!("unexpected reply to register: {other:?}"),
+    }
+}
+
+/// The record an MCP server registers for the host that started it: the
+/// host's runtime as the entry names it (`--runtime`), reached through
+/// MCP, with the nonce that proves the record is this server's. Every
+/// runtime whose entry runs `agentdocker mcp --runtime <name>` joins this
+/// way — one that declares the server per agent file (Docker Agent) as
+/// much as one with a configuration file of its own.
+fn registration_spec(
+    args: &McpArgs,
+    name: String,
+    registrar: &str,
+    session: Option<String>,
+    workdir: Option<std::path::PathBuf>,
+) -> AgentSpec {
+    AgentSpec {
+        name,
+        runtime: args.runtime.clone(),
+        provider: args.provider.clone(),
+        model: args.model.clone(),
+        command: Vec::new(),
+        workdir,
+        env: BTreeMap::new(),
+        labels: {
+            let mut labels = BTreeMap::from([
+                ("via".to_owned(), "mcp".to_owned()),
+                ("registrar".to_owned(), registrar.to_owned()),
+            ]);
+            if args.name.is_none() {
+                labels.insert(
+                    agentdocker_core::agent::NAME_LABEL.to_owned(),
+                    agentdocker_core::agent::GENERATED_NAME.to_owned(),
+                );
+            }
+            if let Some(session) = session {
+                labels.insert("session_id".to_owned(), session);
+            }
+            labels
+        },
+        isolate: false,
+        tty: false,
+        restore: false,
+        in_pane: false,
+        restart: Default::default(),
+        depends_on: Vec::new(),
     }
 }
 
@@ -3526,6 +3542,80 @@ mod tests {
                 host_started_at: None,
             },
         )
+    }
+
+    /// A Docker Agent run lists `agentdocker mcp --runtime docker-agent`
+    /// in its YAML and starts this server as any MCP host does: the record
+    /// it registers is a `docker-agent` agent named after the host, with
+    /// no adapter but MCP, and its tools then act as that agent — a claim
+    /// goes to the daemon in its name, as for a custom runtime.
+    #[tokio::test]
+    async fn a_docker_agent_host_registers_as_its_runtime_and_claims_through_mcp() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Line {
+            #[command(flatten)]
+            args: McpArgs,
+        }
+        let args = Line::parse_from(["mcp", "--runtime", "docker-agent"]).args;
+        let spec = registration_spec(
+            &args,
+            format!("{}-{}", args.runtime, 4242),
+            "nonce",
+            None,
+            Some(std::path::PathBuf::from("/work/orchard")),
+        );
+        assert_eq!(spec.runtime, "docker-agent");
+        assert_eq!(spec.name, "docker-agent-4242");
+        assert_eq!(spec.labels.get("via").map(String::as_str), Some("mcp"));
+        assert_eq!(
+            spec.labels.get("registrar").map(String::as_str),
+            Some("nonce")
+        );
+        assert!(
+            spec.labels
+                .contains_key(agentdocker_core::agent::NAME_LABEL)
+        );
+        assert!(spec.command.is_empty() && !spec.tty && !spec.isolate);
+        assert!(
+            agentdocker_core::runtime::hook_events(&spec.runtime).is_empty(),
+            "no hooks adapter: MCP is the whole of it"
+        );
+
+        // With that identity, a tool call is the daemon's request in the
+        // agent's name.
+        let registered = agentdocker_core::AgentRecord::new(spec, false, chrono::Utc::now());
+        let id = registered.id.to_string();
+        let server = McpServer::new(
+            Mock::with(vec![Response::Agent {
+                agent: registered.clone(),
+            }]),
+            Identity {
+                id: id.clone(),
+                name: registered.spec.name.clone(),
+                registered_here: true,
+                host_pid: Some(4242),
+                host_started_at: None,
+            },
+        );
+        let reply = server
+            .handle(rpc(
+                1,
+                "tools/call",
+                json!({"name": "claim", "arguments": {"resource": "path:/work/orchard/src/lib.rs", "note": "editing"}}),
+            ))
+            .await
+            .unwrap();
+        assert!(reply["error"].is_null(), "{reply}");
+        let requests = server.backend.requests();
+        assert!(
+            requests.iter().any(|request| matches!(
+                request,
+                Request::Claim { agent, resource, .. }
+                    if agent == &id && resource == "path:/work/orchard/src/lib.rs"
+            )),
+            "{requests:?}"
+        );
     }
 
     fn rpc(id: u64, method: &str, params: Value) -> Value {

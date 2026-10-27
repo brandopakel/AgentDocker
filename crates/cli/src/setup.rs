@@ -28,7 +28,15 @@ pub enum Outcome {
     Planned,
 }
 
-pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()> {
+pub async fn run(
+    client: &Client,
+    names: &[String],
+    dry_run: bool,
+    agent: Option<&Path>,
+) -> Result<()> {
+    if agent.is_some() {
+        ensure_agent_names_docker_agent(names)?;
+    }
     let inventory = match client.call(&Request::Runtimes).await? {
         Response::Runtimes { runtimes } => runtimes,
         other => bail!("unexpected reply to runtimes: {other:?}"),
@@ -69,6 +77,11 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
                 if spec.name == "opencode" {
                     paths.push(crate::opencode_plugin::path(&roots));
                 }
+                if spec.mcp == McpWiring::AgentConfig
+                    && let Some(agent) = agent
+                {
+                    paths.push(agent.to_owned());
+                }
             }
         }
         Some(mutation::Guard::acquire(paths)?)
@@ -89,6 +102,32 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
             agentdocker_host::runtimes::mcp_wiring(spec, &roots, "agentdocker"),
         ) {
             (_, Wiring::Wired) => eprintln!("{}: MCP server already registered", runtime.name),
+            // Docker Agent reads its MCP servers from each agent's YAML:
+            // the file the person names is edited, or the entry printed
+            // for them to add.
+            (McpWiring::AgentConfig, _) => match agent {
+                Some(path) => {
+                    if let Some(mutation) = &mutation {
+                        mutation.covers(path)?;
+                    }
+                    let (outcome, target) = register_docker_agent(path, &exe, dry_run)?;
+                    report(&runtime.name, "MCP toolset", path, outcome);
+                    if target.harness {
+                        eprintln!(
+                            "{}: agent `{}` runs a harness, and {} ignores the toolsets of such an agent",
+                            runtime.name, target.agent, runtime.label
+                        );
+                    }
+                }
+                None => eprintln!(
+                    "{}: MCP servers are declared in each agent's YAML file, not in a file of {}'s own. `{} setup {} --agent <file>` adds this to the file's first agent; every run of an agent that lists it joins as one agent:\n\n{}",
+                    runtime.name,
+                    runtime.label,
+                    exe.display(),
+                    runtime.name,
+                    agentdocker_core::runtime::docker_agent_toolset(&exe.to_string_lossy())
+                ),
+            },
             (McpWiring::None, _) => eprintln!(
                 "{}: no MCP registration known for it; point it at `{} mcp --runtime {}` by hand",
                 runtime.name,
@@ -193,6 +232,62 @@ pub async fn run(client: &Client, names: &[String], dry_run: bool) -> Result<()>
         }
     }
     Ok(())
+}
+
+/// `--agent` names a Docker Agent YAML file, so the setup it belongs to is
+/// Docker Agent's and nobody else's.
+pub(crate) fn ensure_agent_names_docker_agent(names: &[String]) -> Result<()> {
+    if names.len() == 1 && names[0] == agentdocker_core::docker_agent::RUNTIME {
+        return Ok(());
+    }
+    bail!(
+        "`--agent` is for Docker Agent alone: `agentdocker setup {} --agent <file>`",
+        agentdocker_core::docker_agent::RUNTIME
+    )
+}
+
+/// Our MCP toolset in a Docker Agent YAML file's first agent, added when
+/// missing, left alone when there.
+pub fn register_docker_agent(
+    path: &Path,
+    exe: &Path,
+    dry_run: bool,
+) -> Result<(Outcome, agentdocker_core::docker_agent::Target)> {
+    let existing = std::fs::read_to_string(path)
+        .with_context(|| format!("cannot read the agent file {}", path.display()))?;
+    let (contents, target) = docker_agent_edit(path, &existing, exe)?;
+    let Some(contents) = contents else {
+        return Ok((Outcome::Present, target));
+    };
+    if dry_run {
+        return Ok((Outcome::Planned, target));
+    }
+    write_config(path, Some(&existing), &contents)?;
+    Ok((Outcome::Added, target))
+}
+
+/// The agent file with our toolset in its first agent (`None` when it is
+/// there), and that agent as found. A file the pure editor cannot place
+/// the entry in is refused with the reason, and the person adds the entry
+/// `setup docker-agent` prints by hand.
+pub(super) fn docker_agent_edit(
+    path: &Path,
+    existing: &str,
+    exe: &Path,
+) -> Result<(Option<String>, agentdocker_core::docker_agent::Target)> {
+    use agentdocker_core::docker_agent::{target, with_toolset};
+    let found = target(existing, "agentdocker")
+        .with_context(|| format!("{}: cannot add the toolset", path.display()))?;
+    let after = with_toolset(existing, &exe.to_string_lossy(), "agentdocker")
+        .with_context(|| format!("{}: cannot add the toolset", path.display()))?;
+    Ok((after, found))
+}
+
+/// The agent file with our toolset taken out of its first agent, `None`
+/// when it lists none.
+pub(super) fn docker_agent_removal(path: &Path, existing: &str) -> Result<Option<String>> {
+    agentdocker_core::docker_agent::without_toolset(existing, "agentdocker")
+        .with_context(|| format!("{}: cannot take the toolset out", path.display()))
 }
 
 /// Write a document AgentDocker owns (a skill, a plugin) unless it is
@@ -892,6 +987,66 @@ mod tests {
         assert!(register_json(&tmp.path().join("bad.json"), exe, "x", false).is_ok());
         std::fs::write(tmp.path().join("list.json"), "[]").unwrap();
         assert!(register_json(&tmp.path().join("list.json"), exe, "x", false).is_err());
+    }
+
+    /// Docker Agent's registration is a toolset in the agent file the
+    /// person names: added once to its first agent, previewed without a
+    /// write, left alone when there, and refused for a file the editor
+    /// cannot place it in rather than rewritten.
+    #[test]
+    fn docker_agent_registration_edits_the_named_agent_file_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("team.yaml");
+        let exe = Path::new("/opt/agentdocker");
+        let before = "agents:\n  root:\n    model: openai/gpt-5-mini\n    toolsets:\n      - type: filesystem\n  helper:\n    model: openai/gpt-5-mini\n";
+        std::fs::write(&path, before).unwrap();
+        let (outcome, target) = register_docker_agent(&path, exe, true).unwrap();
+        assert_eq!(outcome, Outcome::Planned);
+        assert_eq!(target.agent, "root");
+        assert!(!target.harness && !target.lists_toolset);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "a dry run writes nothing"
+        );
+        assert_eq!(
+            register_docker_agent(&path, exe, false).unwrap().0,
+            Outcome::Added
+        );
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            after,
+            "agents:\n  root:\n    model: openai/gpt-5-mini\n    toolsets:\n      - type: filesystem\n      - type: mcp\n        command: \"/opt/agentdocker\"\n        args: [\"mcp\", \"--runtime\", \"docker-agent\"]\n  helper:\n    model: openai/gpt-5-mini\n"
+        );
+        assert!(path.with_extension("agentdocker-backup").exists());
+        let (outcome, target) = register_docker_agent(&path, exe, false).unwrap();
+        assert_eq!(outcome, Outcome::Present);
+        assert!(target.lists_toolset);
+        assert_eq!(
+            docker_agent_removal(&path, &after).unwrap().as_deref(),
+            Some(before),
+            "the removal is the exact reverse"
+        );
+        assert_eq!(docker_agent_removal(&path, before).unwrap(), None);
+        // A harness agent is edited and said to ignore its toolsets.
+        std::fs::write(
+            &path,
+            "agents:\n  coder:\n    harness:\n      type: claude-code\n",
+        )
+        .unwrap();
+        let (outcome, target) = register_docker_agent(&path, exe, true).unwrap();
+        assert_eq!(outcome, Outcome::Planned);
+        assert!(target.harness);
+        // A flow-written toolsets is refused with the reason, unchanged.
+        let inline = "agents:\n  root:\n    toolsets: [{type: filesystem}]\n";
+        std::fs::write(&path, inline).unwrap();
+        let error = register_docker_agent(&path, exe, false).unwrap_err();
+        assert!(format!("{error:#}").contains("inline"), "{error:#}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), inline);
+        assert!(register_docker_agent(&tmp.path().join("missing.yaml"), exe, true).is_err());
+        assert!(ensure_agent_names_docker_agent(&["docker-agent".into()]).is_ok());
+        assert!(ensure_agent_names_docker_agent(&[]).is_err());
+        assert!(ensure_agent_names_docker_agent(&["codex".into(), "docker-agent".into()]).is_err());
     }
 
     #[test]

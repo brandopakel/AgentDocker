@@ -899,7 +899,10 @@ Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 Version, Command, Browser, URL, Code — and each live session as its name with
 its readiness chip and its contact chips (*MCP · recent*, *Hooks · none*), plus **Review setup**,
 **Check connections** and **Setup history**; an incomplete inventory is the
-alert mark; **Other tools (n)** expands
+alert mark. A tool that declares its MCP servers in each agent's file rather
+than in one of its own (Docker Agent) shows MCP as *In each agent's YAML*,
+with the `setup … --agent <file>` command that adds AgentDocker's as its tip,
+and offers no Set up of its own. **Other tools (n)** expands
 the inventory. Delivery, a session's readiness chip, says the same words as `ps`
 and a send's warning: **Ready for messages** (nothing taken
 yet), **Receiving messages**, **Not receiving messages**, **Not heard from

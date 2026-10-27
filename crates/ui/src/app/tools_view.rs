@@ -16,7 +16,7 @@ use super::view::{
 use super::*;
 use crate::controls::{Kind, button as action, custom, ghost, input, primary, segment};
 use agentdocker_core::readiness::State;
-use agentdocker_core::runtime::Wiring;
+use agentdocker_core::runtime::{McpWiring, Wiring};
 use iced::{
     Border, Center, Element, Fill, Font, Length, Padding,
     widget::{Space, column, container, row, scrollable, text},
@@ -820,8 +820,26 @@ impl App {
             let (word, tone) = wiring_word(wiring, c);
             status_word(word, tone, c)
         };
+        // Docker Agent declares its MCP servers in each agent's YAML, so
+        // there is no file of its own to read as configured or not.
+        let per_agent_file = agentdocker_core::runtime::spec(&runtime.name)
+            .is_some_and(|spec| spec.mcp == McpWiring::AgentConfig);
         let mut facts: Vec<(String, Element<'a, Message>)> = vec![
-            ("MCP".into(), wired(runtime.mcp)),
+            (
+                "MCP".into(),
+                if per_agent_file {
+                    super::view::tip(
+                        status_word("In each agent's YAML", c.faint, c),
+                        format!(
+                            "{} reads MCP servers from the toolsets of each agent's YAML file. `agentdocker setup {} --agent <file>` adds AgentDocker's to one.",
+                            runtime.label, runtime.name
+                        ),
+                        c,
+                    )
+                } else {
+                    wired(runtime.mcp)
+                },
+            ),
             (
                 "Hooks".into(),
                 if state.outdated {
