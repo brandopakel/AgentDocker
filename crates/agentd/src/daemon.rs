@@ -229,8 +229,9 @@ enum Coordination {
 /// everything else answers `transferring` until a coordinator owns the
 /// database again. `Shutdown` and `Reload` steer the daemon itself
 /// rather than its data: neither is fenced, and neither counts as a
-/// mutation in flight, or a reload would refuse itself. Public because
-/// the MCP server's tests check each tool's `readOnlyHint` against it.
+/// mutation in flight, or a reload would refuse itself. A journal digest
+/// writes only when it advances the reader's cursor. Public because the
+/// MCP server's tests check each tool's `readOnlyHint` against it.
 pub fn mutates(request: &Request) -> bool {
     !matches!(
         request,
@@ -257,6 +258,10 @@ pub fn mutates(request: &Request) -> bool {
             | Request::Pauses
             | Request::Contests { .. }
             | Request::Journal { digest: None, .. }
+            | Request::Journal {
+                digest: Some(DigestRequest { advance: false, .. }),
+                ..
+            }
             | Request::Channels { .. }
             | Request::Conversations { .. }
             | Request::History { .. }

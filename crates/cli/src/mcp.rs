@@ -1775,7 +1775,7 @@ impl<B: Backend> McpServer<B> {
                         max_entries: budget.max_entries,
                         max_chars: budget.max_chars,
                         all_branches: args.all_branches,
-                        advance: true,
+                        advance: args.advance,
                     }),
                 })
                 .await
@@ -2164,6 +2164,8 @@ struct ReadJournalArgs {
     since: Option<u64>,
     #[serde(default)]
     all_branches: bool,
+    #[serde(default)]
+    advance: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -2458,8 +2460,8 @@ fn render_whole(response: Response) -> Value {
 fn annotations(name: &str) -> Value {
     // (read-only, destructive, idempotent, open-world)
     let (read_only, destructive, idempotent, open_world) = match name {
-        // Looking: nothing changes. `read_journal` moves the reader's own
-        // cursor, a bookmark, and nothing else.
+        // Looking: nothing changes (`read_journal` moves the reader's
+        // cursor only when asked to with `advance`).
         "whoami" | "list_agents" | "inspect_agent" | "list_leases" | "activity" | "overlap"
         | "open_questions" | "read_journal" | "check_stale" | "read_set" | "list_checkpoints"
         | "list_handoffs" | "list_channels" | "contests" | "list_tasks" | "get_task"
@@ -2900,12 +2902,13 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "read_journal",
-            "description": "What changed in this project and why since this agent last read it: one line per release, note, commit, or arrival, oldest first, within a budget. Reading marks it seen; `since` re-reads from a sequence number instead.",
+            "description": "What changed in this project and why since this agent last read it: one line per release, note, commit, or arrival, oldest first, within a budget. Reading changes nothing: `advance` marks what was shown as seen, so the next read starts after it; `since` re-reads from a sequence number instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "since": { "type": "integer", "minimum": 0, "description": "Sequence number to read from instead of this agent's cursor." },
-                    "all_branches": { "type": "boolean", "default": false, "description": "Show entries from every branch instead of counting the other branches." }
+                    "all_branches": { "type": "boolean", "default": false, "description": "Show entries from every branch instead of counting the other branches." },
+                    "advance": { "type": "boolean", "default": false, "description": "Move this agent's cursor to what was shown, so the next read without `since` starts after it. Off, the same read comes back until something is added." }
                 },
                 "additionalProperties": false
             }
@@ -4122,9 +4125,7 @@ mod tests {
     /// send the daemon nothing it admits as a mutation, and a tool marked
     /// otherwise must send something it does. The daemon's own classifier
     /// is the reference, so a hint cannot drift from the protocol: a tool
-    /// that starts writing loses its hint here first. The one reading the
-    /// daemon counts as a write is the journal digest, which moves the
-    /// reader's own cursor; it is named here and nowhere else.
+    /// that starts writing loses its hint here first.
     #[tokio::test]
     async fn read_only_hints_agree_with_the_requests_the_tools_send() {
         let mut findings = Vec::new();
@@ -4169,15 +4170,7 @@ mod tests {
             }
             let mutating: Vec<&Request> = requests
                 .iter()
-                .filter(|request| match request {
-                    // A digest moves the reader's own cursor, a bookmark the
-                    // daemon writes for the caller: still a reading.
-                    Request::Journal {
-                        digest: Some(digest),
-                        ..
-                    } if digest.reader == "abc123" => false,
-                    _ => agentd::daemon::mutates(request),
-                })
+                .filter(|request| agentd::daemon::mutates(request))
                 .collect();
             if tool["annotations"]["readOnlyHint"] == true {
                 if !mutating.is_empty() {
@@ -4190,6 +4183,36 @@ mod tests {
             }
         }
         assert!(findings.is_empty(), "{}", findings.join("\n"));
+    }
+
+    /// The default read leaves the cursor where it is; `advance` is the
+    /// one way the tool writes, and asking for it is what the daemon
+    /// admits as a mutation.
+    #[tokio::test]
+    async fn read_journal_moves_the_cursor_only_when_asked() {
+        for (advance, expected) in [(false, false), (true, true)] {
+            let s = server(vec![]);
+            s.handle(rpc(
+                1,
+                "tools/call",
+                json!({ "name": "read_journal", "arguments": { "advance": advance } }),
+            ))
+            .await
+            .unwrap();
+            let requests = s.backend.requests();
+            let journal = requests
+                .iter()
+                .find(|request| matches!(request, Request::Journal { .. }))
+                .expect("a journal request");
+            assert!(
+                matches!(journal, Request::Journal { digest: Some(digest), .. } if digest.advance == advance)
+            );
+            assert_eq!(
+                agentd::daemon::mutates(journal),
+                expected,
+                "advance={advance}"
+            );
+        }
     }
 
     #[tokio::test]

@@ -713,6 +713,10 @@ about us:
 `read_journal` · `journal_note` · `observe_paths` · `check_stale` ·
 `read_set` · `overlap`
 
+`read_journal` shows what changed since the agent's cursor and leaves the
+cursor where it is; `advance: true` moves it past what was shown, so the
+next read starts after it, and `since` reads from a sequence number instead.
+
 `create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
 `validate` · `validation_results`
 
