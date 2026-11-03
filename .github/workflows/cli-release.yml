@@ -7,6 +7,13 @@ on:
   workflow_dispatch:
   workflow_call:
 
+# A push to a pull request makes its earlier runs moot: they are cancelled.
+# Any other run, a release's call included, is a group of its own, so
+# nothing on main, a batch or a release waits for or replaces another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
