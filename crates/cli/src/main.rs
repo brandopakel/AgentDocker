@@ -1072,6 +1072,10 @@ enum MemoryAction {
         /// such as 90m, 12h, 7d or 2w.
         #[arg(long, value_name = "WHEN", value_parser = parse_when)]
         forget_after: Option<chrono::DateTime<chrono::Utc>>,
+        /// Said only to the agents holding this role, and to the person;
+        /// repeat for several. To everyone when none is named.
+        #[arg(long = "role", value_name = "ROLE")]
+        roles: Vec<String>,
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1084,11 +1088,15 @@ enum MemoryAction {
         limit: Option<usize>,
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
     },
     /// What the project's agents are told first.
     Profile {
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
     },
     /// Forget a memory for good: your own, or any as the person.
     Forget {
@@ -2898,6 +2906,7 @@ async fn run() -> Result<()> {
                     supersedes,
                     standing,
                     forget_after,
+                    roles,
                     project,
                     from,
                 } => {
@@ -2911,6 +2920,7 @@ async fn run() -> Result<()> {
                         supersedes,
                         standing,
                         forget_after,
+                        roles,
                     };
                     if let Response::Memory { memory } = client.call(&request).await? {
                         println!("{}", memory.id);
@@ -2920,9 +2930,16 @@ async fn run() -> Result<()> {
                     query,
                     limit,
                     project,
+                    from,
                 } => {
+                    // Read as who asks: the agent whose session this is, or
+                    // the person, who reads every memory.
                     let request = Request::MemorySearch {
-                        from: None,
+                        from: Some(
+                            sender::resolve(&client, from)
+                                .await?
+                                .unwrap_or_else(|| HUMAN.into()),
+                        ),
                         project: Some(project.map_or_else(here, Ok)?),
                         query: query.join(" "),
                         limit,
@@ -2931,9 +2948,13 @@ async fn run() -> Result<()> {
                         list(&memories);
                     }
                 }
-                MemoryAction::Profile { project } => {
+                MemoryAction::Profile { project, from } => {
                     let request = Request::MemoryProfile {
-                        from: None,
+                        from: Some(
+                            sender::resolve(&client, from)
+                                .await?
+                                .unwrap_or_else(|| HUMAN.into()),
+                        ),
                         project: Some(project.map_or_else(here, Ok)?),
                         max_chars: None,
                     };
