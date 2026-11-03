@@ -114,7 +114,7 @@ async fn read_frame(reader: &mut BufReader<Stream>) -> Result<Response> {
         )
         .into());
     }
-    into_result(serde_json::from_str(&line)?)
+    into_result(decode(&line)?)
 }
 
 #[cfg(all(test, unix))]
@@ -312,6 +312,27 @@ mod tests {
                 .unwrap_err()
                 .to_string()
                 .contains("timed out")
+        );
+    }
+
+    /// A refusal by a code this client does not know keeps its code and
+    /// words on the checked stream too, not a decoding error.
+    #[tokio::test]
+    async fn a_checked_frame_with_an_unknown_code_is_reported_as_itself() {
+        let (client, mut server) = agentdocker_host::ipc::pair().await.unwrap();
+        server
+            .write_all(
+                b"{\"type\":\"error\",\"code\":\"newer_refusal\",\"message\":\"not yours\"}\n",
+            )
+            .await
+            .unwrap();
+        let error = read_frame(&mut BufReader::new(client)).await.unwrap_err();
+        let unknown = error
+            .downcast_ref::<crate::client::UnknownCode>()
+            .expect("an unknown code");
+        assert_eq!(
+            (unknown.code.as_str(), unknown.message.as_str()),
+            ("newer_refusal", "not yours")
         );
     }
 
