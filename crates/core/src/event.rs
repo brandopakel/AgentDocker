@@ -873,6 +873,20 @@ pub enum EventKind {
         by: AgentId,
         verdict: crate::Verdict,
     },
+    /// A verdict was set aside: a departed reviewer's request for changes
+    /// at `role`'s gate, by a successor's pass of that commit or a later
+    /// one (`reviewer_ended`), or any verdict at every gate by the person
+    /// (`person`, no `role`). `was_by` gave it; `by` set it aside.
+    CodeVerdictSuperseded {
+        project: ProjectId,
+        branch: String,
+        verdict: String,
+        was_by: AgentId,
+        by: AgentId,
+        reason: crate::gate::SupersedeReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+    },
     /// A journal entry was appended to a project.
     JournalAppended {
         entry: JournalEntry,

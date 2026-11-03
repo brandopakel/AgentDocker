@@ -2633,7 +2633,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "review_gate",
-            "description": "Whether a branch may land at a commit: approved at exactly that commit by a holder of `role` (default `reviewer`) or the person, with nobody asking for changes. `stale` means the approval read an earlier commit.",
+            "description": "Whether a branch may land at a commit: approved at exactly that commit by a holder of `role` (default `reviewer`) or the person, with nobody asking for changes. `stale` means the approval read an earlier commit. A request for changes from a reviewer whose record has ended is set aside at that role's gate once a current holder of the role, or the person, approves the commit it read or a later one; `superseded` lists such verdicts and who set each aside.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

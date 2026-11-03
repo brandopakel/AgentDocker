@@ -3,6 +3,7 @@
 //! gate is the daemon's; this side turns a pull request or a branch into
 //! the branch and the full commit it means, and can set the answer as a
 //! commit status on GitHub, where any later commit starts without one.
+//! `verdict --supersede <id>` is the person setting a verdict aside.
 //! And `agentdocker report-commit`, what the post-commit hook of a worktree
 //! AgentDocker created runs, so the daemon keeps who made each commit there
 //! and refuses that agent's word on the branch.
@@ -11,7 +12,9 @@ use std::time::Duration;
 
 use crate::client::Client;
 use crate::sender;
-use agentdocker_core::gate::{CodeVerdict, Findings, Gate, WitnessFile};
+use agentdocker_core::gate::{
+    CodeVerdict, Findings, GATE_ROLE, Gate, SupersedeReason, WitnessFile,
+};
 use agentdocker_core::{HUMAN, Request, Response};
 use anyhow::{Context, Result, bail, ensure};
 
@@ -26,14 +29,22 @@ pub struct VerdictArgs {
     #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
     agent: Option<String>,
     /// The branch reviewed.
-    branch: String,
+    #[arg(required_unless_present = "supersede")]
+    branch: Option<String>,
     /// The commit you read: a full id, or anything `git rev-parse` turns into one here.
-    #[arg(long)]
-    head: String,
+    #[arg(long, required_unless_present = "supersede")]
+    head: Option<String>,
     /// The commit an earlier review read, when you read only what came after it.
     #[arg(long)]
     from: Option<String>,
-    #[arg(long, group = "word", required = true)]
+    // One word is required unless a verdict is being set aside; the group
+    // keeps it to one. (A plain `required` would be waived by the group
+    // alone, a `required_unless_present` is not.)
+    #[arg(
+        long,
+        group = "word",
+        required_unless_present_any = ["changes", "comment", "supersede"]
+    )]
     /// Good to land at this commit.
     approve: bool,
     #[arg(long, group = "word")]
@@ -50,6 +61,23 @@ pub struct VerdictArgs {
     project: Option<String>,
     /// What you checked and what you found.
     note: Option<String>,
+    /// Set a verdict aside by its id so it counts at no gate (the person only): the way
+    /// out when a reviewer asked for changes and is gone.
+    #[arg(
+        long,
+        value_name = "VERDICT",
+        conflicts_with_all = ["branch", "head", "from", "approve", "changes", "comment", "findings", "note"]
+    )]
+    supersede: Option<String>,
+    /// Why the verdict is set aside (with --supersede).
+    // Its own conflicts too: clap waives a `requires` when anything the
+    // required argument conflicts with is given.
+    #[arg(
+        long,
+        requires = "supersede",
+        conflicts_with_all = ["branch", "head", "from", "approve", "changes", "comment", "findings", "note"]
+    )]
+    reason: Option<String>,
 }
 
 #[derive(clap::Args, Debug)]
@@ -243,6 +271,33 @@ fn said(gate: &Gate, branch: &str, head: &str) -> String {
     }
 }
 
+/// One line for each verdict set aside at `role`'s gate: which it was,
+/// whose, and who set it aside.
+fn set_aside(superseded: &[CodeVerdict], role: &str) -> Vec<String> {
+    superseded
+        .iter()
+        .filter_map(|verdict| {
+            let mark = verdict.superseded_at(role)?;
+            let why = match mark.reason {
+                SupersedeReason::ReviewerEnded => {
+                    format!(
+                        "{} has left; {} passed since",
+                        verdict.by_name, mark.by_name
+                    )
+                }
+                SupersedeReason::Person => format!("set aside by {}", mark.by_name),
+            };
+            Some(format!(
+                "superseded: {} by {} at {} (verdict {}): {why}",
+                verdict.verdict,
+                verdict.by_name,
+                short(&verdict.head),
+                verdict.id
+            ))
+        })
+        .collect()
+}
+
 /// The commit status that says the same: GitHub keeps it on this commit
 /// only, so a later one starts without it.
 fn status(gate: &Gate) -> (&'static str, String) {
@@ -286,6 +341,30 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
     let agent = sender::resolve(client, args.agent)
         .await?
         .unwrap_or_else(|| HUMAN.into());
+    if let Some(id) = args.supersede {
+        let request = Request::SupersedeVerdict {
+            project: project(client, args.project, &agent).await?,
+            agent,
+            verdict: id,
+            reason: args.reason,
+        };
+        let Response::CodeVerdict { verdict } = client.call(&request).await? else {
+            bail!("the daemon did not set the verdict aside");
+        };
+        println!("{}", verdict.id);
+        eprintln!(
+            "superseded: {} {} at {} by {}; ask `agentdocker gate {}` for the gate now",
+            verdict.verdict,
+            verdict.branch,
+            short(&verdict.head),
+            verdict.by_name,
+            verdict.branch
+        );
+        return Ok(());
+    }
+    let (Some(branch), Some(head)) = (args.branch, args.head) else {
+        bail!("a verdict names the branch and --head it read");
+    };
     let word = if args.approve {
         "approve"
     } else if args.changes {
@@ -296,8 +375,8 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
     let request = Request::CodeVerdict {
         project: project(client, args.project, &agent).await?,
         agent,
-        branch: args.branch,
-        head: commit(&args.head)?,
+        branch,
+        head: commit(&head)?,
         from: args.from.as_deref().map(commit).transpose()?,
         verdict: word.to_owned(),
         findings: args.findings,
@@ -322,6 +401,14 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
 pub async fn gate(client: &Client, args: GateArgs) -> Result<bool> {
     let agent = sender::resolve(client, args.agent).await?;
     let (branch, head) = branch_and_head(&args.target, args.head.as_deref())?;
+    // The role the daemon reads the gate for, as it takes it.
+    let role = args
+        .role
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+        .unwrap_or(GATE_ROLE)
+        .to_owned();
     let request = Request::ReviewGate {
         project: project(client, args.project, agent.as_deref().unwrap_or(HUMAN)).await?,
         agent,
@@ -329,7 +416,7 @@ pub async fn gate(client: &Client, args: GateArgs) -> Result<bool> {
         head: head.clone(),
         role: args.role,
     };
-    let Response::ReviewGate { gate } = client.call(&request).await? else {
+    let Response::ReviewGate { gate, superseded } = client.call(&request).await? else {
         bail!("the daemon did not answer for the gate");
     };
     if args.publish {
@@ -339,11 +426,14 @@ pub async fn gate(client: &Client, args: GateArgs) -> Result<bool> {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "branch": branch, "head": head, "gate": gate,
+                "branch": branch, "head": head, "gate": gate, "superseded": superseded,
             }))?
         );
     } else {
         println!("{}", said(&gate, &branch, &head));
+        for line in set_aside(&superseded, &role) {
+            println!("{line}");
+        }
     }
     Ok(gate.approved())
 }
@@ -465,7 +555,60 @@ mod tests {
             },
             note: String::new(),
             at: chrono::Utc::now(),
+            superseded: Vec::new(),
         })
+    }
+
+    #[test]
+    fn a_verdict_names_a_branch_and_head_with_a_word_or_sets_one_aside() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: VerdictArgs,
+        }
+        use clap::Parser as _;
+        let parsed = |argv: &[&str]| {
+            Cli::try_parse_from(std::iter::once("verdict").chain(argv.iter().copied()))
+                .map(|cli| cli.args)
+        };
+        let changes = parsed(&["feature/x", "--head", "abc", "--changes", "fix the test"]).unwrap();
+        assert_eq!(changes.branch.as_deref(), Some("feature/x"));
+        assert!(changes.changes && changes.supersede.is_none());
+        assert!(
+            parsed(&["feature/x", "--head", "abc", "--approve"])
+                .unwrap()
+                .approve
+        );
+        assert!(
+            parsed(&["feature/x", "--head", "abc", "--comment"])
+                .unwrap()
+                .comment
+        );
+        let lifted = parsed(&["--supersede", "1", "--reason", "the reviewer is gone"]).unwrap();
+        assert_eq!(lifted.supersede.as_deref(), Some("1"));
+        assert_eq!(lifted.reason.as_deref(), Some("the reviewer is gone"));
+        assert!(lifted.branch.is_none() && lifted.head.is_none() && lifted.note.is_none());
+        assert!(parsed(&["--supersede", "1"]).unwrap().reason.is_none());
+        for bad in [
+            &["feature/x", "--head", "abc"][..],
+            &["feature/x", "--head", "abc", "--approve", "--changes"],
+            &["feature/x", "--changes"],
+            &["--head", "abc", "--changes"],
+            &["--supersede", "1", "--approve"],
+            // A word after it would be taken for a branch, never a reason.
+            &["--supersede", "1", "the reviewer is gone"],
+            &["--supersede", "1", "--findings", "0,1,0"],
+            &[
+                "feature/x",
+                "--head",
+                "abc",
+                "--changes",
+                "--reason",
+                "gone",
+            ],
+        ] {
+            assert!(parsed(bad).is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -510,5 +653,43 @@ mod tests {
         assert_eq!(status(&Gate::Changes { verdict: changes }).0, "failure");
         assert_eq!(status(&Gate::Missing).0, "pending");
         assert!(status(&approved).1.chars().count() <= 140);
+    }
+
+    #[test]
+    fn the_gate_says_which_verdict_was_set_aside_and_by_whom() {
+        let head = "a".repeat(40);
+        let mut lifted = *verdict(&head);
+        lifted.verdict = Verdict::Changes;
+        lifted.superseded = vec![agentdocker_core::gate::Supersession {
+            by: AgentId::from("s"),
+            by_name: "reviewer-2".into(),
+            with: Some("2".into()),
+            role: Some(GATE_ROLE.into()),
+            reason: SupersedeReason::ReviewerEnded,
+            note: String::new(),
+            at: chrono::Utc::now(),
+        }];
+        assert_eq!(
+            set_aside(std::slice::from_ref(&lifted), GATE_ROLE),
+            [
+                "superseded: changes by reviewer-1 at aaaaaaaa (verdict 1): reviewer-1 has left; reviewer-2 passed since"
+            ]
+        );
+        // Said only at the gate it was lifted for.
+        assert!(set_aside(std::slice::from_ref(&lifted), "tester").is_empty());
+        // The person's word, at every gate.
+        lifted.superseded = vec![agentdocker_core::gate::Supersession {
+            by: AgentId::from("user"),
+            by_name: "user".into(),
+            with: None,
+            role: None,
+            reason: SupersedeReason::Person,
+            note: "the reviewer is gone".into(),
+            at: chrono::Utc::now(),
+        }];
+        assert_eq!(
+            set_aside(&[lifted], "tester"),
+            ["superseded: changes by reviewer-1 at aaaaaaaa (verdict 1): set aside by user"]
+        );
     }
 }

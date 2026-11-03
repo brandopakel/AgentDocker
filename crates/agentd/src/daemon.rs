@@ -3046,6 +3046,15 @@ impl Daemon {
                 self.review_gate(agent.as_deref(), project, &branch, &head, role)
                     .await
             }
+            Request::SupersedeVerdict {
+                agent,
+                project,
+                verdict,
+                reason,
+            } => {
+                self.supersede_verdict(&agent, project, &verdict, reason)
+                    .await
+            }
             Request::JournalPrune {
                 project,
                 before_seq,
