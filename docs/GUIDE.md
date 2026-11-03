@@ -1388,9 +1388,13 @@ Current behaviour that the sections above do not already state, by area.
   configuration are looked for with the entry's `env` laid over yours: an
   entry's `PATH` chooses its CLI, and its `CLAUDE_CONFIG_DIR` or `CODEX_HOME`
   the profile whose wiring counts, so set such a variable in the entry's
-  `env` for the agent to use that profile too. With `isolate = true` the
-  project's Claude Code settings count as the agent's new worktree will have
-  them: as committed, since an uncommitted edit stays in your checkout. What cannot work is refused
+  `env` for the agent to use that profile too. A relative directory there
+  (`PATH = "bin:/usr/bin"`, `CLAUDE_CONFIG_DIR = ".claude-profile"`) is
+  relative to the agent's working directory; an isolated entry needs it
+  absolute. With `isolate = true` the project's Claude Code settings count
+  as the agent's new worktree will have them: as committed, since an
+  uncommitted edit stays in your checkout, plus what `.worktreeinclude`
+  copies in (a regular file, never a symlink). What cannot work is refused
   when the file is read, naming the agent and the field: `command` beside a
   launch field, an effort the tool does not take, a tool AgentDocker cannot
   build for, a `prompt` on a Codex entry with `idle_messages` (it takes none

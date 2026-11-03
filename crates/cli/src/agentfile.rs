@@ -609,9 +609,9 @@ pub struct SystemHost {
     /// The environment `up` runs in: what `${VAR}` reads, and what an
     /// entry's `env` is laid over.
     base: Vars,
-    /// What has been found, by runtime and the roots it was looked for
-    /// under, so two entries with different environments are asked about
-    /// separately.
+    /// What has been found, by runtime, the roots it was looked for under
+    /// and the directory the agent starts in, so two entries with different
+    /// environments or places are asked about separately.
     found: RefCell<Vec<Found>>,
 }
 
@@ -624,6 +624,7 @@ type Vars = Box<dyn Fn(&str) -> Option<OsString>>;
 struct Found {
     runtime: String,
     roots: Roots,
+    start: PathBuf,
     cli: Option<PathBuf>,
     mcp: Wiring,
 }
@@ -648,21 +649,13 @@ impl SystemHost {
         }
     }
 
-    /// The roots the agent at `at` will see: its `env` over `up`'s.
+    /// The roots the agent at `at` will see: its `env` over `up`'s, a
+    /// relative directory in its own `env` taken from where it starts
+    /// ([`launch::anchored`]).
     fn roots(&self, at: &launch::Destination) -> Roots {
-        let mut roots = Roots::from_vars(&|name| {
-            at.env
-                .iter()
-                .find(|(key, _)| {
-                    // Windows reads variable names without regard to case.
-                    if cfg!(windows) {
-                        key.eq_ignore_ascii_case(name)
-                    } else {
-                        key.as_str() == name
-                    }
-                })
-                .map(|(_, value)| OsString::from(value))
-                .or_else(|| (self.base)(name))
+        let mut roots = Roots::from_vars(&|name| match launch::entry_var(at.env, name) {
+            Some(value) => Some(launch::anchored(name, value, at.workdir)),
+            None => (self.base)(name),
         });
         // The versions are not needed, and each one is a process run.
         roots.versions = false;
@@ -671,12 +664,9 @@ impl SystemHost {
 
     fn found(&self, runtime: &str, at: &launch::Destination) -> (Option<PathBuf>, Wiring) {
         let roots = self.roots(at);
-        if let Some(found) = self
-            .found
-            .borrow()
-            .iter()
-            .find(|found| found.runtime == runtime && found.roots == roots)
-        {
+        if let Some(found) = self.found.borrow().iter().find(|found| {
+            found.runtime == runtime && found.roots == roots && found.start == at.workdir
+        }) {
             return (found.cli.clone(), found.mcp);
         }
         let (cli, mcp) = match agentdocker_core::runtime::spec(runtime) {
@@ -689,6 +679,7 @@ impl SystemHost {
         self.found.borrow_mut().push(Found {
             runtime: runtime.to_owned(),
             roots,
+            start: at.workdir.to_owned(),
             cli: cli.clone(),
             mcp,
         });
@@ -722,8 +713,8 @@ impl launch::Host for SystemHost {
 
     /// The user's settings, from the profile `at` names, and the project's
     /// as the session will find them: in `workdir` for an ordinary launch;
-    /// for an isolated one, as the worktree the daemon makes holds them
-    /// ([`isolated_project_settings`]).
+    /// for an isolated one, as the worktree the daemon makes will hold them
+    /// ([`isolated_project_runs_hooks`]).
     fn claude_hooks_present(&self, at: &launch::Destination) -> bool {
         let Some(spec) = agentdocker_core::runtime::spec("claude-code") else {
             return false;
@@ -733,9 +724,7 @@ impl launch::Host for SystemHost {
             return true;
         }
         if at.isolate {
-            isolated_project_settings(at.workdir).iter().any(|text| {
-                agentdocker_host::runtimes::claude_settings_run_hooks(text, launch::MARKER)
-            })
+            isolated_project_runs_hooks(at.workdir)
         } else {
             PROJECT_SETTINGS.iter().any(|file| {
                 agentdocker_host::runtimes::claude_settings_file_runs_hooks(
@@ -747,14 +736,22 @@ impl launch::Host for SystemHost {
     }
 }
 
-/// The project settings a session in a worktree the daemon makes for
-/// `workdir` will read. The daemon makes it from the `HEAD` of the checkout
-/// `workdir` is in and starts the session at its top level, so a tracked
-/// settings file is what `HEAD` holds — an uncommitted edit stays behind —
-/// and an untracked one is there only when `.worktreeinclude` has it copied
-/// (on Unix; elsewhere the daemon copies nothing). Nothing, when `workdir`
-/// is in no checkout or git cannot say.
-fn isolated_project_settings(workdir: &Path) -> Vec<String> {
+/// Whether the project settings a session in a worktree the daemon makes
+/// for `workdir` will read run our hooks. The daemon makes that worktree
+/// from the `HEAD` of the checkout `workdir` is in and starts the session
+/// at its top level, so:
+///
+/// - a settings file `HEAD` tracks is what `HEAD` holds — an uncommitted
+///   edit stays behind — and only a regular file counts: a tracked symlink
+///   is not followed here, so the hooks are added rather than trusted;
+/// - an untracked one is there only when `.worktreeinclude` has it copied,
+///   by the daemon's own rules: a regular file (never a symlink), within
+///   the copy's size budget, never written through a symlink in the new
+///   worktree — whose tree is `HEAD`'s — and on Unix only, where the daemon
+///   copies at all.
+///
+/// False when `workdir` is in no checkout or git cannot say.
+fn isolated_project_runs_hooks(workdir: &Path) -> bool {
     let git = |dir: &Path, args: Vec<String>| -> Option<String> {
         let mut argv = vec!["git".to_owned()];
         argv.extend(args);
@@ -764,19 +761,35 @@ fn isolated_project_settings(workdir: &Path) -> Vec<String> {
     let words =
         |args: &[&str]| -> Vec<String> { args.iter().map(|arg| (*arg).to_owned()).collect() };
     let Some(top) = git(workdir, words(&["rev-parse", "--show-toplevel"])) else {
-        return Vec::new();
+        return false;
     };
     let top = PathBuf::from(top.trim_end_matches(['\n', '\r']));
+    // The mode `HEAD` gives each path under `.claude`, and `.claude` itself:
+    // what the new worktree's checkout will put there.
+    let tracked: BTreeMap<String, String> = git(
+        &top,
+        words(&["ls-tree", "-r", "-t", "-z", "HEAD", "--", ".claude"]),
+    )
+    .map(|listing| {
+        listing
+            .split('\0')
+            .filter_map(|record| {
+                let (meta, path) = record.split_once('\t')?;
+                Some((path.to_owned(), meta.split(' ').next()?.to_owned()))
+            })
+            .collect()
+    })
+    .unwrap_or_default();
     let copied: Vec<String> = if cfg!(unix) {
         std::fs::read_to_string(top.join(agentdocker_host::vcs::WORKTREE_INCLUDE))
             .ok()
             .and_then(|text| agentdocker_host::vcs::worktree_include_listing(&text))
             .and_then(|args| git(&top, args))
             .map(|listed| {
-                listed
-                    .split('\0')
-                    .filter(|path| !path.is_empty())
-                    .map(str::to_owned)
+                agentdocker_host::vcs::worktree_include_sources(&top, &listed)
+                    .0
+                    .into_iter()
+                    .map(|(relative, _)| relative)
                     .collect()
             })
             .unwrap_or_default()
@@ -785,16 +798,28 @@ fn isolated_project_settings(workdir: &Path) -> Vec<String> {
     };
     PROJECT_SETTINGS
         .iter()
-        .filter_map(|file| {
-            git(&top, words(&["cat-file", "blob", &format!("HEAD:{file}")])).or_else(|| {
-                copied
-                    .iter()
-                    .any(|path| path == file)
-                    .then(|| std::fs::read_to_string(top.join(file)).ok())
-                    .flatten()
-            })
+        .any(|file| match tracked.get(*file).map(String::as_str) {
+            Some("100644" | "100755") => {
+                git(&top, words(&["cat-file", "blob", &format!("HEAD:{file}")])).is_some_and(
+                    |text| {
+                        agentdocker_host::runtimes::claude_settings_run_hooks(&text, launch::MARKER)
+                    },
+                )
+            }
+            Some(_) => false,
+            None => {
+                copied.iter().any(|path| path == file)
+                    && agentdocker_host::vcs::worktree_include_writable(file, |at| {
+                        at.to_str()
+                            .and_then(|at| tracked.get(at))
+                            .is_some_and(|mode| mode == "120000")
+                    })
+                    && agentdocker_host::runtimes::claude_settings_file_runs_hooks(
+                        &top.join(file),
+                        launch::MARKER,
+                    )
+            }
         })
-        .collect()
 }
 
 #[cfg(test)]
@@ -1512,6 +1537,73 @@ depends_on = []
         );
     }
 
+    /// A relative directory first in an entry's own `PATH` is found in the
+    /// directory the agent starts in, and chooses its CLI there.
+    #[cfg(unix)]
+    #[test]
+    fn an_entrys_relative_path_is_searched_where_it_starts() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let workdir = temp.path().join("w");
+        for bin in [workdir.join("bin"), temp.path().join("a")] {
+            std::fs::create_dir_all(&bin).unwrap();
+            let cli = bin.join("claude");
+            std::fs::write(&cli, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let home = temp.path().join("home");
+        let other = temp.path().join("a");
+        let host = machine(&[("HOME", home.as_path()), ("PATH", other.as_path())]);
+        let path = format!("bin:{}", other.display());
+        let command = claude_command(&host, &workdir, &format!("env = {{ PATH = {path:?} }}"));
+        assert_eq!(
+            command[0],
+            workdir
+                .canonicalize()
+                .unwrap()
+                .join("bin/claude")
+                .display()
+                .to_string()
+        );
+    }
+
+    /// A relative `CLAUDE_CONFIG_DIR` in an entry's own `env` is the
+    /// profile at the agent's working directory, wherever `up` runs: wired
+    /// there, nothing is added; the same words for an agent elsewhere name
+    /// another, unwired profile, which gets the MCP server and the hooks.
+    #[test]
+    fn an_entrys_relative_profile_is_read_where_it_starts() {
+        let temp = tempfile::tempdir().unwrap();
+        let workdir = temp.path().join("w");
+        let profile = workdir.join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let exe = Path::new("/opt/ad/agentdocker");
+        std::fs::write(
+            profile.join(".claude.json"),
+            serde_json::json!({"mcpServers": {"agentdocker": {
+                "type": "stdio", "command": exe, "args": ["mcp", "--runtime", "claude-code"]
+            }}})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(profile.join("settings.json"), wired_settings(exe)).unwrap();
+        assert!(
+            !Path::new("profile").exists(),
+            "the test's own directory has no such profile"
+        );
+        let home = temp.path().join("home");
+        let host = machine(&[("HOME", home.as_path()), ("USERPROFILE", home.as_path())]);
+        let own = "env = { CLAUDE_CONFIG_DIR = \"profile\" }";
+        let here = claude_command(&host, &workdir, own);
+        assert!(!here.contains(&"--mcp-config".to_owned()), "{here:?}");
+        assert_eq!(settings_of(&here), None, "{here:?}");
+        let elsewhere = temp.path().join("v");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let there = claude_command(&host, &elsewhere, own);
+        assert!(there.contains(&"--mcp-config".to_owned()), "{there:?}");
+        assert!(settings_of(&there).is_some_and(runs_our_hooks), "{there:?}");
+    }
+
     fn have_git() -> bool {
         std::process::Command::new("git")
             .arg("--version")
@@ -1570,20 +1662,29 @@ depends_on = []
         let settings = settings_of(&isolated).expect("the worktree has only what HEAD has");
         assert!(runs_our_hooks(settings), "{settings}");
 
-        if cfg!(unix) {
+        #[cfg(unix)]
+        {
+            // The daemon copies a listed regular file, and never a symlink,
+            // so only the second of these is in the worktree.
             std::fs::write(repo.join(".gitignore"), ".claude/settings.local.json\n").unwrap();
             std::fs::write(
                 repo.join(".worktreeinclude"),
                 ".claude/settings.local.json\n",
             )
             .unwrap();
-            std::fs::write(
-                repo.join(".claude/settings.local.json"),
-                wired_settings(exe),
-            )
-            .unwrap();
+            let elsewhere = temp.path().join("wired.json");
+            std::fs::write(&elsewhere, wired_settings(exe)).unwrap();
+            let local = repo.join(".claude/settings.local.json");
+            std::os::unix::fs::symlink(&elsewhere, &local).unwrap();
+            let linked = claude_command(&host, &repo, "isolate = true");
+            assert!(
+                settings_of(&linked).is_some_and(runs_our_hooks),
+                "a symlink is not copied: {linked:?}"
+            );
+            std::fs::remove_file(&local).unwrap();
+            std::fs::write(&local, wired_settings(exe)).unwrap();
             let copied = claude_command(&host, &repo, "isolate = true");
-            assert_eq!(settings_of(&copied), None, "copied in: {copied:?}");
+            assert_eq!(settings_of(&copied), None, "a regular file is: {copied:?}");
         }
     }
 

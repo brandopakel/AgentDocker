@@ -65,6 +65,87 @@ pub trait Host {
 /// Runtimes with an input adapter, for `idle_messages`.
 const IDLE_RUNTIMES: &[&str] = &["claude-code", "codex"];
 
+/// The variables of an entry's own `env` that name directories which choose
+/// its CLI and the profile its wiring is read from: `PATH`, the home, and
+/// the profiles Claude Code and Codex read.
+const DIRECTORY_VARS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USERPROFILE",
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+];
+
+/// Whether two variable names are one, as the platform compares them:
+/// without regard to case on Windows.
+fn same_var(a: &str, b: &str) -> bool {
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}
+
+/// A variable of an entry's own `env`, by name.
+pub fn entry_var<'a>(env: &'a BTreeMap<String, String>, name: &str) -> Option<&'a str> {
+    env.iter()
+        .find(|(key, _)| same_var(key, name))
+        .map(|(_, value)| value.as_str())
+}
+
+/// The directories `value` names when it is the variable `name`: each
+/// entry of a `PATH` (an empty one is the current directory, as a shell
+/// reads it), or the one directory a home or profile variable names; none
+/// for any other variable, or an empty home or profile, which is unset.
+fn directories(name: &str, value: &str) -> Vec<PathBuf> {
+    if same_var(name, "PATH") {
+        std::env::split_paths(value).collect()
+    } else if DIRECTORY_VARS.iter().any(|var| same_var(var, name)) && !value.is_empty() {
+        vec![PathBuf::from(value)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// A variable of an entry's own `env` as the agent will read it, starting
+/// in `start`: a relative directory in its `PATH`, home or profile is
+/// relative to where the agent starts, not to where `up` runs. Any other
+/// variable is as written.
+pub fn anchored(name: &str, value: &str, start: &Path) -> std::ffi::OsString {
+    let dirs = directories(name, value);
+    if dirs.iter().all(|dir| dir.is_absolute()) {
+        return value.into();
+    }
+    let mut dirs = dirs.into_iter().map(|dir| {
+        if dir.is_absolute() {
+            dir
+        } else {
+            start.join(dir)
+        }
+    });
+    if same_var(name, "PATH") {
+        std::env::join_paths(dirs).unwrap_or_else(|_| value.into())
+    } else {
+        dirs.next()
+            .map_or_else(|| value.into(), PathBuf::into_os_string)
+    }
+}
+
+/// The first relative directory an entry's `env` names in a variable that
+/// chooses its CLI or profile, with the variable: what an isolated launch
+/// cannot place, since the worktree it starts in is the daemon's to make.
+/// A value still holding `${VAR}` is judged once expanded.
+fn relative_directory(env: &BTreeMap<String, String>) -> Option<(String, PathBuf)> {
+    env.iter()
+        .filter(|(_, value)| !value.contains('$'))
+        .find_map(|(name, value)| {
+            directories(name, value)
+                .into_iter()
+                .find(|dir| dir.is_relative())
+                .map(|dir| (name.clone(), dir))
+        })
+}
+
 /// What is wrong with an entry's launch fields, judged from the file alone,
 /// with the agent and the field named. A value with `${VAR}` in it is
 /// judged once expanded: [`check`] runs again on the expanded entry before
@@ -105,6 +186,18 @@ pub fn check(name: &str, entry: &AgentEntry) -> Result<(), String> {
                 BUILT.join(", ")
             )
         });
+    }
+    // An ordinary launch starts in its working directory, where a relative
+    // directory in its own `env` is found; an isolated one starts in a
+    // worktree the daemon makes, which is not known here.
+    if entry.isolate
+        && let Some((var, dir)) = relative_directory(&entry.env)
+    {
+        return Err(format!(
+            "agent `{name}` has `isolate = true` and `env.{var}` names the relative directory \
+             {dir:?}; an isolated agent starts in a worktree the daemon makes, so write it as an \
+             absolute path"
+        ));
     }
     let terminal = entry.tty || entry.in_pane;
     let needs_prompt = |what: &str| {
@@ -802,12 +895,84 @@ config = { approval_policy = "never", sandbox = { mode = "workspace-write" }, fl
                 "[agents.a]\nruntime = \"gemini-cli\"\ncommand = [\"gemini\"]\nidle_messages = true",
                 "claude-code and codex",
             ),
+            (
+                "[agents.a]\nruntime = \"claude-code\"\nprompt = \"x\"\nisolate = true\nenv = { CLAUDE_CONFIG_DIR = \"profile\" }",
+                "`env.CLAUDE_CONFIG_DIR` names the relative directory \"profile\"",
+            ),
         ] {
             let error = Agentfile::parse(&format!("version = 2\n{text}\n"))
                 .unwrap_err()
                 .to_string();
             assert!(error.contains(expect), "{text}\n→ {error}");
         }
+    }
+
+    /// An entry's own relative directories are where the agent starts: its
+    /// working directory. An isolated launch, whose worktree is the
+    /// daemon's to make, refuses them where it builds the command, and a
+    /// written command keeps them for the agent to read where it runs.
+    #[test]
+    fn relative_directories_in_an_entrys_env_are_taken_from_where_it_starts() {
+        let start = Path::new("/work/app");
+        assert_eq!(
+            anchored("CLAUDE_CONFIG_DIR", "profile", start),
+            start.join("profile").into_os_string()
+        );
+        assert_eq!(anchored("CODEX_HOME", "/abs/codex", start), "/abs/codex");
+        assert_eq!(anchored("CODEX_HOME", "", start), "", "empty is unset");
+        assert_eq!(
+            anchored("RUST_LOG", "info", start),
+            "info",
+            "not a directory"
+        );
+        if cfg!(unix) {
+            assert_eq!(
+                anchored("PATH", "bin:/usr/bin", start),
+                "/work/app/bin:/usr/bin"
+            );
+            assert_eq!(anchored("PATH", "/a:/b", start), "/a:/b");
+        }
+        let entry = |text: &str| {
+            Agentfile::parse(&format!("version = 2\n[agents.a]\n{text}\n"))
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        let refused =
+            entry("runtime = \"codex\"\nprompt = \"x\"\nisolate = true\nenv = { PATH = \"bin\" }")
+                .unwrap_err();
+        assert!(
+            refused.contains("agent `a` has `isolate = true`"),
+            "{refused}"
+        );
+        assert!(
+            refused.contains("write it as an absolute path"),
+            "{refused}"
+        );
+        let absolute = if cfg!(windows) {
+            "C:\\opt\\bin"
+        } else {
+            "/opt/bin"
+        };
+        entry(&format!(
+            "runtime = \"codex\"\nprompt = \"x\"\nisolate = true\nenv = {{ PATH = '{absolute}' }}"
+        ))
+        .unwrap();
+        entry("command = [\"make\"]\nisolate = true\nenv = { PATH = \"bin\" }").unwrap();
+        entry("runtime = \"codex\"\nprompt = \"x\"\nenv = { PATH = \"bin\" }").unwrap();
+        // A value still holding a variable is judged once it is expanded.
+        let file = Agentfile::parse(
+            "version = 2\n[agents.a]\nruntime = \"codex\"\nprompt = \"x\"\nisolate = true\nenv = { CODEX_HOME = \"${DIR}\" }\n",
+        )
+        .unwrap();
+        let mut host = Fake::default();
+        host.vars.insert("DIR", "codex-home");
+        let error = file
+            .specs(Path::new("/repo/Agentfile.toml"), &[], &host)
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("relative directory"),
+            "{error:#}"
+        );
     }
 
     /// A value from the environment is checked once expanded: an effort

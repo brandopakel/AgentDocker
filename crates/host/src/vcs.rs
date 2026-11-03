@@ -83,6 +83,76 @@ pub fn worktree_include_listing(text: &str) -> Option<Vec<String>> {
     Some(args)
 }
 
+/// At most this many bytes of what a `.worktreeinclude` names are copied
+/// into one worktree.
+pub const WORKTREE_INCLUDE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// What a copy of a `.worktreeinclude` listing takes from the checkout
+/// `root`: of the paths `listed` names, NUL-separated as the command
+/// [`worktree_include_listing`] gives prints them, in order, the regular
+/// files — a symlink is left out, since it could point anywhere, and so is
+/// anything else that is not a file — each with its metadata, until
+/// together they pass [`WORKTREE_INCLUDE_BYTES`], where the copy stops.
+/// The second value says why it stopped early, when it did. The daemon
+/// copies by this, and a client predicting a new worktree's contents reads
+/// it the same way.
+pub fn worktree_include_sources(
+    root: &Path,
+    listed: &str,
+) -> (Vec<(String, std::fs::Metadata)>, Option<String>) {
+    include_sources_within(root, listed, WORKTREE_INCLUDE_BYTES)
+}
+
+fn include_sources_within(
+    root: &Path,
+    listed: &str,
+    budget: u64,
+) -> (Vec<(String, std::fs::Metadata)>, Option<String>) {
+    let (mut sources, mut bytes) = (Vec::new(), 0u64);
+    for relative in listed.split('\0').filter(|r| !r.is_empty()) {
+        let Ok(meta) = std::fs::symlink_metadata(root.join(relative)) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        bytes += meta.len();
+        if bytes > budget {
+            let limit = budget / (1024 * 1024);
+            return (
+                sources,
+                Some(format!(
+                    "{WORKTREE_INCLUDE} names more than {limit} MiB; the rest was not copied"
+                )),
+            );
+        }
+        sources.push((relative.to_owned(), meta));
+    }
+    (sources, None)
+}
+
+/// Whether a copy may write `relative` beneath a new worktree: an ordinary
+/// relative path none of whose prefixes, the file itself included, is a
+/// symlink there, as `is_symlink` says of each prefix in turn (relative to
+/// the worktree). Written through a symlink, the copy would land wherever
+/// it points, and a checkout made from somebody's commit can carry one.
+pub fn worktree_include_writable(
+    relative: &str,
+    mut is_symlink: impl FnMut(&Path) -> bool,
+) -> bool {
+    let mut at = PathBuf::new();
+    for part in Path::new(relative).components() {
+        let std::path::Component::Normal(name) = part else {
+            return false;
+        };
+        at.push(name);
+        if is_symlink(&at) {
+            return false;
+        }
+    }
+    true
+}
+
 /// The subject line of a commit, via `git log`; `None` when git is
 /// missing, the object is unknown, or `timeout` passes.
 pub fn subject(dir: &Path, sha: &str, timeout: std::time::Duration) -> Option<String> {
@@ -301,6 +371,55 @@ mod tests {
             &["commit", "-q", "--allow-empty", "-m", "root"],
         );
         main
+    }
+
+    /// A copy takes regular files in the order listed, never a symlink or
+    /// a folder, and stops once the files together pass the budget.
+    #[cfg(unix)]
+    #[test]
+    fn a_worktree_include_copies_regular_files_within_its_budget() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir_all(root.join("dir")).unwrap();
+        fs::write(root.join("a.env"), "1234").unwrap();
+        fs::write(root.join("b.env"), "56").unwrap();
+        fs::write(root.join("outside"), "x").unwrap();
+        std::os::unix::fs::symlink(root.join("outside"), root.join("link.env")).unwrap();
+        let listed = "a.env\0dir\0link.env\0missing\0b.env\0";
+        let names = |(sources, _): &(Vec<(String, std::fs::Metadata)>, Option<String>)| {
+            sources
+                .iter()
+                .map(|(name, _)| name.clone())
+                .collect::<Vec<_>>()
+        };
+        let all = worktree_include_sources(root, listed);
+        assert_eq!(names(&all), ["a.env", "b.env"]);
+        assert_eq!(all.1, None);
+        let short = include_sources_within(root, listed, 5);
+        assert_eq!(names(&short), ["a.env"], "b.env would pass the budget");
+        assert!(short.1.unwrap().contains("the rest was not copied"));
+    }
+
+    #[test]
+    fn a_worktree_include_is_never_written_through_a_symlink() {
+        let symlinks = ["shared", "a/b"];
+        let is_symlink = |at: &Path| symlinks.iter().any(|link| at == Path::new(link));
+        assert!(worktree_include_writable(
+            ".claude/settings.local.json",
+            is_symlink
+        ));
+        assert!(worktree_include_writable("a/c", is_symlink));
+        assert!(
+            !worktree_include_writable("shared/x", is_symlink),
+            "a folder on the way"
+        );
+        assert!(
+            !worktree_include_writable("a/b", is_symlink),
+            "the file itself"
+        );
+        assert!(!worktree_include_writable("../x", is_symlink));
+        assert!(!worktree_include_writable("/etc/x", is_symlink));
+        assert!(!worktree_include_writable("a/./b/../c", is_symlink));
     }
 
     #[test]

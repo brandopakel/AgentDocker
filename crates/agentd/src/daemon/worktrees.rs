@@ -105,9 +105,6 @@ pub(super) async fn add_worktree(
 /// The file a project keeps its worktree includes in
 /// ([`agentdocker_host::vcs::WORKTREE_INCLUDE`]).
 pub const INCLUDE_FILE: &str = agentdocker_host::vcs::WORKTREE_INCLUDE;
-/// At most this much is copied into one worktree.
-const INCLUDE_BYTES: u64 = 256 * 1024 * 1024;
-
 /// Copy the files `.worktreeinclude` names from `root` into `path`: only
 /// files git ignores or does not track there (tracked files are in the
 /// worktree already), each under the same relative path. Says how many
@@ -136,59 +133,41 @@ pub(super) async fn copy_includes(root: PathBuf, path: PathBuf) -> (usize, Optio
         Ok(output) => return (0, Some(output.text)),
         Err(e) => return (0, Some(e.to_string())),
     };
-    let (mut copied, mut bytes, mut trouble) = (0usize, 0u64, None);
-    for relative in listed.split('\0').filter(|r| !r.is_empty()) {
-        let from = root.join(relative);
-        let to = path.join(relative);
-        // A symlink is left out: it could point anywhere.
-        let Ok(meta) = std::fs::symlink_metadata(&from) else {
-            continue;
-        };
-        if !meta.is_file() {
-            continue;
-        }
-        bytes += meta.len();
-        if bytes > INCLUDE_BYTES {
-            trouble.get_or_insert_with(|| {
-                format!("{INCLUDE_FILE} names more than 256 MiB; the rest was not copied")
-            });
-            break;
-        }
+    // Regular files only, in order, within the size budget: the rule a
+    // client predicting this worktree's contents applies too.
+    let (sources, stopped) = agentdocker_host::vcs::worktree_include_sources(&root, &listed);
+    let (mut copied, mut trouble) = (0usize, None);
+    for (relative, meta) in sources {
+        let from = root.join(&relative);
+        let to = path.join(&relative);
         // The worktree is a checkout, and a checkout can carry a symlink
         // where this file or a folder on its way goes: written through, the
         // copy would land wherever it points. Nothing is written through
         // one, and nothing already there is replaced.
-        if !stays_inside(&path, relative) {
+        if !stays_inside(&path, &relative) {
             trouble.get_or_insert_with(|| {
                 format!("{relative}: the worktree has a symlink on its way; not copied")
             });
             continue;
         }
-        match copy_new(&from, &path, relative, &to, &meta) {
+        match copy_new(&from, &path, &relative, &to, &meta) {
             Ok(()) => copied += 1,
             Err(e) => {
                 trouble.get_or_insert_with(|| format!("{relative}: {e}"));
             }
         }
     }
-    (copied, trouble)
+    // Every file that came before the budget ran out was tried first.
+    (copied, trouble.or(stopped))
 }
 
 /// Whether writing `relative` under `base` stays under it: an ordinary
 /// path, and no part of the way there, the file itself included, a
-/// symlink.
+/// symlink ([`agentdocker_host::vcs::worktree_include_writable`]).
 fn stays_inside(base: &Path, relative: &str) -> bool {
-    let mut at = base.to_path_buf();
-    for part in Path::new(relative).components() {
-        let std::path::Component::Normal(name) = part else {
-            return false;
-        };
-        at.push(name);
-        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
-            return false;
-        }
-    }
-    true
+    agentdocker_host::vcs::worktree_include_writable(relative, |at| {
+        std::fs::symlink_metadata(base.join(at)).is_ok_and(|m| m.file_type().is_symlink())
+    })
 }
 
 /// Copy `from` to a file made new at `relative` beneath `base`. On Unix
