@@ -2084,6 +2084,11 @@ struct ClaimArgs {
     /// decides is whether the sum fits its capacity.
     #[arg(long)]
     amount: Option<u64>,
+    /// Who inside this session takes it, where the session runs several
+    /// agents in one process (a Claude Code in-process teammate's id):
+    /// kept on the lease and named in a refusal.
+    #[arg(long)]
+    actor: Option<String>,
 }
 
 /// Stack for the thread that does the work. Clap's derived parser for
@@ -4901,6 +4906,7 @@ async fn run() -> Result<()> {
                 wait_secs: args.wait,
                 priority: args.priority,
                 automatic: false,
+                actor: args.actor,
             };
             if let Response::Lease { lease } = client.call(&request).await? {
                 println!("{}", lease.id);

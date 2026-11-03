@@ -165,6 +165,13 @@ pub struct Lease {
     /// before this field, which were all deliberate.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub automatic: bool,
+    /// Who inside the holder's session took it, where the session is
+    /// several agents in one process: a Claude Code in-process teammate's
+    /// id, as its hooks report it. Named in a refusal, so the agent
+    /// refused knows which teammate holds the file. Absent for a lease
+    /// the session took as itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
 }
 
 fn is_zero(n: &u64) -> bool {
@@ -322,6 +329,7 @@ impl LeaseTable {
             note,
             amount: 0,
             automatic,
+            actor: None,
         };
         self.leases.insert(lease.id.clone(), lease.clone());
         Ok(Claimed::New(lease))
@@ -924,6 +932,7 @@ mod tests {
             note: None,
             amount: 0,
             automatic: false,
+            actor: None,
         });
         assert!(
             t.claim(

@@ -59,6 +59,25 @@ pub const INBOXES_DIR: &str = "inboxes";
 pub const REGISTRY_FILE: &str = "agent-registry.json";
 /// A project's own mailbox directory, under its `.claude/`.
 pub const MAILBOX_DIR: &str = "mailbox";
+/// The label a Claude Code session's adapters put on its record saying
+/// which configuration directory that session uses, resolved by
+/// [`config_dir`] in the environment Claude Code gave them — its hooks
+/// and its MCP server run inside the session and inherit it. The daemon
+/// reads that session's team files from there, so a session launched
+/// under another directory than the daemon's own — or under the default
+/// while the daemon has one set — is still placed.
+pub const CONFIG_DIR_LABEL: &str = "claude_config_dir";
+
+/// The configuration directory a Claude Code session uses, by Claude's
+/// own rule as observed: `CLAUDE_CONFIG_DIR` with surrounding space
+/// trimmed, a blank value being unset; else `.claude` in the home
+/// directory. `None` with neither.
+pub fn config_dir(claude_config_dir: Option<&str>, home: Option<&Path>) -> Option<PathBuf> {
+    match claude_config_dir.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(dir) => Some(PathBuf::from(dir)),
+        None => home.map(|home| home.join(".claude")),
+    }
+}
 
 /// One agent of a team as the team names it: the lead or a teammate.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +260,25 @@ impl Team {
         }
         self.members.iter().find(|m| same_name(&m.name, name))
     }
+
+    /// The member an in-process teammate's id names. Claude's default
+    /// teammates run inside the lead's process, so their hooks fire under
+    /// the lead's session with the teammate's `agent_id`; it is matched to
+    /// a member's `agentId` exactly, then, as that id is observed to be
+    /// `<name>@<team>` for some members, by the name before the `@`, then
+    /// as a bare name. `None` for an id that names nobody here.
+    pub fn acting_member(&self, actor: &str) -> Option<&Teammate> {
+        let actor = actor.trim();
+        if actor.is_empty() {
+            return None;
+        }
+        let all = std::iter::once(&self.lead).chain(self.members.iter());
+        if let Some(exact) = all.clone().find(|m| m.agent_id.as_deref() == Some(actor)) {
+            return Some(exact);
+        }
+        let name = actor.split_once('@').map_or(actor, |(name, _)| name);
+        all.clone().find(|m| same_name(&m.name, name))
+    }
 }
 
 /// Entries of a project's `.claude/agent-registry.json`, read tolerantly
@@ -407,6 +445,25 @@ impl TeamMembership {
     /// The colour as one of the eight Claude Code uses, where it is.
     pub fn role_color(&self) -> Option<crate::RoleColor> {
         self.colour.as_deref().and_then(crate::RoleColor::parse)
+    }
+
+    /// What a lease taken under this membership says of its holder when
+    /// `actor` names who took it: the in-process teammate as the team
+    /// names it (`pruner, teammate of team-lead in orchard`), the
+    /// membership itself when no actor is named, and the membership with
+    /// the actor's id when the team does not know the id.
+    pub fn describe_acting(&self, actor: Option<&str>, team: Option<&Team>) -> String {
+        match actor.map(str::trim).filter(|a| !a.is_empty()) {
+            None => self.describe(),
+            Some(actor) => match team.and_then(|t| t.acting_member(actor)) {
+                Some(member) if same_name(&member.name, &self.lead_name) => self.describe(),
+                Some(member) => format!(
+                    "{}, teammate of {} in {}",
+                    member.name, self.lead_name, self.team
+                ),
+                None => format!("{}, as its agent {actor}", self.describe()),
+            },
+        }
     }
 }
 
@@ -760,6 +817,64 @@ mod tests {
         three.push(twin);
         assert!(membership(&alone, &three).is_none());
         assert!(membership(&SessionFacts::default(), &teams).is_none());
+    }
+
+    #[test]
+    fn an_in_process_teammate_is_named_by_its_agent_id() {
+        let team = Team::from_team_file("orchard", TEAM_FILE_JSON).unwrap();
+        assert_eq!(team.acting_member("pruner@orchard").unwrap().name, "pruner");
+        assert_eq!(
+            team.acting_member("grafter@elsewhere").unwrap().name,
+            "grafter"
+        );
+        assert_eq!(team.acting_member("Pruner").unwrap().name, "pruner");
+        assert_eq!(
+            team.acting_member("team-lead@orchard").unwrap().name,
+            LEAD_NAME
+        );
+        assert!(team.acting_member("a1b2c3").is_none());
+        assert!(team.acting_member(" ").is_none());
+        let lead = TeamMembership {
+            team: "orchard".into(),
+            role: TeamRole::Lead,
+            name: LEAD_NAME.into(),
+            lead_name: LEAD_NAME.into(),
+            colour: None,
+            agent_id: Some("team-lead@orchard".into()),
+        };
+        assert_eq!(
+            lead.describe_acting(Some("pruner@orchard"), Some(&team)),
+            "pruner, teammate of team-lead in orchard"
+        );
+        assert_eq!(lead.describe_acting(None, Some(&team)), "lead of orchard");
+        assert_eq!(
+            lead.describe_acting(Some("team-lead@orchard"), Some(&team)),
+            "lead of orchard"
+        );
+        assert_eq!(
+            lead.describe_acting(Some("a1b2c3"), Some(&team)),
+            "lead of orchard, as its agent a1b2c3"
+        );
+        assert_eq!(
+            lead.describe_acting(Some("pruner@orchard"), None),
+            "lead of orchard, as its agent pruner@orchard"
+        );
+        let home = Path::new("/home/p");
+        assert_eq!(
+            config_dir(Some(" /x/claude-work "), Some(home)),
+            Some(PathBuf::from("/x/claude-work")),
+            "the variable wins, trimmed"
+        );
+        assert_eq!(
+            config_dir(Some("  "), Some(home)),
+            Some(PathBuf::from("/home/p/.claude")),
+            "a blank variable is unset: the home's directory"
+        );
+        assert_eq!(
+            config_dir(None, Some(home)),
+            Some(PathBuf::from("/home/p/.claude"))
+        );
+        assert_eq!(config_dir(None, None), None);
     }
 
     #[test]

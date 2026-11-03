@@ -224,6 +224,17 @@ impl HookInput {
     }
 }
 
+/// The configuration directory the Claude Code session running this
+/// process uses, by Claude's own rule, read from this process's own
+/// environment — which, for a hook or the MCP server, is the session's.
+pub fn session_config_dir() -> Option<String> {
+    agentdocker_core::team::config_dir(
+        std::env::var("CLAUDE_CONFIG_DIR").ok().as_deref(),
+        std::env::home_dir().as_deref(),
+    )
+    .map(|dir| dir.display().to_string())
+}
+
 /// The name a hook session registers under: `claude-<8>` or `opencode-<8>`.
 pub fn session_name_for(input: &HookInput) -> String {
     let name = session_name(&input.session_id);
@@ -1045,6 +1056,10 @@ pub async fn claude_code<B: Backend>(
                         // Taken for this edit, not asked for: the turn's end
                         // gives it back. What the agent claimed itself stays.
                         automatic: true,
+                        // An in-process teammate edits under the lead's
+                        // session; the lease says which one, so a refusal
+                        // can name it as the team does.
+                        actor: input.agent_id.clone(),
                     })
                     .await?;
                 match response {
@@ -1595,6 +1610,13 @@ async fn registered_as<B: Backend>(
     ]);
     if let Some(source) = &input.source {
         labels.insert("source".to_owned(), source.clone());
+    }
+    // The configuration directory this session uses, resolved in the
+    // environment Claude Code gave its hook: where its team files are.
+    if input.runtime() == RUNTIME
+        && let Some(dir) = session_config_dir()
+    {
+        labels.insert(agentdocker_core::team::CONFIG_DIR_LABEL.to_owned(), dir);
     }
     let spec = AgentSpec {
         name: session_name_for(input),
@@ -4015,6 +4037,99 @@ mod tests {
         }
     }
 
+    /// Claude's default teammates run inside the lead's process: their
+    /// hooks fire under the lead's session with the teammate's
+    /// `agent_id`. The edit is claimed under the session's record naming
+    /// that agent, so the daemon's refusal of another agent's edit says
+    /// which teammate holds the file; the refusal reaches the model as
+    /// the daemon worded it.
+    #[tokio::test]
+    async fn an_in_process_teammates_edit_claims_as_that_agent_and_a_refusal_names_it() {
+        let me = agent("claude-01234567", true);
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Stale { stale: vec![] },
+            Response::Lease {
+                lease: agentdocker_core::Lease {
+                    id: "l1".into(),
+                    resource: agentdocker_core::ResourceKey::new("path:/x"),
+                    holder: me.id.clone(),
+                    mode: LeaseMode::Exclusive,
+                    acquired_at: chrono::Utc::now(),
+                    change_seq: None,
+                    expires_at: chrono::Utc::now(),
+                    note: None,
+                    amount: 0,
+                    automatic: true,
+                    actor: Some("pruner@orchard".into()),
+                },
+            },
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        let shared = dir.path().join("shared.rs");
+        std::fs::write(&shared, "").unwrap();
+        // The payload of an in-process teammate's edit: the lead's session,
+        // the teammate's `agent_id`.
+        let ev: HookInput = serde_json::from_value(json!({
+            "hook_event_name": "PreToolUse",
+            "session_id": input("PreToolUse").session_id,
+            "cwd": std::env::temp_dir(),
+            "agent_id": "pruner@orchard",
+            "agent_type": "general-purpose",
+            "tool_name": "Edit",
+            "tool_input": { "file_path": shared },
+            "tool_use_id": "toolu_fixture",
+        }))
+        .unwrap();
+        assert!(claude_code(&backend, &ev, &opts()).await.unwrap().is_none());
+        let requests = backend.requests();
+        assert!(matches!(
+            &requests[2],
+            Request::Claim { agent, actor: Some(actor), automatic: true, .. }
+                if agent == me.id.as_str() && actor == "pruner@orchard"
+        ));
+
+        // The lead's own edit names nobody.
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Stale { stale: vec![] },
+            Response::Ok,
+        ]);
+        let mut own = input("PreToolUse");
+        own.tool_name = Some("Edit".into());
+        own.tool_input = Some(json!({ "file_path": shared }));
+        let _ = claude_code(&backend, &own, &opts()).await;
+        assert!(matches!(
+            &backend.requests()[2],
+            Request::Claim { actor: None, .. }
+        ));
+
+        // Refused for a teammate's lease: the daemon's words, naming it.
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Stale { stale: vec![] },
+            Response::Error {
+                code: ErrorCode::Conflict,
+                message: "path:/x is held by claude-1a2b3c4d, pruner, teammate of team-lead in orchard (1a2b3c4d; exclusive on path:/x)".into(),
+                details: Some(json!({ "held_by": [{ "note": "editing in Claude Code session claude-1a2b3c4d", "actor": "pruner@orchard" }] })),
+            },
+        ]);
+        let mut codex_side = input("PreToolUse");
+        codex_side.tool_name = Some("Edit".into());
+        codex_side.tool_input = Some(json!({ "file_path": shared }));
+        let out = claude_code(&backend, &codex_side, &opts())
+            .await
+            .unwrap()
+            .unwrap();
+        let reason = out["hookSpecificOutput"]["permissionDecisionReason"]
+            .as_str()
+            .unwrap();
+        assert!(
+            reason.contains("pruner, teammate of team-lead in orchard"),
+            "{reason}"
+        );
+    }
+
     #[tokio::test]
     async fn pre_tool_use_denies_on_conflict() {
         let me = agent("claude-01234567", true);
@@ -4245,6 +4360,17 @@ mod tests {
             &requests[1],
             Request::Register { spec, .. } if spec.name == "claude-01234567" && spec.runtime == RUNTIME
         ));
+        // With the configuration directory the session uses, as this
+        // process's environment resolves it by Claude's rule.
+        let Request::Register { spec, .. } = &requests[1] else {
+            unreachable!()
+        };
+        assert_eq!(
+            spec.labels
+                .get(agentdocker_core::team::CONFIG_DIR_LABEL)
+                .cloned(),
+            session_config_dir()
+        );
     }
 
     #[tokio::test]

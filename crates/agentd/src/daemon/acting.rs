@@ -1663,6 +1663,7 @@ mod tests {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
         };
         let me = Some((std::process::id(), procinfo::start_time(std::process::id())));
         assert!(daemon.agent_refusal(me, &mut own).await.is_none());
@@ -3060,6 +3061,7 @@ mod tests {
                     wait_secs: 0,
                     priority: 0,
                     automatic: false,
+                    actor: None,
                 })
                 .await;
             assert!(matches!(lease, Response::Lease { .. }), "{lease:?}");
@@ -3143,6 +3145,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
             })
             .await;
         assert!(matches!(lease, Response::Lease { .. }), "{lease:?}");

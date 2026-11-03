@@ -1310,6 +1310,12 @@ pub enum Request {
         /// asked for holds until it releases it or the TTL runs out.
         #[serde(default)]
         automatic: bool,
+        /// Who inside the agent's session takes it, where a session is
+        /// several agents in one process (a Claude Code in-process
+        /// teammate's id, from its hooks). Kept on the lease and named in
+        /// a refusal; never an agent of its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
     },
     Renew {
         agent: String,
@@ -2414,6 +2420,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
             }
         );
         let back = serde_json::to_string(&req).unwrap();

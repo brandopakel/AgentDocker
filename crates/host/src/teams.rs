@@ -148,13 +148,29 @@ fn json_files(dir: &Path) -> Vec<PathBuf> {
     files
 }
 
-/// A regular file of at most [`MAX_FILE`] bytes, as text.
+/// A regular file of at most [`MAX_FILE`] bytes, as text: opened once,
+/// without blocking and following no symlink ([`crate::files::open_regular`]),
+/// checked on that handle to be a regular file within the bound, and read
+/// through the same handle with the bound applied to the bytes that
+/// arrive — so a file grown after it was checked brings in no more than
+/// the bound, a file replaced after it was opened is not the one read,
+/// and a FIFO, device or symlink in its place neither holds the tick or
+/// a registration nor is read.
 fn read_small(path: &Path) -> Option<String> {
-    let meta = std::fs::metadata(path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_FILE {
+    let file = crate::files::open_regular(path).ok()?;
+    if file.metadata().ok()?.len() > MAX_FILE {
         return None;
     }
-    std::fs::read_to_string(path).ok()
+    read_bounded(file, MAX_FILE)
+}
+
+/// At most `limit` bytes of text from `reader`; `None` for more, however
+/// they got there, and for text that is not UTF-8.
+fn read_bounded(reader: impl std::io::Read, limit: u64) -> Option<String> {
+    use std::io::Read as _;
+    let mut text = String::new();
+    reader.take(limit + 1).read_to_string(&mut text).ok()?;
+    (text.len() as u64 <= limit).then_some(text)
 }
 
 #[cfg(test)]
@@ -285,12 +301,79 @@ mod tests {
     }
 
     #[test]
-    fn oversized_files_are_left_unread() {
+    fn oversized_grown_replaced_and_special_files_are_left_unread() {
+        use std::io::Write as _;
         let config = tempfile::tempdir().unwrap();
         let big = config.path().join(TEAMS_DIR).join("big");
         std::fs::create_dir_all(&big).unwrap();
-        let file = std::fs::File::create(big.join(TEAM_FILE)).unwrap();
+        let path = big.join(TEAM_FILE);
+        let file = std::fs::File::create(&path).unwrap();
         file.set_len(MAX_FILE + 1).unwrap();
+        assert!(read_small(&path).is_none(), "a sparse giant");
         assert!(read_teams(config.path()).is_empty());
+
+        // Exactly at the bound it is read.
+        std::fs::write(&path, "a".repeat(MAX_FILE as usize)).unwrap();
+        assert_eq!(read_small(&path).map(|t| t.len() as u64), Some(MAX_FILE));
+
+        // Grown after it was checked: the bytes read are bounded, not the
+        // size first seen.
+        let opened = crate::files::open_regular(&path).unwrap();
+        assert!(opened.metadata().unwrap().len() <= MAX_FILE);
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"more")
+            .unwrap();
+        assert!(
+            read_bounded(opened, MAX_FILE).is_none(),
+            "grown past the bound"
+        );
+        assert!(read_small(&path).is_none());
+
+        // Replaced after it was opened: the opened file is what is read.
+        std::fs::write(&path, r#"{"name":"big","members":[]}"#).unwrap();
+        let opened = crate::files::open_regular(&path).unwrap();
+        let swap = big.join("swap.json");
+        std::fs::write(&swap, "x".repeat(MAX_FILE as usize + 64)).unwrap();
+        std::fs::rename(&swap, &path).unwrap();
+        assert_eq!(
+            read_bounded(opened, MAX_FILE).as_deref(),
+            Some(r#"{"name":"big","members":[]}"#)
+        );
+        assert!(
+            read_small(&path).is_none(),
+            "the replacement is over the bound"
+        );
+
+        // A directory in the file's place is not a file.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(read_small(&path).is_none());
+        std::fs::remove_dir(&path).unwrap();
+
+        #[cfg(unix)]
+        {
+            // A FIFO with no writer neither blocks nor is read.
+            let name = std::ffi::CString::new(path.to_str().unwrap()).unwrap();
+            assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+            let started = std::time::Instant::now();
+            assert!(read_small(&path).is_none(), "a FIFO is not a team file");
+            assert!(read_teams(config.path()).is_empty());
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            std::fs::remove_file(&path).unwrap();
+            // Nor is a symlink followed: not to a team file, not to a device.
+            let real = config.path().join("elsewhere.json");
+            std::fs::write(&real, r#"{"name":"big","members":[]}"#).unwrap();
+            std::os::unix::fs::symlink(&real, &path).unwrap();
+            assert!(read_small(&path).is_none(), "a symlink is not followed");
+            std::fs::remove_file(&path).unwrap();
+            std::os::unix::fs::symlink("/dev/zero", &path).unwrap();
+            assert!(
+                read_small(&path).is_none(),
+                "a device behind a symlink is not read"
+            );
+        }
     }
 }

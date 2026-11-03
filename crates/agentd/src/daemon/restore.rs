@@ -1231,6 +1231,7 @@ mod tests {
                     note: None,
                     amount: None,
                     automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Lease { .. }
@@ -1682,6 +1683,7 @@ mod tests {
                     note: None,
                     amount: None,
                     automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Lease { .. }

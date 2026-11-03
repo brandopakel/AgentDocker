@@ -2954,6 +2954,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
             })
             .await
         else {
@@ -3109,6 +3110,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
             })
             .await
         else {

@@ -777,7 +777,9 @@ Hooks an earlier version installed are *outdated*: `agentdocker runtimes` shows
 `outdated (…)` with the events they lack, the Tools card says *Hooks outdated*,
 and `agentdocker setup claude-code` (or `codex`) adds them. An edit refused for
 another agent's lease names that agent and, when it is a teammate of a
-Claude Code agent team, the name its lead gave it. They are what let the daemon see an agent's session
+Claude Code agent team, the name its lead gave it — a teammate running
+inside the lead's process included, since its edits are claimed under the
+lead's session naming it. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, the
 project's memory, and anything it read that has gone stale. Codex's
@@ -1215,9 +1217,15 @@ Current behaviour that the sections above do not already state, by area.
   team lacks: a teammate's edits take the same path leases through the
   hooks as any Claude Code session, under its own record, so a Codex agent
   (or another teammate) editing the same file in that checkout is refused
-  with the teammate's name. A team needs the lead's hooks to be known as
-  the lead; a lead adopted without hooks is placed only when it is the one
-  plain Claude Code session in the team's checkout.
+  with the teammate's name; so is a teammate that runs inside the lead's
+  process, whose edits are claimed under the lead's session naming it. A
+  team needs the lead's hooks to be known as the lead; a lead adopted
+  without hooks is placed only when it is the one plain Claude Code
+  session in the team's checkout. A session started under a
+  `CLAUDE_CONFIG_DIR` of its own is read from there whatever the daemon's
+  is: from the session's own environment where the system lets the daemon
+  read it (Linux), and otherwise as its hooks and AgentDocker MCP server
+  report it.
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   has its own record, by its thread: its AgentDocker tools work as it, and
