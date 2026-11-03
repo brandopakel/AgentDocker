@@ -3324,11 +3324,20 @@ impl Daemon {
                 "pause and resume notices require a project lifecycle request",
             );
         }
+        // A repeat of a keyed send is answered as the first was before its
+        // destination is resolved again: since the first, the recipient may
+        // have been renamed or removed, a prefix grown ambiguous or a
+        // project's scope changed, and the message is queued all the same.
+        // The look-ups under the locks that publish, below, catch a repeat
+        // racing its first.
+        let replayed = lock(&self.state).replayed_send(&from, idempotency_key.as_deref());
+        if let Some(answer) = replayed {
+            return answer;
+        }
         // An agent's word to a role goes to that role's room in its project.
         if let Some(role) = to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX) {
             let mut state = lock(&self.state);
-            let sender = state.keyed_sender(&from);
-            if let Some(answer) = state.replayed_send(&sender, idempotency_key.as_deref()) {
+            if let Some(answer) = state.replayed_send(&from, idempotency_key.as_deref()) {
                 return answer;
             }
             if let Some(response) = state.send_to_role(
@@ -3339,7 +3348,7 @@ impl Daemon {
                 reply_to.clone(),
                 links.clone(),
             ) {
-                state.keep_keyed_send(sender, idempotency_key, &response);
+                state.keep_keyed_send(&from, idempotency_key, &response);
                 return response;
             }
         }
@@ -3378,7 +3387,7 @@ impl Daemon {
         let mut envelope = Envelope::new(from.clone(), to, kind, payload, reply_to, Utc::now());
         envelope.links = links;
         let response = state.publish(envelope);
-        state.keep_keyed_send(from, idempotency_key, &response);
+        state.keep_keyed_send(&from, idempotency_key, &response);
         response
     }
 
@@ -5118,27 +5127,32 @@ impl State {
         self.publish_question(envelope, None)
     }
 
-    /// The name a keyed send is remembered under: the sender's resolved
-    /// id when it has a record, else the name it gave (`agentd`, a bare
-    /// `user`).
-    fn keyed_sender(&self, from: &str) -> String {
-        self.registry
-            .resolve(from)
-            .map_or_else(|_| from.to_owned(), |id| id.to_string())
+    /// Who a keyed send is remembered under, as `endpoints` resolves the
+    /// sender: its id when it has a record, the name it gave when it has
+    /// none (`agentd`, a bare `user`). A sender that resolves to neither
+    /// (an ambiguous name) is refused there, and is remembered nowhere.
+    fn keyed_sender(&self, from: &str) -> Option<String> {
+        match self.registry.resolve(from) {
+            Ok(id) => Some(id.to_string()),
+            Err(RegistryError::NotFound(_)) => Some(from.to_owned()),
+            Err(_) => None,
+        }
     }
 
     /// The answer already given to this sender for this key, if any: the
     /// send it repeats was queued then, and nothing is queued again.
-    fn replayed_send(&mut self, sender: &str, key: Option<&str>) -> Option<Response> {
+    fn replayed_send(&mut self, from: &str, key: Option<&str>) -> Option<Response> {
         let key = key?;
-        self.keyed_sends.lookup(sender, key, Utc::now()).cloned()
+        let sender = self.keyed_sender(from)?;
+        self.keyed_sends.lookup(&sender, key, Utc::now()).cloned()
     }
 
     /// Remember a keyed send's answer, once it queued something: a refusal
     /// queued nothing, so repeating it is harmless and may now succeed.
-    fn keep_keyed_send(&mut self, sender: String, key: Option<String>, response: &Response) {
+    fn keep_keyed_send(&mut self, from: &str, key: Option<String>, response: &Response) {
         if let Some(key) = key
             && matches!(response, Response::Sent { .. })
+            && let Some(sender) = self.keyed_sender(from)
         {
             self.keyed_sends
                 .record(&sender, &key, response.clone(), Utc::now());

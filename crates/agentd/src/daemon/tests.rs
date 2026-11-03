@@ -2741,6 +2741,67 @@ async fn a_repeated_idempotency_key_replays_the_first_answer_and_queues_nothing(
     ));
 }
 
+/// A keyed retry is answered before its destination is resolved again:
+/// after a lost answer the recipient may have been renamed, or removed,
+/// and the message the retry repeats is queued all the same.
+#[tokio::test]
+async fn a_keyed_retry_is_answered_after_its_recipient_is_renamed_or_removed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sender = register(&daemon, "sender", distinct_pid()).await;
+    let reader = register(&daemon, "reader", distinct_pid()).await;
+    let send = |key: &str| Request::Send {
+        from: sender.id.to_string(),
+        to: "reader".to_owned(),
+        kind: "chat".to_owned(),
+        payload: json!({ "text": "once" }),
+        reply_to: None,
+        links: Vec::new(),
+        idempotency_key: Some(key.to_owned()),
+    };
+
+    // The answer is lost on the way back, and the recipient is renamed
+    // before the retry: its old name no longer reaches it.
+    let first = daemon.handle(send("send-1")).await;
+    let Response::Sent { message, .. } = &first else {
+        panic!("{first:?}");
+    };
+    let renamed = daemon
+        .handle(Request::Rename {
+            agent: reader.id.to_string(),
+            name: "renamed-reader".to_owned(),
+        })
+        .await;
+    assert!(matches!(renamed, Response::Agent { .. }), "{renamed:?}");
+    let fresh = daemon.handle(send("send-2")).await;
+    assert!(
+        matches!(fresh, Response::Error { .. }),
+        "a new send by the old name is refused: {fresh:?}"
+    );
+
+    let again = daemon.handle(send("send-1")).await;
+    assert_eq!(again, first, "the first answer, unchanged");
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(
+        messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        vec![message],
+        "queued once"
+    );
+
+    // And once the recipient is gone altogether.
+    let ended = lock(&daemon.state).deregister(&reader.id.to_string());
+    assert!(matches!(ended, Response::Agent { .. }), "{ended:?}");
+    assert_eq!(daemon.handle(send("send-1")).await, first);
+}
+
 // ----- snapshot restore ----------------------------------------------
 
 /// A daemon that stops and comes back on the same home, as a restart
