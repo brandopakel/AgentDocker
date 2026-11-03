@@ -3329,6 +3329,7 @@ fn memory_search(project: &str, query: &str) -> Request {
         limit: Some(MEMORY_PAGE),
         as_of: None,
         include_superseded: false,
+        min_score: None,
     }
 }
 

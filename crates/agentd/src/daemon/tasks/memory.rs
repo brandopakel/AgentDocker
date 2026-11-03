@@ -237,6 +237,7 @@ impl Daemon {
         Response::Memory { memory }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn memory_search(
         self: &Arc<Self>,
         from: Option<String>,
@@ -245,6 +246,7 @@ impl Daemon {
         limit: Option<usize>,
         as_of: Option<chrono::DateTime<Utc>>,
         include_superseded: bool,
+        min_score: Option<f64>,
     ) -> Response {
         let project = match self.memory_project(from.as_deref(), project).await {
             Ok(project) => project,
@@ -274,10 +276,17 @@ impl Daemon {
             };
         }
         Response::Memories {
-            memories: memory::search(&memories, query, limit, reading.reader(), at)
-                .into_iter()
-                .cloned()
-                .collect(),
+            memories: memory::search_above(
+                &memories,
+                query,
+                limit,
+                min_score.unwrap_or(0.0),
+                reading.reader(),
+                at,
+            )
+            .into_iter()
+            .cloned()
+            .collect(),
         }
     }
 

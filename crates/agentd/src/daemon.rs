@@ -2641,9 +2641,18 @@ impl Daemon {
                 limit,
                 as_of,
                 include_superseded,
+                min_score,
             } => {
-                self.memory_search(from, project, &query, limit, as_of, include_superseded)
-                    .await
+                self.memory_search(
+                    from,
+                    project,
+                    &query,
+                    limit,
+                    as_of,
+                    include_superseded,
+                    min_score,
+                )
+                .await
             }
             Request::MemoryProfile {
                 from,

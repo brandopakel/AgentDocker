@@ -2991,6 +2991,7 @@ async fn run() -> Result<()> {
                         limit,
                         as_of,
                         include_superseded: history,
+                        min_score: None,
                     };
                     match client.call(&request).await? {
                         Response::Memories { memories } => list(&memories, &none),

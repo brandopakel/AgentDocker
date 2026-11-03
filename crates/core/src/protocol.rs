@@ -1119,6 +1119,10 @@ pub enum Request {
         as_of: Option<chrono::DateTime<chrono::Utc>>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         include_superseded: bool,
+        /// Only memories whose words score at least this (the sum of their
+        /// inverse document frequencies); none below it is answered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_score: Option<f64>,
     },
     /// What a project's agents should know first, within `max_chars`: its
     /// standing memories, the oldest first, then the others, newest first;
