@@ -3188,6 +3188,7 @@ mod tests {
             created_at: chrono::Utc::now(),
             standing: false,
             forget_after: None,
+            roles: vec![],
         };
         let line = memory_line(&memory);
         assert!(
