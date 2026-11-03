@@ -295,11 +295,13 @@ const tests = {
     assert.ok(!("prompt" in prompts[1]), "a turn with no text of its own sends none")
   },
 
-  // What an answer told of memory is handed back only with a turn that
-  // completed carrying it: the start's with the first such turn (its
-  // orientation is in every request), a prompt's with its own turn. An
-  // errored turn hands back nothing of its prompt, which is told again.
-  async "memories told reach the hook only with a completed turn"() {
+  // OpenCode builds the system prompt again for each model call, so what a
+  // prompt is told stays in every request of its turn (a tool call's
+  // included) and leaves with the turn. Its memories are therefore never
+  // reported told: a later matching prompt is told them again. The start's
+  // memories, which every request carries, are reported at the end of the
+  // session's first turn.
+  async "a prompt's memories stay for its turn and only the start's are reported told"() {
     const begun = { agent: "agent-a", start: true, memories: ["m0"] }
     const recall = { agent: "agent-a", start: false, memories: ["mb"] }
     const t = await start({
@@ -311,18 +313,25 @@ const tests = {
       opening: { ...orientation, agentdocker: { agent: "agent-a", delivered: [], told: [begun] } },
     })
     const told = () => t.delivered().map((d) => Array.from(d.told ?? [], (x) => x.memories.join()))
-    await t.plugin["chat.message"]({ sessionID: "s" }, { parts: [{ type: "text", text: "how do deploys work?" }] })
-    const output = { system: [] }
-    await t.plugin["experimental.chat.system.transform"]({ sessionID: "s" }, output)
-    assert.ok(output.system.includes("Memory B"))
+    const request = async () => {
+      const output = { system: [] }
+      await t.plugin["experimental.chat.system.transform"]({ sessionID: "s" }, output)
+      return Array.from(output.system)
+    }
+    const ask = () =>
+      t.plugin["chat.message"]({ sessionID: "s" }, { parts: [{ type: "text", text: "how do deploys work?" }] })
+    await ask()
+    assert.deepEqual(await request(), ["Orientation.", "Memory B"])
+    assert.deepEqual(await request(), ["Orientation.", "Memory B"], "after a tool call, still there")
     await t.event("session.error")
     await t.event("session.idle")
-    assert.deepEqual(told(), [["m0"]], "the start's, not the errored prompt's")
-    await t.plugin["chat.message"]({ sessionID: "s" }, { parts: [{ type: "text", text: "how do deploys work?" }] })
-    await t.plugin["experimental.chat.system.transform"]({ sessionID: "s" }, { system: [] })
+    assert.deepEqual(told(), [["m0"]], "the start's, reported with the first turn to end")
+    assert.deepEqual(await request(), ["Orientation."], "gone with its turn")
+    await ask()
+    assert.deepEqual(await request(), ["Orientation.", "Memory B"], "told again")
     await t.event("session.idle")
-    assert.deepEqual(told(), [["m0"], ["mb"]])
-    assert.equal(t.delivered()[1].told[0].start, false)
+    assert.deepEqual(await request(), ["Orientation."])
+    assert.deepEqual(told(), [["m0"]], "a prompt's memories are never reported told")
   },
 
   // Text that reached a completed turn is acknowledged; an errored turn's

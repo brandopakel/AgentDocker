@@ -366,7 +366,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             let (mut output, delivered) = opencode_answer(result, delivery.pending.take());
             // What the answer tells of memory goes back to the plugin with
             // the messages, to be handed back once a turn carried it.
-            let told: Vec<Telling> = output.as_mut().and_then(take_telling).into_iter().collect();
+            let told = opencode_tellings(output.as_mut().and_then(take_telling));
             // The session's agent, for the plugin's idle watch.
             let agent = if matches!(input.hook_event_name.as_str(), "SessionStart" | "Stop") {
                 tokio::time::timeout_at(deadline, session_agent(&client, &input))
@@ -708,6 +708,16 @@ fn opencode_answer(
         Vec::new()
     };
     (output, delivered)
+}
+
+/// What an OpenCode answer tells of memory that stays told: a session
+/// start's profile, which the plugin puts in every request of the session.
+/// A prompt's recall is in the requests of its own turn only (OpenCode
+/// builds the system prompt again for each model call, and the plugin
+/// drops what a turn carried when it ends), so it is never listed and a
+/// later prompt may be told it again.
+fn opencode_tellings(telling: Option<Telling>) -> Vec<Telling> {
+    telling.into_iter().filter(|t| t.start).collect()
 }
 
 /// The acknowledgements an answer held back, as the OpenCode plugin hands
@@ -2657,6 +2667,20 @@ mod tests {
             );
             assert_eq!(received["reply_destination"], reply);
         }
+    }
+
+    /// Only a session start's memories stay in an OpenCode session's
+    /// context; a prompt's leave with its turn and are never listed.
+    #[test]
+    fn an_opencode_answer_lists_only_its_start_as_told() {
+        let telling = |start| Telling {
+            agent: "a".into(),
+            start,
+            memories: vec!["m1".into()],
+        };
+        assert_eq!(opencode_tellings(Some(telling(true))), [telling(true)]);
+        assert!(opencode_tellings(Some(telling(false))).is_empty());
+        assert!(opencode_tellings(None).is_empty());
     }
 
     /// OpenCode answers hand their acknowledgements to the plugin instead of
