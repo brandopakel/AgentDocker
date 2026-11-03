@@ -1792,9 +1792,10 @@ pub enum ErrorCode {
     /// executable, or tmux would not start it in a new session. Nothing
     /// runs; a record made for it is ended with the reason.
     LaunchFailed,
-    /// The change was made, but what it made could not be read back (a
-    /// merge whose new head could not be read): look before retrying, as a
-    /// retry could do it twice.
+    /// The change may have been made but could not be confirmed (a merge
+    /// whose new head could not be read; a launch whose command may have
+    /// started before its session failed): look before retrying, as a retry
+    /// could do it twice.
     Unconfirmed,
 }
 

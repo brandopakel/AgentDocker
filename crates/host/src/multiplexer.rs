@@ -464,6 +464,24 @@ pub mod tmux {
     /// Detached because the daemon is not a terminal: the human attaches
     /// afterwards with `tmux attach -t <session>`, which is the whole
     /// reason for doing this rather than running the agent ourselves.
+    /// tmux would not create the session, so nothing was started. Any
+    /// other error from [`new_session`] comes after tmux made the pane.
+    #[derive(Debug)]
+    pub struct Refused(pub String);
+
+    impl std::fmt::Display for Refused {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for Refused {}
+
+    /// Whether `error` from [`new_session`] says nothing was started.
+    pub fn refused(error: &io::Error) -> bool {
+        error.get_ref().is_some_and(|inner| inner.is::<Refused>())
+    }
+
     pub fn new_session(
         session: &str,
         workdir: &Path,
@@ -486,12 +504,14 @@ pub mod tmux {
         }
         // `--` so an agent's own flags are never read as tmux's.
         tmux.arg("--").args(command);
-        let output = tmux.output()?;
+        let output = tmux.output().map_err(|error| {
+            io::Error::other(Refused(format!("tmux could not be run: {error}")))
+        })?;
         if !output.status.success() {
-            return Err(io::Error::other(format!(
+            return Err(io::Error::other(Refused(format!(
                 "tmux refused to create the session: {}",
                 String::from_utf8_lossy(&output.stderr).trim()
-            )));
+            ))));
         }
         let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
         if id.is_empty() {
@@ -675,6 +695,17 @@ pub mod tmux {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// A refusal says nothing started; an error after tmux made the
+        /// pane (it did not name it, its pid could not be read) does not.
+        #[test]
+        fn only_a_refusal_says_nothing_started() {
+            assert!(refused(&io::Error::other(Refused("no server".into()))));
+            assert!(!refused(&io::Error::other(
+                "tmux created a pane but did not name it"
+            )));
+            assert!(!refused(&io::Error::from(io::ErrorKind::NotFound)));
+        }
 
         #[test]
         fn a_session_name_avoids_tmuxs_own_target_syntax() {

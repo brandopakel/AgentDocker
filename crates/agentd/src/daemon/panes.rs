@@ -154,7 +154,14 @@ impl Daemon {
                     },
                 );
                 self.cleanup_isolate(&record).await;
-                return Response::error(ErrorCode::LaunchFailed, reason);
+                // Refused, nothing started; otherwise tmux made the pane and
+                // its command may be running.
+                let code = if tmux::refused(&error) {
+                    ErrorCode::LaunchFailed
+                } else {
+                    ErrorCode::Unconfirmed
+                };
+                return Response::error(code, reason);
             }
             Err(error) => {
                 let reason = format!("tmux worker failed: {error}");

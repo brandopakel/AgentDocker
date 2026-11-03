@@ -15,12 +15,11 @@ impl Daemon {
             Ok(a) => a,
             Err(e) => return *e,
         };
-        match state
-            .store
-            .documents::<Checkpoint>("checkpoint", agent.as_ref())
-        {
+        match state.read_store("checkpoint", |store| {
+            store.documents::<Checkpoint>("checkpoint", agent.as_ref())
+        }) {
             Ok(checkpoints) => Response::Checkpoints { checkpoints },
-            Err(e) => storage(e),
+            Err(e) => *e,
         }
     }
 
@@ -41,19 +40,17 @@ impl Daemon {
         let Some(cutoff) = cutoff_before(older_than_secs) else {
             return Response::Pruned { removed: 0 };
         };
-        let checkpoints = match state
-            .store
-            .documents::<Checkpoint>("checkpoint", agent.as_ref())
-        {
+        let checkpoints = match state.read_store("checkpoint", |store| {
+            store.documents::<Checkpoint>("checkpoint", agent.as_ref())
+        }) {
             Ok(checkpoints) => checkpoints,
-            Err(e) => return storage(e),
+            Err(e) => return *e,
         };
-        let handoffs = match state
-            .store
-            .documents::<agentdocker_core::HandoffBundle>("handoff", None)
-        {
+        let handoffs = match state.read_store("handoff", |store| {
+            store.documents::<agentdocker_core::HandoffBundle>("handoff", None)
+        }) {
             Ok(handoffs) => handoffs,
-            Err(e) => return storage(e),
+            Err(e) => return *e,
         };
         let addressed: HashMap<&str, &AgentId> = handoffs
             .iter()
@@ -147,13 +144,15 @@ impl Daemon {
         }
         let id = format!("{}:{key}", agent.as_str());
         {
-            let state = lock(&self.state);
-            match state.store.document::<Checkpoint>("checkpoint", &id) {
+            let mut state = lock(&self.state);
+            match state.read_store("checkpoint", |store| {
+                store.document::<Checkpoint>("checkpoint", &id)
+            }) {
                 Ok(Some(checkpoint)) => {
                     return checkpoint_retry(checkpoint, release, &task, &assumptions, &next_steps);
                 }
                 Ok(None) => {}
-                Err(e) => return storage(e),
+                Err(e) => return *e,
             }
         }
         let root = checkout.clone();
@@ -172,19 +171,20 @@ impl Daemon {
         }
         // Recheck under the mutation lock after host I/O: concurrent retries must
         // not overwrite the winning checkpoint or its acknowledgement.
-        match state.store.document::<Checkpoint>("checkpoint", &id) {
+        match state.read_store("checkpoint", |store| {
+            store.document::<Checkpoint>("checkpoint", &id)
+        }) {
             Ok(Some(checkpoint)) => {
                 return checkpoint_retry(checkpoint, release, &task, &assumptions, &next_steps);
             }
             Ok(None) => {}
-            Err(e) => return storage(e),
+            Err(e) => return *e,
         }
-        let reads = match state
-            .store
-            .document::<Vec<ReadMark>>("reads", agent.as_str())
-        {
+        let reads = match state.read_store("reads", |store| {
+            store.document::<Vec<ReadMark>>("reads", agent.as_str())
+        }) {
             Ok(reads) => reads.unwrap_or_default(),
-            Err(e) => return storage(e),
+            Err(e) => return *e,
         };
         let checkpoint = Checkpoint {
             id: id.clone(),
@@ -236,13 +236,12 @@ impl Daemon {
             Ok(v) => v,
             Err(e) => return *e,
         };
-        let checkpoint = match lock(&self.state)
-            .store
-            .document::<Checkpoint>("checkpoint", id)
-        {
+        let checkpoint = match lock(&self.state).read_store("checkpoint", |store| {
+            store.document::<Checkpoint>("checkpoint", id)
+        }) {
             Ok(Some(c)) => c,
             Ok(None) => return Response::error(ErrorCode::NotFound, "checkpoint not found"),
-            Err(e) => return storage(e),
+            Err(e) => return *e,
         };
         if checkpoint.checkout != checkout {
             return Response::error(
@@ -272,10 +271,12 @@ impl Daemon {
                 "replacement stopped during verification",
             );
         }
-        let mut checkpoint = match state.store.document::<Checkpoint>("checkpoint", id) {
+        let mut checkpoint = match state.read_store("checkpoint", |store| {
+            store.document::<Checkpoint>("checkpoint", id)
+        }) {
             Ok(Some(c)) => c,
             Ok(None) => return Response::error(ErrorCode::NotFound, "checkpoint disappeared"),
-            Err(e) => return storage(e),
+            Err(e) => return *e,
         };
         let environment = state
             .registry
@@ -286,12 +287,11 @@ impl Daemon {
         // A checkpoint made by a handoff carries a bundle: it may name its
         // recipient, ask for its leases to move, and say where the sender
         // had read the journal to.
-        let bundle = match state
-            .store
-            .document::<agentdocker_core::HandoffBundle>("handoff", id)
-        {
+        let bundle = match state.read_store("handoff", |store| {
+            store.document::<agentdocker_core::HandoffBundle>("handoff", id)
+        }) {
             Ok(bundle) => bundle,
-            Err(e) => return storage(e),
+            Err(e) => return *e,
         };
         if acknowledge
             && bundle
@@ -319,12 +319,11 @@ impl Daemon {
             }
             if checkpoint.accepted_by.is_none() {
                 // Do not overwrite observations the replacement already made.
-                let current = match state
-                    .store
-                    .document::<Vec<ReadMark>>("reads", agent.as_str())
-                {
+                let current = match state.read_store("reads", |store| {
+                    store.document::<Vec<ReadMark>>("reads", agent.as_str())
+                }) {
                     Ok(v) => v.unwrap_or_default(),
-                    Err(e) => return storage(e),
+                    Err(e) => return *e,
                 };
                 let mut reads: BTreeMap<_, _> = checkpoint
                     .reads
@@ -435,10 +434,9 @@ impl Daemon {
                 }
             }
         }
-        let validations = match state
-            .store
-            .matching_validations(&checkpoint.checkout, &checkpoint.version)
-        {
+        let validations = match state.read_store("matching_validations", |store| {
+            store.matching_validations(&checkpoint.checkout, &checkpoint.version)
+        }) {
             Ok(v) => v
                 .into_iter()
                 .filter(|v| {
@@ -447,7 +445,7 @@ impl Daemon {
                         && ContainerEnvironment::matches(&v.environment, &environment)
                 })
                 .collect(),
-            Err(e) => return storage(e),
+            Err(e) => return *e,
         };
         Response::Recovery {
             recovery: Recovery {
@@ -466,12 +464,11 @@ impl Daemon {
             Ok(a) => a,
             Err(e) => return *e,
         };
-        match state
-            .store
-            .documents::<Validation>("validation", Some(&agent))
-        {
+        match state.read_store("validation", |store| {
+            store.documents::<Validation>("validation", Some(&agent))
+        }) {
             Ok(validations) => Response::Validations { validations },
-            Err(e) => storage(e),
+            Err(e) => *e,
         }
     }
 
@@ -761,6 +758,60 @@ mod tests {
         }
         (daemon, root)
     }
+    /// A checkpoint the store cannot read latches storage like any other
+    /// store failure: the read answers `storage_unavailable`, and so does
+    /// the next write, which changes nothing.
+    #[tokio::test]
+    async fn an_unreadable_checkpoint_latches_storage() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, _) = fixture(&tmp).await;
+        lock(&daemon.state)
+            .store
+            .put_document(
+                "checkpoint",
+                "original:broken",
+                &serde_json::json!({"not": "a checkpoint"}),
+            )
+            .unwrap();
+        let read = daemon.handle(Request::Checkpoints { agent: None }).await;
+        assert!(
+            matches!(
+                &read,
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ),
+            "{read:?}"
+        );
+        let claim = daemon
+            .handle(Request::Claim {
+                agent: "original".into(),
+                resource: "task:after".into(),
+                mode: LeaseMode::Exclusive,
+                amount: None,
+                ttl_secs: 60,
+                note: None,
+                wait_secs: 0,
+                priority: 0,
+                automatic: false,
+            })
+            .await;
+        assert!(
+            matches!(
+                &claim,
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ),
+            "{claim:?}"
+        );
+        let state = lock(&daemon.state);
+        let owner = state.registry.resolve("original").unwrap();
+        assert!(state.leases.by_holder(&owner).is_empty(), "nothing claimed");
+    }
+
     /// Accepting a handoff seeds the recipient's read set with the
     /// sender's, joined to its own: the union keeps to the capacity in
     /// `agentd.toml`, and a refused acceptance changes nothing.

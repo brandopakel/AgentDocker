@@ -3499,6 +3499,23 @@ impl State {
         self.store_read(what, op)
     }
 
+    /// [`State::store_read`] for a request: what it read, or the answer a
+    /// failed read latched, `storage_unavailable` like every store failure.
+    fn read_store<T>(
+        &mut self,
+        what: &str,
+        op: impl FnOnce(&Store) -> anyhow::Result<T>,
+    ) -> Result<T, Box<Response>> {
+        self.store_read(what, op).ok_or_else(|| {
+            Box::new(self.storage_failure().unwrap_or_else(|| {
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    format!("{what} could not be read"),
+                )
+            }))
+        })
+    }
+
     /// A store read: served through a fence, since a transfer stops
     /// writes and nothing else, and refused only once storage has failed.
     fn store_read<T>(
