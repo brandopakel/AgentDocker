@@ -1229,7 +1229,10 @@ Current behaviour that the sections above do not already state, by area.
 - **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
   starts Codex in the terminal you are in, through AgentDocker's launcher:
   messages wake it even while it is idle, and you can give it a role, such
-  as reviewer, like any agent. Codex's own options go after `--`. While
+  as reviewer, like any agent. Codex's own options go after `--`: those
+  that set its configuration (`-c`, `--model`, `-a`, `-s`, `--yolo`, the
+  last meaning no approvals and no sandbox); a prompt or a profile is
+  refused, so send the first message through AgentDocker. While
   Codex has the terminal AgentDocker writes nothing into it: the INPUT
   column of `agentdocker ps` and the app say when it can take messages, and
   the launcher's own words go to its launch log. A plain
