@@ -802,13 +802,22 @@ pub mod tmux {
             assert_eq!(err.error().kind(), io::ErrorKind::InvalidInput);
         }
 
-        /// A tmux that never answers is killed at the deadline and its
+        /// A tmux that never answers is given up on at the deadline, one
+        /// that answers past its output's bound is killed there and its
         /// process reaped, and a pane whose process is not the agent's is
-        /// refused before anything is captured.
+        /// refused before anything is captured. Nothing here needs a
+        /// stand-in to reach a line before a clock runs out: the deadline
+        /// is held only to what it guarantees wherever the stand-in was,
+        /// the output's bound is crossed only after the stand-in has named
+        /// itself, and a stand-in meant to answer has `BOUND` to do it.
         #[cfg(unix)]
         #[test]
         fn a_capture_is_bounded_and_bound_to_the_agents_process() {
             use std::os::unix::fs::PermissionsExt;
+            use std::time::{Duration, Instant};
+            /// What a stand-in meant to answer is given: a backstop a
+            /// loaded machine does not reach, never what the test waits on.
+            const BOUND: Duration = Duration::from_secs(10);
             let dir = tempfile::tempdir().unwrap();
             let stand_in = |name: &str, body: &str| {
                 let path = dir.path().join(name);
@@ -816,19 +825,29 @@ pub mod tmux {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
                 path
             };
+            // The pid a stand-in wrote of itself, once all of it is there.
+            let named = |marker: &Path| -> Option<u32> {
+                std::fs::read_to_string(marker).ok()?.trim().parse().ok()
+            };
             let socket = dir.path().join("server");
-            let marker = dir.path().join("hung");
+
+            // A tmux that never answers is given up on at the deadline,
+            // whether it was still starting then or already asleep. One
+            // that got as far as naming itself is gone and reaped; under
+            // load it may not have, and the output's bound below shows the
+            // reaping whatever the clock did.
+            let hung = dir.path().join("hung");
             let hanging = stand_in(
                 "hanging",
-                &format!("echo $$ > {}; exec sleep 30", marker.display()),
+                &format!("echo $$ > {}; exec sleep 30", hung.display()),
             );
-            let started = std::time::Instant::now();
+            let started = Instant::now();
             let err = capture_bound(
                 &hanging,
                 &socket,
                 "%0",
                 |_| true,
-                std::time::Duration::from_millis(300),
+                Duration::from_millis(300),
             )
             .unwrap_err();
             assert!(err.to_string().contains("timed out"), "{err}");
@@ -836,13 +855,28 @@ pub mod tmux {
                 matches!(err, Uncaptured::Unanswered(_)),
                 "a tmux that gave no answer said nothing of the pane"
             );
-            assert!(started.elapsed() < std::time::Duration::from_secs(5));
-            let hung: u32 = std::fs::read_to_string(&marker)
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
-            assert!(!crate::procinfo::alive(hung), "killed and reaped");
+            assert!(started.elapsed() < BOUND);
+            if let Some(pid) = named(&hung) {
+                assert!(!crate::procinfo::alive(pid), "killed and reaped");
+            }
+
+            // A tmux that names itself and then answers past its output's
+            // bound while still running: given up on there, killed and
+            // reaped. Its pid is written before any of its output, so the
+            // order is the script's own and no clock is raced.
+            let flooded = dir.path().join("flooded");
+            let flooding = stand_in(
+                "flooding",
+                &format!(
+                    "echo $$ > {}; head -c 5000000 /dev/zero; exec sleep 30",
+                    flooded.display()
+                ),
+            );
+            let err = capture_bound(&flooding, &socket, "%0", |_| true, BOUND).unwrap_err();
+            assert!(err.to_string().contains("output exceeded"), "{err}");
+            assert!(matches!(err, Uncaptured::Unanswered(_)), "{err}");
+            let pid = named(&flooded).expect("it named itself before its output");
+            assert!(!crate::procinfo::alive(pid), "killed and reaped");
 
             // A stand-in that says the pane holds process 4242, and records
             // whether a capture was asked for.
@@ -854,16 +888,14 @@ pub mod tmux {
                     captured.display()
                 ),
             );
-            let err = capture_bound(&answering, &socket, "%0", |pid| pid == 1, CAPTURE_DEADLINE)
-                .unwrap_err();
+            let err = capture_bound(&answering, &socket, "%0", |pid| pid == 1, BOUND).unwrap_err();
             assert!(matches!(err, Uncaptured::Refused(_)));
             assert_eq!(err.error().kind(), io::ErrorKind::PermissionDenied);
             assert!(!captured.exists(), "nothing was captured");
 
             // A server that answers that the pane is not there.
             let missing = stand_in("missing", "echo \"can't find pane: %0\" >&2; exit 1");
-            let err =
-                capture_bound(&missing, &socket, "%0", |_| true, CAPTURE_DEADLINE).unwrap_err();
+            let err = capture_bound(&missing, &socket, "%0", |_| true, BOUND).unwrap_err();
             assert!(matches!(err, Uncaptured::Refused(_)), "{err}");
 
             // A tmux that cannot be run at all.
@@ -876,14 +908,7 @@ pub mod tmux {
             )
             .unwrap_err();
             assert!(matches!(err, Uncaptured::Unanswered(_)), "{err}");
-            let text = capture_bound(
-                &answering,
-                &socket,
-                "%0",
-                |pid| pid == 4242,
-                CAPTURE_DEADLINE,
-            )
-            .unwrap();
+            let text = capture_bound(&answering, &socket, "%0", |pid| pid == 4242, BOUND).unwrap();
             assert_eq!(text.trim(), "screen");
         }
     }
