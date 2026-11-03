@@ -4890,6 +4890,14 @@ async fn status_changes_are_said_once_and_answer_with_activity() {
     // Ended and said: the tick has nothing more to say of it.
     daemon.expire_leases();
     assert_eq!(changes(&mut events), vec![]);
+    // A restart remembers the ended asker's answer without saying it
+    // again, so closing its question afterwards is still said.
+    drop(events);
+    drop(daemon);
+    let daemon = open(&dir);
+    let mut events = daemon.subscribe_events();
+    daemon.expire_leases();
+    assert_eq!(changes(&mut events), vec![], "a restart says nothing");
     // Its question outlived it; when that closes, its last answer is said.
     let Response::Questions { questions } = daemon.handle(Request::Questions { agent: None }).await
     else {

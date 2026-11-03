@@ -675,8 +675,9 @@ pub enum EventKind {
     /// person: what for, how sure, and which screen of which process (by
     /// digest, never its text). Its record carries the judgment and its
     /// activity reads as waiting, marked judged, until the screen changes
-    /// or can no longer be read, its own adapter reports, or another
-    /// process is behind it.
+    /// or can no longer be read, something first-hand is reported (its own
+    /// adapter, Codex's shared server; never a weak word such as an idle
+    /// timer), or another process is behind it.
     AgentJudgedNeedsYou {
         agent: AgentId,
         judgment: crate::judgment::ScreenJudgment,

@@ -650,14 +650,17 @@ impl State {
         }))
     }
 
-    /// With the answer for every live agent remembered as already said,
-    /// so the first announcements after a start are of changes.
+    /// With the answer for every agent [`Self::refresh_statuses`] follows
+    /// remembered as already said — every live one, and every one that has
+    /// ended while a question of its stays open — so the first
+    /// announcements after a start are of changes, and closing such a
+    /// question after a restart is still said.
     pub(super) fn seeded(mut self, now: DateTime<Utc>) -> Self {
         let asking = self.asking(now);
         self.statuses = self
             .registry
             .all()
-            .filter(|record| record.status.is_live())
+            .filter(|record| record.status.is_live() || asking.contains(record.id.as_str()))
             .filter_map(|record| {
                 self.identity_status_of(record, now, &asking)
                     .map(|status| (record.id.clone(), status))
@@ -685,7 +688,11 @@ impl State {
         let changes: Vec<(AgentId, Option<ProjectId>, bool, IdentityStatus)> = self
             .registry
             .all()
-            .filter(|record| record.status.is_live() || self.statuses.contains_key(&record.id))
+            .filter(|record| {
+                record.status.is_live()
+                    || self.statuses.contains_key(&record.id)
+                    || asking.contains(record.id.as_str())
+            })
             .filter_map(|record| {
                 let status = self.identity_status_of(record, now, &asking)?;
                 (self.statuses.get(&record.id) != Some(&status)).then(|| {

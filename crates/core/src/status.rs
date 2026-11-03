@@ -260,12 +260,12 @@ pub struct Inputs<'a> {
 /// **What it waits for from the person.** An open question first: the
 /// daemon holds it, so nothing outranks it, and it stays until answered
 /// or expired even once the agent is gone. An agent that is gone waits
-/// for nothing else. Then a current observation that says *waiting*, by
-/// its reason, with the observation's own evidence (strong from the
-/// agent's adapter or the conversation's server, weak from herdr). Then
-/// a standing screen judgment, which the judge records only when its
-/// reading cleared its confidence bar, so it is strong. Otherwise
-/// nothing.
+/// for nothing else. Then, strongest first: a current first-hand
+/// observation that says *waiting* (the agent's adapter, the
+/// conversation's server), by its reason; a standing screen judgment,
+/// which the judge records only when its reading cleared its confidence
+/// bar, so it is strong; a current weak one that says *waiting* (herdr's
+/// reading of a terminal), by its reason, weakly. Otherwise nothing.
 ///
 /// **State.** The lifecycle's word once the agent has ended; a live agent
 /// in the lease queue is blocked; any other live agent is working.
@@ -294,19 +294,20 @@ pub fn derive(inputs: &Inputs<'_>) -> IdentityStatus {
     } = *inputs;
     let live = lifecycle.is_live();
     let current = observation.filter(|observation| observation.current(now).is_some());
+    let wait = current.filter(|observation| observation.activity == ReportedActivity::Waiting);
     let (waiting_for, wait_evidence) = if open_question {
         (WaitingFor::Question, Evidence::Strong)
     } else if !live {
         (WaitingFor::None, Evidence::Strong)
-    } else if let Some(wait) =
-        current.filter(|observation| observation.activity == ReportedActivity::Waiting)
-    {
-        (WaitingFor::from_reason(wait.reason), wait.evidence())
+    } else if let Some(wait) = wait.filter(|wait| wait.evidence() == Evidence::Strong) {
+        (WaitingFor::from_reason(wait.reason), Evidence::Strong)
     } else if let Some(judgment) = judgment {
         (
             WaitingFor::from_reason(Some(judgment.reason)),
             judgment.evidence(),
         )
+    } else if let Some(wait) = wait {
+        (WaitingFor::from_reason(wait.reason), wait.evidence())
     } else {
         (WaitingFor::None, Evidence::Strong)
     };
@@ -568,6 +569,23 @@ mod tests {
             })
             .waiting_for,
             WaitingFor::Permission
+        );
+        // And the judgment, strong, over herdr's weak reading of a wait.
+        assert_eq!(
+            derive(&Inputs {
+                judgment: Some(&judgment),
+                ..live(Some(&herdr_wait))
+            }),
+            triple(w, Status::Waiting, WaitingFor::Input, Evidence::Strong)
+        );
+        assert_eq!(
+            derive(&Inputs {
+                judgment: Some(&judged(WaitReason::Permission, 900)),
+                ..live(Some(&herdr_wait))
+            })
+            .waiting_for,
+            WaitingFor::Permission,
+            "by the judgment's reason, not herdr's"
         );
         // The lease queue: blocked, waiting for nothing from the person.
         assert_eq!(
