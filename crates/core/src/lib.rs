@@ -38,9 +38,11 @@ pub mod project;
 pub mod protocol;
 pub mod provider;
 pub mod task;
+pub mod team;
 pub use provider::{
     ProviderAvailability, ProviderIssue, ProviderIssueKind, ProviderReport, provider_block,
 };
+pub use team::{Team, TeamMembership, TeamRole, Teammate};
 pub mod registry;
 pub mod secret;
 pub mod seed;

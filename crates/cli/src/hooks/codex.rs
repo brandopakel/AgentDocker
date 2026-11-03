@@ -647,6 +647,7 @@ pub(super) async fn claim_edits<B: Backend>(
                 wait_secs: 0,
                 priority: 0,
                 automatic: true,
+                actor: None,
             })
             .await?;
         if let Response::Error {

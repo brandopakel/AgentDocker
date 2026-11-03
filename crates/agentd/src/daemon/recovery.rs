@@ -1025,6 +1025,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
             })
             .await;
         let next = lock(&daemon.state).next_seq;
@@ -1200,6 +1201,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
             })
             .await;
         assert!(matches!(

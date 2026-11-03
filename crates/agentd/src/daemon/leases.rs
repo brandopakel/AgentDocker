@@ -15,7 +15,9 @@ impl Daemon {
         wait_secs: u64,
         priority: Priority,
         automatic: bool,
+        actor: Option<String>,
     ) -> Response {
+        let actor = actor.map(|a| a.trim().to_owned()).filter(|a| !a.is_empty());
         if !wait::valid_priority(priority) {
             return Response::error(
                 ErrorCode::Invalid,
@@ -181,6 +183,7 @@ impl Daemon {
                     };
                     let (message, held_by) = match result {
                         Ok(Claimed::New(mut lease)) => {
+                            lease.actor = actor.clone();
                             lease.change_seq = state.store_read("lease ledger boundary", |store| {
                                 store.change_watermark()
                             });
@@ -202,7 +205,11 @@ impl Daemon {
                             }
                             break 'attempt Err((Response::Lease { lease }, WaitOutcome::Claimed));
                         }
-                        Ok(Claimed::Renewed(lease)) => {
+                        Ok(Claimed::Renewed(mut lease)) => {
+                            // Each claim says who in the session takes it
+                            // now, none being the session itself: the lead
+                            // editing a file a teammate had is the lead's.
+                            lease.actor = actor.clone();
                             if !state.commit_lease_activity(
                                 &holder,
                                 Some(&lease),
@@ -225,14 +232,31 @@ impl Daemon {
                                 let holders = held_by
                                     .iter()
                                     .map(|l| {
-                                        let name = state
-                                            .registry
-                                            .get(&l.holder)
+                                        let holder = state.registry.get(&l.holder);
+                                        let name = holder
                                             .map(|a| a.spec.name.as_str())
                                             .filter(|n| !n.is_empty())
                                             .unwrap_or("an unknown agent");
+                                        // A member of a Claude Code team by
+                                        // the name its lead gave it: the name
+                                        // the team's other agents know. An
+                                        // in-process teammate took the lease
+                                        // under the lead's session, and is
+                                        // named by the actor it reported.
+                                        let team = holder
+                                            .and_then(|a| a.team.as_ref())
+                                            .map(|t| {
+                                                format!(
+                                                    ", {}",
+                                                    t.describe_acting(
+                                                        l.actor.as_deref(),
+                                                        state.teams.get(&t.team),
+                                                    )
+                                                )
+                                            })
+                                            .unwrap_or_default();
                                         format!(
-                                            "{name} ({}; {} on {})",
+                                            "{name}{team} ({}; {} on {})",
                                             l.holder.short(),
                                             l.mode,
                                             l.resource

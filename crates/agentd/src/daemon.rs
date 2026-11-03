@@ -81,6 +81,7 @@ mod review;
 mod roles;
 mod secret_reviews;
 mod tasks;
+mod teams;
 mod topics;
 mod transport;
 mod usage;
@@ -500,6 +501,20 @@ struct State {
     /// its linked worktrees. Refreshed off the lock on the same tick as
     /// the VCS sweep, because enumerating them runs git.
     project_checkouts: HashMap<ProjectId, Vec<PathBuf>>,
+    /// Claude Code's configuration directory by the daemon's own
+    /// environment (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), as read when
+    /// the daemon started: where a session's team files are read from
+    /// only when nothing says which directory the session itself uses.
+    /// `None` where neither could be told.
+    claude_config_dir: Option<PathBuf>,
+    /// Each live Claude Code process's command line and configuration
+    /// directory as last read, by pid and birth, so they are read from the
+    /// process table and its environment once rather than on every tick.
+    team_processes: teams::ProcessCache,
+    /// Every Claude Code team last read, by name, so a lease's actor can
+    /// be named as the team names it. In memory only: read again on the
+    /// next tick.
+    teams: HashMap<String, agentdocker_core::Team>,
     /// Checkouts the daemon is committing in right now. The watcher polls
     /// on its own schedule and will see HEAD move part-way through, so
     /// without this it writes its own guessed-at entry for a commit the
@@ -1657,6 +1672,9 @@ impl Daemon {
                 last_branch: HashMap::new(),
                 worktree_creators: HashMap::new(),
                 project_checkouts: HashMap::new(),
+                claude_config_dir: agentdocker_host::teams::claude_config_dir(),
+                team_processes: HashMap::new(),
+                teams: HashMap::new(),
                 committing: std::collections::BTreeSet::new(),
                 controller_pins: HashMap::new(),
                 question_waiters: HashSet::new(),
@@ -2164,6 +2182,7 @@ impl Daemon {
             Request::Register { spec, pid, session } => {
                 let registered = self.register(spec, pid, session, authorized).await;
                 self.trace_starter(&registered);
+                self.note_team(&registered).await;
                 registered
             }
             Request::SessionAttach {
@@ -2186,6 +2205,7 @@ impl Daemon {
             Request::Adopt { pid, name, runtime } => {
                 let adopted = self.adopt(pid, name, runtime, authorized).await;
                 self.trace_starter(&adopted);
+                self.note_team(&adopted).await;
                 adopted
             }
             Request::Stop { agent, force } => self.stop_agent(&agent, force).await,
@@ -2904,9 +2924,11 @@ impl Daemon {
                 wait_secs,
                 priority,
                 automatic,
+                actor,
             } => {
                 self.claim(
                     &agent, resource, mode, amount, ttl_secs, note, wait_secs, priority, automatic,
+                    actor,
                 )
                 .await
             }
@@ -5632,6 +5654,19 @@ impl State {
                         .spec
                         .labels
                         .insert(agentdocker_core::agent::PROFILE_LABEL.to_owned(), profile);
+                }
+                // The session's own configuration directory, as the half
+                // that binds the session sees it in its environment, where
+                // the record does not say one yet.
+                let config_label = agentdocker_core::team::CONFIG_DIR_LABEL;
+                if let Some(dir) = record.spec.labels.get(config_label)
+                    && !dir.is_empty()
+                    && !updated.spec.labels.contains_key(config_label)
+                {
+                    updated
+                        .spec
+                        .labels
+                        .insert(config_label.to_owned(), dir.clone());
                 }
                 let event = Event::new(
                     EventKind::AgentSessionBound {

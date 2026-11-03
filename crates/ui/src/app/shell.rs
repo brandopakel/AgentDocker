@@ -9539,6 +9539,7 @@ mod tests {
             project: None,
             started_at: None,
             session: None,
+            team: None,
         });
         let _ = commands.try_iter().count();
         let _ = app.update(Message::Adopt(4242));

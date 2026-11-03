@@ -688,6 +688,7 @@ mod tests {
             wait_secs: 20,
             priority: 0,
             automatic: false,
+            actor: None,
         };
         assert!(daemon.restricted_request("wrong", Request::Ping).is_err());
         let original = lock(&daemon.state)

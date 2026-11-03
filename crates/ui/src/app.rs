@@ -2060,6 +2060,7 @@ impl App {
             | EventKind::AgentReconciled { .. }
             | EventKind::HumanLocationChanged { .. }
             | EventKind::AgentVcsChanged { .. }
+            | EventKind::AgentTeamChanged { .. }
             | EventKind::AdapterContactReported { .. } => self.send(Cmd::Agents),
             EventKind::InputDeliveryReported { .. }
             | EventKind::InputHeldForTyping { .. }

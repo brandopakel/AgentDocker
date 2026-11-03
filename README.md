@@ -118,7 +118,7 @@ MCP onboarding, so agents can discover the workflow without a repeated reminder.
 
 The daemon and the CLI build on Rust 1.87; the desktop app needs 1.95, which is what its graphics stack requires. Packaging separates commands-only archives from desktop archives containing the app and its two companion commands. From source, build the app with `cargo install --path crates/ui --locked`.
 
-The daemon keeps scanning for agent processes on its own and announces them as `agent_discovered` and `agent_vanished` events, so nothing has to be typed for a running Claude Code or Codex session to show up.
+The daemon keeps scanning for agent processes on its own and announces them as `agent_discovered` and `agent_vanished` events, so nothing has to be typed for a running Claude Code or Codex session to show up. A Claude Code agent team shows as its lead and its named teammates, and a teammate's edits are protected by the same leases as any other session's.
 
 ### Limitations
 
