@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -185,16 +186,22 @@ def smoke(binary_dir, output):
         project = root / "project"
         project.mkdir()
         (project / "Agentfile").write_text('name = "desktop-fixture"\ncommand = ["sleep", "90"]\n')
+        # A provider as the process table shows it: Codex's name, no
+        # arguments. Bash runs under any name and sleeps for it; `sleep`
+        # itself may not, since multi-call coreutils refuse another name.
         runtime = root / "codex"
-        runtime.symlink_to(shutil.which("sleep"))
+        runtime.symlink_to("/bin/bash" if Path("/bin/bash").exists() else shutil.which("bash"))
         env = {**os.environ, "AGENTDOCKER_HOME": str(home), "AGENTDOCKER_SOCKET": str(endpoint),
                "AGENTDOCKER_NO_AUTOSTART": "1", "RUST_LOG": os.environ.get("RUST_LOG", "warn")}
         daemon = fixture = window = None
         previous_umask = os.umask(0o077)
         try:
             with (output / "daemon.log").open("w") as daemon_log, (output / "window.log").open("w") as window_log:
-                fixture = subprocess.Popen([str(runtime), "90"], cwd=project, stdin=subprocess.DEVNULL,
-                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                fixture = subprocess.Popen([str(runtime)], cwd=project, stdin=subprocess.PIPE,
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                           start_new_session=True)
+                fixture.stdin.write(b"sleep 90\nexit 0\n")
+                fixture.stdin.close()
                 daemon = subprocess.Popen([str(binary_dir / "agentd")], cwd=project, env=env,
                                           stdin=subprocess.DEVNULL, stdout=daemon_log, stderr=subprocess.STDOUT)
                 deadline = time.monotonic() + 15
@@ -235,6 +242,12 @@ def smoke(binary_dir, output):
                 except (OSError, ValueError, subprocess.TimeoutExpired):
                     stop(daemon)
             stop(fixture)
+            if fixture is not None:
+                # Its sleep too, in the session the fixture leads.
+                try:
+                    os.killpg(fixture.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
             os.umask(previous_umask)
 
 

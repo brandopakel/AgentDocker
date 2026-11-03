@@ -500,6 +500,89 @@ pub(crate) fn companion_cli() -> Option<std::path::PathBuf> {
     Some(daemon.with_file_name(agentdocker_host::program::Role::Cli.file_name()))
 }
 
+/// Whether `executable` is AgentDocker's own CLI, by the file the kernel
+/// says a process runs: the companion's file, or the CLI of another version
+/// the same installation still retains. An update installs its version
+/// beside the earlier ones, and a session an earlier version launched runs
+/// that version's CLI until the version is retired; it is AgentDocker's all
+/// the same. Only for telling who launched a process, never for what to
+/// launch, which stays the companion ([`admit_controller_launch`]).
+pub(crate) fn own_cli(executable: &std::path::Path) -> bool {
+    companion_cli().is_some_and(|cli| own_cli_beside(&cli, executable))
+}
+
+fn own_cli_beside(cli: &std::path::Path, executable: &std::path::Path) -> bool {
+    if same_file(cli, executable) {
+        return true;
+    }
+    // A retained version is found by where it sits: in the companion's own
+    // `versions` directory, reached through no link, and the file at the
+    // place inside its version the companion holds inside this one. By the
+    // file there, not the name: macOS may name a process running the CLI
+    // by either of its names, `agentd` being the same file.
+    let (Ok(cli), Ok(real)) = (cli.canonicalize(), executable.canonicalize()) else {
+        return false;
+    };
+    let (Some((versions, _, place)), Some((theirs, id, _))) =
+        (version_place(&cli), version_place(&real))
+    else {
+        return false;
+    };
+    plain(&real) == plain(executable)
+        && versions == theirs
+        && same_file(&theirs.join(id).join(place), &real)
+}
+
+/// A path as it is compared with the one the kernel names a running
+/// program by. Windows names a process's image by its DOS path (`C:\…`),
+/// where `canonicalize` spells the same file verbatim (`\\?\C:\…`, and
+/// `\\?\UNC\server\…` for `\\server\…`) and in the file's own case:
+/// neither difference is a link, so both are set aside there, and any
+/// other one still is. Elsewhere a path is compared as it is.
+fn plain(path: &std::path::Path) -> std::ffi::OsString {
+    #[cfg(windows)]
+    {
+        plain_windows(&path.to_string_lossy()).into()
+    }
+    #[cfg(not(windows))]
+    {
+        path.as_os_str().to_owned()
+    }
+}
+
+/// [`plain`]'s Windows spelling, apart, so that every platform tests it.
+#[cfg(any(windows, test))]
+fn plain_windows(path: &str) -> String {
+    let path = match path.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => path.strip_prefix(r"\\?\").unwrap_or(path).to_owned(),
+    };
+    path.to_lowercase()
+}
+
+/// Where `path` sits among an installation's versions, when it is
+/// `<…>/versions/<id>/<rest>` and `<id>` is a release's tree hash (64 hex
+/// digits): the `versions` directory, `<id>` and `<rest>`.
+fn version_place(
+    path: &std::path::Path,
+) -> Option<(std::path::PathBuf, &std::ffi::OsStr, std::path::PathBuf)> {
+    let parts: Vec<_> = path.components().collect();
+    (0..parts.len().saturating_sub(2)).rev().find_map(|at| {
+        let id = parts[at + 1].as_os_str();
+        let hex = id.to_str()?;
+        (parts[at].as_os_str() == "versions"
+            && hex.len() == 64
+            && hex.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| {
+            (
+                parts[..=at].iter().collect(),
+                id,
+                parts[at + 2..].iter().collect(),
+            )
+        })
+    })
+}
+
 /// Environment a client may not give a supervised Codex terminal's
 /// controller: anything that loads code into it.
 fn loads_code(key: &str) -> bool {
@@ -883,6 +966,107 @@ mod tests {
     use super::*;
     use agentdocker_core::AgentSpec;
     use std::collections::BTreeMap;
+
+    /// Windows names a running image by its DOS path, and `canonicalize`
+    /// the same file verbatim and in its own case: one spelling of one
+    /// path, not a link, so they compare equal; another path does not.
+    #[test]
+    fn a_windows_path_compares_by_its_dos_spelling() {
+        assert_eq!(
+            plain_windows(r"\\?\C:\Users\Me\AppData\versions\ab\agentdocker.exe"),
+            plain_windows(r"c:\users\me\appdata\VERSIONS\ab\AgentDocker.exe")
+        );
+        assert_eq!(
+            plain_windows(r"\\?\UNC\server\share\agentdocker.exe"),
+            plain_windows(r"\\server\share\agentdocker.exe")
+        );
+        assert_ne!(
+            plain_windows(r"\\?\C:\linked\agentdocker.exe"),
+            plain_windows(r"C:\Users\Me\agentdocker.exe")
+        );
+    }
+
+    /// On Windows, a retained version's CLI named by the DOS path the
+    /// kernel gives a running image is AgentDocker's.
+    #[cfg(windows)]
+    #[test]
+    fn a_retained_launcher_named_by_its_dos_path_is_agentdocker_s() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let place = r"AgentDocker\agentdocker.exe";
+        let cli = |version: String| {
+            let path = root.join("versions").join(version).join(place);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, b"cli").unwrap();
+            path
+        };
+        let companion = cli("a".repeat(64));
+        let retained = cli("b".repeat(64));
+        let dos = std::path::PathBuf::from(
+            retained
+                .to_string_lossy()
+                .strip_prefix(r"\\?\")
+                .expect("canonicalize spells it verbatim"),
+        );
+        assert!(own_cli_beside(&companion, &dos), "{dos:?}");
+    }
+
+    /// A retained version's CLI, at the companion's place inside its own
+    /// version, is AgentDocker's, by either of its names; the same name
+    /// anywhere else, at another place in a version, under a directory that
+    /// is not a release's hash, or reached through a link, is not.
+    #[test]
+    fn a_retained_version_s_cli_is_agentdocker_s_own() {
+        let root = tempfile::tempdir().unwrap();
+        let root = root.path().canonicalize().unwrap();
+        let cli = |version: &str, rest: &str| {
+            let path = root.join(version).join(rest);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, version.as_bytes()).unwrap();
+            path
+        };
+        let (current, earlier) = ("a".repeat(64), "b".repeat(64));
+        let place = "AgentDocker.app/Contents/MacOS/agentdocker";
+        let companion = cli(&format!("versions/{current}"), place);
+        let retained = cli(&format!("versions/{earlier}"), place);
+        assert!(own_cli_beside(&companion, &companion));
+        assert!(own_cli_beside(&companion, &retained), "a retained version");
+        // The kernel may name the process by the CLI's other name, the
+        // daemon's, which is the same file; a different file by that name is
+        // not the CLI.
+        let daemon = retained.with_file_name("agentd");
+        std::fs::hard_link(&retained, &daemon).unwrap();
+        assert!(own_cli_beside(&companion, &daemon), "by its other name");
+        let third = cli(&format!("versions/{}", "d".repeat(64)), place);
+        let impostor = third.with_file_name("agentd");
+        std::fs::write(&impostor, b"not the cli").unwrap();
+        assert!(
+            !own_cli_beside(&companion, &impostor),
+            "another file by that name"
+        );
+
+        let elsewhere = cli("elsewhere", "agentdocker");
+        let other_place = cli(&format!("versions/{earlier}"), "agentdocker");
+        let not_a_release = cli("versions/notahash", place);
+        let other_store = cli(&format!("other/versions/{earlier}"), place);
+        for stranger in [&elsewhere, &other_place, &not_a_release, &other_store] {
+            assert!(!own_cli_beside(&companion, stranger), "{stranger:?}");
+        }
+        #[cfg(unix)]
+        {
+            let linked = root.join(format!("versions/{}/{place}", "c".repeat(64)));
+            std::fs::create_dir_all(linked.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(&elsewhere, &linked).unwrap();
+            assert!(!own_cli_beside(&companion, &linked), "a link to elsewhere");
+            let outside = root.join("link");
+            std::os::unix::fs::symlink(&retained, &outside).unwrap();
+            assert!(!own_cli_beside(&companion, &outside), "a link from outside");
+        }
+        // Outside any installation (a development build), only its own file.
+        let built = cli("target/debug", "agentdocker");
+        assert!(own_cli_beside(&built, &built));
+        assert!(!own_cli_beside(&built, &retained));
+    }
 
     fn process(pid: u32, ppid: u32, argv: &[&str]) -> procinfo::Process {
         procinfo::Process {
