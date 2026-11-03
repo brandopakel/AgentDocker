@@ -1209,7 +1209,8 @@ Current behaviour that the sections above do not already state, by area.
   from the file's `toolsets`, so there is no file of its own for setup to
   register in. `agentdocker runtimes` finds it on `PATH`, in the standard
   directories and in the Docker CLI plugin directories, and counts its `run`
-  and `new` processes as sessions nobody registered; its `serve` and `board`
+  and `new` processes as sessions nobody registered (a bare `docker agent`
+  is a run of the project's agent file); its `serve` and `board`
   processes are helpers `adopt` refuses. `agentdocker setup docker-agent
   --agent <path/to/agent.yaml>` adds AgentDocker's toolset to the file's
   first agent — the one `docker agent run` runs unless `--agent` names
@@ -1219,7 +1220,9 @@ Current behaviour that the sections above do not already state, by area.
   `setup --remove docker-agent --agent <file>` takes exactly that entry out.
   `setup docker-agent --dry-run` prints the entry to paste when you would
   rather edit the file yourself, or when the file is written in a way the
-  edit refuses (an inline `toolsets: [...]`, tabs). Every run of an agent
+  edit refuses (an inline `toolsets: [...]`, a `toolsets` shared through a
+  merge key, alias or anchor, tabs); a multi-line `instruction: |` is kept
+  whole, comments and all. Every run of an agent
   whose file lists it then appears as a `docker-agent` agent with the
   coordination tools: it can claim, release, message and ask like any
   other, and reads its messages at its next tool call; nothing wakes it

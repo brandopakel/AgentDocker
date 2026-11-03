@@ -25,9 +25,14 @@
 //! byte, and only the lines of our entry (and a `toolsets:` key when the
 //! agent had none) are added or removed. What the editor cannot place
 //! with certainty — a `toolsets` written as a flow sequence (`[...]`), an
-//! agent written as a flow mapping, tabs for indentation — is refused with
-//! the reason rather than guessed at, and the person adds the entry by
-//! hand from the text [`docker_agent_toolset`] prints.
+//! agent written as a flow mapping, an agent that takes keys from a merge
+//! (`<<:`) or whose `toolsets` is an alias or carries an anchor (what the
+//! agent's effective list is cannot be read off these lines), tabs for
+//! indentation — is refused with the reason rather than guessed at, and
+//! the person adds the entry by hand from the text
+//! [`docker_agent_toolset`] prints. A block scalar (`instruction: |`) is
+//! read as the one value it is, comments and all, so the entry never lands
+//! inside it.
 //!
 //! The target is the file's first agent: what `docker agent run <file>`
 //! runs when no `--agent` names another, by Docker Agent's own `run` help
@@ -54,6 +59,11 @@ pub enum Problem {
     /// The agent's `toolsets` is a flow sequence or a scalar the editor
     /// does not rewrite.
     ToolsetsNotBlock(String),
+    /// The agent takes keys from a merge (`<<:`), or its `toolsets` is an
+    /// alias or carries an anchor: what the agent's effective toolsets
+    /// are is not on its own lines, so an entry could not be placed
+    /// without changing more than it adds.
+    Shared(String),
 }
 
 impl fmt::Display for Problem {
@@ -67,6 +77,10 @@ impl fmt::Display for Problem {
             Self::ToolsetsNotBlock(agent) => write!(
                 f,
                 "agent `{agent}` writes `toolsets` inline (`[...]`), not as a list of `- ` items"
+            ),
+            Self::Shared(agent) => write!(
+                f,
+                "agent `{agent}` takes keys from a merge (`<<:`) or shares its `toolsets` through an alias or anchor, so its effective toolsets are not on its own lines"
             ),
         }
     }
@@ -222,8 +236,11 @@ struct Line<'a> {
     ending: &'a str,
     /// Leading spaces.
     indent: usize,
-    /// Blank, or a comment alone.
+    /// Blank, or a comment alone — outside a block scalar.
     skip: bool,
+    /// Inside a block scalar (`key: |`, `key: >`): text of that value,
+    /// whatever it looks like, never a key, an item or a comment.
+    scalar: bool,
 }
 
 impl Line<'_> {
@@ -297,10 +314,55 @@ impl<'a> Document<'a> {
                     ending,
                     indent,
                     skip,
+                    scalar: false,
                 }
             })
             .collect::<Vec<_>>();
-        Self { lines }
+        let mut doc = Self { lines };
+        doc.mark_block_scalars();
+        doc
+    }
+
+    /// The lines of every block scalar: from the line after its `|` or
+    /// `>` indicator while they stay deeper than the node it is the value
+    /// of (the key, or a sequence entry's dash), blank lines between
+    /// included, and the blank lines after the last when the indicator
+    /// keeps them (`|+`). They are the scalar's text, so a `#` among them
+    /// is not a comment and a `- ` is not an item.
+    fn mark_block_scalars(&mut self) {
+        let mut index = 0;
+        while index < self.lines.len() {
+            let line = &self.lines[index];
+            let header = if line.skip || line.scalar {
+                None
+            } else {
+                block_scalar_header(line.content())
+            };
+            let Some((column, keep)) = header else {
+                index += 1;
+                continue;
+            };
+            let parent = line.indent + column;
+            let mut next = index + 1;
+            let mut last = index;
+            while next < self.lines.len() {
+                let candidate = &self.lines[next];
+                if candidate.text.trim().is_empty() {
+                    next += 1;
+                } else if candidate.indent > parent {
+                    last = next;
+                    next += 1;
+                } else {
+                    break;
+                }
+            }
+            let end = if keep { next } else { last + 1 };
+            for line in &mut self.lines[index + 1..end] {
+                line.scalar = true;
+                line.skip = false;
+            }
+            index = end.max(index + 1);
+        }
     }
 
     /// The line ending the file uses: the first line's, else `\n`.
@@ -319,6 +381,12 @@ impl<'a> Document<'a> {
         let mut end = from;
         for (index, line) in self.lines.iter().enumerate().skip(from) {
             if line.skip {
+                continue;
+            }
+            // A block scalar's lines are the value of a key in this block,
+            // whatever their own indent: a blank line in one is still in it.
+            if line.scalar {
+                end = index + 1;
                 continue;
             }
             if line.text[line.indent..].starts_with('\t') {
@@ -369,8 +437,10 @@ impl<'a> Document<'a> {
     /// The agent's own keys: the content lines at its property indent.
     fn properties(&self, agent: &Agent) -> impl Iterator<Item = usize> + '_ {
         let indent = agent.property_indent;
-        (agent.key + 1..agent.end)
-            .filter(move |&index| !self.lines[index].skip && self.lines[index].indent == indent)
+        (agent.key + 1..agent.end).filter(move |&index| {
+            let line = &self.lines[index];
+            !line.skip && !line.scalar && line.indent == indent
+        })
     }
 
     fn has_key(&self, agent: &Agent, key: &str) -> bool {
@@ -379,6 +449,12 @@ impl<'a> Document<'a> {
     }
 
     fn toolsets(&self, agent: &Agent) -> Result<Toolsets, Problem> {
+        // Keys merged in from elsewhere (`<<: *defaults`) may carry a
+        // toolsets list this file's lines do not show; a local key added
+        // beside the merge would replace it, not extend it.
+        if self.has_key(agent, "<<") {
+            return Err(Problem::Shared(agent.name.clone()));
+        }
         let Some(key) = self.properties(agent).find(|&index| {
             self.lines[index]
                 .key_value()
@@ -398,6 +474,9 @@ impl<'a> Document<'a> {
                 items: Vec::new(),
             });
         }
+        if value.starts_with('*') || value.starts_with('&') {
+            return Err(Problem::Shared(agent.name.clone()));
+        }
         if !value.is_empty() {
             return Err(Problem::ToolsetsNotBlock(agent.name.clone()));
         }
@@ -412,7 +491,8 @@ impl<'a> Document<'a> {
                 index += 1;
                 continue;
             }
-            let is_item = line.text[line.indent..].starts_with('-')
+            let is_item = !line.scalar
+                && line.text[line.indent..].starts_with('-')
                 && line.indent >= agent.property_indent
                 && item_indent.is_none_or(|indent| indent == line.indent);
             if !is_item {
@@ -443,7 +523,7 @@ impl<'a> Document<'a> {
         let inner = item.indent + 2;
         for index in item.start..item.end {
             let line = &self.lines[index];
-            if line.skip {
+            if line.skip || line.scalar {
                 continue;
             }
             let text = if index == item.start {
@@ -502,6 +582,52 @@ impl<'a> Document<'a> {
         get("type").map(unquote) == Some("mcp")
             && (file_name == marker || file_name == format!("{marker}.exe"))
             && (args == ["mcp"] || args == ARGS)
+    }
+}
+
+/// A block scalar's header: a line's content (past its indent, comment
+/// removed) that ends in a `|` or `>` indicator — with chomping and
+/// indentation indicators in either order — as the value of a key
+/// (`key: |`, `- key: >-`) or of a sequence entry (`- |`), an anchor or a
+/// tag allowed before it. `Some((column, keep))`: the column, past the
+/// line's indent, of the node the scalar belongs to — the key, or the
+/// entry's dash — which the scalar's lines are deeper than; and whether
+/// `+` chomping keeps the blank lines after its text.
+fn block_scalar_header(content: &str) -> Option<(usize, bool)> {
+    // Sequence entry indicators in front: `- `, `- - `.
+    let mut column = 0;
+    let mut dash = None;
+    let mut rest = content;
+    while let Some(after) = rest.strip_prefix('-') {
+        if !after.is_empty() && !after.starts_with(' ') {
+            break;
+        }
+        dash = Some(column);
+        let trimmed = after.trim_start();
+        column += rest.len() - trimmed.len();
+        rest = trimmed;
+    }
+    let mut words = rest.split_whitespace().rev();
+    let indicator = words.next()?;
+    let mut before = words.skip_while(|word| word.starts_with('&') || word.starts_with('!'));
+    let parent = match before.next() {
+        // `key: |`: the value of the key, which starts the rest.
+        Some(key) if key.ends_with(':') => column,
+        Some(_) => return None,
+        // `- |`: the value of the entry.
+        None => dash?,
+    };
+    let mut chars = indicator.chars();
+    if !matches!(chars.next(), Some('|' | '>')) {
+        return None;
+    }
+    let flags = chars.as_str();
+    let chomping = flags.chars().filter(|c| matches!(c, '-' | '+')).count();
+    let digits = flags.chars().filter(char::is_ascii_digit).count();
+    if flags.chars().all(|c| matches!(c, '-' | '+' | '1'..='9')) && chomping <= 1 && digits <= 1 {
+        Some((parent, flags.contains('+')))
+    } else {
+        None
     }
 }
 
@@ -691,6 +817,175 @@ mod tests {
         );
         assert!(!target(&other, "agentdocker").unwrap().lists_toolset);
         assert!(with_toolset(&other, EXE, "agentdocker").unwrap().is_some());
+    }
+
+    /// A block scalar is one value whatever its lines look like: a `#`
+    /// line inside an instruction is text, not a comment, so the entry
+    /// goes after the whole scalar and the instruction reads the same
+    /// before and after; `|+` keeps its trailing blank lines inside.
+    #[test]
+    fn a_block_scalar_keeps_its_text_whole() {
+        // The value of `instruction` by YAML's rules for block scalars,
+        // read apart from the editor: the lines deeper than the key (blank
+        // ones among them), less the first one's indentation, folded for
+        // `>` (the fixtures have no more-indented lines), with the
+        // chomping applied — strip `-`, clip, keep `+`.
+        fn instruction(yaml: &str) -> String {
+            let indent = |line: &str| line.len() - line.trim_start_matches(' ').len();
+            let lines: Vec<&str> = yaml.lines().collect();
+            let at = lines
+                .iter()
+                .position(|line| line.trim_start().starts_with("instruction:"))
+                .unwrap();
+            let header = lines[at].trim_start()["instruction:".len()..].trim();
+            let body: Vec<&str> = lines[at + 1..]
+                .iter()
+                .copied()
+                .take_while(|line| line.trim().is_empty() || indent(line) > indent(lines[at]))
+                .collect();
+            let content = body
+                .iter()
+                .copied()
+                .find(|line| !line.trim().is_empty())
+                .map_or(0, indent);
+            let texts: Vec<&str> = body
+                .iter()
+                .map(|line| {
+                    if line.trim().is_empty() {
+                        ""
+                    } else {
+                        &line[content..]
+                    }
+                })
+                .collect();
+            let last = texts
+                .iter()
+                .rposition(|text| !text.is_empty())
+                .map_or(0, |i| i + 1);
+            let mut value = String::new();
+            for (i, text) in texts[..last].iter().enumerate() {
+                if i > 0 {
+                    let fold =
+                        header.starts_with('>') && !text.is_empty() && !texts[i - 1].is_empty();
+                    value.push(if fold { ' ' } else { '\n' });
+                }
+                value.push_str(text);
+            }
+            if header.contains('+') {
+                value.push('\n');
+                value.push_str(&"\n".repeat(texts.len() - last));
+            } else if !header.contains('-') && last > 0 {
+                value.push('\n');
+            }
+            value
+        }
+        let yaml = "agents:\n  root:\n    model: fast\n    instruction: |\n      Follow the rules.\n      # Keep all filenames private\n      - never a list\n  helper:\n    model: fast\n";
+        let after = with_toolset(yaml, EXE, "agentdocker").unwrap().unwrap();
+        assert_eq!(
+            after,
+            format!(
+                "agents:\n  root:\n    model: fast\n    instruction: |\n      Follow the rules.\n      # Keep all filenames private\n      - never a list\n    toolsets:\n      - type: mcp\n        command: \"{EXE}\"\n        args: [\"mcp\", \"--runtime\", \"docker-agent\"]\n  helper:\n    model: fast\n"
+            )
+        );
+        assert_eq!(
+            instruction(&after),
+            instruction(yaml),
+            "the instruction reads the same"
+        );
+        assert_eq!(
+            instruction(yaml),
+            "Follow the rules.\n# Keep all filenames private\n- never a list\n"
+        );
+        assert_eq!(
+            without_toolset(&after, "agentdocker").unwrap().unwrap(),
+            yaml
+        );
+        // A scalar of `#` lines alone is still the whole value.
+        let hashes = "agents:\n  root:\n    instruction: >-\n      # one\n      # two\n";
+        let after = with_toolset(hashes, EXE, "agentdocker").unwrap().unwrap();
+        assert!(after.starts_with(
+            "agents:\n  root:\n    instruction: >-\n      # one\n      # two\n    toolsets:\n"
+        ));
+        assert_eq!(instruction(&after), instruction(hashes));
+        assert_eq!(instruction(hashes), "# one # two");
+        // `|+` keeps the blank lines after the text: the entry goes after
+        // them, and blank lines inside a scalar stay inside.
+        let keep = "agents:\n  root:\n    instruction: |+\n      First.\n\n      Last.\n\n\n  helper:\n    model: fast\n";
+        let after = with_toolset(keep, EXE, "agentdocker").unwrap().unwrap();
+        assert!(after.starts_with(
+            "agents:\n  root:\n    instruction: |+\n      First.\n\n      Last.\n\n\n    toolsets:\n"
+        ));
+        assert_eq!(instruction(&after), instruction(keep));
+        assert_eq!(instruction(keep), "First.\n\nLast.\n\n\n");
+        assert_eq!(
+            without_toolset(&after, "agentdocker").unwrap().unwrap(),
+            keep
+        );
+        // A scalar inside an item is that item's, and the item's keys
+        // are still read around it, on its own line or on the dash's.
+        for item in [
+            "agents:\n  root:\n    toolsets:\n      - type: mcp\n        instruction: |\n          # use it\n          - always\n        command: /opt/agentdocker\n        args: [mcp]\n",
+            "agents:\n  root:\n    toolsets:\n      - instruction: |+\n          # use it\n\n        type: mcp\n        command: /opt/agentdocker\n        args: [mcp]\n",
+        ] {
+            assert!(target(item, "agentdocker").unwrap().lists_toolset, "{item}");
+            assert_eq!(
+                without_toolset(item, "agentdocker").unwrap().unwrap(),
+                "agents:\n  root:\n",
+                "{item}"
+            );
+        }
+        for (content, header) in [
+            ("instruction: |", Some((0, false))),
+            ("instruction: >-", Some((0, false))),
+            ("instruction: |+", Some((0, true))),
+            ("instruction: |2+", Some((0, true))),
+            ("instruction: &doc !!str |", Some((0, false))),
+            ("\"a:b\": >-", Some((0, false))),
+            ("- |", Some((0, false))),
+            ("- note: >+", Some((2, true))),
+            ("-   - note: |", Some((6, false))),
+            ("note: a |", None),
+            ("instruction: a | b", None),
+            ("instruction: |x", None),
+            ("instruction: |--", None),
+            ("command: /bin/x", None),
+            ("--flag: |x", None),
+            ("|", None),
+            ("-", None),
+        ] {
+            assert_eq!(block_scalar_header(content), header, "{content}");
+        }
+    }
+
+    /// An agent whose keys come from a merge, or whose toolsets are an
+    /// alias or carry an anchor, is refused: a local list would replace
+    /// what it shares, not add to it.
+    #[test]
+    fn merged_or_shared_toolsets_are_refused() {
+        let shared = Problem::Shared("root".into());
+        for yaml in [
+            "defaults: &defaults\n  toolsets:\n    - type: filesystem\nagents:\n  root:\n    <<: *defaults\n    model: fast\n",
+            "agents:\n  root:\n    model: fast\n    <<: [*a, *b]\n",
+            "agents:\n  root:\n    toolsets: *shared\n",
+            "agents:\n  root:\n    toolsets: &shared\n      - type: filesystem\n  helper:\n    toolsets: *shared\n",
+        ] {
+            assert_eq!(
+                with_toolset(yaml, EXE, "agentdocker").unwrap_err(),
+                shared,
+                "{yaml}"
+            );
+            assert_eq!(
+                without_toolset(yaml, "agentdocker").unwrap_err(),
+                shared,
+                "{yaml}"
+            );
+            assert_eq!(target(yaml, "agentdocker").unwrap_err(), shared, "{yaml}");
+        }
+        assert!(shared.to_string().contains("merge"));
+        // A merge in another agent, or an anchor elsewhere, is not this
+        // agent's.
+        let other = "agents:\n  root:\n    model: &m fast\n  helper:\n    <<: *defaults\n";
+        assert!(with_toolset(other, EXE, "agentdocker").unwrap().is_some());
     }
 
     /// A file that ends without a newline, or with CRLF endings, is
