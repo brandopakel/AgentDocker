@@ -514,6 +514,7 @@ each one by pid.
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml`. An entry with `after = "build exits 0"` starts once `build` has exited 0; `up` stays while it waits (`waiting: build exits 0`), and if `build` exits otherwise, is stopped or fails to start, it and everything waiting on it are not started (`not started: build exited 1`) and `up` exits unsuccessfully. `up test` alone takes an earlier exit 0 of `build`, from another `up`, as success when it was `build`'s own: its record says no stop was asked of that run, and it is still the run of the entry as this file gives it now (the same command, runtime, working directory, environment and the rest of how it runs; not renamed). Edit `build` in any of those ways, or give it `isolate = true`, and bring it up again before `test`. An earlier `build` that was stopped does not count, whatever it exited with (`not started: build was stopped`), and neither does one whose record cannot show this (`not started: build ended before this run; …`); the record is kept, and the answer with it, across a daemon restart and until retention forgets it. For an agent `up` is watching, only an exit 0 whose event it received counts, so an exit 0 seen after `up` has said its event stream ended does not |
+| `agentfile check` / `upgrade` / `schema` | Read an `Agentfile.toml` the way `up` will — any version upgraded, `${VAR}` expanded from this environment, commands built — and show what would start, without starting it (`--json` for a program; an agent's `env` is shown as names, never values, and command arguments as they will run, so a secret belongs in `env`, not in `args` or `prompt`); rewrite a version 1 file as version 2 in place, keeping its comments (`--print` to see it instead); print the JSON Schema of the format, for editors (`#:schema <url>` on the file's first line) |
 | `heartbeat` | Report that an agent is alive |
 
 ### Talk
@@ -1319,6 +1320,87 @@ Current behaviour that the sections above do not already state, by area.
   `[agents] retention = "90d"` in `~/.agentdocker/agentd.toml` changes the
   window and `"off"` keeps every record. The journal and the ledger keep a
   forgotten agent's id.
+
+### Agentfiles
+
+- **An `Agentfile.toml` has a version.** A file without `version` is version
+  1, the format before versions: it reads as it always did. `version = 2`
+  adds `${VAR}` expansion and lets an entry say what it wants instead of how
+  to type it. A field from version 2 in a version 1 file is refused with the
+  version to declare; `agentdocker agentfile upgrade` rewrites the file in
+  place, keeping comments, with `version = 2` at the top and every `$`
+  doubled so it still means itself (version 1 never expanded one).
+
+- **Say what you want, for the tools AgentDocker knows how to start.** With
+  `version = 2`, an entry for `claude-code`, `codex` or `gemini-cli` may leave
+  `command` out and give `prompt`, `model`, `effort`, `args` (the tool's own
+  arguments) and `config` (the tool's own settings); AgentDocker builds the
+  command, wires its MCP server in — and Claude Code's hooks — where your own
+  configuration lacks them (`coordinate = false` leaves that out), and
+  `idle_messages = true` lets a message start a turn while the session is
+  idle, as `run --claude-channel` and `run --codex-input` do. Any other
+  runtime, or an entry with `command`, is launched as written.
+
+  ```toml
+  #:schema https://raw.githubusercontent.com/brandopakel/AgentDocker/main/crates/cli/schemas/agentfile.schema.json
+  version = 2
+  name = "feature"
+
+  [agents.writer]
+  runtime = "claude-code"
+  prompt = "Implement ${TASK:?set TASK to what the writer should build}"
+  model = "${WRITER_MODEL:-opus}"
+  effort = "high"
+  args = ["--permission-mode", "acceptEdits"]
+  isolate = true
+
+  [agents.reviewer]
+  runtime = "codex"
+  prompt = "Review what writer changed and message it with findings"
+  model = "${REVIEWER_MODEL:-gpt-5}"
+  effort = "medium"
+  config = { approval_policy = "never", sandbox_mode = "workspace-write" }
+  labels = { role = "reviewer" }
+  after = "writer exits 0"
+
+  [agents.pair]
+  runtime = "claude-code"
+  tty = true                              # interactive, so no prompt is needed
+  idle_messages = true                    # a message wakes it while idle
+  config = { permissionMode = "plan" }
+
+  [agents.notes]
+  runtime = "gemini-cli"
+  prompt = "Summarise the day's commits in NOTES.md"
+  model = "gemini-pro"
+
+  [agents.serve]
+  command = ["sh", "-c", "echo costs $$5; exec ./serve --port ${PORT:-8080}"]
+  restart = "always"
+  ```
+
+  Without a terminal (`tty`, `in_pane`) a built command needs a `prompt`.
+  Efforts are the tool's own words: Claude Code `low`, `medium`, `high`,
+  `xhigh`, `max`; Codex `minimal`, `low`, `medium`, `high`, `xhigh`; Gemini
+  CLI has none. `config` reaches Claude Code as its `--settings` document and
+  Codex as `-c key=value` per entry (`sandbox = { mode = "workspace-write" }`
+  becomes `-c sandbox.mode="workspace-write"`). What cannot work is refused
+  when the file is read, naming the agent and the field: `command` beside a
+  launch field, an effort the tool does not take, a tool AgentDocker cannot
+  build for, a `prompt` on a Codex entry with `idle_messages` (it takes none
+  on its command line; send the first message once it is up).
+
+- **`${VAR}` reads the environment of the `up` that starts the file.**
+  `${VAR:-default}` gives a value when `VAR` is unset or empty, `${VAR-default}`
+  only when it is unset, `${VAR:?message}` stops with the message when it is
+  unset or empty, and `$$` is one dollar sign; an unset `${VAR}` with no
+  default, and any other `$`, stop `up` with the field named
+  (`agents.writer.prompt`). It reaches `command`, `args`, `prompt`, `model`,
+  `effort`, `provider`, `workdir`, the values of `env` and `labels` and the
+  strings in `config`; names, the runtime, `restart` and the waits are taken
+  as written. `agentdocker agentfile check` shows the result before anything
+  starts; `down` needs only the names, so an unset variable never keeps you
+  from stopping what runs.
 
 ### Sessions and worktrees
 

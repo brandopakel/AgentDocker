@@ -875,6 +875,9 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Check, upgrade or describe an Agentfile.toml without starting anything.
+    #[command(subcommand)]
+    Agentfile(AgentfileCommand),
     /// Stream daemon events.
     Events {
         /// Show this many stored events before streaming new ones.
@@ -887,6 +890,38 @@ enum Command {
         #[arg(long, requires = "resumable")]
         after_cursor: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum AgentfileCommand {
+    /// Read the file the way `up` will — any version upgraded, `${VAR}`
+    /// expanded from this environment, commands built — and show what would
+    /// start, or why the file cannot be read; nothing is started and no
+    /// daemon is asked.
+    Check {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// Only these agents.
+        names: Vec<String>,
+        /// The resolved agents as JSON (environment variable names only,
+        /// never values).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rewrite a version 1 file as the latest version, in place, keeping
+    /// its comments: `version = 2` at the top, and every `$` doubled so it
+    /// still means itself.
+    Upgrade {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// Print the upgraded file instead of writing it.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Print the JSON Schema of the latest version, for editors.
+    Schema,
 }
 
 #[derive(Args)]
@@ -2548,6 +2583,13 @@ async fn run() -> Result<()> {
             }
         }
         Command::Skill => print!("{}", skill::installed_document()),
+        Command::Agentfile(command) => match command {
+            AgentfileCommand::Check { file, names, json } => {
+                teams::check(file.as_deref(), &names, json)?
+            }
+            AgentfileCommand::Upgrade { file, print } => teams::upgrade(file.as_deref(), print)?,
+            AgentfileCommand::Schema => print!("{}", agentfile::SCHEMA),
+        },
         Command::Ping => {
             if let Response::Pong {
                 version,

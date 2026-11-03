@@ -1,4 +1,6 @@
-//! `agentdocker up` / `down`: start and stop the agents in an Agentfile.
+//! `agentdocker up` / `down`: start and stop the agents in an Agentfile;
+//! `agentdocker agentfile check` / `upgrade`: read one the way `up` will,
+//! and rewrite a version 1 file as the latest version.
 //!
 //! `up` is a client of the daemon like any other: a `run` for each entry,
 //! and, for an entry that waits on another's exit (`after`), the daemon's
@@ -27,8 +29,15 @@ use crate::client::Client;
 pub async fn up(client: &Client, file: Option<&Path>, only: &[String]) -> Result<()> {
     let (agentfile, path) = Agentfile::load(file)?;
     // Refuses a name that is not in the file.
-    agentfile.specs(&path, only)?;
-    let specs = agentfile.specs(&path, &[])?;
+    agentfile.names(&path, only)?;
+    // Every entry is built, selected or not: an entry left out is judged
+    // against the launch the file gives it now.
+    let host = crate::agentfile::SystemHost::new();
+    let built = agentfile.specs(&path, &[], &host)?;
+    for note in built.iter().flat_map(|built| &built.notes) {
+        eprintln!("note: {note}");
+    }
+    let specs = built.into_iter().map(|built| built.spec).collect();
     let entries = agentfile.entries();
     let endings = if entries.iter().any(|entry| !entry.after.is_empty()) {
         // Subscribed before anything starts, so no ending is missed.
@@ -466,12 +475,13 @@ pub async fn down(
     only: &[String],
     force: bool,
 ) -> Result<()> {
+    // Stopping needs names only: an unset `${VAR}` must not keep anyone
+    // from stopping what is running.
     let (agentfile, path) = Agentfile::load(file)?;
-    let specs = agentfile.specs(&path, only)?;
+    let names = agentfile.names(&path, only)?;
     let live = live_agents(client).await?;
     let mut failed = 0;
-    for spec in specs {
-        let name = spec.name;
+    for name in names {
         let Some(agent) = live.iter().find(|a| a.spec.name == name) else {
             println!("{name:<24} not running");
             continue;
@@ -490,6 +500,198 @@ pub async fn down(
     }
     if failed > 0 {
         bail!("{failed} agent(s) failed to stop");
+    }
+    Ok(())
+}
+
+/// `agentfile check`: read the file the way `up` will — any version
+/// upgraded, `${VAR}` expanded from this environment, commands built — and
+/// show what would be launched, without launching anything or asking the
+/// daemon. The values of the agent's `env` are not shown, only its names:
+/// expansion can put a secret there. Command arguments are shown as they
+/// will run, so a secret belongs in `env`, not in `args` or `prompt`.
+pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
+    let (agentfile, path) = Agentfile::load(file)?;
+    let built = agentfile.specs(&path, only, &crate::agentfile::SystemHost::new())?;
+    let entries = agentfile.entries();
+    let ordered: Vec<&crate::agentfile::Built> = agentfile::order(&entries)
+        .into_iter()
+        .filter_map(|i| built.iter().find(|b| b.spec.name == entries[i].name))
+        .collect();
+    if json {
+        let rows: Vec<serde_json::Value> = ordered
+            .iter()
+            .map(|built| {
+                let spec = &built.spec;
+                serde_json::json!({
+                    "name": spec.name,
+                    "runtime": spec.runtime,
+                    "model": spec.model,
+                    "effort": spec.labels.get(agentdocker_core::model_choice::EFFORT_LABEL),
+                    "workdir": spec.workdir,
+                    "command": spec.command,
+                    "env": spec.env.keys().collect::<Vec<_>>(),
+                    "labels": spec.labels,
+                    "tty": spec.tty,
+                    "in_pane": spec.in_pane,
+                    "isolate": spec.isolate,
+                    "restart": spec.restart.describe(),
+                    "depends_on": spec.depends_on,
+                    "after": entries
+                        .iter()
+                        .find(|entry| entry.name == spec.name)
+                        .map(|entry| entry.after.iter().map(ToString::to_string).collect::<Vec<_>>())
+                        .unwrap_or_default(),
+                    "notes": built.notes,
+                })
+            })
+            .collect();
+        let report = serde_json::json!({
+            "file": path,
+            "declared_version": agentfile.declared,
+            "version": agentfile.version,
+            "agents": rows,
+        });
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!(
+        "{}: version {}{}, {} agent{}",
+        path.display(),
+        agentfile.declared,
+        if agentfile.declared == agentfile.version {
+            String::new()
+        } else {
+            format!(
+                " (read as version {}; `agentdocker agentfile upgrade` rewrites it)",
+                agentfile.version
+            )
+        },
+        ordered.len(),
+        if ordered.len() == 1 { "" } else { "s" }
+    );
+    for built in ordered {
+        let spec = &built.spec;
+        println!(
+            "
+{}  {}{}{}",
+            spec.name,
+            spec.runtime,
+            spec.model
+                .as_deref()
+                .map(|m| format!("  model {m}"))
+                .unwrap_or_default(),
+            spec.labels
+                .get(agentdocker_core::model_choice::EFFORT_LABEL)
+                .map(|e| format!("  effort {e}"))
+                .unwrap_or_default()
+        );
+        if let Some(dir) = &spec.workdir {
+            println!("  in     {}", dir.display());
+        }
+        // A wired-in settings or MCP document is long JSON; its size says
+        // enough here, and `--json` shows it whole.
+        let words: Vec<String> = spec
+            .command
+            .iter()
+            .map(|word| {
+                if word.starts_with('{') && word.len() > 60 {
+                    format!("<{} bytes of JSON>", word.len())
+                } else {
+                    word.clone()
+                }
+            })
+            .collect();
+        println!(
+            "  runs   {}",
+            shlex::try_join(words.iter().map(String::as_str)).unwrap_or_else(|_| words.join(" "))
+        );
+        let mut how = Vec::new();
+        if spec.tty {
+            how.push("tty".to_owned());
+        }
+        if spec.in_pane {
+            how.push("in a tmux pane".to_owned());
+        }
+        if spec.isolate {
+            how.push("own worktree".to_owned());
+        }
+        if !spec.restart.is_no() {
+            how.push(format!("restart {}", spec.restart.describe()));
+        }
+        if !how.is_empty() {
+            println!("  with   {}", how.join(", "));
+        }
+        if !spec.env.is_empty() {
+            println!(
+                "  env    {}",
+                spec.env.keys().cloned().collect::<Vec<_>>().join(", ")
+            );
+        }
+        if let Some(entry) = entries.iter().find(|entry| entry.name == spec.name) {
+            if !entry.depends_on.is_empty() {
+                println!("  needs  {} running", entry.depends_on.join(", "));
+            }
+            if !entry.after.is_empty() {
+                println!(
+                    "  after  {}",
+                    entry
+                        .after
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+        for note in &built.notes {
+            println!("  note   {note}");
+        }
+    }
+    Ok(())
+}
+
+/// `agentfile upgrade`: rewrite a version 1 file as the latest version, in
+/// place (or on stdout with `print`), keeping its comments. The file is
+/// read as an Agentfile first, so what is rewritten is a file `up` reads.
+pub fn upgrade(file: Option<&Path>, print: bool) -> Result<()> {
+    let (_, path) = Agentfile::load(file)?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let Some(upgraded) = crate::agentfile::upgrade::upgrade(&text)? else {
+        eprintln!(
+            "{} is already version {}; nothing to do",
+            path.display(),
+            crate::agentfile::LATEST
+        );
+        return Ok(());
+    };
+    // What was written reads, and means what it meant, before the file is
+    // touched.
+    Agentfile::parse(&upgraded.text)
+        .with_context(|| format!("the upgraded {} does not read", path.display()))?;
+    let dollars = match upgraded.escaped {
+        0 => String::new(),
+        1 => "; one `$` was doubled so it still means itself".to_owned(),
+        n => format!("; {n} `$` were doubled so each still means itself"),
+    };
+    if print {
+        print!("{}", upgraded.text);
+        eprintln!(
+            "{}: version {} as version {}{dollars} (not written: --print)",
+            path.display(),
+            upgraded.from,
+            crate::agentfile::LATEST
+        );
+    } else {
+        std::fs::write(&path, &upgraded.text)
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        println!(
+            "{}: upgraded from version {} to {}{dollars}; comments kept",
+            path.display(),
+            upgraded.from,
+            crate::agentfile::LATEST
+        );
     }
     Ok(())
 }
