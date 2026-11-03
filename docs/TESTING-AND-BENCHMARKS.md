@@ -161,6 +161,13 @@ CodeRabbit automatic review includes every base branch, including stacked
 fix/test/docs branches. A skipped or rate-limited review remains pending even
 when its status context is green. Draft PRs can run preliminary CI; final review
 and all applicable checks on the published head are required before integration.
+A pull request's desktop packaging and CLI archives are built on Linux only;
+the macOS ones run for main, for a `batch/**` branch (main with the approved
+pull requests merged in, which also runs the CI suite) and on demand, since
+macOS runners are few. A pull request merged from a batch needs its own
+checks and the batch's green. A new push to a pull request cancels the runs
+of its earlier heads; runs on main and batch branches are never cancelled by
+another.
 
 Controller-binding fixtures resolve the intended `sleep` executable before
 spawning, then wait at most five seconds for the child's kernel executable path
