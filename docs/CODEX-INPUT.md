@@ -426,8 +426,10 @@ server is asked nothing more than the status watch asks, and nothing is
 written to the profile. A rollout not there yet is looked for again a minute
 later. Each thing learned is announced once as `agent_thread_learned`. A
 spawned thread's tokens, in the same rollout, are counted to its parent's
-record while the thread has no record of its own, from Codex's own count for
-each response ([Architecture](ARCHITECTURE.md#codex-threads-role-parent-and-usage)).
+record while the thread has no record of its own (those counted before the
+parent's record existed included), and to the thread's own record once it
+has one, from Codex's own count for each response
+([Architecture](ARCHITECTURE.md#codex-threads-role-parent-and-usage)).
 What this does not do: spawn, name, steer or close a thread, read a thread's
 turns for this, or make a record for a spawned thread that has none.
 

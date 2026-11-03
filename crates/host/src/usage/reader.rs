@@ -21,7 +21,9 @@ pub use session::{Preparation, Session};
 const MAX_BATCH: u64 = 16 * 1024 * 1024;
 // Revisit prior unsupported Claude patch versions and old quarantine decisions.
 // The collector replays an older cursor with source-ID deduplication.
-const CURSOR_VERSION: u32 = 7;
+// Version 8 keeps the Codex thread's parent; a version 7 cursor is not
+// replayed but takes a whole proof once, which reads its first record for it.
+const CURSOR_VERSION: u32 = 8;
 const MAX_RECORD: usize = 1024 * 1024;
 const MAX_RECORDS: usize = 4096;
 const PREFIX_DEADLINE: Duration = Duration::from_secs(1);

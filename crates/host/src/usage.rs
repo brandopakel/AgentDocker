@@ -52,6 +52,17 @@ pub struct Codex {
     parent: Option<String>,
 }
 
+impl Codex {
+    /// What a cursor written before the parser kept the parent thread lacks,
+    /// from the rollout's first record (`session_meta`): only when that
+    /// record names the session this parser is reading.
+    fn recover_parent(&mut self, meta: &agentdocker_core::codex_thread::ThreadMeta) {
+        if self.session.as_deref() == Some(meta.thread.as_str()) {
+            self.parent = meta.parent_thread.clone();
+        }
+    }
+}
+
 /// Codex releases whose rollouts were checked against a fixture.
 const CODEX_CHECKED: [&str; 5] = ["0.153.4", "0.154.0", "0.155.1", "0.160.0", "0.164.0"];
 

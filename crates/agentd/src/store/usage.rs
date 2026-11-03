@@ -37,6 +37,11 @@ struct Contribution {
     /// leaves whatever bucket it moves to unable to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     exact: Option<bool>,
+    /// The thread that spawned this sample's session, kept while that
+    /// session has no record of its own: the usage is the parent's record's
+    /// (once it has one), until the session's own record takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -154,7 +159,11 @@ impl Store {
         };
         let agent = attribution.agent.as_ref().expect("attributed agent");
         let retained_since = self.usage_retained_since(retained_since)?;
-        let mut statement = self.conn.prepare("SELECT source_id,contribution FROM usage_samples WHERE at>=?1 AND contribution IS NOT NULL AND json_extract(contribution,'$.bucket.attribution.agent') IS NULL AND json_extract(contribution,'$.bucket.runtime')=?2 AND json_extract(contribution,'$.session')=?3 AND (?4 IS NULL OR at>=?4) AND (?5 IS NULL OR at<?5) ORDER BY source_id LIMIT 256")?;
+        // `session`'s own samples that are nobody's, or that were counted
+        // through its parent while it had no record (its own record comes
+        // first); and the samples of threads `session` spawned that are
+        // nobody's, counted while those threads had no record.
+        let mut statement = self.conn.prepare("SELECT source_id,contribution FROM usage_samples WHERE at>=?1 AND contribution IS NOT NULL AND json_extract(contribution,'$.bucket.runtime')=?2 AND ((json_extract(contribution,'$.session')=?3 AND (json_extract(contribution,'$.bucket.attribution.agent') IS NULL OR json_extract(contribution,'$.parent') IS NOT NULL)) OR (json_extract(contribution,'$.parent')=?3 AND json_extract(contribution,'$.bucket.attribution.agent') IS NULL)) AND (?4 IS NULL OR at>=?4) AND (?5 IS NULL OR at<?5) ORDER BY source_id LIMIT 256")?;
         let (from, until) = window;
         let records = statement
             .query_map(
@@ -172,8 +181,24 @@ impl Store {
         let mut tracking_gaps = 0;
         for (id, value) in records {
             let mut contribution: Contribution = serde_json::from_str(&value)?;
+            // A sample of the session's own is the session's from now on;
+            // a spawned thread's keeps its parent, so the thread's own
+            // record can still take it.
+            let own = contribution.session == session;
             let mut destination = contribution.bucket.clone();
             destination.attribution = attribution.clone();
+            if destination == contribution.bucket {
+                // Already this record's: only how it got here changes.
+                if own && contribution.parent.take().is_some() {
+                    self.usage_bounded_write(|| {
+                        Ok(self.conn.execute(
+                            "UPDATE usage_samples SET contribution=?1 WHERE source_id=?2",
+                            params![serde_json::to_string(&contribution)?, id],
+                        )?)
+                    })?;
+                }
+                continue;
+            }
             let Ok(next) = self
                 .usage_bucket(&destination)?
                 .add(&contribution.counters, contribution.exact)
@@ -190,6 +215,9 @@ impl Store {
                 .usage_bounded_write(|| {
                     self.write_usage_bucket(&contribution.bucket, &previous)?;
                     contribution.bucket = destination;
+                    if own {
+                        contribution.parent = None;
+                    }
                     self.write_usage_bucket(&contribution.bucket, &next)?;
                     self.conn.execute(
                         "UPDATE usage_samples SET contribution=?1 WHERE source_id=?2",
@@ -484,6 +512,7 @@ impl Store {
                 session: sample.session_id.clone(),
                 counters,
                 exact: Some(sample.semantics == Semantics::Response),
+                parent: sample.parent_session.clone(),
             });
         let counted = if let Some(contribution) = &contribution {
             match self
@@ -774,6 +803,94 @@ mod tests {
             .conn
             .execute("UPDATE usage_tracking SET capacity=?1", [capacity])
             .unwrap();
+    }
+
+    #[test]
+    fn a_spawned_threads_samples_go_to_its_parent_until_its_own_record_takes_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let to = |agent: &str| Attribution {
+            agent: Some(agent.into()),
+            project: None,
+        };
+        let child = |id: &str, input: u64, attribution: Attribution| {
+            let mut sample = sample(id, 10, input, false);
+            sample.session_id = "child".into();
+            sample.parent_session = Some("parent".into());
+            (sample, attribution)
+        };
+        let rows = |store: &Store| -> BTreeMap<Option<String>, Option<u64>> {
+            report(store, 9, 12)
+                .rows
+                .into_iter()
+                .map(|row| (row.key, row.counters.input_tokens.sum))
+                .collect()
+        };
+        let reconcile = |session: &str, agent: &str| {
+            let seq = store.max_event_seq().unwrap() + 1;
+            store
+                .usage_reconcile(
+                    "codex",
+                    session,
+                    Some(&to(agent)),
+                    (None, None),
+                    at(0),
+                    at(21),
+                    seq,
+                )
+                .unwrap()
+        };
+        // Counted while neither thread had a record, then while only the
+        // parent had one (the collector attributes those to the parent).
+        ingest(
+            &store,
+            &progress,
+            "k",
+            vec![
+                child("r1", 5, Attribution::default()),
+                child("r2", 7, to("parent-agent")),
+            ],
+            at(0),
+        )
+        .unwrap();
+        assert_eq!(
+            rows(&store),
+            BTreeMap::from([(None, Some(5)), (Some("parent-agent".into()), Some(7))])
+        );
+        // The parent's record takes what was nobody's, once.
+        assert!(reconcile("parent", "parent-agent").is_some());
+        assert_eq!(
+            rows(&store),
+            BTreeMap::from([(Some("parent-agent".into()), Some(12))])
+        );
+        assert!(reconcile("parent", "parent-agent").is_none());
+        // The thread's own record takes all of it from the parent's ...
+        assert!(reconcile("child", "child-agent").is_some());
+        assert_eq!(
+            rows(&store),
+            BTreeMap::from([(Some("child-agent".into()), Some(12))])
+        );
+        // ... and keeps it: neither reconciles it again.
+        assert!(reconcile("parent", "parent-agent").is_none());
+        assert!(reconcile("child", "child-agent").is_none());
+        assert_eq!(
+            rows(&store),
+            BTreeMap::from([(Some("child-agent".into()), Some(12))])
+        );
+        // A thread's sample counted to its own record never goes to a parent.
+        let mut own = sample("r3", 10, 1, false);
+        own.session_id = "other-child".into();
+        ingest(
+            &store,
+            &progress,
+            "k",
+            vec![(own, to("other-agent"))],
+            at(0),
+        )
+        .unwrap();
+        assert!(reconcile("parent", "parent-agent").is_none());
+        assert_eq!(rows(&store)[&Some("other-agent".into())], Some(1));
     }
 
     #[test]
