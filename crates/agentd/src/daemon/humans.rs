@@ -200,9 +200,33 @@ impl State {
             |state, _, ()| {
                 for question in &expired {
                     state.questions.remove(question);
+                    if state.blocked_defaults.remove(question) {
+                        info!(%question, "question expired before its refused stale default answer could be published");
+                    }
                 }
             },
         );
+    }
+
+    /// What became of a stale default answer on this sweep, said so that
+    /// a default refused tick after tick is one warning rather than one a
+    /// second: the first refusal at warn with its reason, the rest at
+    /// debug, and the moment it goes through at info.
+    fn note_default(&mut self, question: &MessageId, outcome: Result<(), String>) {
+        match outcome {
+            Ok(()) => {
+                if self.blocked_defaults.remove(question) {
+                    info!(%question, "stale default answer published after it was refused");
+                }
+            }
+            Err(reason) => {
+                if self.blocked_defaults.insert(question.clone()) {
+                    warn!(%question, %reason, "stale default answer could not be published; the question stays open and the default is tried again on every sweep");
+                } else {
+                    debug!(%question, %reason, "stale default answer is still refused");
+                }
+            }
+        }
     }
 
     /// Questions whose stale window has passed unanswered go stale, once
@@ -218,6 +242,16 @@ impl State {
     /// does not run the sweep again, and nothing already stale or gone is
     /// touched twice.
     pub(super) fn stale_questions(&mut self, now: DateTime<Utc>) {
+        // A refused default whose question was answered or cancelled
+        // meanwhile is nobody's concern any more; say so once.
+        let questions = &self.questions;
+        self.blocked_defaults.retain(|question| {
+            let open = questions.contains_key(question);
+            if !open {
+                info!(%question, "question closed before its refused stale default answer could be published");
+            }
+            open
+        });
         if self.storage_error.is_some() {
             return;
         }
@@ -269,30 +303,34 @@ impl State {
                     );
                 }
                 StaleAction::AnswerDefault { label } => {
-                    let Ok(mut answer) = QuestionAnswer::resolve(
+                    let outcome = match QuestionAnswer::resolve(
                         &question.form,
                         label,
                         std::slice::from_ref(label),
                         None,
                     )
-                    .or_else(|_| QuestionAnswer::resolve(&question.form, label, &[], None)) else {
-                        warn!(question = %question.id, "stale default answer is not one the question takes; it stays open");
-                        continue;
-                    };
-                    answer.default = true;
-                    let envelope = Envelope::new(
-                        DEFAULT_ANSWERER,
-                        Destination::Agent(AgentId::from(question.from.as_str())),
-                        "answer",
-                        answer.payload(),
-                        Some(question.id.clone()),
-                        now,
-                    );
-                    if let Response::Error { message, .. } =
-                        self.publish_default_answer(envelope, &question.id)
+                    .or_else(|_| QuestionAnswer::resolve(&question.form, label, &[], None))
                     {
-                        warn!(question = %question.id, %message, "stale default answer was not published; the question stays open for the next sweep");
-                    }
+                        Ok(mut answer) => {
+                            answer.default = true;
+                            let envelope = Envelope::new(
+                                DEFAULT_ANSWERER,
+                                Destination::Agent(AgentId::from(question.from.as_str())),
+                                "answer",
+                                answer.payload(),
+                                Some(question.id.clone()),
+                                now,
+                            );
+                            match self.publish_default_answer(envelope, &question.id) {
+                                Response::Error { message, .. } => Err(message),
+                                _ => Ok(()),
+                            }
+                        }
+                        Err(reason) => Err(format!(
+                            "{label:?} is not an answer the question takes: {reason}"
+                        )),
+                    };
+                    self.note_default(&question.id, outcome);
                 }
                 StaleAction::Withdraw => {
                     let closed = vec![question.id.clone()];
@@ -2746,6 +2784,123 @@ mod tests {
             );
         }
         assert_eq!(stale_events(&daemon, &pending.id), 1);
+    }
+
+    /// The log lines written while `run` runs, at debug and above, without
+    /// colour or time: what an operator reads in `agentd.log`.
+    fn logged(run: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let capture = Capture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let bytes = capture.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// A default refused by a full inbox is tried on every sweep but said
+    /// once at warn, at debug while it stays refused, and once at info when
+    /// it goes through or its question expires first.
+    #[tokio::test]
+    async fn a_refused_default_is_said_once_then_quietly_until_it_resolves() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let blue = || {
+            colours(
+                Some(10),
+                StaleAction::AnswerDefault {
+                    label: "Blue".into(),
+                },
+            )
+        };
+        let mut pending = typed(300, blue());
+        pending.from = asker.id.to_string();
+        let mut doomed = typed(30, blue());
+        doomed.from = asker.id.to_string();
+        let log = logged(|| {
+            let mut state = lock(&daemon.state);
+            assert!(remember(&mut state, pending.clone()));
+            // The asker's queue is full: the default is refused, nothing failed.
+            state.inbox_bytes.insert(asker.id.clone(), INBOX_BYTES);
+            let stale_at = pending.asked_at + Duration::seconds(10);
+            for tick in 0..3 {
+                state.expire_questions(stale_at + Duration::seconds(tick));
+                assert!(state.write_failure().is_none());
+                assert_eq!(
+                    state.questions[&pending.id].stale_since, None,
+                    "unmarked, so tried again"
+                );
+            }
+            assert!(state.blocked_defaults.contains(&pending.id));
+            state.inbox_bytes.insert(asker.id.clone(), 0);
+            state.expire_questions(stale_at + Duration::seconds(3));
+            assert!(
+                !state.questions.contains_key(&pending.id),
+                "answered once it could be"
+            );
+            assert!(state.blocked_defaults.is_empty());
+
+            assert!(remember(&mut state, doomed.clone()));
+            state.inbox_bytes.insert(asker.id.clone(), INBOX_BYTES);
+            state.expire_questions(doomed.asked_at + Duration::seconds(10));
+            assert!(state.blocked_defaults.contains(&doomed.id));
+            state.expire_questions(doomed.expires_at);
+            assert!(!state.questions.contains_key(&doomed.id));
+            assert!(state.blocked_defaults.is_empty());
+        });
+        let said = |question: &Question, words: &str, level: &str| {
+            let lines: Vec<_> = log
+                .lines()
+                .filter(|line| line.contains(words) && line.contains(question.id.as_str()))
+                .collect();
+            assert!(lines.iter().all(|line| line.contains(level)), "{log}");
+            lines.len()
+        };
+        let refused = "stale default answer could not be published";
+        assert_eq!(said(&pending, refused, "WARN"), 1, "{log}");
+        assert_eq!(
+            said(&pending, "stale default answer is still refused", "DEBUG"),
+            2,
+            "{log}"
+        );
+        assert_eq!(
+            said(&pending, "published after it was refused", "INFO"),
+            1,
+            "{log}"
+        );
+        assert_eq!(said(&doomed, refused, "WARN"), 1, "{log}");
+        assert_eq!(
+            said(&doomed, "expired before its refused stale default", "INFO"),
+            1,
+            "{log}"
+        );
+        assert_eq!(
+            said(&doomed, "published after it was refused", "INFO"),
+            0,
+            "{log}"
+        );
+        assert_eq!(stale_events(&daemon, &pending.id), 1);
+        assert_eq!(
+            stale_events(&daemon, &doomed.id),
+            0,
+            "it expired, never went stale"
+        );
     }
 
     /// Withdrawing closes the question unanswered and ends the wait with a

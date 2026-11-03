@@ -544,6 +544,12 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// Open questions whose stale default answer was refused (a full
+    /// inbox, say) and is tried again on every sweep. Kept so the refusal
+    /// is said once at warn, then at debug while it lasts, and once at
+    /// info when it goes through or the question closes. In memory only:
+    /// a daemon that restarts says it once more.
+    blocked_defaults: HashSet<MessageId>,
     secret_reviews: HashMap<String, secret_reviews::Entry>,
     /// The projects told to hold, and why; kept as documents.
     pauses: HashMap<ProjectId, agentdocker_core::Pause>,
@@ -1668,6 +1674,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions,
+                blocked_defaults: HashSet::new(),
                 secret_reviews: HashMap::new(),
                 pauses,
                 waiting: agentdocker_core::WaitQueue::new(),
