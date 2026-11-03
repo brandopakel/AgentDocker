@@ -729,10 +729,7 @@ impl Daemon {
                 &table,
                 procinfo::start_time,
                 |pid| procinfo::executable_path_of(pid).ok(),
-                |exe| {
-                    person::companion_cli()
-                        .is_some_and(|cli| agentdocker_host::program::same_file(&cli, exe))
-                },
+                person::own_cli,
             ) {
                 tasks::verdicts::Author::Reviewer => {
                     *agent = Some(owner.id.to_string());

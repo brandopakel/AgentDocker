@@ -2202,6 +2202,11 @@ fn parse<T: for<'de> Deserialize<'de>>(arguments: Value) -> Result<T, (i64, Stri
 }
 
 fn transport(err: anyhow::Error) -> (i64, String) {
+    // A refusal by a code this server is too old to know is the daemon's
+    // answer, not a failure to reach it.
+    if let Some(unknown) = err.downcast_ref::<crate::client::UnknownCode>() {
+        return (INTERNAL_ERROR, unknown.to_string());
+    }
     (INTERNAL_ERROR, format!("agentd unreachable: {err:#}"))
 }
 
@@ -2956,7 +2961,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "pull_task",
-            "description": "Take a card from the board's pull source (Ready on most boards) that nobody else holds: it becomes yours, in the pull target, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Name no card to take the next ready one: the first in board order that is free or yours and waits on nothing open; when there is none the answer says nothing_ready with what is there, which is not an error. Refused if somebody holds it, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. The answer is the card in full — its description, acceptance, comments, history and the cards it waits on — and the lease: read the acceptance before you start.",
+            "description": "Take a card nobody else holds: one you name from any open lane (one in progress or in review stays where it is; any other goes to the pull target), or with no card named the next one in the board's pull source (Ready on most boards), into the pull target. It becomes yours, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Name no card to take the next ready one: the first in board order that is free or yours and waits on nothing open; when there is none the answer says nothing_ready with what is there, which is not an error. Refused if somebody holds it, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. The answer is the card in full — its description, acceptance, comments, history and the cards it waits on — and the lease: read the acceptance before you start.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2970,7 +2975,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "move_task",
-            "description": "Move a card you hold to another lane — review when it is ready for eyes (the first Review lane), done when its acceptance text is met. Name the lane by slug, name or category; the answer lists the board's lanes when nothing matches. Say why in comment and it goes on the card in the same change. after or before put it beside another card in that lane. Only the card's holder or the person moves it.",
+            "description": "Move a card you hold to another lane — review when it is ready for eyes (the first Review lane), done when its acceptance text is met. Name the lane by slug, name or category; the answer lists the board's lanes when nothing matches. Say why in comment and it goes on the card in the same change. after or before put it beside another card in that lane. Only the card's holder or the person moves it; take a card nobody holds with pull_task by naming it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3334,6 +3339,25 @@ fn tagged_request(arguments: Value, op: &str, agent: &str) -> Result<Request, (i
 
 #[cfg(test)]
 mod tests {
+    /// A refusal by a code this server is too old to know is reported as
+    /// that refusal; only a failure to reach the daemon is "unreachable".
+    #[test]
+    fn a_refusal_by_an_unknown_code_is_not_reported_as_unreachable() {
+        let (_, message) = super::transport(
+            crate::client::UnknownCode {
+                code: "newer_refusal".into(),
+                message: "not from inside that session".into(),
+            }
+            .into(),
+        );
+        assert!(
+            !message.contains("unreachable") && message.contains("newer_refusal"),
+            "{message}"
+        );
+        let (_, message) = super::transport(anyhow::anyhow!("connection refused"));
+        assert!(message.starts_with("agentd unreachable"), "{message}");
+    }
+
     /// A whole record names what `run -e` set and never says its value.
     #[test]
     fn a_whole_record_keeps_environment_names_and_drops_their_values() {
