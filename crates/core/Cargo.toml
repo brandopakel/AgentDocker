@@ -17,12 +17,12 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+yaml-rust2.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
 toml.workspace = true
 proptest.workspace = true
-yaml-rust2.workspace = true
 
 [[bench]]
 name = "leases"

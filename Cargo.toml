@@ -63,8 +63,8 @@ process-wrap = { version = "10", default-features = false, features = ["std", "j
 filetime = "0.2"
 # Native Windows update ZIPs; explicit extraction admits only our portable payload.
 zip = { version = "6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
-# Test-only: the independent YAML parser the Docker Agent editor's tests
-# hold every edit to. Never a runtime dependency.
+# The YAML parser the Docker Agent editor reads every edit back with
+# before it is written (pure parsing, in core).
 yaml-rust2 = { version = "0.13", default-features = false }
 
 # Repeated isolated worktrees otherwise retain many GiB of incremental state.

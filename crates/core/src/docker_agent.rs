@@ -20,33 +20,45 @@
 //!         args: ["mcp", "--runtime", "docker-agent"]
 //! ```
 //!
-//! The edit is done by lines, with no YAML library: everything the person
-//! wrote — comments, blank lines, quoting, key order — stays byte for
-//! byte, and only the lines of our entry (and a `toolsets:` key when the
-//! agent had none) are added or removed. The editor reads only as much YAML
-//! as it needs to place those lines with certainty, and is conservative by
-//! rule. The agent it edits must be written as an indented block whose own
-//! lines use no anchor (`&name`), alias (`*name`) or merge key (`<<`,
-//! `!!merge`) — what such lines share with the rest of the file is not on
-//! them, so an edit could change more than it adds, or leave an alias with
-//! nothing to name — no explicit key (`? `), and no quoted value or inline
-//! list or mapping that runs over several lines; its `toolsets` must be a
-//! list of `- ` items or `[]`; its indentation must be spaces. Anything
-//! else is refused with the reason, and the person adds the entry by hand
-//! from the text [`docker_agent_toolset`] prints. A block scalar
-//! (`instruction: |`) is read as the one value it is, by its content
-//! indentation — the indentation indicator's, else its first line's — so a
-//! `#` or `- ` line in it is text and the entry never lands inside it. The
-//! tests hold every edit to an independent YAML parser.
+//! The edit is made by lines, so that everything the person wrote —
+//! comments, blank lines, quoting, key order — stays byte for byte, and
+//! only the lines of our entry (and a `toolsets:` key when the agent had
+//! none) are added or removed. Two things keep a line edit honest.
+//!
+//! It is conservative by rule. Anywhere in the file outside block-scalar
+//! text it refuses an anchor (`&name`), an alias (`*name`), a merge key
+//! (`<<`, `!!merge`), a tag (`!tag`) and an explicit key (`? `): Docker
+//! Agent's YAML reader resolves anchors and merges, the parser below does
+//! not, and what such a file says is not on its lines. It refuses a quoted
+//! key among the agents and in any agent's own keys, which a YAML reader
+//! decodes and these lines do not; and in the agent it edits, a quoted
+//! value or an inline list or mapping that runs over several lines, an
+//! inline `toolsets`, an agent written as a flow mapping, and tabs.
+//!
+//! And every edit is confirmed before it is returned: the original and the
+//! edited text are both read with a YAML parser (yaml-rust2), which must
+//! find one document in each and no key twice in a mapping; the agent the
+//! lines chose must be the one that reading names as the default; and the
+//! edited document must equal the original but for our entry, added to
+//! that agent's `toolsets` or taken out of them. What is refused or cannot
+//! be confirmed is said with the reason, and the person adds the entry by
+//! hand from the text [`docker_agent_toolset`] prints.
+//!
+//! A block scalar (`instruction: |`) is read as the one value it is, by
+//! its content indentation — the indentation indicator's, else its first
+//! line's — so a `#` or `- ` line in it is text and the entry never lands
+//! inside it.
 //!
 //! The target is the agent `docker agent run <file>` runs when no
 //! `--agent` names another: the one named `root`, else the first (Docker
-//! Agent's `Team::DefaultAgent`). An agent with `harness:` set runs an
+//! Agent's `Team.DefaultAgent`). An agent with `harness:` set runs an
 //! external coding CLI instead of a model, and Docker Agent documents that
 //! it ignores that agent's `toolsets`; the edit still goes in, and the
 //! caller is told so it can say.
 
 use std::fmt;
+
+use yaml_rust2::{Yaml, YamlLoader, yaml::Hash};
 
 /// The runtime name Docker Agent sessions register with.
 pub const RUNTIME: &str = "docker-agent";
@@ -64,16 +76,28 @@ pub enum Problem {
     /// The agent's `toolsets` is a flow sequence or a scalar the editor
     /// does not rewrite.
     ToolsetsNotBlock(String),
-    /// The agent's lines hold an anchor, an alias or a merge key: what they
-    /// share with the rest of the file, or take from it, is not on them, so
-    /// an edit could change more than it adds or leave an alias with
-    /// nothing to name.
-    Shared(String),
-    /// The agent's lines use YAML the editor does not read — the construct
-    /// is named: an explicit key, or a quoted value or an inline list or
-    /// mapping that runs over several lines.
-    Unsupported(String, &'static str),
+    /// YAML the editor refuses, at a line of the file (counted from 1):
+    /// an anchor, an alias, a merge key, a tag or an explicit key or value
+    /// anywhere; a quoted key among the agents or an agent's own keys; in
+    /// the agent it edits, a quoted value or an inline list or mapping
+    /// that runs over several lines.
+    Construct { line: usize, form: &'static str },
+    /// The edit could not be confirmed against a YAML reading of the file:
+    /// what did not agree.
+    Unverified(String),
 }
+
+/// The YAML the editor refuses, as its refusals name it.
+const ANCHOR: &str = "an anchor (`&name`)";
+const ALIAS: &str = "an alias (`*name`)";
+const MERGE: &str = "a merge key (`<<`)";
+const MERGE_TAG: &str = "a merge key (`!!merge`)";
+const TAG: &str = "a tag (`!tag`)";
+const EXPLICIT_KEY: &str = "an explicit key (`? `)";
+const EXPLICIT_VALUE: &str = "an explicit value (`: ` where a key goes)";
+const QUOTED_KEY: &str = "a quoted key";
+const MULTI_LINE_QUOTE: &str = "a quoted value that runs over several lines";
+const MULTI_LINE_FLOW: &str = "an inline list or mapping that runs over several lines";
 
 impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -87,13 +111,12 @@ impl fmt::Display for Problem {
                 f,
                 "agent `{agent}` writes `toolsets` inline (`[...]`), not as a list of `- ` items"
             ),
-            Self::Shared(agent) => write!(
+            Self::Construct { line, form } => {
+                write!(f, "line {line}: {form}, which this editor does not rewrite")
+            }
+            Self::Unverified(why) => write!(
                 f,
-                "agent `{agent}` uses an anchor (`&`), an alias (`*`) or a merge key (`<<`), so what its lines share with the rest of the file is not on them"
-            ),
-            Self::Unsupported(agent, construct) => write!(
-                f,
-                "agent `{agent}` uses {construct}, which this editor does not rewrite"
+                "the edit could not be confirmed against a YAML reading of the file: {why}"
             ),
         }
     }
@@ -136,13 +159,15 @@ fn toolset_item(exe: &str, indent: usize, eol: &str) -> String {
 }
 
 /// The YAML with our toolset entry added to its default agent, or `None`
-/// when that agent lists it already. `marker` is the executable name an
-/// entry is recognised by (`agentdocker`), whatever directory it is in.
+/// when that agent lists it already — confirmed either way against a YAML
+/// reading of the file. `marker` is the executable name an entry is
+/// recognised by (`agentdocker`), whatever directory it is in.
 pub fn with_toolset(yaml: &str, exe: &str, marker: &str) -> Result<Option<String>, Problem> {
     let doc = Document::parse(yaml);
-    let agent = doc.default_agent()?;
+    let agent = doc.target_agent()?;
     let toolsets = doc.toolsets(&agent)?;
     if toolsets.items.iter().any(|item| doc.is_ours(item, marker)) {
+        confirm_listed(yaml, &agent.name, marker, true)?;
         return Ok(None);
     }
     let eol = doc.eol();
@@ -176,16 +201,19 @@ pub fn with_toolset(yaml: &str, exe: &str, marker: &str) -> Result<Option<String
             insert(&mut out, agent.end, &text, eol);
         }
     }
-    Ok(Some(out.concat()))
+    let edited = out.concat();
+    confirm_added(yaml, &edited, &agent.name, exe)?;
+    Ok(Some(edited))
 }
 
 /// The YAML with our toolset entries taken out of its default agent, or
-/// `None` when it lists none. A `toolsets` left with no item goes with
-/// them, as the entry's own key when `with_toolset` added it; the rest of
-/// the file is untouched.
+/// `None` when it lists none — confirmed either way against a YAML reading
+/// of the file. A `toolsets` left with no item goes with them, as the
+/// entry's own key when `with_toolset` added it; the rest of the file is
+/// untouched.
 pub fn without_toolset(yaml: &str, marker: &str) -> Result<Option<String>, Problem> {
     let doc = Document::parse(yaml);
-    let agent = doc.default_agent()?;
+    let agent = doc.target_agent()?;
     let toolsets = doc.toolsets(&agent)?;
     let ours: Vec<&Item> = toolsets
         .items
@@ -193,6 +221,7 @@ pub fn without_toolset(yaml: &str, marker: &str) -> Result<Option<String>, Probl
         .filter(|item| doc.is_ours(item, marker))
         .collect();
     if ours.is_empty() {
+        confirm_listed(yaml, &agent.name, marker, false)?;
         return Ok(None);
     }
     let mut drop = vec![false; doc.lines.len()];
@@ -211,18 +240,21 @@ pub fn without_toolset(yaml: &str, marker: &str) -> Result<Option<String>, Probl
         .filter(|(index, _)| !drop[*index])
         .map(|(_, line)| line.raw)
         .collect();
+    confirm_removed(yaml, &kept, &agent.name, marker)?;
     Ok(Some(kept))
 }
 
 /// The agent the edit targets, with what the caller would need to say
-/// about it.
+/// about it, confirmed against a YAML reading of the file.
 pub fn target(yaml: &str, marker: &str) -> Result<Target, Problem> {
     let doc = Document::parse(yaml);
-    let agent = doc.default_agent()?;
+    let agent = doc.target_agent()?;
     let toolsets = doc.toolsets(&agent)?;
+    let lists_toolset = toolsets.items.iter().any(|item| doc.is_ours(item, marker));
+    confirm_listed(yaml, &agent.name, marker, lists_toolset)?;
     Ok(Target {
         harness: doc.has_key(&agent, "harness"),
-        lists_toolset: toolsets.items.iter().any(|item| doc.is_ours(item, marker)),
+        lists_toolset,
         agent: agent.name,
     })
 }
@@ -427,8 +459,37 @@ impl<'a> Document<'a> {
         Ok(end)
     }
 
+    /// The agent the edit targets, once the file passes the refusals that
+    /// hold anywhere in it.
+    fn target_agent(&self) -> Result<Agent, Problem> {
+        self.refuse_document_wide()?;
+        self.default_agent()
+    }
+
+    /// Refuse, anywhere in the file outside block-scalar text, what its
+    /// lines do not say on their own, or what Docker Agent's YAML reader
+    /// and the one that confirms an edit read differently: an anchor, an
+    /// alias, a merge key, a tag, an explicit key or value.
+    fn refuse_document_wide(&self) -> Result<(), Problem> {
+        for (index, line) in self.lines.iter().enumerate() {
+            if line.skip || line.scalar {
+                continue;
+            }
+            if let Some(form) = scan(&line.text[line.indent..]).form {
+                return Err(Problem::Construct {
+                    line: index + 1,
+                    form,
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// The agent `docker agent run` runs by default: the one named `root`
-    /// among the keys under `agents:`, else the first of them.
+    /// among the keys under `agents:`, else the first of them. Names and
+    /// keys are read as written, so a quoted one — which a YAML reader
+    /// decodes, perhaps into another name — is refused: the `agents` key,
+    /// the agents' names, and every agent's own keys.
     fn default_agent(&self) -> Result<Agent, Problem> {
         let agents = self
             .lines
@@ -437,6 +498,17 @@ impl<'a> Document<'a> {
                 !line.skip && !line.scalar && line.indent == 0 && line.block_key() == Some("agents")
             })
             .ok_or(Problem::NoAgents)?;
+        let quoted = |index: usize| {
+            if self.lines[index].content().starts_with(['"', '\'']) {
+                Err(Problem::Construct {
+                    line: index + 1,
+                    form: QUOTED_KEY,
+                })
+            } else {
+                Ok(())
+            }
+        };
+        quoted(agents)?;
         let end = self.block_end(agents + 1, 0)?;
         let first = (agents + 1..end)
             .find(|&index| !self.lines[index].skip)
@@ -448,18 +520,18 @@ impl<'a> Document<'a> {
                 !line.skip && !line.scalar && line.indent == indent
             })
             .collect();
-        // A name behind an anchor, an alias, a tag or an explicit key is
-        // not one the editor reads, and could be `root`.
         for &index in &keys {
-            let content = self.lines[index].content();
-            let name = content
-                .split_once(": ")
-                .map_or(content.trim_end_matches(':'), |(name, _)| name);
-            if name.starts_with(['&', '*', '!', '?']) || content.starts_with(':') {
-                return Err(Problem::Unsupported(
-                    name.to_owned(),
-                    "an anchor, alias, tag or explicit key on an agent's name",
-                ));
+            quoted(index)?;
+            let lines: Vec<usize> = (index + 1..self.block_end(index + 1, indent)?)
+                .filter(|&own| !self.lines[own].skip && !self.lines[own].scalar)
+                .collect();
+            if let Some(&property) = lines.first() {
+                let property_indent = self.lines[property].indent;
+                for &own in &lines {
+                    if self.lines[own].indent == property_indent {
+                        quoted(own)?;
+                    }
+                }
             }
         }
         let key = keys
@@ -495,28 +567,32 @@ impl<'a> Document<'a> {
         })
     }
 
-    /// Refuse the agent when its own lines — its key line through its
-    /// last, block-scalar text aside — use YAML whose meaning reaches past
-    /// them or that the editor does not read.
-    fn conservative(&self, agent: &Agent) -> Result<(), Problem> {
-        let unsupported = |construct| Err(Problem::Unsupported(agent.name.clone(), construct));
-        for line in &self.lines[agent.key..agent.end] {
+    /// Refuse, in the agent the edit goes into, what these lines would
+    /// misread: a quoted value or an inline list or mapping that runs over
+    /// several lines.
+    fn refuse_in_agent(&self, agent: &Agent) -> Result<(), Problem> {
+        for (index, line) in self
+            .lines
+            .iter()
+            .enumerate()
+            .take(agent.end)
+            .skip(agent.key)
+        {
             if line.skip || line.scalar {
                 continue;
             }
             let found = scan(&line.text[line.indent..]);
-            if found.shares {
-                return Err(Problem::Shared(agent.name.clone()));
-            }
-            if found.explicit {
-                return unsupported("an explicit key (`? `, or a value on a `: ` line)");
-            }
-            if found.open_quote {
-                return unsupported("a quoted value that runs over several lines");
-            }
-            if found.open_flow {
-                return unsupported("an inline list or mapping that runs over several lines");
-            }
+            let form = if found.open_quote {
+                MULTI_LINE_QUOTE
+            } else if found.open_flow {
+                MULTI_LINE_FLOW
+            } else {
+                continue;
+            };
+            return Err(Problem::Construct {
+                line: index + 1,
+                form,
+            });
         }
         Ok(())
     }
@@ -536,7 +612,7 @@ impl<'a> Document<'a> {
     }
 
     fn toolsets(&self, agent: &Agent) -> Result<Toolsets, Problem> {
-        self.conservative(agent)?;
+        self.refuse_in_agent(agent)?;
         let Some(key) = self.properties(agent).find(|&index| {
             self.lines[index]
                 .key_value()
@@ -743,10 +819,9 @@ fn block_scalar_header(content: &str) -> Option<Header> {
 struct Scan {
     /// Where the comment starts; the content's length when there is none.
     comment: usize,
-    /// An anchor, an alias or a merge key (`<<`, `!!merge`).
-    shares: bool,
-    /// An explicit key (`? `), or a `: ` where a node may start.
-    explicit: bool,
+    /// The first indicator the editor refuses wherever it is: an anchor,
+    /// an alias, a merge key, a tag, an explicit key or value.
+    form: Option<&'static str>,
     /// A quoted scalar still open at the end.
     open_quote: bool,
     /// An inline list or mapping still open at the end, or closed there
@@ -797,7 +872,7 @@ fn scan(content: &str) -> Scan {
                     start = false;
                 }
                 '&' | '*' if start && !spaced => {
-                    found.shares = true;
+                    found.form = found.form.or(Some(if c == '&' { ANCHOR } else { ALIAS }));
                     // The name runs to the next space or inline indicator.
                     while chars
                         .next_if(|&(_, n)| {
@@ -813,11 +888,16 @@ fn scan(content: &str) -> Scan {
                     while let Some((_, n)) = chars.next_if(|&(_, n)| !n.is_whitespace()) {
                         tag.push(n);
                     }
-                    found.shares |= tag == "!!merge";
+                    found.form =
+                        found
+                            .form
+                            .or(Some(if tag == "!!merge" { MERGE_TAG } else { TAG }));
                 }
-                '?' if start && spaced => found.explicit = true,
+                '?' if start && spaced => found.form = found.form.or(Some(EXPLICIT_KEY)),
                 ':' if spaced => {
-                    found.explicit |= start;
+                    if start {
+                        found.form = found.form.or(Some(EXPLICIT_VALUE));
+                    }
                     start = true;
                 }
                 '-' if start && spaced => {}
@@ -831,7 +911,7 @@ fn scan(content: &str) -> Scan {
                 }
                 ',' if depth > 0 => start = true,
                 '<' if next == Some('<') => {
-                    found.shares = true;
+                    found.form = found.form.or(Some(MERGE));
                     start = false;
                 }
                 _ => start = false,
@@ -861,174 +941,233 @@ fn unquote(value: &str) -> &str {
     inner.unwrap_or(value)
 }
 
+// The runtime check: every edit read again as YAML before it is returned.
+
+fn key(name: &str) -> Yaml {
+    Yaml::String(name.to_owned())
+}
+
+/// The one document a YAML parser reads in the text. A text it cannot
+/// read — a key twice in one mapping among the reasons, which it names
+/// with the line — or one with several documents is not one an edit can
+/// be confirmed against.
+fn read(text: &str, which: &str) -> Result<Yaml, Problem> {
+    let mut documents = YamlLoader::load_from_str(text)
+        .map_err(|error| Problem::Unverified(format!("{which} does not read as YAML: {error}")))?;
+    if documents.len() > 1 {
+        return Err(Problem::Unverified(format!(
+            "{which} holds {} YAML documents",
+            documents.len()
+        )));
+    }
+    Ok(documents.pop().unwrap_or(Yaml::Null))
+}
+
+/// The default agent as a parsed document names it: `root` among the
+/// agents, else the first, by its decoded key.
+fn read_default(document: &Yaml) -> Result<String, Problem> {
+    let agents = document["agents"].as_hash().ok_or_else(|| {
+        Problem::Unverified("the YAML reading has no `agents` mapping".to_owned())
+    })?;
+    if agents.contains_key(&key("root")) {
+        return Ok("root".to_owned());
+    }
+    match agents.keys().next() {
+        Some(Yaml::String(name)) => Ok(name.clone()),
+        Some(other) => Err(Problem::Unverified(format!(
+            "the YAML reading's first agent is not named by a string: {other:?}"
+        ))),
+        None => Err(Problem::NoAgents),
+    }
+}
+
+/// The file as a YAML parser reads it, the agent the lines chose confirmed
+/// as the one that reading names as the default.
+fn read_confirmed(original: &str, agent: &str) -> Result<Yaml, Problem> {
+    let document = read(original, "the file")?;
+    let default = read_default(&document)?;
+    if default != agent {
+        return Err(Problem::Unverified(format!(
+            "the YAML reading's default agent is `{default}`, not `{agent}`"
+        )));
+    }
+    Ok(document)
+}
+
+/// Our entry as a parser reads the lines `with_toolset` writes.
+fn entry(exe: &str) -> Yaml {
+    let mut entry = Hash::new();
+    entry.insert(key("type"), key("mcp"));
+    entry.insert(key("command"), key(exe));
+    entry.insert(
+        key("args"),
+        Yaml::Array(ARGS.iter().map(|arg| key(arg)).collect()),
+    );
+    Yaml::Hash(entry)
+}
+
+/// Whether a parsed toolset runs our server, as [`Document::is_ours`]
+/// reads it off its lines.
+fn runs_us(item: &Yaml, marker: &str) -> bool {
+    let args: Option<Vec<&str>> = item["args"]
+        .as_vec()
+        .and_then(|args| args.iter().map(Yaml::as_str).collect());
+    let file = item["command"]
+        .as_str()
+        .map(|command| command.rsplit(['/', '\\']).next().unwrap_or(command));
+    item["type"].as_str() == Some("mcp")
+        && file.is_some_and(|file| file == marker || file.strip_suffix(".exe") == Some(marker))
+        && args.is_some_and(|args| args == ["mcp"] || args == ARGS)
+}
+
+fn lists_us(document: &Yaml, agent: &str, marker: &str) -> bool {
+    document["agents"][agent]["toolsets"]
+        .as_vec()
+        .is_some_and(|items| items.iter().any(|item| runs_us(item, marker)))
+}
+
+/// The document with `edit` made to an agent's mapping: one made for it
+/// when the agent was empty, read as empty again when the edit leaves it
+/// so.
+fn with_agent(document: &Yaml, agent: &str, edit: impl FnOnce(&mut Hash)) -> Yaml {
+    let mut document = document.clone();
+    let found = document
+        .as_mut_hash()
+        .and_then(|top| top.get_mut(&key("agents")))
+        .and_then(Yaml::as_mut_hash)
+        .and_then(|agents| agents.get_mut(&key(agent)));
+    if let Some(value) = found {
+        if value.is_null() {
+            *value = Yaml::Hash(Hash::new());
+        }
+        if let Yaml::Hash(mapping) = value {
+            edit(mapping);
+            if mapping.is_empty() {
+                *value = Yaml::Null;
+            }
+        }
+    }
+    document
+}
+
+/// What an addition must read as: the original with our entry added,
+/// last, to the agent's toolsets.
+fn with_entry(document: &Yaml, agent: &str, exe: &str) -> Yaml {
+    with_agent(document, agent, |mapping| {
+        match mapping.get_mut(&key("toolsets")) {
+            Some(Yaml::Array(items)) => items.push(entry(exe)),
+            Some(value) if value.is_null() => *value = Yaml::Array(vec![entry(exe)]),
+            Some(_) => {}
+            None => {
+                mapping.insert(key("toolsets"), Yaml::Array(vec![entry(exe)]));
+            }
+        }
+    })
+}
+
+/// What a removal must read as: the original without our entries in the
+/// agent's toolsets, a list left empty going with them.
+fn without_entries(document: &Yaml, agent: &str, marker: &str) -> Yaml {
+    with_agent(document, agent, |mapping| {
+        if let Some(Yaml::Array(items)) = mapping.get_mut(&key("toolsets")) {
+            items.retain(|item| !runs_us(item, marker));
+            if items.is_empty() {
+                mapping.remove(&key("toolsets"));
+            }
+        }
+    })
+}
+
+/// Confirm an addition: the edited file reads as the original with only
+/// our entry added to the default agent's toolsets.
+fn confirm_added(original: &str, edited: &str, agent: &str, exe: &str) -> Result<(), Problem> {
+    let before = read_confirmed(original, agent)?;
+    let after = read(edited, "the edited file")?;
+    if after == with_entry(&before, agent, exe) {
+        Ok(())
+    } else {
+        Err(Problem::Unverified(format!(
+            "the edited file reads as more than our toolset added to agent `{agent}`"
+        )))
+    }
+}
+
+/// Confirm a removal: the edited file reads as the original with only our
+/// entries taken out of the default agent's toolsets.
+fn confirm_removed(original: &str, edited: &str, agent: &str, marker: &str) -> Result<(), Problem> {
+    let before = read_confirmed(original, agent)?;
+    let after = read(edited, "the edited file")?;
+    if lists_us(&before, agent, marker) && after == without_entries(&before, agent, marker) {
+        Ok(())
+    } else {
+        Err(Problem::Unverified(format!(
+            "the edited file reads as more than our toolset taken out of agent `{agent}`"
+        )))
+    }
+}
+
+/// Confirm what the lines say of the default agent without an edit:
+/// whether it lists our toolset.
+fn confirm_listed(original: &str, agent: &str, marker: &str, listed: bool) -> Result<(), Problem> {
+    let before = read_confirmed(original, agent)?;
+    if lists_us(&before, agent, marker) == listed {
+        Ok(())
+    } else if listed {
+        Err(Problem::Unverified(format!(
+            "these lines find our toolset in agent `{agent}`, the YAML reading does not"
+        )))
+    } else {
+        Err(Problem::Unverified(format!(
+            "the YAML reading finds our toolset in agent `{agent}`, these lines do not"
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use yaml_rust2::{Yaml, YamlLoader};
 
     const EXE: &str = "/opt/agentdocker/bin/agentdocker";
 
     const PLAIN: &str =
         "agents:\n  root:\n    model: openai/gpt-5-mini\n    description: A helpful assistant\n";
 
-    // Every edit a test makes goes through `add` or `remove`, which hold it
-    // to an independent YAML parser (yaml-rust2, a test-only dependency):
-    // the text an edit gives must read as the original document with only
-    // our entry added to, or taken from, the default agent's toolsets.
+    // Every edit `with_toolset` and `without_toolset` make is confirmed
+    // before it is returned against a YAML reading of the file (see
+    // `confirm_added`): the whole fixture corpus runs through them, and
+    // `add` checks the bytes of each round trip besides.
 
-    /// The one document the parser reads in the text.
-    fn load(text: &str) -> Yaml {
-        let mut documents =
-            YamlLoader::load_from_str(text).unwrap_or_else(|error| panic!("{error}:\n{text}"));
-        assert!(documents.len() <= 1, "several documents:\n{text}");
-        documents.pop().unwrap_or(Yaml::Null)
-    }
-
-    fn key(name: &str) -> Yaml {
-        Yaml::String(name.to_owned())
-    }
-
-    /// The default agent's name as the parser reads the file: `root`, else
-    /// the first.
-    fn default_name(document: &Yaml) -> String {
-        let agents = document["agents"].as_hash().expect("an agents mapping");
-        if agents.contains_key(&key("root")) {
-            return "root".to_owned();
-        }
-        let first = agents.keys().next().expect("an agent");
-        first.as_str().expect("a named agent").to_owned()
-    }
-
-    /// Our entry, as the parser reads it.
-    fn entry() -> Yaml {
-        load(&format!(
-            "type: mcp\ncommand: \"{EXE}\"\nargs: [\"mcp\", \"--runtime\", \"docker-agent\"]\n"
-        ))
-    }
-
-    /// Whether a parsed item runs our server, as the editor means it.
-    fn runs_us(item: &Yaml) -> bool {
-        let args: Option<Vec<&str>> = item["args"]
-            .as_vec()
-            .and_then(|args| args.iter().map(Yaml::as_str).collect());
-        let file = item["command"]
-            .as_str()
-            .map(|command| command.rsplit(['/', '\\']).next().unwrap_or(command));
-        item["type"].as_str() == Some("mcp")
-            && matches!(file, Some("agentdocker" | "agentdocker.exe"))
-            && args.is_some_and(|args| args == ["mcp"] || args == ARGS)
-    }
-
-    fn lists_us(document: &Yaml) -> bool {
-        document["agents"][default_name(document).as_str()]["toolsets"]
-            .as_vec()
-            .is_some_and(|items| items.iter().any(runs_us))
-    }
-
-    /// The default agent's mapping, made one when it was empty, for `edit`.
-    fn with_agent(original: &Yaml, edit: impl FnOnce(&mut yaml_rust2::yaml::Hash)) -> Yaml {
-        let mut document = original.clone();
-        let name = default_name(&document);
-        let agent = &mut document["agents"][name.as_str()];
-        if *agent == Yaml::Null {
-            *agent = Yaml::Hash(Default::default());
-        }
-        let Yaml::Hash(mapping) = agent else {
-            panic!("the agent is not a mapping");
-        };
-        edit(mapping);
-        if mapping.is_empty() {
-            *agent = Yaml::Null;
-        }
-        document
-    }
-
-    /// What an addition must read as: the original with our entry added,
-    /// last, to the default agent's toolsets.
-    fn with_entry(original: &Yaml) -> Yaml {
-        with_agent(original, |agent| match agent.get_mut(&key("toolsets")) {
-            Some(Yaml::Array(items)) => items.push(entry()),
-            Some(value) if *value == Yaml::Null => *value = Yaml::Array(vec![entry()]),
-            Some(other) => panic!("toolsets is {other:?}"),
-            None => {
-                agent.insert(key("toolsets"), Yaml::Array(vec![entry()]));
-            }
-        })
-    }
-
-    /// What a removal must read as: the original without our entries in
-    /// the default agent's toolsets, a list it leaves empty going with
-    /// them and an agent it leaves empty reading as null.
-    fn without_entries(original: &Yaml) -> Yaml {
-        with_agent(original, |agent| {
-            if let Some(Yaml::Array(items)) = agent.get_mut(&key("toolsets")) {
-                items.retain(|item| !runs_us(item));
-                if items.is_empty() {
-                    agent.remove(&key("toolsets"));
-                }
-            }
-        })
-    }
-
-    /// Add our entry, held to the parser: the text reads as the original
-    /// with only our entry added; taking it out again reads as the original
-    /// and gives its bytes back (but for the line ending a last line
-    /// without one gets, and a `toolsets: []` opened into a list, whose key
-    /// then goes); an entry the editor finds listed, the parser finds too.
+    /// Add our entry, and take it out again: the removal gives the original
+    /// bytes back (but for the line ending a last line without one gets,
+    /// and a `toolsets: []` opened into a list, whose key then goes).
     #[track_caller]
     fn add(yaml: &str) -> Option<String> {
         let after = with_toolset(yaml, EXE, "agentdocker")
             .unwrap_or_else(|problem| panic!("{problem}:\n{yaml}"));
-        let before = load(yaml);
-        let Some(edited) = &after else {
-            assert!(
-                lists_us(&before),
-                "listed for the editor, not the parser:\n{yaml}"
-            );
-            return None;
-        };
-        assert_eq!(
-            load(edited),
-            with_entry(&before),
-            "added:\n{yaml}\n---\n{edited}"
-        );
-        let back = remove(edited).expect("ours comes out again");
-        if !yaml.contains("toolsets: []") {
-            assert!(
-                back == yaml
-                    || back
-                        .strip_prefix(yaml)
-                        .is_some_and(|rest| rest == "\n" || rest == "\r\n"),
-                "the removal is the reverse:\n{yaml}\n---\n{back}"
-            );
+        if let Some(edited) = &after {
+            let back = remove(edited).expect("ours comes out again");
+            if !yaml.contains("toolsets: []") {
+                assert!(
+                    back == yaml
+                        || back
+                            .strip_prefix(yaml)
+                            .is_some_and(|rest| rest == "\n" || rest == "\r\n"),
+                    "the removal is the reverse:\n{yaml}\n---\n{back}"
+                );
+            }
         }
         after
     }
 
-    /// Take our entries out, held to the parser.
     #[track_caller]
     fn remove(yaml: &str) -> Option<String> {
-        let after = without_toolset(yaml, "agentdocker")
-            .unwrap_or_else(|problem| panic!("{problem}:\n{yaml}"));
-        let before = load(yaml);
-        match &after {
-            Some(edited) => assert_eq!(
-                load(edited),
-                without_entries(&before),
-                "removed:\n{yaml}\n---\n{edited}"
-            ),
-            None => assert!(
-                !lists_us(&before),
-                "listed for the parser, not the editor:\n{yaml}"
-            ),
-        }
-        after
+        without_toolset(yaml, "agentdocker").unwrap_or_else(|problem| panic!("{problem}:\n{yaml}"))
     }
 
     /// The default agent's instruction, as the parser reads it.
     fn instruction(yaml: &str) -> String {
-        let document = load(yaml);
-        let name = default_name(&document);
+        let document = read(yaml, "the fixture").unwrap();
+        let name = read_default(&document).unwrap();
         document["agents"][name.as_str()]["instruction"]
             .as_str()
             .expect("an instruction")
@@ -1036,7 +1175,8 @@ mod tests {
     }
 
     /// The block setup prints is the entry at an agent's indent, quoted as
-    /// YAML, with the arguments the daemon recognises.
+    /// YAML, with the arguments the daemon recognises, and reads as the
+    /// entry the check expects.
     #[test]
     fn the_printed_toolset_is_the_entry_at_an_agents_indent() {
         let text = docker_agent_toolset("/Apps/Agent Docker/agentdocker");
@@ -1044,11 +1184,12 @@ mod tests {
             text,
             "    toolsets:\n      - type: mcp\n        command: \"/Apps/Agent Docker/agentdocker\"\n        args: [\"mcp\", \"--runtime\", \"docker-agent\"]\n"
         );
-        assert_eq!(
-            load(&format!("agents:\n  root:\n{}", docker_agent_toolset(EXE)))["agents"]["root"]["toolsets"]
-                [0],
-            entry()
-        );
+        let document = read(
+            &format!("agents:\n  root:\n{}", docker_agent_toolset(EXE)),
+            "the fixture",
+        )
+        .unwrap();
+        assert_eq!(document["agents"]["root"]["toolsets"][0], entry(EXE));
     }
 
     /// An agent without `toolsets` gets the key and our entry after its
@@ -1205,9 +1346,6 @@ mod tests {
                 "agents:\n  helper:\n    model: fast\n  root:\n    model: fast\n    toolsets:\n      - type: mcp\n        command: \"{EXE}\"\n        args: [\"mcp\", \"--runtime\", \"docker-agent\"]\n  writer:\n    model: fast\n"
             )
         );
-        let quoted = "agents:\n  helper:\n    model: fast\n  \"root\":\n    model: fast\n";
-        assert_eq!(target(quoted, "agentdocker").unwrap().agent, "root");
-        add(quoted);
         // A `root` that is no block is refused, not passed over.
         assert_eq!(
             with_toolset(
@@ -1325,97 +1463,256 @@ mod tests {
         }
     }
 
-    /// What the agent's own lines share with the rest of the file, or spell
-    /// in ways the editor does not read, is refused: an anchored item
-    /// another agent aliases (taking it out would leave the alias naming
-    /// nothing), an alias, any merge key, an explicit key, a quoted value
-    /// or an inline collection over several lines. Text that only looks
-    /// like them is text, and sharing elsewhere in the file is not the
-    /// agent's.
+    /// What the lines do not say on their own, or what Docker Agent's YAML
+    /// reader and the one that confirms an edit read differently, is
+    /// refused wherever it is in the file, with the line and the form: an
+    /// anchor (an anchored item another agent aliases, which a removal
+    /// would leave naming nothing), an alias, a merge key (on an agent, or
+    /// on the `agents` mapping itself), a tag, an explicit key; so is a
+    /// quoted key among the agents or an agent's own keys (an escaped
+    /// `"r\x6fot"` is `root`, an escaped `"tool\x73ets"` is `toolsets`),
+    /// and, in the agent edited, a quoted value or an inline collection
+    /// over several lines. Text that only looks like them is text.
     #[test]
-    fn what_the_agents_lines_share_or_spell_explicitly_is_refused() {
-        let shared = Problem::Shared("root".into());
-        for yaml in [
-            "agents:\n  root:\n    toolsets:\n      - &shared\n        type: filesystem\n  helper:\n    toolsets:\n      - *shared\n",
-            "agents:\n  helper:\n    toolsets:\n      - &shared\n        type: filesystem\n  root:\n    toolsets:\n      - *shared\n",
-            "defaults: &defaults\n  toolsets:\n    - type: filesystem\nagents:\n  root:\n    ? <<\n    : *defaults\n    model: fast\n",
-            "defaults: &defaults\n  toolsets:\n    - type: filesystem\nagents:\n  root:\n    <<: *defaults\n    model: fast\n",
-            "agents:\n  root:\n    model: fast\n    <<: [*a, *b]\n",
-            "agents:\n  root:\n    toolsets: *shared\n",
-            "agents:\n  root:\n    toolsets: &shared\n      - type: filesystem\n  helper:\n    toolsets: *shared\n",
-            "agents:\n  root:\n    model: &m fast\n  helper:\n    model: *m\n",
-            "agents:\n  root:\n    toolsets:\n      - type: script\n        env: {<<: {A: b}}\n",
-            "agents:\n  root:\n    !!merge <<: {model: fast}\n",
-        ] {
-            assert_eq!(
-                with_toolset(yaml, EXE, "agentdocker").unwrap_err(),
-                shared,
-                "{yaml}"
-            );
-            assert_eq!(
-                without_toolset(yaml, "agentdocker").unwrap_err(),
-                shared,
-                "{yaml}"
-            );
-            assert_eq!(target(yaml, "agentdocker").unwrap_err(), shared, "{yaml}");
-        }
-        assert!(shared.to_string().contains("merge"));
-        for (yaml, construct) in [
+    fn what_the_editor_cannot_read_with_certainty_is_refused() {
+        for (yaml, line, form) in [
             (
-                "agents:\n  root:\n    ? model\n    : fast\n",
-                "explicit key",
+                "agents:\n  root:\n    toolsets:\n      - &shared\n        type: filesystem\n  helper:\n    toolsets:\n      - *shared\n",
+                4,
+                ANCHOR,
             ),
             (
-                "agents:\n  root:\n    model: fast\n    ? [a, b]\n    : c\n",
-                "explicit key",
+                "agents:\n  helper:\n    toolsets:\n      - &shared\n        type: filesystem\n  root:\n    toolsets:\n      - *shared\n",
+                4,
+                ANCHOR,
             ),
             (
-                "agents:\n  root:\n    instruction: \"first line\n      # not a comment\"\n  helper:\n    model: fast\n",
-                "quoted value",
+                "defaults: &defaults\n  toolsets:\n    - type: filesystem\nagents:\n  root:\n    ? <<\n    : *defaults\n    model: fast\n",
+                1,
+                ANCHOR,
             ),
             (
-                "agents:\n  root:\n    instruction: 'it''s\n      long'\n",
-                "quoted value",
+                "defaults: &defaults\n  model: fast\nagents:\n  root:\n    model: fast\n  helper:\n    <<: *defaults\n",
+                1,
+                ANCHOR,
             ),
             (
-                "agents:\n  root:\n    model: {provider: x,\n      name: y}\n",
-                "inline list or mapping",
+                "agents:\n  root:\n    model: fast\n    <<: [*a, *b]\n",
+                4,
+                MERGE,
             ),
-            // A name the editor cannot read could be `root`'s, wherever it is.
-            ("agents:\n  &a root:\n    model: fast\n", "agent's name"),
+            ("agents:\n  root:\n    toolsets: *shared\n", 3, ALIAS),
             (
-                "agents:\n  helper:\n    model: fast\n  &r root:\n    model: fast\n",
-                "agent's name",
+                "agents:\n  root:\n    toolsets:\n      - type: script\n        env: {<<: {A: b}}\n",
+                5,
+                MERGE,
+            ),
+            (
+                "agents:\n  root:\n    !!merge <<: {model: fast}\n",
+                3,
+                MERGE_TAG,
+            ),
+            // A merge on the agents mapping itself, which may bring `root`.
+            (
+                "defaults: &defaults\n  root:\n    model: fast\nagents:\n  <<: *defaults\n  helper:\n    model: fast\n",
+                1,
+                ANCHOR,
+            ),
+            (
+                "agents:\n  <<: {root: {model: fast}}\n  helper:\n    model: fast\n",
+                2,
+                MERGE,
+            ),
+            // Tags and explicit keys, anywhere.
+            (
+                "models:\n  fast: !custom openai/gpt-5-mini\nagents:\n  root:\n    model: fast\n",
+                2,
+                TAG,
             ),
             (
                 "agents:\n  helper:\n    model: fast\n  !!str root:\n    model: fast\n",
-                "agent's name",
+                4,
+                TAG,
+            ),
+            (
+                "agents:\n  root:\n    ? model\n    : fast\n",
+                3,
+                EXPLICIT_KEY,
+            ),
+            (
+                "agents:\n  root:\n    model: fast\n    ? [a, b]\n    : c\n",
+                4,
+                EXPLICIT_KEY,
             ),
             (
                 "agents:\n  helper:\n    model: fast\n  ? root\n  : {model: fast}\n",
-                "agent's name",
+                4,
+                EXPLICIT_KEY,
+            ),
+            ("agents:\n  &a root:\n    model: fast\n", 2, ANCHOR),
+            // Quoted keys, which a reader decodes: the reviewed cases first.
+            (
+                "agents:\n  root:\n    \"tool\\x73ets\":\n      - type: filesystem\n",
+                3,
+                QUOTED_KEY,
+            ),
+            (
+                "agents:\n  helper:\n    model: fast\n  \"r\\x6fot\":\n    model: fast\n",
+                4,
+                QUOTED_KEY,
+            ),
+            (
+                "agents:\n  helper:\n    model: fast\n  \"root\":\n    model: fast\n",
+                4,
+                QUOTED_KEY,
+            ),
+            ("agents:\n  'root':\n    model: fast\n", 2, QUOTED_KEY),
+            (
+                "agents:\n  root:\n    model: fast\n  helper:\n    \"model\": fast\n",
+                5,
+                QUOTED_KEY,
+            ),
+            ("\"agents\":\n  root:\n    model: fast\n", 1, QUOTED_KEY),
+            (
+                "toolsets:\n  web:\n    - type: fetch\nagents:\n  \"my agent\":\n    use_toolsets: [web]\n",
+                5,
+                QUOTED_KEY,
+            ),
+            // In the agent edited, values and collections over several lines.
+            (
+                "agents:\n  root:\n    instruction: \"first line\n      # not a comment\"\n  helper:\n    model: fast\n",
+                3,
+                MULTI_LINE_QUOTE,
+            ),
+            (
+                "agents:\n  root:\n    instruction: 'it''s\n      long'\n",
+                3,
+                MULTI_LINE_QUOTE,
+            ),
+            (
+                "agents:\n  root:\n    model: {provider: x,\n      name: y}\n",
+                3,
+                MULTI_LINE_FLOW,
             ),
         ] {
-            let problem = with_toolset(yaml, EXE, "agentdocker").unwrap_err();
-            assert!(
-                matches!(&problem, Problem::Unsupported(..)),
-                "{yaml}: {problem:?}"
+            let problem = Problem::Construct { line, form };
+            let refused = Err(problem.clone());
+            assert_eq!(
+                with_toolset(yaml, EXE, "agentdocker").map(|_| ()),
+                refused,
+                "{yaml}"
             );
-            assert!(problem.to_string().contains(construct), "{problem}");
-            assert_eq!(without_toolset(yaml, "agentdocker").unwrap_err(), problem);
+            assert_eq!(
+                without_toolset(yaml, "agentdocker").map(|_| ()),
+                refused,
+                "{yaml}"
+            );
+            assert_eq!(target(yaml, "agentdocker").map(|_| ()), refused, "{yaml}");
+            let message = problem.to_string();
+            assert!(
+                message.starts_with(&format!("line {line}: {form}")),
+                "{message}"
+            );
         }
         for yaml in [
             "agents:\n  root:\n    description: it's a test of *plain* text & more? yes\n    instruction: \"use *bold*, & 'quotes' # not a comment \\\" <<\"\n    model: 'it''s'  # a comment's *own* text\n",
-            "agents:\n  root:\n    instruction: |\n      *bold* & <<more>>\n      ? not a key\n      : not a value\n      &not *alias\n    model: fast\n",
-            "defaults: &defaults\n  model: fast\nagents:\n  root:\n    model: fast\n  helper:\n    <<: *defaults\n",
+            "agents:\n  root:\n    instruction: |\n      *bold* & <<more>> !tag\n      ? not a key\n      : not a value\n      &not *alias\n    model: fast\n",
             "agents:\n  root:\n    model: fast\n    url: http://localhost:8080/a?b=c\n    tags: [a, \"b, c\", {d: e}]\n",
+            "agents:\n  root:\n    model: fast\n  helper:\n    instruction: \"a quoted value\n      over two lines, not in the agent edited\"\n",
         ] {
             add(yaml);
         }
     }
 
+    /// The runtime check refuses an edit it cannot confirm, whatever the
+    /// lines made of the file: more changed than our entry, the entry under
+    /// an agent other than the one the file names as default, a key twice
+    /// in one mapping, a text that is no YAML, a removal of more than ours,
+    /// and an entry the lines and the reading disagree about.
+    #[test]
+    fn the_runtime_check_refuses_an_edit_it_cannot_confirm() {
+        let unconfirmed = |result: Result<(), Problem>, says: &str| match result {
+            Err(Problem::Unverified(why)) => assert!(why.contains(says), "{why}"),
+            other => panic!("{other:?}"),
+        };
+        let original = "agents:\n  root:\n    model: fast\n";
+        let added = with_toolset(original, EXE, "agentdocker").unwrap().unwrap();
+        assert_eq!(confirm_added(original, &added, "root", EXE), Ok(()));
+        unconfirmed(
+            confirm_added(
+                original,
+                &added.replace("model: fast", "model: slow"),
+                "root",
+                EXE,
+            ),
+            "more than our toolset",
+        );
+        unconfirmed(
+            confirm_added(original, &added, "root", "/elsewhere/agentdocker"),
+            "more than our toolset",
+        );
+        // The file names `root` by an escape the lines do not decode, so
+        // an entry under helper is under the wrong agent.
+        let escaped = "agents:\n  helper:\n    model: fast\n  \"r\\x6fot\":\n    model: fast\n";
+        let on_helper = format!(
+            "agents:\n  helper:\n    model: fast\n{}  \"r\\x6fot\":\n    model: fast\n",
+            docker_agent_toolset(EXE)
+        );
+        unconfirmed(
+            confirm_added(escaped, &on_helper, "helper", EXE),
+            "default agent is `root`, not `helper`",
+        );
+        // An escaped `toolsets` key and a second one added beside it.
+        let doubled = format!(
+            "agents:\n  root:\n    \"tool\\x73ets\":\n      - type: filesystem\n{}",
+            docker_agent_toolset(EXE)
+        );
+        unconfirmed(
+            confirm_added(
+                "agents:\n  root:\n    \"tool\\x73ets\":\n      - type: filesystem\n",
+                &doubled,
+                "root",
+                EXE,
+            ),
+            "duplicated key",
+        );
+        unconfirmed(
+            confirm_added("agents: [\n", &added, "root", EXE),
+            "does not read as YAML",
+        );
+        unconfirmed(
+            confirm_added(original, "agents:\n  root:\n---\nagents:\n", "root", EXE),
+            "2 YAML documents",
+        );
+        // A removal must take out ours and nothing else.
+        let both = format!(
+            "agents:\n  root:\n    toolsets:\n      - type: filesystem\n{}",
+            &docker_agent_toolset(EXE)["    toolsets:\n".len()..]
+        );
+        let kept = without_toolset(&both, "agentdocker").unwrap().unwrap();
+        assert_eq!(confirm_removed(&both, &kept, "root", "agentdocker"), Ok(()));
+        unconfirmed(
+            confirm_removed(&both, "agents:\n  root:\n", "root", "agentdocker"),
+            "more than our toolset",
+        );
+        unconfirmed(
+            confirm_removed(original, original, "root", "agentdocker"),
+            "more than our toolset",
+        );
+        // What the lines say is listed, the reading must find too.
+        unconfirmed(
+            confirm_listed(original, "root", "agentdocker", true),
+            "the YAML reading does not",
+        );
+        unconfirmed(
+            confirm_listed(&added, "root", "agentdocker", false),
+            "these lines do not",
+        );
+        assert_eq!(confirm_listed(&added, "root", "agentdocker", true), Ok(()));
+    }
+
     /// The scanner reads quotes, comments and indicators only where YAML
-    /// does.
+    /// does, and names the first form the editor refuses.
     #[test]
     fn the_scanner_reads_indicators_only_where_a_node_starts() {
         for (content, comment) in [
@@ -1429,27 +1726,24 @@ mod tests {
         ] {
             assert_eq!(scan(content).comment, comment, "{content}");
         }
-        let flags = |content: &str| {
+        let read = |content: &str| {
             let found = scan(content);
-            (
-                found.shares,
-                found.explicit,
-                found.open_quote,
-                found.open_flow,
-            )
+            (found.form, found.open_quote, found.open_flow)
         };
-        assert_eq!(flags("text: a *b* & c? d"), (false, false, false, false));
-        assert_eq!(flags("- &x key: v"), (true, false, false, false));
-        assert_eq!(flags("[*x, y]"), (true, false, false, false));
-        assert_eq!(flags("? key"), (false, true, false, false));
-        assert_eq!(flags(": value"), (false, true, false, false));
-        assert_eq!(flags("host: ::1"), (false, false, false, false));
-        assert_eq!(flags("text: \"open"), (false, false, true, false));
-        assert_eq!(flags("text: it's"), (false, false, false, false));
-        assert_eq!(flags("map: {a: 1,"), (false, false, false, true));
-        assert_eq!(flags("text: see [docs"), (false, false, false, false));
-        assert_eq!(flags("text: !!str x"), (false, false, false, false));
-        assert_eq!(flags("text: !!merge x"), (true, false, false, false));
+        assert_eq!(read("text: a *b* & c? d"), (None, false, false));
+        assert_eq!(read("- &x key: v"), (Some(ANCHOR), false, false));
+        assert_eq!(read("[*x, y]"), (Some(ALIAS), false, false));
+        assert_eq!(read("? key"), (Some(EXPLICIT_KEY), false, false));
+        assert_eq!(read(": value"), (Some(EXPLICIT_VALUE), false, false));
+        assert_eq!(read("host: ::1"), (None, false, false));
+        assert_eq!(read("text: \"open"), (None, true, false));
+        assert_eq!(read("text: it's"), (None, false, false));
+        assert_eq!(read("map: {a: 1,"), (None, false, true));
+        assert_eq!(read("text: see [docs"), (None, false, false));
+        assert_eq!(read("text: !!str x"), (Some(TAG), false, false));
+        assert_eq!(read("text: !!merge x"), (Some(MERGE_TAG), false, false));
+        assert_eq!(read("text: a << b"), (Some(MERGE), false, false));
+        assert_eq!(read("text: \"a << b\""), (None, false, false));
     }
 
     /// A file that ends without a newline, or with CRLF endings, is
@@ -1486,9 +1780,10 @@ mod tests {
         add(harness);
         // With no `root`, the first agent is the target whatever it is
         // called, and a top-level `toolsets:` group is not an agent's.
-        let groups = "toolsets:\n  web:\n    - type: fetch\nagents:\n  \"my agent\":\n    use_toolsets: [web]\n";
+        let groups =
+            "toolsets:\n  web:\n    - type: fetch\nagents:\n  my-agent:\n    use_toolsets: [web]\n";
         let after = add(groups).unwrap();
-        assert!(after.starts_with("toolsets:\n  web:\n    - type: fetch\nagents:\n  \"my agent\":\n    use_toolsets: [web]\n    toolsets:\n"));
-        assert_eq!(target(groups, "agentdocker").unwrap().agent, "my agent");
+        assert!(after.starts_with("toolsets:\n  web:\n    - type: fetch\nagents:\n  my-agent:\n    use_toolsets: [web]\n    toolsets:\n"));
+        assert_eq!(target(groups, "agentdocker").unwrap().agent, "my-agent");
     }
 }

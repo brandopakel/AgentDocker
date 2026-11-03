@@ -1219,12 +1219,15 @@ Current behaviour that the sections above do not already state, by area.
   of the file as it was; the plan is saved like any other setup change,
   `setup --undo <id>` puts the file back to the byte, and `setup --remove
   docker-agent --agent <file>` takes exactly that entry out. A multi-line
-  `instruction: |` is kept whole, comments and all. The edit refuses, and
-  says why, when that agent's own lines use an anchor, an alias or a merge
-  key (`<<`) — even one that has nothing to do with `toolsets` — an
-  explicit `? ` key, a quoted value or inline list that runs over several
-  lines, an inline `toolsets: [...]`, or tabs; `setup docker-agent
-  --dry-run` then prints the entry to paste by hand. Every run of an agent
+  `instruction: |` is kept whole, comments and all. The edit refuses,
+  saying what and on which line, a file that uses an anchor, an alias, a
+  merge key (`<<`), a tag or an explicit `? ` key anywhere; a quoted key
+  among the agents or in an agent's own keys; and, in the agent it edits, a
+  quoted value or inline list that runs over several lines, an inline
+  `toolsets: [...]`, or tabs. It also reads the file and its edit back as
+  YAML before writing anything, and refuses an edit it cannot confirm
+  changes nothing but that one entry in the default agent. `setup
+  docker-agent --dry-run` then prints the entry to paste by hand. Every run of an agent
   whose file lists it appears as a `docker-agent` agent with the
   coordination tools: it can claim, release, message and ask like any
   other, and reads its messages at its next tool call; nothing wakes it
