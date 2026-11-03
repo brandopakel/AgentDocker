@@ -289,7 +289,7 @@ fn set_aside(superseded: &[CodeVerdict], role: &str) -> Vec<String> {
             };
             Some(format!(
                 "superseded: {} by {} at {} (verdict {}): {why}",
-                verdict.verdict,
+                verdict.word(),
                 verdict.by_name,
                 short(&verdict.head),
                 verdict.id
@@ -354,7 +354,7 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
         println!("{}", verdict.id);
         eprintln!(
             "superseded: {} {} at {} by {}; ask `agentdocker gate {}` for the gate now",
-            verdict.verdict,
+            verdict.word(),
             verdict.branch,
             short(&verdict.head),
             verdict.by_name,
@@ -556,6 +556,7 @@ mod tests {
             note: String::new(),
             at: chrono::Utc::now(),
             superseded: Vec::new(),
+            given: None,
         })
     }
 
@@ -688,8 +689,14 @@ mod tests {
             at: chrono::Utc::now(),
         }];
         assert_eq!(
-            set_aside(&[lifted], "tester"),
+            set_aside(std::slice::from_ref(&lifted), "tester"),
             ["superseded: changes by reviewer-1 at aaaaaaaa (verdict 1): set aside by user"]
+        );
+        // A pass set aside is written as changes, and said as given.
+        lifted.given = Some(Verdict::Approve);
+        assert_eq!(
+            set_aside(&[lifted], GATE_ROLE),
+            ["superseded: approve by reviewer-1 at aaaaaaaa (verdict 1): set aside by user"]
         );
     }
 }

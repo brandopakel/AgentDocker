@@ -1085,6 +1085,8 @@ Current behaviour that the sections above do not already state, by area.
   without the role lifts nothing, and a reviewer that is still running
   keeps its word. To lift a verdict yourself at every gate, whoever gave
   it, `agentdocker verdict --supersede <verdict id> [--reason <text>]`.
+  A reviewer's latest verdict is its word: once that one is lifted, it
+  has no word at that gate, and nothing it said before comes back.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or

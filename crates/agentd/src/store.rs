@@ -87,10 +87,12 @@ pub struct TaskTransition<'a> {
 // Nor do `topic_messages` and `topic_cursors`, by the same rule: an older
 // daemon keeps no topic messages and moves no cursor while it runs, so a
 // reader may later be replayed less or again, never anything wrong.
-// A `code_verdict` document's `superseded` marks need no bump either: an
-// older daemon ignores them and counts the verdict again, which can only
-// block a gate a newer one opened, and no daemon rewrites a verdict it did
-// not just mark.
+// A `code_verdict` document's `superseded` marks need no bump either, as
+// what an older daemon reads without them can only block: a request for
+// changes a successor's pass lifted still asks for changes, and a pass the
+// person set aside is written `changes` (the word given kept in `given`),
+// so no older reader counts it, nor an earlier word it replaced. No daemon
+// rewrites a verdict it did not just mark.
 pub(crate) const SCHEMA_VERSION: i64 = 28;
 
 const SCHEMA: &str = "
@@ -2458,6 +2460,32 @@ impl Store {
                 .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
         }
         if let Some(entry) = entry {
+            self.insert_journal(entry)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Write documents with the journal entries that describe them (their
+    /// `seq`s assigned) and the events that announce both, in one
+    /// transaction: a verdict set aside never lands without its line.
+    pub fn documents_with_journal(
+        &self,
+        documents: &[(&str, String, String)],
+        entries: &[JournalEntry],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = write_transaction(&self.conn)?;
+        for (kind, id, json) in documents {
+            self.conn.execute(
+                "INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
+                params![kind, id, json],
+            )?;
+        }
+        for entry in entries {
             self.insert_journal(entry)?;
         }
         for event in events {
