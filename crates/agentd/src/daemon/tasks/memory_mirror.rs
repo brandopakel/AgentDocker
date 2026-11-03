@@ -697,6 +697,7 @@ mod tests {
                 supersedes: None,
                 standing: false,
                 forget_after: None,
+                roles: Vec::new(),
             })
             .await
         {
