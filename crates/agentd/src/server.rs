@@ -1874,6 +1874,7 @@ mod tests {
                 text: "Yes".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await
         else {

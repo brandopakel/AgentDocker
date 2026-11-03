@@ -2391,8 +2391,9 @@ impl Daemon {
                 message,
                 text,
                 choices,
+                other,
                 note,
-            } => self.answer(from, message, text, choices, note).await,
+            } => self.answer(from, message, text, choices, other, note).await,
             Request::Questions { agent } => self.questions(agent),
             Request::Activity {
                 agent,
@@ -5254,6 +5255,7 @@ impl State {
                 &pending.form,
                 &given.text,
                 &given.choices,
+                given.other.as_deref(),
                 given.note.as_deref(),
             ) {
                 Ok(answer) => envelope.payload = answer.payload(),

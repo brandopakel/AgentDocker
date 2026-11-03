@@ -664,9 +664,12 @@ pub enum Request {
         message: MessageId,
     },
     /// Answer a question by its message id. The daemon knows who asked.
-    /// `choices` name the options taken, by label or 1-based number; with
-    /// none, `text` is the answer (one choice, for a question with
-    /// options). `note` is the answerer's own words beside a choice.
+    /// `choices` name the options taken, each by label or 1-based number.
+    /// `other` is the answerer's own words for the question's Other, taken
+    /// as written: never read as a label or a number, and refused where
+    /// the question takes no Other. With neither, `text` is the answer (one
+    /// choice, for a question with options); beside either it is not read.
+    /// `note` is the answerer's own words beside a choice.
     Answer {
         #[serde(default)]
         from: Option<String>,
@@ -675,6 +678,8 @@ pub enum Request {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         choices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        other: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
     },
@@ -2060,6 +2065,8 @@ pub enum Response {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         choices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        other: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]

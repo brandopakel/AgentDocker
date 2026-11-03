@@ -859,10 +859,12 @@ Options an agent offered are full-width rows, the label on the left and what
 choosing it means on the right, a refusal in red; pressing one is the answer,
 and the chosen row stands in for the rows as the receipt while it goes. A
 multi-select question's rows pick and unpick (a picked row stays washed) and
-**Send choices** sends them together; words in the box beside them go as one
-more choice, the *Other*, alone or with the picked rows. Writing is the
-*Other*: the box is there when the question takes words of your own, and
-absent when it takes only its options. Under an open conversation the composer sends to that
+**Send choices** sends them together; words in the box beside them go as the
+*Other*, alone or with the picked rows, exactly as written (a typed *2* is the
+words *2*, never the second option). Writing is the *Other*: the box is there
+when the question takes words of your own, on a single-choice question too,
+where the written answer is sent as its *Other*, and absent when it takes only
+its options. Under an open conversation the composer sends to that
 agent (**Send**) or to every agent in its project (**Send to everyone**); a
 failed send shows *Not sent* and why under the box, as does the delivery
 notice when recipients need attention, and drafts survive navigation, a failed

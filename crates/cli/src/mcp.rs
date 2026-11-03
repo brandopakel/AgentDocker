@@ -1657,6 +1657,7 @@ impl<B: Backend> McpServer<B> {
                     message: MessageId::from(args.message),
                     text: args.text,
                     choices: args.choices,
+                    other: args.other,
                     note: args.note,
                 })
                 .await
@@ -2161,6 +2162,8 @@ struct AnswerArgs {
     #[serde(default)]
     choices: Vec<String>,
     #[serde(default)]
+    other: Option<String>,
+    #[serde(default)]
     note: Option<String>,
 }
 
@@ -2513,10 +2516,11 @@ fn render_whole(response: Response) -> Value {
             from,
             text,
             choices,
+            other,
             note,
             default,
         } => text_result(
-            &json!({ "answered": true, "message_id": message, "from": from, "text": text, "choices": choices, "note": note, "default": default }),
+            &json!({ "answered": true, "message_id": message, "from": from, "text": text, "choices": choices, "other": other, "note": note, "default": default }),
             false,
         ),
         // Each question carries its `prompt`: the words with the numbered
@@ -2891,8 +2895,9 @@ fn bare_tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "message": { "type": "string", "description": "The question's message id." },
-                    "text": { "type": "string", "description": "The answer in words; for a question with options, one option by label or number." },
+                    "text": { "type": "string", "description": "The answer in words; for a question with options, one option by label or number. Not read beside choices or other." },
                     "choices": { "type": "array", "items": { "type": "string" }, "description": "The options taken, each by label or 1-based number; several only for a multi-select question. An answer outside the options is taken only when the question allows Other." },
+                    "other": { "type": "string", "description": "Your own answer for the question's Other, taken as written: never read as an option's label or number. Only where the question allows Other; beside choices only for a multi-select question." },
                     "note": { "type": "string", "description": "Your own words beside a choice." }
                 },
                 "required": ["message"],
@@ -4567,6 +4572,7 @@ mod tests {
                 choices: Vec::new(),
                 note: None,
                 default: false,
+                other: None,
             },
         ]);
         let response = ordinary
@@ -4600,6 +4606,7 @@ mod tests {
                 choices: vec!["Blue".into()],
                 note: None,
                 default: true,
+                other: None,
             },
             Response::Sent {
                 message: "reply".to_owned().into(),
@@ -4659,15 +4666,15 @@ mod tests {
         );
         s.tool(
             "answer_question",
-            json!({"message":"q1","choices":["2"],"note":"the mock-ups won"}),
+            json!({"message":"q1","choices":["2"],"other":"Teal","note":"the mock-ups won"}),
         )
         .await
         .unwrap();
         let requests = s.backend.requests();
         assert!(matches!(
             requests.last(),
-            Some(Request::Answer { text, choices, note: Some(note), .. })
-                if text.is_empty() && choices == &["2".to_owned()] && note == "the mock-ups won"
+            Some(Request::Answer { text, choices, other: Some(other), note: Some(note), .. })
+                if text.is_empty() && choices == &["2".to_owned()] && other == "Teal" && note == "the mock-ups won"
         ));
     }
 

@@ -2507,8 +2507,36 @@ mod tests {
         assert!(
             matches!(
                 sent.as_slice(),
-                [Cmd::AnswerChoices(sent_id, choices, None)]
-                    if *sent_id == id && choices == &["Green".to_owned(), "Red".to_owned()]
+                [Cmd::AnswerChoices(sent_id, choices, Some(other))]
+                    if *sent_id == id && choices == &["Green".to_owned()] && other == "Red"
+            ),
+            "{sent:?}"
+        );
+    }
+
+    /// Written words answering a question with options are its Other, sent
+    /// as written: a typed "2" is the words "2", never the second option.
+    #[test]
+    fn a_written_answer_to_a_question_with_options_goes_as_its_other() {
+        let (mut app, commands) = app();
+        let question = typed(
+            &mut app,
+            "words",
+            agentdocker_core::QuestionForm {
+                options: colours(),
+                ..Default::default()
+            },
+        );
+        let id = question.id.clone();
+        app.shell.answers.insert(id.clone(), " 2 ".into());
+        let _ = app.update(Message::Answer(id.clone()));
+        assert!(app.sending.contains(&id));
+        let sent: Vec<_> = commands.try_iter().collect();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [Cmd::AnswerChoices(sent_id, choices, Some(other))]
+                    if *sent_id == id && choices.is_empty() && other == "2"
             ),
             "{sent:?}"
         );
@@ -2538,8 +2566,8 @@ mod tests {
         assert!(
             matches!(
                 sent.as_slice(),
-                [Cmd::AnswerChoices(sent_id, choices, None)]
-                    if *sent_id == id && choices == &["Red".to_owned()]
+                [Cmd::AnswerChoices(sent_id, choices, Some(other))]
+                    if *sent_id == id && choices.is_empty() && other == "Red"
             ),
             "{sent:?}"
         );

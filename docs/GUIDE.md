@@ -525,7 +525,7 @@ each one by pid.
 | `watch` | Stream messages for an agent or matching topics. Topics keep their messages: `watch --as <agent> 'repo/#'` first shows what each matching topic kept since the last topic message that agent acknowledged there (everything kept, the first time), then streams live; `inbox --as <agent> --ack <id>` on a topic message moves that topic on past it. A topic line shows its `seq:`; without an agent, topics are live only unless `--after-seq <n>` replays from that point. One watch replays at most a topic's newest 500, 5,000 in all, and says how many older ones it did not replay |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer. `--kind question\|permission\|access` says what is being decided; `--option "Label: what it means"` (repeat) offers choices, `--multi` lets several be chosen, `--no-other` takes only those; `--stale-after <secs> --stale-action keep_waiting\|withdraw\|answer:<label>` says what happens when nobody answers in that time; see [Three kinds of question](#three-kinds-of-question) |
-| `answer` | Answer a question somebody is waiting on: words, or `--choice <label or number>` (repeat for a multi-select) with `--note` for your own words beside it |
+| `answer` | Answer a question somebody is waiting on: words, or `--choice <label or number>` (repeat for a multi-select), `--other <words>` for an answer of your own, taken as written (never read as an option's label or number), and `--note` for words beside a choice |
 | `questions` | Questions waiting for an answer, each with its kind, `[stale]` when its window passed, and its options numbered |
 | `conversations` | What you can read: every conversation with its unread count, newest first |
 | `history <conversation>` | What was said in one conversation, oldest first; `--read` marks it read through the last line shown, for you or for `--as <agent>` (the agent's own shell, through `AGENTDOCKER_AGENT_ID`), never the other |
@@ -710,8 +710,8 @@ about us:
 
 `ask_human` takes `kind`, `options` (labels, or `{label, description}`),
 `multi_select`, `allow_other`, `stale_after_secs` and `stale_action` beside the
-question; `answer_question` takes `choices` (labels or numbers) and `note`
-beside `text`; `open_questions` returns each question's `prompt`, the words
+question; `answer_question` takes `choices` (labels or numbers), `other`
+(your own words for the Other, taken as written) and `note` beside `text`; `open_questions` returns each question's `prompt`, the words
 with the options numbered, so a reader that renders only text offers the same
 choices the desktop draws as buttons. See
 [Three kinds of question](#three-kinds-of-question).
@@ -1140,7 +1140,8 @@ Current behaviour that the sections above do not already state, by area.
   The options show as buttons in the desktop, as a numbered list with an
   *Other* line in a terminal and in the connector, and the answer is the
   same wherever it is given: `agentdocker answer <id> 2`, `--choice Green`,
-  or words of your own where the question allows them. A question with a
+  or words of your own with `--other` where the question allows them, taken
+  as written (`--other 2` is the words "2", not the second option). A question with a
   stale window goes **stale** once the window passes: by default it stays
   open and is marked so; `answer:<label>` takes that option as the answer,
   attributed to the daemon as the default; `withdraw` closes it and the

@@ -308,8 +308,9 @@ impl State {
                         label,
                         std::slice::from_ref(label),
                         None,
+                        None,
                     )
-                    .or_else(|_| QuestionAnswer::resolve(&question.form, label, &[], None))
+                    .or_else(|_| QuestionAnswer::resolve(&question.form, label, &[], None, None))
                     {
                         Ok(mut answer) => {
                             answer.default = true;
@@ -709,7 +710,7 @@ impl Daemon {
                         );
                     }
                     let answer = QuestionAnswer::from_payload(&envelope.payload);
-                    return Response::Answer { message: envelope.id.clone(), from: envelope.from.clone(), text: answer.text, choices: answer.choices, note: answer.note, default: answer.default };
+                    return Response::Answer { message: envelope.id.clone(), from: envelope.from.clone(), text: answer.text, choices: answer.choices, other: answer.other, note: answer.note, default: answer.default };
                 }
                 tokio::select! {
                 answer = answers.recv() => match answer {
@@ -840,6 +841,7 @@ impl Daemon {
         message: MessageId,
         text: String,
         choices: Vec<String>,
+        other: Option<String>,
         note: Option<String>,
     ) -> Response {
         let question = lock(&self.state)
@@ -885,8 +887,13 @@ impl Daemon {
         // What was chosen, by label: a number becomes its option, a
         // choice outside the options is refused unless Other is allowed,
         // and a free-text question takes the words as they are.
-        let answer = match QuestionAnswer::resolve(&question.form, &text, &choices, note.as_deref())
-        {
+        let answer = match QuestionAnswer::resolve(
+            &question.form,
+            &text,
+            &choices,
+            other.as_deref(),
+            note.as_deref(),
+        ) {
             Ok(answer) => answer,
             Err(reason) => return Response::error(ErrorCode::Invalid, reason),
         };
@@ -1107,6 +1114,7 @@ mod tests {
                 text: "Allow".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await
         else {
@@ -1188,6 +1196,7 @@ mod tests {
                 text: "Decline".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await
         else {
@@ -1272,6 +1281,7 @@ mod tests {
                 text: "{\"n\":2}".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await
         else {
@@ -1358,6 +1368,7 @@ mod tests {
                     text: "Allow".into(),
                     choices: Vec::new(),
                     note: None,
+                    other: None,
                 })
                 .await,
             Response::Error {
@@ -1388,6 +1399,7 @@ mod tests {
                 text: "Allow".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await
         else {
@@ -1487,6 +1499,7 @@ mod tests {
                     text: "Too late".into(),
                     choices: Vec::new(),
                     note: None,
+                    other: None,
                 })
                 .await,
             Response::Error {
@@ -1577,6 +1590,7 @@ mod tests {
                 text: "Blue".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await
         else {
@@ -1634,6 +1648,7 @@ mod tests {
                 text: "Large".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await
         else {
@@ -1739,6 +1754,7 @@ mod tests {
                 text: "Yes".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await
         else {
@@ -1883,6 +1899,7 @@ mod tests {
                 text: "Blue".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await
         else {
@@ -2060,6 +2077,7 @@ mod tests {
             text: "continue".into(),
             choices: Vec::new(),
             note: None,
+            other: None,
         };
         let (first, second) = tokio::join!(daemon.handle(request()), daemon.handle(request()));
         assert_eq!(
@@ -2149,6 +2167,7 @@ mod tests {
                 text: "reply".into(),
                 choices: Vec::new(),
                 note: None,
+                other: None,
             })
             .await;
         assert!(matches!(
@@ -2429,6 +2448,7 @@ mod tests {
                         text: String::new(),
                         choices: vec!["1".into(), "2".into()],
                         note: None,
+                        other: None,
                     })
                     .await,
                 Response::Error {
@@ -2448,6 +2468,7 @@ mod tests {
                 text: "2".into(),
                 choices: Vec::new(),
                 note: Some("the mock-ups won".into()),
+                other: None,
             })
             .await
         else {
@@ -2521,6 +2542,7 @@ mod tests {
                         text: "Red".into(),
                         choices: Vec::new(),
                         note: None,
+                        other: None,
                     })
                     .await,
                 Response::Error {
@@ -2545,6 +2567,101 @@ mod tests {
         assert_eq!(accepted.kind, "answer");
         assert_eq!(accepted.payload["text"], "Green", "normalised to its label");
         assert_eq!(accepted.payload["choices"], json!(["Green"]));
+    }
+
+    /// An answer's Other reaches its asker as written: "2" beside the
+    /// options "30" and "60" is "2", alone or beside a pick, never the
+    /// second option; a question that takes no Other refuses it and stays
+    /// open. Every answer is checked again where it closes the question, so
+    /// this also holds the daemon's own re-reading of it to the same rule.
+    #[tokio::test]
+    async fn an_other_is_delivered_as_written_never_as_a_label_or_number() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        register(&daemon, "recipient").await;
+        let numbers = |multi_select: bool, allow_other: bool| QuestionForm {
+            options: ["30", "60"]
+                .map(|label| agentdocker_core::QuestionOption {
+                    label: label.into(),
+                    description: String::new(),
+                })
+                .to_vec(),
+            multi_select,
+            allow_other,
+            ..QuestionForm::default()
+        };
+        let post = |form: QuestionForm| {
+            let daemon = daemon.clone();
+            async move {
+                let Response::Sent { message, .. } = daemon
+                    .post_question(
+                        "asker".into(),
+                        "recipient".into(),
+                        "How many seconds?".into(),
+                        None,
+                        300,
+                        form,
+                    )
+                    .await
+                else {
+                    panic!("the question was not posted");
+                };
+                message
+            }
+        };
+        let answer = |message: &MessageId, choices: &[&str], other: Option<&str>| {
+            let daemon = daemon.clone();
+            let request = Request::Answer {
+                from: Some("recipient".into()),
+                message: message.clone(),
+                text: String::new(),
+                choices: choices.iter().map(|c| (*c).to_owned()).collect(),
+                other: other.map(str::to_owned),
+                note: None,
+            };
+            async move { daemon.handle(request).await }
+        };
+        let delivered = |reply: &MessageId| {
+            lock(&daemon.state).inboxes[&asker.id]
+                .iter()
+                .find(|m| m.id == *reply)
+                .map(|m| m.payload.clone())
+                .expect("the answer reached the asker")
+        };
+
+        let alone = post(numbers(false, true)).await;
+        let Response::Sent { message: reply, .. } = answer(&alone, &[], Some("2")).await else {
+            panic!("the Other alone was refused");
+        };
+        let payload = delivered(&reply);
+        assert_eq!(payload["text"], "2", "{payload}");
+        assert_eq!(payload["other"], "2", "{payload}");
+        assert!(payload.get("choices").is_none(), "{payload}");
+        assert!(!lock(&daemon.state).questions.contains_key(&alone));
+
+        let beside = post(numbers(true, true)).await;
+        let Response::Sent { message: reply, .. } = answer(&beside, &["30"], Some("2")).await
+        else {
+            panic!("a pick and the Other were refused");
+        };
+        let payload = delivered(&reply);
+        assert_eq!(payload["text"], "30, 2", "{payload}");
+        assert_eq!(payload["choices"], json!(["30"]), "{payload}");
+        assert_eq!(payload["other"], "2", "{payload}");
+
+        let strict = post(numbers(true, false)).await;
+        assert!(matches!(
+            answer(&strict, &[], Some("2")).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert!(
+            lock(&daemon.state).questions.contains_key(&strict),
+            "refused, so still open"
+        );
     }
 
     /// Keeping waiting marks the question stale once, durably, with its
@@ -2622,6 +2739,7 @@ mod tests {
             from,
             text,
             choices,
+            other,
             note,
             default,
         } = asking.await
@@ -2631,6 +2749,7 @@ mod tests {
         assert_eq!(from, DEFAULT_ANSWERER);
         assert_eq!(text, "Blue");
         assert_eq!(choices, vec!["Blue".to_owned()]);
+        assert_eq!(other, None);
         assert_eq!(note, None);
         assert!(default);
         let state = lock(&daemon.state);

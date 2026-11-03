@@ -277,7 +277,8 @@ enum Cmd {
     Me,
     Questions,
     Answer(MessageId, String),
-    /// The options picked on a multi-select question, with a note.
+    /// The options picked on a question, by label, and the person's own
+    /// words for its Other, sent as written.
     AnswerChoices(MessageId, Vec<String>, Option<String>),
     SecretReviews,
     SecretAnswer(String, agentdocker_core::secret::SecretAnswers),
@@ -4090,17 +4091,19 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 message: message.clone(),
                 text,
                 choices: Vec::new(),
+                other: None,
                 note: None,
             })?;
             Some(Msg::Answered(message, Ok(())))
         }
-        Cmd::AnswerChoices(message, choices, note) => {
+        Cmd::AnswerChoices(message, choices, other) => {
             client.call(&Request::Answer {
                 from: None,
                 message: message.clone(),
                 text: String::new(),
                 choices,
-                note,
+                other,
+                note: None,
             })?;
             Some(Msg::Answered(message, Ok(())))
         }

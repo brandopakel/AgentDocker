@@ -2294,6 +2294,7 @@ mod tests {
                     text: "Allow".into(),
                     choices: Vec::new(),
                     note: None,
+                    other: None,
                 },
             )
             .await;

@@ -3505,24 +3505,21 @@ impl App {
                 }
             }
             Message::AnswerChoices(id) => {
-                // The picked rows, and the written words as the Other
-                // where the question allows one: a choice of its own,
-                // alone or beside the rows, never a note.
-                let mut choices = self.shell.picked.get(&id).cloned().unwrap_or_default();
-                if let Some(other) = self
+                // The picked rows by label, and the written words, where
+                // the question allows an Other, as that Other: sent apart
+                // and as written, never read as a label or a number, never
+                // a note.
+                let choices = self.shell.picked.get(&id).cloned().unwrap_or_default();
+                let other = self
                     .questions
                     .iter()
                     .find(|q| q.id == id && q.form.multi_select && q.form.allow_other)
                     .and_then(|_| self.shell.answers.get(&id))
                     .map(|words| words.trim().to_owned())
-                    .filter(|words| !words.is_empty())
-                    && !choices.contains(&other)
-                {
-                    choices.push(other);
-                }
+                    .filter(|words| !words.is_empty());
                 if self.connected.is_ok()
                     && !self.sending.contains(&id)
-                    && !choices.is_empty()
+                    && (!choices.is_empty() || other.is_some())
                     && self
                         .questions
                         .iter()
@@ -3535,10 +3532,15 @@ impl App {
                     self.shell
                         .chosen_answers
                         .retain(|id, _| sending.contains(id));
+                    let receipt: Vec<&str> = choices
+                        .iter()
+                        .chain(other.iter())
+                        .map(String::as_str)
+                        .collect();
                     self.shell
                         .chosen_answers
-                        .insert(id.clone(), choices.join(", "));
-                    self.send(Cmd::AnswerChoices(id, choices, None));
+                        .insert(id.clone(), receipt.join(", "));
+                    self.send(Cmd::AnswerChoices(id, choices, other));
                 }
             }
             Message::SecretEdit(id, field, value) => {
@@ -3599,7 +3601,19 @@ impl App {
                     self.sending.insert(id.clone());
                     self.shell.pending_answer_reveal = Some(id.clone());
                     self.shell.chosen_answers.remove(&id);
-                    self.send(Cmd::Answer(id, answer));
+                    // To a question with options of its own and an Other,
+                    // the written answer is that Other: sent as written,
+                    // never read as one of the options' labels or numbers.
+                    if self
+                        .questions
+                        .iter()
+                        .any(|q| q.id == id && !q.form.options.is_empty() && q.form.allow_other)
+                    {
+                        let other = answer.trim().to_owned();
+                        self.send(Cmd::AnswerChoices(id, Vec::new(), Some(other)));
+                    } else {
+                        self.send(Cmd::Answer(id, answer));
+                    }
                 }
             }
             Message::DismissInbox(mut ids) => {

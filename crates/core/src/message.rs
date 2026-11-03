@@ -444,16 +444,21 @@ impl QuestionForm {
     }
 }
 
-/// An answer as it was given: the options chosen, by label, a note in the
-/// answerer's words, and the text a reader that knows neither sees. The
-/// daemon builds one from an `answer` request against the question it
-/// answers, so a number becomes its label and a choice outside the options
-/// is refused unless the question allows Other.
+/// An answer as it was given: the options chosen, by label; the
+/// answerer's own words for the question's Other, as written; a note
+/// beside them; and the text a reader that knows none of these sees. The
+/// daemon builds one from an `answer` request, or a reply, against the
+/// question it answers, so a number becomes its label, a choice outside the
+/// options is refused unless the question allows Other, and the Other is
+/// never read as a label or a number.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuestionAnswer {
     pub text: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub choices: Vec<String>,
+    /// The answerer's own words for the question's Other, as written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub other: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     /// Nobody answered: the daemon applied the question's default.
@@ -462,23 +467,40 @@ pub struct QuestionAnswer {
 }
 
 impl QuestionAnswer {
-    /// Resolve what was given against `form`. `choices` are labels or
-    /// numbers; with none, `text` is read as one choice when the form has
-    /// options, and as the answer itself otherwise.
+    /// Resolve what was given against `form`. `choices` are selectors:
+    /// each names an option by label or number, and one that names none is
+    /// taken as an Other where the question allows one. `other` is the
+    /// answerer's own words, taken as written for the Other and never read
+    /// as a label or a number. With neither, `text` is read as one selector
+    /// when the form has options and as the answer itself otherwise; beside
+    /// either it is not read. So an answer resolved here resolves to itself
+    /// again, which lets the daemon check every reply that closes a
+    /// question, its own resolved answers among them.
     pub fn resolve(
         form: &QuestionForm,
         text: &str,
         choices: &[String],
+        other: Option<&str>,
         note: Option<&str>,
     ) -> Result<Self, String> {
-        let note = note
-            .map(str::trim)
-            .filter(|n| !n.is_empty())
-            .map(str::to_owned);
+        let words = |value: Option<&str>| {
+            value
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        let note = words(note);
+        let other = words(other);
         let text = text.trim();
         if form.options.is_empty() {
             if !choices.is_empty() {
                 return Err("this question offers no options; answer in words".to_owned());
+            }
+            if other.is_some() {
+                return Err(
+                    "this question offers no options, so it has no Other; answer in words"
+                        .to_owned(),
+                );
             }
             let text = match (text.is_empty(), &note) {
                 (false, _) => text.to_owned(),
@@ -488,18 +510,26 @@ impl QuestionAnswer {
             return Ok(Self {
                 text,
                 choices: Vec::new(),
+                other: None,
                 note,
                 default: false,
             });
         }
-        let given: Vec<&str> = if choices.is_empty() {
-            if text.is_empty() {
-                return Err("choose an option, or answer in words".to_owned());
-            }
+        if other.is_some() && !form.allow_other {
+            return Err(
+                "this question takes only its options, not an answer in other words".to_owned(),
+            );
+        }
+        let given: Vec<&str> = if !choices.is_empty() {
+            choices.iter().map(|c| c.trim()).collect()
+        } else if other.is_none() && !text.is_empty() {
             vec![text]
         } else {
-            choices.iter().map(|c| c.trim()).collect()
+            Vec::new()
         };
+        if given.is_empty() && other.is_none() {
+            return Err("choose an option, or answer in words".to_owned());
+        }
         let mut resolved: Vec<String> = Vec::new();
         for value in given {
             let label = match form.resolve_choice(value) {
@@ -516,10 +546,16 @@ impl QuestionAnswer {
                 resolved.push(label);
             }
         }
-        if !form.multi_select && resolved.len() > 1 {
+        // The Other is one choice among them, as written.
+        if !form.multi_select && resolved.len() + usize::from(other.is_some()) > 1 {
             return Err("this question takes one choice".to_owned());
         }
-        let mut text = resolved.join(", ");
+        let mut text = resolved
+            .iter()
+            .chain(other.iter())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ");
         if let Some(note) = &note {
             text.push_str(" — ");
             text.push_str(note);
@@ -527,6 +563,7 @@ impl QuestionAnswer {
         Ok(Self {
             text,
             choices: resolved,
+            other,
             note,
             default: false,
         })
@@ -1515,33 +1552,34 @@ mod form_tests {
     fn an_answer_resolves_against_the_form() {
         let plain = QuestionForm::default();
         assert_eq!(
-            QuestionAnswer::resolve(&plain, "yes", &[], None)
+            QuestionAnswer::resolve(&plain, "yes", &[], None, None)
                 .unwrap()
                 .text,
             "yes"
         );
-        assert!(QuestionAnswer::resolve(&plain, " ", &[], None).is_err());
+        assert!(QuestionAnswer::resolve(&plain, " ", &[], None, None).is_err());
         assert!(
-            QuestionAnswer::resolve(&plain, "", &["1".into()], None).is_err(),
+            QuestionAnswer::resolve(&plain, "", &["1".into()], None, None).is_err(),
             "no options to choose from"
         );
         let colours = colours();
-        let by_number = QuestionAnswer::resolve(&colours, "2", &[], None).unwrap();
+        let by_number = QuestionAnswer::resolve(&colours, "2", &[], None, None).unwrap();
         assert_eq!(by_number.choices, vec!["Green".to_owned()]);
         assert_eq!(by_number.text, "Green");
         let by_label =
-            QuestionAnswer::resolve(&colours, "", &["blue".into()], Some(" please ")).unwrap();
+            QuestionAnswer::resolve(&colours, "", &["blue".into()], None, Some(" please "))
+                .unwrap();
         assert_eq!(by_label.choices, vec!["Blue".to_owned()]);
         assert_eq!(by_label.note.as_deref(), Some("please"));
         assert_eq!(by_label.text, "Blue — please");
-        let other = QuestionAnswer::resolve(&colours, "Red", &[], None).unwrap();
+        let other = QuestionAnswer::resolve(&colours, "Red", &[], None, None).unwrap();
         assert_eq!(
             other.choices,
             vec!["Red".to_owned()],
             "Other is allowed by default"
         );
         assert!(
-            QuestionAnswer::resolve(&colours, "", &["1".into(), "2".into()], None).is_err(),
+            QuestionAnswer::resolve(&colours, "", &["1".into(), "2".into()], None, None).is_err(),
             "one choice unless multi_select"
         );
         let strict = QuestionForm {
@@ -1549,22 +1587,103 @@ mod form_tests {
             multi_select: true,
             ..colours.clone()
         };
-        assert!(QuestionAnswer::resolve(&strict, "Red", &[], None).is_err());
-        let both =
-            QuestionAnswer::resolve(&strict, "", &["2".into(), "Blue".into(), "2".into()], None)
-                .unwrap();
+        assert!(QuestionAnswer::resolve(&strict, "Red", &[], None, None).is_err());
+        let both = QuestionAnswer::resolve(
+            &strict,
+            "",
+            &["2".into(), "Blue".into(), "2".into()],
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             both.choices,
             vec!["Green".to_owned(), "Blue".to_owned()],
             "deduplicated, in order"
         );
         assert_eq!(both.text, "Green, Blue");
-        assert!(QuestionAnswer::resolve(&strict, "", &[" ".into()], None).is_err());
+        assert!(QuestionAnswer::resolve(&strict, "", &[" ".into()], None, None).is_err());
         let payload = both.payload();
         assert_eq!(QuestionAnswer::from_payload(&payload), both);
         let bare = QuestionAnswer::from_payload(&serde_json::json!({"text": "ok"}));
         assert_eq!(bare.text, "ok");
         assert!(bare.choices.is_empty() && bare.note.is_none() && !bare.default);
+    }
+
+    /// The Other is the answerer's words as written: never read as a label
+    /// or a number, refused where the question takes none, one choice of
+    /// its own, and beside it `text` is not read. An answer resolved once
+    /// resolves to itself again.
+    #[test]
+    fn the_other_is_taken_as_written_never_as_a_label_or_number() {
+        let numbers = QuestionForm {
+            options: vec![option("30", ""), option("60", "")],
+            ..QuestionForm::default()
+        };
+        assert_eq!(numbers.validate(300), Ok(()));
+        let alone = QuestionAnswer::resolve(&numbers, "", &[], Some(" 2 "), None).unwrap();
+        assert_eq!(alone.other.as_deref(), Some("2"));
+        assert!(alone.choices.is_empty());
+        assert_eq!(alone.text, "2");
+        let plain = QuestionAnswer::resolve(&numbers, "2", &[], None, None).unwrap();
+        assert_eq!(
+            plain.choices,
+            vec!["60".to_owned()],
+            "text alone keeps its rule: the second option"
+        );
+        assert_eq!(plain.other, None);
+        let unread = QuestionAnswer::resolve(&numbers, "60", &[], Some("2"), None).unwrap();
+        assert!(
+            unread.choices.is_empty(),
+            "beside the Other, text is not read"
+        );
+        assert_eq!(unread.other.as_deref(), Some("2"));
+        assert!(
+            QuestionAnswer::resolve(&numbers, "", &["30".into()], Some("2"), None).is_err(),
+            "a pick and an Other are two choices"
+        );
+        let multi = QuestionForm {
+            multi_select: true,
+            ..numbers.clone()
+        };
+        let beside =
+            QuestionAnswer::resolve(&multi, "", &["30".into()], Some("2"), Some("soon")).unwrap();
+        assert_eq!(beside.choices, vec!["30".to_owned()]);
+        assert_eq!(beside.other.as_deref(), Some("2"));
+        assert_eq!(beside.text, "30, 2 — soon");
+        let strict = QuestionForm {
+            allow_other: false,
+            ..multi.clone()
+        };
+        assert!(
+            QuestionAnswer::resolve(&strict, "", &[], Some("2"), None).is_err(),
+            "no Other here"
+        );
+        assert!(
+            QuestionAnswer::resolve(&QuestionForm::default(), "", &[], Some("words"), None)
+                .is_err(),
+            "a question without options has no Other"
+        );
+        for (form, answer) in [
+            (&numbers, &alone),
+            (&numbers, &plain),
+            (&numbers, &unread),
+            (&multi, &beside),
+        ] {
+            let again = QuestionAnswer::from_payload(&answer.payload());
+            assert_eq!(
+                QuestionAnswer::resolve(
+                    form,
+                    &again.text,
+                    &again.choices,
+                    again.other.as_deref(),
+                    again.note.as_deref()
+                )
+                .as_ref(),
+                Ok(answer),
+                "a resolved answer resolves to itself"
+            );
+        }
     }
 
     #[test]

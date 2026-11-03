@@ -732,12 +732,20 @@ enum Command {
         agent: Option<String>,
         /// The question's message id, as `ask` and `questions` print it.
         message: String,
-        /// The answer in words, or one option by its label or number.
-        #[arg(required_unless_present = "choices")]
+        /// The answer in words, or one option by its label or number;
+        /// give `--choice` or `--other` instead to say which it is.
+        #[arg(
+            required_unless_present_any = ["choices", "other"],
+            conflicts_with_all = ["choices", "other"]
+        )]
         text: Option<String>,
         /// An option taken, by label or number; repeat for a multi-select question.
         #[arg(long = "choice", value_name = "LABEL|N")]
         choices: Vec<String>,
+        /// Your own answer for the question's Other, taken as written: never
+        /// read as an option's label or number.
+        #[arg(long, value_name = "WORDS")]
+        other: Option<String>,
         /// Your own words beside a choice.
         #[arg(long)]
         note: Option<String>,
@@ -4643,6 +4651,7 @@ async fn run() -> Result<()> {
             message,
             text,
             choices,
+            other,
             note,
         } => {
             let request = Request::Answer {
@@ -4650,6 +4659,7 @@ async fn run() -> Result<()> {
                 message: MessageId::from(message),
                 text: text.unwrap_or_default(),
                 choices,
+                other,
                 note,
             };
             if let Response::Sent { message, .. } = client.call(&request).await? {

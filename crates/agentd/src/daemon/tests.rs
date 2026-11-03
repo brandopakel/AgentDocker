@@ -2420,6 +2420,7 @@ async fn ask_returns_the_answer_that_names_it() {
                     text: "yes".to_owned(),
                     choices: Vec::new(),
                     note: None,
+                    other: None,
                 })
                 .await
         })
@@ -2527,6 +2528,7 @@ async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
             text: "hello?".to_owned(),
             choices: Vec::new(),
             note: None,
+            other: None,
         })
         .await;
     assert!(
@@ -3872,6 +3874,7 @@ async fn an_answer_that_races_the_question_still_lands() {
                                 text: "at once".to_owned(),
                                 choices: Vec::new(),
                                 note: None,
+                                other: None,
                             })
                             .await,
                     );
