@@ -1971,6 +1971,51 @@ mod tests {
         stop(&daemon, &agent).await;
     }
 
+    /// A fifo named `name` in `dir`: a gate for a stand-in to wait at
+    /// until the test lets it go.
+    #[cfg(unix)]
+    fn fifo(dir: &TempDir, name: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        let raw = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a valid nul-terminated path is passed to mkfifo.
+        assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
+        path
+    }
+
+    /// Let the stand-in `pid` go from `gate`, where it waits to read. A
+    /// fifo opens to write without blocking only while a reader has it
+    /// open, and closing it then ends the read. With no reader yet the
+    /// open is tried again a moment later; a stand-in gone without
+    /// reading is an error as soon as that is seen, and one not at its
+    /// gate within `within` is an error then. Nothing here blocks, so a
+    /// test whose stand-in never reads fails instead of hanging.
+    #[cfg(unix)]
+    async fn release(gate: &Path, pid: u32, within: StdDuration) -> Result<(), String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(gate)
+            {
+                // Closed as it is dropped here, which ends the read.
+                Ok(_writer) => return Ok(()),
+                Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {}
+                Err(e) => return Err(format!("the gate could not be opened: {e}")),
+            }
+            if !agentdocker_host::procinfo::alive(pid) {
+                return Err(format!("stand-in {pid} is gone without reading its gate"));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "stand-in {pid} was not at its gate within {within:?}"
+                ));
+            }
+            tokio::time::sleep(StdDuration::from_millis(10)).await;
+        }
+    }
+
     /// A tmux that hangs holds up neither a managed terminal, judged in
     /// the same pass once the capture ends, nor the switch-off, seen while
     /// the capture hangs. The stand-in writes its pid and then blocks on a
@@ -1986,10 +2031,7 @@ mod tests {
         configure(&dir, &url, "");
         let daemon = open(&dir);
         let marker = dir.path().join("hung");
-        let gate = dir.path().join("gate");
-        let name = std::ffi::CString::new(gate.as_os_str().as_encoded_bytes()).unwrap();
-        // SAFETY: a valid nul-terminated path is passed to mkfifo.
-        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let gate = fifo(&dir, "gate");
         let stand_in = dir.path().join("tmux");
         std::fs::write(
             &stand_in,
@@ -2006,24 +2048,10 @@ mod tests {
             judge.tmux = stand_in;
             judge.capture_deadline = TMUX_BOUND;
         }
-        /// The stand-in is running and blocked on its gate: its pid, once
-        /// the marker holds all of it.
+        /// The stand-in's pid, once the marker holds all of it: the
+        /// stand-in is then at its gate or on its way there.
         async fn hanging(marker: &Path) -> u32 {
             eventually(async || std::fs::read_to_string(marker).ok()?.trim().parse().ok()).await
-        }
-        /// Let the stand-in go: opening the gate to write waits for its
-        /// reader, and closing it ends the read.
-        async fn release(gate: &Path) {
-            let gate = gate.to_path_buf();
-            tokio::time::timeout(
-                TMUX_BOUND,
-                tokio::task::spawn_blocking(move || {
-                    drop(std::fs::OpenOptions::new().write(true).open(gate).unwrap());
-                }),
-            )
-            .await
-            .expect("the stand-in reads its gate")
-            .unwrap();
         }
         let mut guest = std::process::Command::new("sleep")
             .arg("60")
@@ -2061,7 +2089,9 @@ mod tests {
             record(&daemon, &managed).judged.is_none(),
             "nothing judged while the pass reads"
         );
-        release(&gate).await;
+        if let Err(why) = release(&gate, hung, TMUX_BOUND).await {
+            panic!("{why}");
+        }
         pass.await.unwrap();
         assert!(
             record(&daemon, &managed).judged.is_some(),
@@ -2087,7 +2117,9 @@ mod tests {
             "taken off with it"
         );
         assert!(!pass.is_finished(), "the capture still hangs");
-        release(&gate).await;
+        if let Err(why) = release(&gate, hung, TMUX_BOUND).await {
+            panic!("{why}");
+        }
         pass.await.unwrap();
         assert_eq!(calls(&fake), 1);
         assert!(!agentdocker_host::procinfo::alive(hung), "reaped");
@@ -2095,6 +2127,35 @@ mod tests {
         let _ = guest.wait();
         stop(&daemon, &managed).await;
         let _ = in_tmux;
+    }
+
+    /// Letting a stand-in go never waits without end: a reader gone
+    /// before it was let go is reported gone at once, not at the bound,
+    /// and a gate nobody comes to read is given up on at the bound the
+    /// release was given. The error says which was met; no clock does.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_gate_nobody_reads_is_not_waited_on() {
+        let dir = TempDir::new().unwrap();
+        let gate = fifo(&dir, "gate");
+        let mut reader = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("read line < {}", gate.display()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        reader.kill().unwrap();
+        reader.wait().unwrap();
+        let gone = release(&gate, reader.id(), TMUX_BOUND).await.unwrap_err();
+        assert!(gone.contains("is gone"), "{gone}");
+        // Nobody opens it to read, while the process waited on, this
+        // one, is still there.
+        let unread = release(&gate, std::process::id(), StdDuration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(unread.contains("within"), "{unread}");
     }
 
     /// How long one tmux command, or a server's exit, may take.
