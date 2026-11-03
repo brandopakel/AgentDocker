@@ -3452,6 +3452,29 @@ async fn a_restore_that_cannot_run_records_the_failure_and_does_not_stop_the_oth
     daemon.stop_all().await;
 }
 
+/// A command whose program cannot be started is refused `launch_failed`,
+/// not `internal`: the request named something that cannot run.
+#[tokio::test]
+async fn a_command_that_cannot_start_is_refused_launch_failed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let mut missing = spec("missing");
+    missing.workdir = Some(dir.path().to_path_buf());
+    missing.command = vec!["/nonexistent/agentdocker-no-such-binary".into()];
+    let response = daemon.handle(Request::Run { spec: missing }).await;
+    assert!(
+        matches!(
+            &response,
+            Response::Error {
+                code: ErrorCode::LaunchFailed,
+                ..
+            }
+        ),
+        "{response:?}"
+    );
+    daemon.stop_all().await;
+}
+
 #[tokio::test]
 async fn an_agent_stopped_on_purpose_is_not_brought_back() {
     let dir = TempDir::new().unwrap();

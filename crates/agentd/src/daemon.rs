@@ -3617,7 +3617,7 @@ impl State {
                 "another coordination transfer is still offered in the database",
             ))),
             None => Err(Box::new(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "cannot record the offer")
+                Response::error(ErrorCode::StorageUnavailable, "cannot record the offer")
             }))),
         }
     }
@@ -4912,7 +4912,7 @@ impl State {
                 entries,
                 head_seq: Some(head_seq),
             },
-            None => Response::error(ErrorCode::Internal, "journal query failed"),
+            None => Response::error(ErrorCode::StorageUnavailable, "journal query failed"),
         }
     }
 
@@ -5059,9 +5059,9 @@ impl State {
                 }
                 Response::Pruned { removed }
             }
-            None => self
-                .write_failure()
-                .unwrap_or_else(|| Response::error(ErrorCode::Internal, "journal prune failed")),
+            None => self.write_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::StorageUnavailable, "journal prune failed")
+            }),
         }
     }
 

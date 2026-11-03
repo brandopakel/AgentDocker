@@ -470,8 +470,8 @@ text; the words and any details still go to stderr as `Error: … (Code)`.
 | Status | Meaning | Daemon answers |
 | --- | --- | --- |
 | 0 | done | — |
-| 1 | something unexpected: an internal error, or a failure that is not the daemon's answer (no daemon, a broken connection) | `internal` |
-| 2 | a usage error, the argument parser's own; also an invalid request | `invalid` |
+| 1 | something unexpected: an internal error, a change made but not confirmed (look before retrying), or a failure that is not the daemon's answer (no daemon, a broken connection) | `internal`, `unconfirmed` |
+| 2 | a usage error, the argument parser's own; also an invalid request, or a command that could not be started | `invalid`, `launch_failed` |
 | 3 | nothing by that name, or too many | `not_found`, `ambiguous` |
 | 4 | held or taken by somebody else | `conflict`, `name_taken`, `deadlock` |
 | 5 | refused: not the caller's to do, the project is paused, or it acts as an agent, or registers a process, from inside another agent's session or from a sender that cannot be traced | `forbidden`, `paused`, `identity_mismatch` |

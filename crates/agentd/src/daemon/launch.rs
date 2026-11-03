@@ -311,7 +311,7 @@ impl Daemon {
                 if let Some(error) = failed.or_else(|| {
                     activation_error.map(|error| {
                         Response::error(
-                            ErrorCode::Internal,
+                            ErrorCode::LaunchFailed,
                             format!("failed to execute command: {error:#}"),
                         )
                     })
@@ -716,7 +716,7 @@ impl Daemon {
         let dir = paths::worktree_dir(&self.home).join(base.id().short());
         if let Err(err) = std::fs::create_dir_all(&dir) {
             return Err(Box::new(Response::error(
-                ErrorCode::Internal,
+                ErrorCode::StorageUnavailable,
                 format!("cannot create {}: {err}", dir.display()),
             )));
         }

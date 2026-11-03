@@ -529,8 +529,8 @@ impl Daemon {
                         if candidate.is_none() { candidate = Some(envelope); }
                     }
                     Ok(_) => continue,
-                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::Internal, "answer stream lost messages; the answer remains in the inbox"),
-                    Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Internal, "the message bus closed"),
+                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::EventHistoryLost, "answer stream lost messages; the answer remains in the inbox"),
+                    Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Unavailable, "the message bus closed"),
                 },
                 event = events.recv() => match event {
                     Ok(Event { kind: EventKind::QuestionCancelled { question, .. }, .. }) if question == message =>
@@ -540,8 +540,8 @@ impl Daemon {
                         accepted = answer;
                     }
                     Ok(_) => continue,
-                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::Internal, "question stream lost events; no answer can be confirmed"),
-                    Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Internal, "the event bus closed"),
+                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::EventHistoryLost, "question stream lost events; no answer can be confirmed"),
+                    Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Unavailable, "the event bus closed"),
                 }
                 }
             }

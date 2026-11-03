@@ -1,7 +1,7 @@
 //! Handoff bundles: a checkpoint addressed to someone, with everything the
 //! daemon already knows about the sender bundled around it. Acceptance is
 //! `resume` (in `recovery`), which is where ownership moves.
-use super::recovery::internal;
+use super::recovery::storage;
 use super::*;
 use agentdocker_core::handoff::{BUNDLE_ROWS, HANDOFF_SCHEMA};
 use agentdocker_core::{Checkpoint, HandoffBundle};
@@ -157,7 +157,7 @@ impl Daemon {
         match state.store.document::<HandoffBundle>("handoff", &id) {
             Ok(Some(bundle)) => return Response::Handoff { bundle },
             Ok(None) => {}
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         }
         let project = record.project.as_ref().map(ProjectRef::id);
         let changes = match &project {
@@ -274,7 +274,7 @@ impl Daemon {
         };
         match state.store.handoffs(agent.as_ref()) {
             Ok(bundles) => Response::Handoffs { bundles },
-            Err(e) => internal(e),
+            Err(e) => storage(e),
         }
     }
 
@@ -374,7 +374,7 @@ impl Daemon {
                 );
             }
             Ok(None) => {}
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         }
         let now = Utc::now();
         let project = state

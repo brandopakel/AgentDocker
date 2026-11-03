@@ -154,7 +154,7 @@ impl Daemon {
                     },
                 );
                 self.cleanup_isolate(&record).await;
-                return Response::error(ErrorCode::Internal, reason);
+                return Response::error(ErrorCode::LaunchFailed, reason);
             }
             Err(error) => {
                 let reason = format!("tmux worker failed: {error}");

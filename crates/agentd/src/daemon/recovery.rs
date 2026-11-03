@@ -20,7 +20,7 @@ impl Daemon {
             .documents::<Checkpoint>("checkpoint", agent.as_ref())
         {
             Ok(checkpoints) => Response::Checkpoints { checkpoints },
-            Err(e) => internal(e),
+            Err(e) => storage(e),
         }
     }
 
@@ -46,14 +46,14 @@ impl Daemon {
             .documents::<Checkpoint>("checkpoint", agent.as_ref())
         {
             Ok(checkpoints) => checkpoints,
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         };
         let handoffs = match state
             .store
             .documents::<agentdocker_core::HandoffBundle>("handoff", None)
         {
             Ok(handoffs) => handoffs,
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         };
         let addressed: HashMap<&str, &AgentId> = handoffs
             .iter()
@@ -153,13 +153,13 @@ impl Daemon {
                     return checkpoint_retry(checkpoint, release, &task, &assumptions, &next_steps);
                 }
                 Ok(None) => {}
-                Err(e) => return internal(e),
+                Err(e) => return storage(e),
             }
         }
         let root = checkout.clone();
         let version = match tokio::task::spawn_blocking(move || content::fingerprint(&root)).await {
             Ok(Ok(v)) => v,
-            Ok(Err(e)) => return internal(e),
+            Ok(Err(e)) => return unreadable_checkout(e),
             Err(e) => return internal(e),
         };
         let mut state = lock(&self.state);
@@ -177,14 +177,14 @@ impl Daemon {
                 return checkpoint_retry(checkpoint, release, &task, &assumptions, &next_steps);
             }
             Ok(None) => {}
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         }
         let reads = match state
             .store
             .document::<Vec<ReadMark>>("reads", agent.as_str())
         {
             Ok(reads) => reads.unwrap_or_default(),
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         };
         let checkpoint = Checkpoint {
             id: id.clone(),
@@ -242,7 +242,7 @@ impl Daemon {
         {
             Ok(Some(c)) => c,
             Ok(None) => return Response::error(ErrorCode::NotFound, "checkpoint not found"),
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         };
         if checkpoint.checkout != checkout {
             return Response::error(
@@ -275,7 +275,7 @@ impl Daemon {
         let mut checkpoint = match state.store.document::<Checkpoint>("checkpoint", id) {
             Ok(Some(c)) => c,
             Ok(None) => return Response::error(ErrorCode::NotFound, "checkpoint disappeared"),
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         };
         let environment = state
             .registry
@@ -291,7 +291,7 @@ impl Daemon {
             .document::<agentdocker_core::HandoffBundle>("handoff", id)
         {
             Ok(bundle) => bundle,
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         };
         if acknowledge
             && bundle
@@ -324,7 +324,7 @@ impl Daemon {
                     .document::<Vec<ReadMark>>("reads", agent.as_str())
                 {
                     Ok(v) => v.unwrap_or_default(),
-                    Err(e) => return internal(e),
+                    Err(e) => return storage(e),
                 };
                 let mut reads: BTreeMap<_, _> = checkpoint
                     .reads
@@ -447,7 +447,7 @@ impl Daemon {
                         && ContainerEnvironment::matches(&v.environment, &environment)
                 })
                 .collect(),
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         };
         Response::Recovery {
             recovery: Recovery {
@@ -471,7 +471,7 @@ impl Daemon {
             .documents::<Validation>("validation", Some(&agent))
         {
             Ok(validations) => Response::Validations { validations },
-            Err(e) => internal(e),
+            Err(e) => storage(e),
         }
     }
 
@@ -513,13 +513,13 @@ impl Daemon {
         .await
         {
             Ok(Ok(v)) => v,
-            Ok(Err(e)) => return internal(e),
+            Ok(Err(e)) => return unreadable_checkout(e),
             Err(e) => return internal(e),
         };
         let id = MessageId::generate().to_string();
         let log = self.home.join("logs").join(format!("validation-{id}.log"));
         if let Err(e) = std::fs::create_dir_all(self.home.join("logs")) {
-            return internal(e);
+            return storage(e);
         }
         let output = match std::fs::OpenOptions::new()
             .write(true)
@@ -527,11 +527,11 @@ impl Daemon {
             .open(&log)
         {
             Ok(f) => f,
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         };
         let error = match output.try_clone() {
             Ok(f) => f,
-            Err(e) => return internal(e),
+            Err(e) => return storage(e),
         };
         let mut validation = Validation {
             id: id.clone(),
@@ -603,7 +603,7 @@ impl Daemon {
             cmd.as_std_mut().process_group(0);
             let mut child = match cmd.spawn() {
                 Ok(child) => child,
-                Err(e) => return internal(e),
+                Err(e) => return launch_failed(e),
             };
             // On Unix the command leads its own process group, ended as a
             // whole on a timeout and checked for survivors afterwards. On
@@ -711,8 +711,29 @@ impl Drop for ValidationGroup {
         }
     }
 }
+/// A fault of the daemon's own: a worker task that panicked or was
+/// cancelled, a child that could not be waited for.
 pub(super) fn internal(error: impl std::fmt::Display) -> Response {
     Response::error(ErrorCode::Internal, error.to_string())
+}
+
+/// The store, or a file under the daemon's home, could not be read or
+/// written.
+pub(super) fn storage(error: impl std::fmt::Display) -> Response {
+    Response::error(ErrorCode::StorageUnavailable, error.to_string())
+}
+
+/// The checkout could not be read to fingerprint it.
+fn unreadable_checkout(error: impl std::fmt::Display) -> Response {
+    Response::error(
+        ErrorCode::Invalid,
+        format!("the checkout cannot be read: {error}"),
+    )
+}
+
+/// The command could not be started.
+fn launch_failed(error: impl std::fmt::Display) -> Response {
+    Response::error(ErrorCode::LaunchFailed, error.to_string())
 }
 
 #[cfg(test)]
