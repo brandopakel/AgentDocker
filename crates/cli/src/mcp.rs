@@ -2965,7 +2965,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "pull_task",
-            "description": "Take a card from the board's pull source (Ready on most boards) that nobody else holds: it becomes yours, in the pull target, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Name no card to take the next ready one: the first in board order that is free or yours and waits on nothing open; when there is none the answer says nothing_ready with what is there, which is not an error. Refused if somebody holds it, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. The answer is the card in full — its description, acceptance, comments, history and the cards it waits on — and the lease: read the acceptance before you start.",
+            "description": "Take a card nobody else holds: one you name from any open lane (one in progress or in review stays where it is; any other goes to the pull target), or with no card named the next one in the board's pull source (Ready on most boards), into the pull target. It becomes yours, and you hold its task:<id> lease (four hours; renew it during long work — an exit releases it; pulling your own held card renews it). Name no card to take the next ready one: the first in board order that is free or yours and waits on nothing open; when there is none the answer says nothing_ready with what is there, which is not an error. Refused if somebody holds it, so two agents never work the same card. A card whose holder's lease lapsed is refused too, with hold: lapsed: take it over only by naming that holder in take_over_from, when you know they are gone or the person said so. The answer is the card in full — its description, acceptance, comments, history and the cards it waits on — and the lease: read the acceptance before you start.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2979,7 +2979,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "move_task",
-            "description": "Move a card you hold to another lane — review when it is ready for eyes (the first Review lane), done when its acceptance text is met. Name the lane by slug, name or category; the answer lists the board's lanes when nothing matches. Say why in comment and it goes on the card in the same change. after or before put it beside another card in that lane. Only the card's holder or the person moves it.",
+            "description": "Move a card you hold to another lane — review when it is ready for eyes (the first Review lane), done when its acceptance text is met. Name the lane by slug, name or category; the answer lists the board's lanes when nothing matches. Say why in comment and it goes on the card in the same change. after or before put it beside another card in that lane. Only the card's holder or the person moves it; take a card nobody holds with pull_task by naming it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3273,7 +3273,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "add_memory",
-            "description": "Keep a fact for this project's agents and the person: a convention, a decision, where something lives. Kept on this machine, said to every new session in the project. One sentence or a few, at most 2048 characters; never a secret, which is refused. Replace a memory that is no longer true by naming it in `supersedes`.",
+            "description": "Keep a fact for this project's agents and the person: a convention, a decision, where something lives. Kept on this machine, said to every new session in the project, or with `roles` only to those roles' holders. One sentence or a few, at most 2048 characters; never a secret, which is refused. Replace a memory that is no longer true by naming it in `supersedes`.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3281,6 +3281,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "supersedes": { "type": "string", "description": "The id of the memory this one replaces." },
                     "standing": { "type": "boolean", "description": "Said first in the profile, before the recent ones: a convention or a decision rather than news." },
                     "forget_after": { "type": "string", "format": "date-time", "description": "An RFC 3339 time after which it is no longer said." },
+                    "roles": { "type": "array", "maxItems": 8, "items": { "type": "string" }, "description": "Said only to the agents holding one of these project roles, and to the person; to everyone when absent." },
                     "links": { "type": "array", "maxItems": 8, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["content"],
