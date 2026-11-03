@@ -28,10 +28,12 @@ CACHE_NAMES = ("target", "fuzz/target")
 CAMPAIGN = "task:local-cargo-campaign"
 
 # One running process as the prune sees it: `places` are the paths the kernel
-# knows it by (working directory, executable); `blind` says one of them could
-# not be read and the command line gives no absolute executable either, so
-# nothing can rule the process out of any worktree.
+# knows it by (working directory, executable); `blind` says one of the two
+# could not be read, so nothing can rule the process out of any worktree.
 Process = namedtuple("Process", "pid command places blind", defaults=(False,))
+# What must be known of a process before it is ruled out of a worktree, as
+# lsof names them: where it works, and what it runs.
+REQUIRED_PLACES = ("cwd", "txt")
 
 
 class BudgetError(Exception):
@@ -185,13 +187,14 @@ def process_table():
     """This user's live processes as `Process` records: the places are the
     paths the kernel knows a process by — its working directory and the
     files it executes — since a command started as `target/debug/app` or
-    `python3 server.py` names no worktree on its command line. A process
-    whose places cannot be read is `blind` unless its command line names
-    an absolute executable (its directory then stays unknown; the
-    executable does not). Another user's processes and zombies do not
-    build in this user's worktrees and are left out; so is a pid that has
-    exited by the time its places are read. None when the processes or
-    their places cannot be read at all: then every worktree may be busy.
+    `python3 server.py` names no worktree on its command line, and an
+    absolute interpreter (`/usr/bin/python3 server.py`) says where the
+    interpreter is, not where its script runs. A live process whose working
+    directory or executable cannot be read is `blind`, whatever its command
+    line names. Another user's processes and zombies do not build in this
+    user's worktrees and are left out; so is a pid that has exited by the
+    time its places are read. None when the processes or their places
+    cannot be read at all: then every worktree may be busy.
     """
     try:
         listing = subprocess.check_output(["ps", "-e", "-ww", "-o", "pid=,uid=,stat=,command="],
@@ -211,63 +214,135 @@ def process_table():
     if read is None:
         return None
     places, unread, exited = read
-    table = []
-    for pid, command in processes:
-        if pid in exited:
-            continue
-        absolute = command.split(None, 1)[0].startswith("/") if command.strip() else False
-        table.append(Process(pid, command, tuple(places.get(pid, ())), pid in unread and not absolute))
-    return table
+    return [Process(pid, command, tuple(places.get(pid, ())), pid in unread)
+            for pid, command in processes if pid not in exited]
+
+
+def chunked(items, size=100):
+    return [items[start:start + size] for start in range(0, len(items), size)]
 
 
 def process_places(pids, proc=Path("/proc")):
     """What the kernel says of each pid's places: (places, unread, exited) —
-    pid -> the paths it works in and executes; the pids with a place that
-    could not be read while the process lives; the pids that have exited.
-    /proc on Linux, `lsof -d cwd,txt` elsewhere; None when neither can be
+    pid -> the paths it works in and executes; the live pids whose working
+    directory or executable could not be read; the pids that have exited or
+    are zombies. /proc on Linux. Elsewhere one `lsof -d cwd,txt` scan of
+    every process; a pid it passed without both a cwd and a txt record is
+    asked about again on its own, since the scan reads processes one at a
+    time while they start and end, and a pid still missing one then is
+    unread unless it has ended. None when neither /proc nor lsof can be
     asked at all."""
     places, unread, exited = {}, set(), set()
     if proc.is_dir():
         for pid in pids:
+            missing = False
             for name in ("cwd", "exe"):
                 try:
-                    place = Path(os.readlink(proc / str(pid) / name))
+                    target = os.readlink(proc / str(pid) / name)
                 except OSError:
-                    if (proc / str(pid)).is_dir():
-                        unread.add(pid)
-                    else:
-                        exited.add(pid)
+                    missing = True
                     continue
-                places.setdefault(pid, []).append(place)
+                if target.endswith(" (deleted)"):
+                    target = target[:-len(" (deleted)")]
+                places.setdefault(pid, []).append(Path(target))
+            if missing:
+                (exited if proc_ended(proc, pid) else unread).add(pid)
         return places, unread, exited
     if not shutil.which("lsof"):
         return None
+    listing = lsof_records()
+    if listing is None:
+        return None
+    seen = {}
+    read_lsof(listing, places, seen)
+    incomplete = [pid for pid in pids if not set(REQUIRED_PLACES) <= seen.get(pid, set())]
+    for chunk in chunked(incomplete):
+        again = lsof_records("-a", "-p", ",".join(str(pid) for pid in chunk))
+        if again is not None:
+            read_lsof(again, places, seen)
+    missing = [pid for pid in incomplete if not set(REQUIRED_PLACES) <= seen.get(pid, set())]
+    gone = ended(missing)
+    for pid in missing:
+        (exited if pid in gone else unread).add(pid)
+    return {pid: list(dict.fromkeys(found)) for pid, found in places.items()}, unread, exited
+
+
+def proc_ended(proc, pid):
+    """The pid is gone from /proc, or is a zombie there: nothing left of it
+    works anywhere. A pid whose state cannot be read is taken as alive."""
     try:
-        output = subprocess.check_output(["lsof", "-d", "cwd,txt", "-F", "pn"], text=True,
-                                         stderr=subprocess.DEVNULL, timeout=120)
+        stat = (proc / str(pid) / "stat").read_text()
+    except OSError:
+        return not (proc / str(pid)).exists()
+    # The command name is in parentheses and may hold either; the state follows the last.
+    fields = stat.rpartition(")")[2].split()
+    return bool(fields) and fields[0] in ("Z", "X", "x")
+
+
+def lsof_records(*selection):
+    """`lsof -F pfn` records of the working directories and executables of
+    the processes `selection` names (every process when empty), or None
+    when lsof cannot be run. lsof exits 1 when it could not read some
+    process; what it read is listed all the same, and a process it cannot
+    read at all gets no record."""
+    try:
+        return subprocess.check_output(["lsof", *selection, "-d", ",".join(REQUIRED_PLACES), "-F", "pfn"],
+                                       text=True, stderr=subprocess.DEVNULL, timeout=120)
     except subprocess.CalledProcessError as error:
-        # lsof exits 1 when some process could not be read; the rest is listed.
-        output = error.output or ""
+        return error.output or ""
     except (OSError, subprocess.SubprocessError):
         return None
-    pid = None
-    for line in output.splitlines():
-        if line.startswith("p"):
-            pid = int(line[1:])
-        elif line.startswith("n") and pid is not None:
-            places.setdefault(pid, []).append(Path(line[1:]))
+
+
+def read_lsof(listing, places, seen):
+    """Fold `lsof -F pfn` records into places (pid -> paths) and seen (pid ->
+    the descriptors read, cwd and txt told apart by their `f` record). A
+    name that is not a path, or one under no descriptor, reads nothing."""
+    pid = descriptor = None
+    for line in listing.splitlines():
+        tag, value = line[:1], line[1:]
+        if tag == "p":
+            pid, descriptor = (int(value) if value.isdigit() else None), None
+        elif tag == "f":
+            descriptor = value
+        elif tag == "n":
+            # One name per descriptor: a second one belongs to none.
+            if pid is not None and descriptor in REQUIRED_PLACES and value.startswith("/"):
+                seen.setdefault(pid, set()).add(descriptor)
+                places.setdefault(pid, []).append(Path(value))
+            descriptor = None
+
+
+def ended(pids):
+    """The pids among these that have exited, or are zombies: nothing left of
+    them works anywhere. Existence is the kernel's answer to signal 0; ps is
+    asked only whether a pid that exists is a zombie, since a `ps -p` list
+    with one pid it refuses answers for none. A pid that cannot be told is
+    taken as alive."""
+    gone, present = set(), []
     for pid in pids:
-        if pid in places:
+        if pid <= 0:
+            present.append(pid)
             continue
         try:
             os.kill(pid, 0)
         except ProcessLookupError:
-            exited.add(pid)
+            gone.add(pid)
+            continue
         except OSError:
-            unread.add(pid)
-        else:
-            unread.add(pid)
-    return places, unread, exited
+            pass
+        present.append(pid)
+    for chunk in chunked([pid for pid in present if pid > 0]):
+        try:
+            answer = subprocess.run(["ps", "-o", "pid=,stat=", "-p", ",".join(str(pid) for pid in chunk)],
+                                    capture_output=True, text=True, timeout=60).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in answer.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].isdigit() and "Z" in parts[1]:
+                gone.add(int(parts[0]))
+    return gone
 
 
 def within(path, base):
@@ -479,6 +554,11 @@ def prune(args):
           f"(current {caches.get(current, 0) / GIB:.1f} GiB; limit {args.max_total_gib})")
     leases = lease_resources()
     processes = process_table()
+    for pid, command, _, blind in (Process(*entry) for entry in processes or ()):
+        if blind:
+            name = os.path.basename(command.split(None, 1)[0]) if command.strip() else "?"
+            print(f"process {pid} ({name}) cannot be placed: its working directory or executable cannot be read, "
+                  "so it may be in any worktree; nothing is prunable while it runs")
     branches = Branches()
     prunable, kept = plan_prune(records, caches, current_root=ROOT.resolve(), current_target=current,
                                 leases=leases, processes=processes, branch_state=branches.state, lock_held=build_lock_held)

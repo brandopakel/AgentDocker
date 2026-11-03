@@ -214,15 +214,20 @@ longer exists (a detached checkout counts as merged when its commit is in
 `origin/main`; a checkout at `origin/main`'s tip, branch or detached, is current
 with nothing of its own merged, and stays), no running process names the worktree on its
 command line, works in it or runs a file from it (every process's working
-directory and executable, from `/proc` or `lsof`; a command started as
-`target/debug/app` or `python3 server.py` names no worktree). Another user's
-processes and zombies do not build in this user's worktrees and are left out,
-and so is a pid that exited meanwhile; a live process of this user whose places
-cannot be read is blind unless its command line names an absolute executable
-(the executable is then known, its directory not), and one blind process keeps
-every worktree; when no process or place can be read at all, every worktree
-counts as busy. The last condition is that no Cargo build holds the cache's
-`.cargo-lock`. The current worktree (the checkout the script runs from, and
+directory and executable, from `/proc` on Linux and `lsof` elsewhere, where the
+files a process maps count too; a command started as `target/debug/app` or
+`python3 server.py` names no worktree, and an absolute interpreter such as
+`/usr/bin/python3 server.py` says where the interpreter is, not where its script
+runs). Another user's processes and zombies do not build in this user's
+worktrees and are left out, and so is a pid that has exited by the time it is
+read. `lsof` scans every process one at a time while processes start and end,
+so a pid the scan passed without both a working-directory and an executable
+record is asked about again on its own. A live process of this user whose
+working directory or executable still cannot be read is blind, whatever its
+command line names, and one blind process keeps every worktree: the report names
+it, and nothing is pruned while it runs. When no process or place can be read at
+all, every worktree counts as busy. The last condition is that no Cargo build
+holds the cache's `.cargo-lock`. The current worktree (the checkout the script runs from, and
 whatever Cargo reports as its target directory), the project's main checkout
 and a `target` that is a symbolic link are never touched; only the cache goes,
 never the worktree. The leases are the machine's own daemon's, asked without
