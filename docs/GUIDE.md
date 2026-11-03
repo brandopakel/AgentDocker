@@ -1096,10 +1096,14 @@ Current behaviour that the sections above do not already state, by area.
   ```
 
   A job reads the second line (`gate=approved` is the only pass; every
-  field before `by=` is one `key=value` token) or `--json`; the commit
+  field before `by=` is one `key=value` token, the runtime
+  percent-encoded if it has a space in it) or `--json`; the commit
   status `agentdocker/review` says `changes by reviewer-1 (codex;
   important 1, nit 2, pre-existing 0)`. `--approve` and `--comment` are
-  still accepted for `--pass` and `--none`.
+  still accepted for `--pass` and `--none`, and in JSON (`--json`, the
+  tools' replies, `events`) the word is written `approve`, `changes` or
+  `comment`, the spelling older clients read: `pass` is `approve` and
+  `none` is `comment`.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or

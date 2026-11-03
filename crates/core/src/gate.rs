@@ -68,20 +68,23 @@ impl Findings {
     }
 }
 
-/// A reviewer's word on a branch at a commit: the fixed vocabulary.
+/// A reviewer's word on a branch at a commit: the fixed vocabulary as
+/// spoken and shown (`pass`, `changes`, `none`).
 ///
-/// Verdicts written before it said `approve` and `comment`; those read as
-/// `pass` and `none`, and are still accepted when spoken.
+/// On the wire and in storage it is written `approve`, `changes` and
+/// `comment`, the spelling clients built before this vocabulary decode,
+/// so a retained CLI still reads a verdict, a gate and an event; either
+/// spelling is read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Word {
     /// Good to land at this commit, with no important finding.
-    #[serde(alias = "approve", alias = "approved")]
+    #[serde(rename = "approve", alias = "approved", alias = "pass")]
     Pass,
     /// Not yet: the findings say what to change.
     Changes,
     /// Read, and no verdict given: neither passes nor blocks.
-    #[serde(alias = "comment")]
+    #[serde(rename = "comment", alias = "none")]
     None,
 }
 
@@ -108,6 +111,25 @@ impl fmt::Display for Word {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_str())
     }
+}
+
+/// `text` as one token of a parseable line: every space, control
+/// character, `=` and `%` percent-encoded (`%20`, `%0A`, `%3D`, `%25`),
+/// so the line splits on spaces and each field on its first `=`. Decoding
+/// is percent-decoding.
+pub fn token(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_whitespace() || c.is_control() || c == '=' || c == '%' {
+            let mut bytes = [0u8; 4];
+            for byte in c.encode_utf8(&mut bytes).bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// One reviewer's word on one branch at one commit.
@@ -212,16 +234,19 @@ impl CodeVerdict {
 
     /// One line a job can parse, `key=value` fields split on spaces:
     /// `verdict=pass head=<full commit> important=0 nit=1 pre_existing=0
-    /// runtime=codex by=<reviewer>`. Every value before `by=` has no
-    /// space in it; `by=` is last and runs to the end of the line, since a
-    /// reviewer's name may have spaces.
+    /// runtime=codex by=<reviewer>`. Every value before `by=` is one
+    /// token: the word, the commit and the counts are so by construction,
+    /// and the runtime, free text when an agent registered, is
+    /// percent-encoded ([`token`]). `by=` is last and runs to the end of
+    /// the line, since a reviewer's name may have spaces (never a control
+    /// character).
     pub fn line(&self) -> String {
         format!(
             "verdict={} head={} {} runtime={} by={}",
             self.verdict,
             self.head,
             self.findings.line(),
-            self.runtime_said(),
+            token(self.runtime_said()),
             self.by_name
         )
     }
@@ -566,7 +591,19 @@ mod tests {
         }
         assert_eq!(Word::parse("lgtm"), None);
         assert_eq!(Word::Pass.to_string(), "pass");
-        assert_eq!(serde_json::to_string(&Word::None).unwrap(), "\"none\"");
+        // Spoken and shown as pass/none; written as approve/comment, the
+        // spelling retained clients decode; both read back.
+        assert_eq!(serde_json::to_string(&Word::None).unwrap(), "\"comment\"");
+        assert_eq!(serde_json::to_string(&Word::Pass).unwrap(), "\"approve\"");
+        for (json, word) in [
+            ("\"pass\"", Word::Pass),
+            ("\"approve\"", Word::Pass),
+            ("\"none\"", Word::None),
+            ("\"comment\"", Word::None),
+            ("\"changes\"", Word::Changes),
+        ] {
+            assert_eq!(serde_json::from_str::<Word>(json).unwrap(), word);
+        }
         // A verdict kept before the vocabulary: `approve`, priorities,
         // no runtime.
         let kept: CodeVerdict = serde_json::from_value(serde_json::json!({
@@ -593,7 +630,152 @@ mod tests {
         let round: CodeVerdict =
             serde_json::from_str(&serde_json::to_string(&kept).unwrap()).unwrap();
         assert_eq!(round, kept);
-        assert!(serde_json::to_string(&kept).unwrap().contains("\"pass\""));
+        assert!(
+            serde_json::to_string(&kept)
+                .unwrap()
+                .contains("\"approve\"")
+        );
+    }
+
+    /// A client built before the vocabulary — its enum `approve`,
+    /// `changes`, `comment` and its findings `p1`, `p2`, `p3` — decodes a
+    /// verdict reply, a gate payload and a `code_verdict_given` event
+    /// written now, so an old `--approve` reports what it did.
+    #[test]
+    fn a_retained_client_decodes_what_is_written_now() {
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum OldVerdict {
+            Approve,
+            Changes,
+            Comment,
+        }
+        #[derive(Debug, Default, PartialEq, Deserialize)]
+        struct OldFindings {
+            #[serde(default)]
+            p1: u32,
+            #[serde(default)]
+            p2: u32,
+            #[serde(default)]
+            p3: u32,
+        }
+        #[derive(Debug, Deserialize)]
+        struct OldCodeVerdict {
+            id: String,
+            branch: String,
+            head: String,
+            by_name: String,
+            #[serde(default)]
+            roles: Vec<String>,
+            verdict: OldVerdict,
+            #[serde(default)]
+            findings: OldFindings,
+            note: String,
+        }
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "state", rename_all = "snake_case")]
+        enum OldGate {
+            Approved { verdict: Box<OldCodeVerdict> },
+            Changes { verdict: Box<OldCodeVerdict> },
+            Stale { verdict: Box<OldCodeVerdict> },
+            Missing,
+        }
+        #[derive(Debug, Deserialize)]
+        #[serde(tag = "event", rename_all = "snake_case")]
+        enum OldKind {
+            CodeVerdictGiven {
+                branch: String,
+                head: String,
+                by: AgentId,
+                verdict: OldVerdict,
+            },
+        }
+        let mut passed = verdict("r", &["reviewer"], A, Word::Pass, 0);
+        passed.findings.nit = 2;
+        let json = serde_json::to_value(&passed).unwrap();
+        let old: OldCodeVerdict = serde_json::from_value(json).unwrap();
+        assert_eq!(old.verdict, OldVerdict::Approve);
+        assert_eq!(old.findings, OldFindings::default(), "counts it never had");
+        assert_eq!(
+            (
+                old.id,
+                old.branch,
+                old.head,
+                old.by_name,
+                old.roles,
+                old.note
+            ),
+            (
+                passed.id.clone(),
+                "feature/x".into(),
+                A.into(),
+                "r".into(),
+                vec!["reviewer".into()],
+                String::new()
+            )
+        );
+        let withheld = verdict("r", &["reviewer"], A, Word::None, 1);
+        let old: OldCodeVerdict =
+            serde_json::from_value(serde_json::to_value(&withheld).unwrap()).unwrap();
+        assert_eq!(old.verdict, OldVerdict::Comment);
+        for (gate, state) in [
+            (
+                Gate::Approved {
+                    verdict: Box::new(passed.clone()),
+                },
+                "approved",
+            ),
+            (
+                Gate::Changes {
+                    verdict: Box::new(verdict("r", &["reviewer"], A, Word::Changes, 2)),
+                },
+                "changes",
+            ),
+            (
+                Gate::Stale {
+                    verdict: Box::new(passed.clone()),
+                },
+                "stale",
+            ),
+            (Gate::Missing, "missing"),
+        ] {
+            let json = serde_json::to_value(&gate).unwrap();
+            assert_eq!(json["state"], state);
+            let old: OldGate = serde_json::from_value(json).unwrap();
+            match (&gate, &old) {
+                (Gate::Approved { .. }, OldGate::Approved { verdict })
+                | (Gate::Stale { .. }, OldGate::Stale { verdict }) => {
+                    assert_eq!(verdict.verdict, OldVerdict::Approve);
+                }
+                (Gate::Changes { .. }, OldGate::Changes { verdict }) => {
+                    assert_eq!(verdict.verdict, OldVerdict::Changes);
+                }
+                (Gate::Missing, OldGate::Missing) => {}
+                other => panic!("{other:?}"),
+            }
+        }
+        let event = crate::EventKind::CodeVerdictGiven {
+            project: ProjectId::from("p"),
+            branch: "feature/x".into(),
+            head: A.into(),
+            by: AgentId::from("r"),
+            verdict: Word::Pass,
+            findings: passed.findings,
+            runtime: "codex".into(),
+        };
+        let json = serde_json::to_value(&event).unwrap();
+        assert_eq!(json["verdict"], "approve");
+        assert_eq!(json["findings"]["nit"], 2);
+        let OldKind::CodeVerdictGiven {
+            branch,
+            head,
+            by,
+            verdict,
+        } = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            (branch.as_str(), head.as_str(), by.as_str(), verdict),
+            ("feature/x", A, "r", OldVerdict::Approve)
+        );
     }
 
     #[test]
@@ -627,10 +809,29 @@ mod tests {
             Gate::Missing.line("feature/x", B),
             format!("gate=missing branch=feature/x head={B}")
         );
-        // Every field before `by=` is one token.
+        // Every field before `by=` is one token, a runtime an agent
+        // registered as free text included.
         let line = approved.line("feature/x", A);
         let (before, _) = line.split_once(" by=").unwrap();
         assert!(before.split(' ').all(|field| field.contains('=')));
+        let mut odd = verdict("r", &["reviewer"], A, Word::Pass, 0);
+        odd.runtime = "custom runtime\n=100%\t".into();
+        let line = odd.line();
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+        let fields: Vec<(&str, &str)> = line
+            .split_once(" by=")
+            .unwrap()
+            .0
+            .split(' ')
+            .map(|field| field.split_once('=').unwrap())
+            .collect();
+        assert_eq!(
+            fields.iter().find(|(key, _)| *key == "runtime").unwrap().1,
+            "custom%20runtime%0A%3D100%25%09"
+        );
+        assert_eq!(fields.len(), 6, "{fields:?}");
+        assert_eq!(token("codex"), "codex");
+        assert_eq!(token("é b"), "é%20b");
     }
 
     #[test]
