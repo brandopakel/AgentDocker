@@ -196,7 +196,7 @@ impl State {
 
     /// What a project is called, for its display keys: the name an agent
     /// in it has for it, else its id.
-    fn project_name(&self, project: &ProjectId) -> String {
+    pub(super) fn project_name(&self, project: &ProjectId) -> String {
         self.registry
             .all()
             .filter_map(|a| a.project.as_ref())
