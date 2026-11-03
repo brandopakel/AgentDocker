@@ -254,8 +254,8 @@ CREATE TABLE IF NOT EXISTS usage_holdings (
     kind  TEXT NOT NULL,
     since TEXT NOT NULL,
     until TEXT,
-    value TEXT,
-    PRIMARY KEY (agent, kind, since)
+    value TEXT NOT NULL,
+    PRIMARY KEY (agent, kind, since, value)
 );
 CREATE TABLE IF NOT EXISTS read_cursors (
     reader       TEXT NOT NULL,
@@ -1441,11 +1441,15 @@ impl Store {
 
     pub fn upsert_lease(&self, lease: &Lease) -> Result<()> {
         // A lease passed to another holder (a handoff's transfer) ends the
-        // holding of the one it leaves.
+        // holding of the one it leaves, at the hand-over.
         if let Some(previous) = self.stored_lease(&lease.id)?
             && previous.holder != lease.holder
         {
-            self.usage_holding_ended(&previous, Utc::now())?;
+            let handed_over = lease
+                .held_since
+                .filter(|at| *at > previous.held_since())
+                .unwrap_or_else(Utc::now);
+            self.usage_holding_ended(&previous, handed_over)?;
         }
         self.conn.execute(
             "INSERT INTO leases (id, holder, resource, json) VALUES (?1, ?2, ?3, ?4)
@@ -3155,6 +3159,7 @@ mod tests {
             holder: AgentId::from("a"),
             mode: LeaseMode::Shared,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + Duration::seconds(30),
             note: Some("n".into()),
@@ -3180,6 +3185,7 @@ mod tests {
             holder: AgentId::from("a"),
             mode: LeaseMode::Exclusive,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + Duration::seconds(30),
             note: None,
@@ -4620,6 +4626,7 @@ mod tests {
             holder: AgentId::from("a1"),
             mode: LeaseMode::Exclusive,
             acquired_at: Utc::now(),
+            held_since: None,
             change_seq: None,
             expires_at: Utc::now() + Duration::seconds(60),
             note: None,

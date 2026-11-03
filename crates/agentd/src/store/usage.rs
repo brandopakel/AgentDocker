@@ -877,10 +877,12 @@ impl Store {
         Ok(())
     }
 
-    /// A lease ends (released, lapsed, its agent gone, taken over or
-    /// passed to another): when it was an exclusive hold on a board card,
-    /// the interval it was held is kept, so usage made then is charged to
-    /// the card however late its record arrives. A lapsed lease ends at its
+    /// A lease ends for its holder (released, lapsed, its agent gone, taken
+    /// over or passed to another): when it was an exclusive hold on a board
+    /// card, the interval that holder held it is kept — from the moment it
+    /// took it (`Lease::held_since`, the hand-over for a lease passed on),
+    /// never from the sender's claim — so usage made then is charged to the
+    /// card however late its record arrives. A lapsed lease ends at its
     /// expiry, not at the sweep that removes it.
     pub(crate) fn usage_holding_ended(&self, lease: &Lease, now: DateTime<Utc>) -> Result<()> {
         if lease.mode != LeaseMode::Exclusive {
@@ -892,16 +894,11 @@ impl Store {
         if !self.usage_is_card(card)? {
             return Ok(());
         }
-        let until = now.min(lease.expires_at).max(lease.acquired_at);
+        let since = lease.held_since();
+        let until = now.min(lease.expires_at).max(since);
         self.conn.execute(
             "INSERT OR REPLACE INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,?2,?3,?4,?5)",
-            params![
-                lease.holder.as_str(),
-                HELD_CARD,
-                text(lease.acquired_at),
-                text(until),
-                card
-            ],
+            params![lease.holder.as_str(), HELD_CARD, text(since), text(until), card],
         )?;
         Ok(())
     }
@@ -909,7 +906,7 @@ impl Store {
     /// An agent's roles changed from `before` to `after` at `now`: the
     /// interval it held `before` closes and one for `after` opens. The
     /// first change kept for an agent also keeps what it held since it was
-    /// registered.
+    /// registered. No role is kept as the empty label.
     pub(crate) fn usage_role_changed(
         &self,
         agent: &str,
@@ -922,15 +919,21 @@ impl Store {
             "UPDATE usage_holdings SET until=?3 WHERE agent=?1 AND kind=?2 AND until IS NULL",
             params![agent, HELD_ROLE, text(now)],
         )?;
-        if closed == 0 {
+        if closed == 0 && registered < now {
             self.conn.execute(
                 "INSERT OR REPLACE INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,?2,?3,?4,?5)",
-                params![agent, HELD_ROLE, text(registered.min(now)), text(now), before],
+                params![
+                    agent,
+                    HELD_ROLE,
+                    text(registered),
+                    text(now),
+                    before.unwrap_or_default()
+                ],
             )?;
         }
         self.conn.execute(
             "INSERT OR REPLACE INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,?2,?3,NULL,?4)",
-            params![agent, HELD_ROLE, text(now), after],
+            params![agent, HELD_ROLE, text(now), after.unwrap_or_default()],
         )?;
         Ok(())
     }
@@ -944,7 +947,7 @@ impl Store {
     ) -> Result<Option<(DateTime<Utc>, String)>> {
         self.conn
             .query_row(
-                "SELECT since,value FROM usage_holdings WHERE agent=?1 AND kind=?2 AND since<=?3 AND until>?3 AND value IS NOT NULL ORDER BY since DESC LIMIT 1",
+                "SELECT since,value FROM usage_holdings WHERE agent=?1 AND kind=?2 AND since<=?3 AND until>?3 ORDER BY since DESC LIMIT 1",
                 params![agent, HELD_CARD, text(at)],
                 |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
             )
@@ -968,25 +971,27 @@ impl Store {
         agent: &str,
         at: DateTime<Utc>,
     ) -> Result<Option<Option<String>>> {
+        let label = |value: String| (!value.is_empty()).then_some(value);
         let covering = self
             .conn
             .query_row(
                 "SELECT value FROM usage_holdings WHERE agent=?1 AND kind=?2 AND since<=?3 AND (until IS NULL OR until>?3) ORDER BY since DESC LIMIT 1",
                 params![agent, HELD_ROLE, text(at)],
-                |r| r.get::<_, Option<String>>(0),
+                |r| r.get::<_, String>(0),
             )
             .optional()?;
-        if covering.is_some() {
-            return Ok(covering);
+        if let Some(value) = covering {
+            return Ok(Some(label(value)));
         }
         Ok(self
             .conn
             .query_row(
                 "SELECT value FROM usage_holdings WHERE agent=?1 AND kind=?2 ORDER BY since ASC LIMIT 1",
                 params![agent, HELD_ROLE],
-                |r| r.get::<_, Option<String>>(0),
+                |r| r.get::<_, String>(0),
             )
-            .optional()?)
+            .optional()?
+            .map(label))
     }
 
     /// Whether `id` names a card on a board: a `task:` lease on anything

@@ -435,9 +435,10 @@ fn attribution_at(state: &State, sample: &agentdocker_host::usage::Sample) -> Us
 /// The card and roles an attributed agent held when the response was
 /// made, onto its sample, however late its record arrives. The card: of
 /// the exclusive `task:` leases on a board card it held at `at` (one it
-/// still holds, taken by then and not lapsed, or one the store kept when
-/// it ended), the latest taken; a `task:` lease on anything else (a build
-/// campaign) is never one. The roles: those its kept history says it held
+/// still holds, held by then and not lapsed, or one the store kept when
+/// it ended), the latest it took; a `task:` lease on anything else (a
+/// build campaign) is never one. A lease handed over is held from the
+/// hand-over (`Lease::held_since`), never from the sender's claim. The roles: those its kept history says it held
 /// then, or its current ones when they have never changed. Nothing for an
 /// unattributed sample.
 fn stamp(state: &State, attribution: &mut UsageAttribution, at: DateTime<Utc>) {
@@ -450,7 +451,7 @@ fn stamp(state: &State, attribution: &mut UsageAttribution, at: DateTime<Utc>) {
         .by_holder(&id)
         .into_iter()
         .filter(|lease| {
-            lease.mode == LeaseMode::Exclusive && lease.acquired_at <= at && at < lease.expires_at
+            lease.mode == LeaseMode::Exclusive && lease.held_since() <= at && at < lease.expires_at
         })
         .filter_map(|lease| {
             let card = lease.resource.as_str().strip_prefix("task:")?;
@@ -458,7 +459,7 @@ fn stamp(state: &State, attribution: &mut UsageAttribution, at: DateTime<Utc>) {
                 .store
                 .usage_is_card(card)
                 .unwrap_or(false)
-                .then(|| (lease.acquired_at, card.to_owned()))
+                .then(|| (lease.held_since(), card.to_owned()))
         });
     let ended = state.store.usage_card_held(&agent, at).ok().flatten();
     attribution.card = live
@@ -1507,6 +1508,235 @@ mod tests {
             by_role,
             BTreeMap::from([(Some("reviewer".to_owned()), 3), (Some(now_held), 1)]),
             "what was made before the change keeps the roles held then"
+        );
+        drop(temp);
+    }
+
+    /// A card handed over is the recipient's from the moment it accepted,
+    /// not from the sender's claim: the recipient's response from before
+    /// the hand-over is not charged to it and its response after is, read
+    /// while it holds the card or after it let it go; and a hand back
+    /// keeps the sender's first interval as it was, with the time between
+    /// the two hand-overs the recipient's, not the sender's.
+    #[tokio::test]
+    async fn a_handed_over_card_is_charged_from_the_hand_over() {
+        use agentdocker_core::usage::Counters;
+        use agentdocker_host::usage::{Sample, Semantics};
+        let (temp, daemon, _, _) = fixture();
+        let checkout = temp.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let mut agents = Vec::new();
+        for (name, session) in [("sender", "sess-sender"), ("recipient", "sess-recipient")] {
+            let mut spec = AgentSpec {
+                name: name.into(),
+                runtime: "claude-code".into(),
+                workdir: Some(checkout.clone()),
+                ..Default::default()
+            };
+            spec.labels.insert("session_id".into(), session.into());
+            let Response::Agent { agent } = daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: None,
+                    session: None,
+                })
+                .await
+            else {
+                panic!("registration")
+            };
+            agents.push(agent);
+        }
+        let (a, b) = (agents[0].clone(), agents[1].clone());
+        let Response::Task { task: card } = daemon
+            .handle(Request::TaskCreate {
+                from: a.id.to_string(),
+                project: Some(checkout.display().to_string()),
+                title: "hand it on".to_owned(),
+                acceptance: "done".to_owned(),
+                column: Some(agentdocker_core::Column::Ready),
+                links: Vec::new(),
+                board: None,
+                lane: None,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
+                plan: None,
+            })
+            .await
+        else {
+            panic!("the card is filed")
+        };
+        let Response::TaskDetail {
+            lease: Some(pulled),
+            ..
+        } = daemon
+            .handle(Request::TaskPull {
+                agent: a.id.to_string(),
+                task: Some(card.id.to_string()),
+                take_over_from: None,
+                project: None,
+                board: None,
+            })
+            .await
+        else {
+            panic!("the sender pulls the card")
+        };
+        let hand = |from: &AgentRecord, to: &AgentRecord, key: &str| Request::Handoff {
+            agent: from.id.to_string(),
+            to: Some(to.id.to_string()),
+            task: Some("hand it on".into()),
+            note: None,
+            links: Vec::new(),
+            transfer_leases: true,
+            key: Some(key.into()),
+        };
+        let pause = || tokio::time::sleep(std::time::Duration::from_millis(5));
+
+        // t0: the sender holds the card. t1: the recipient holds nothing.
+        pause().await;
+        let sender_holding = Utc::now();
+        let recipient_before = Utc::now();
+        pause().await;
+        // t2: the recipient accepts the hand-over.
+        let Response::Handoff { bundle } = daemon.handle(hand(&a, &b, "to-recipient")).await else {
+            panic!("the sender hands over")
+        };
+        assert!(bundle.leases.iter().any(|lease| lease.id == pulled.id));
+        let accepted = daemon.resume(b.id.as_str(), &bundle.id, true).await;
+        assert!(
+            matches!(accepted, Response::Recovery { .. }),
+            "{accepted:?}"
+        );
+        let moved = lock(&daemon.state).leases.get(&pulled.id).cloned().unwrap();
+        assert_eq!(moved.holder, b.id);
+        assert_eq!(
+            moved.acquired_at, pulled.acquired_at,
+            "the claim's time stays"
+        );
+        assert!(
+            moved.held_since() > recipient_before,
+            "held from the hand-over"
+        );
+        // t3: the recipient holds the card.
+        pause().await;
+        let recipient_holding = Utc::now();
+
+        let sample = |id: &str, session: &str, at: DateTime<Utc>| Sample {
+            source_id: format!("handed-{id}"),
+            runtime: "claude-code".into(),
+            format: "fixture".into(),
+            session_id: session.into(),
+            at,
+            provider: None,
+            model: Some("fixture-model".into()),
+            counters: Counters {
+                input_tokens: Some(10),
+                output_tokens: Some(1),
+                ..Counters::default()
+            },
+            semantics: Semantics::Response,
+            proves_zero_baseline: false,
+            cost_usd_micros: Some(100),
+            aliases: Vec::new(),
+        };
+        let charged = |daemon: &Arc<Daemon>, samples: Vec<Sample>| {
+            assert_eq!(
+                daemon.record_telemetry(&samples, &[]),
+                Received::Recorded {
+                    accepted: samples.len() as u64
+                }
+            );
+        };
+        // Read while the recipient holds it.
+        charged(
+            &daemon,
+            vec![
+                sample("t1-early", "sess-recipient", recipient_before),
+                sample("t3-early", "sess-recipient", recipient_holding),
+            ],
+        );
+        let cards = |report: Report| -> BTreeMap<Option<String>, u64> {
+            report
+                .rows
+                .into_iter()
+                .map(|row| (row.key, row.samples))
+                .collect()
+        };
+        assert_eq!(
+            cards(query_by(&daemon, Group::Card).await),
+            BTreeMap::from([(None, 1), (Some(card.id.to_string()), 1)]),
+            "before the hand-over the recipient held nothing; after, the card"
+        );
+
+        // t4: handed back; t5: released by the sender.
+        pause().await;
+        let Response::Handoff { bundle: back } = daemon.handle(hand(&b, &a, "to-sender")).await
+        else {
+            panic!("the recipient hands back")
+        };
+        let returned = daemon.resume(a.id.as_str(), &back.id, true).await;
+        assert!(
+            matches!(returned, Response::Recovery { .. }),
+            "{returned:?}"
+        );
+        pause().await;
+        let sender_again = Utc::now();
+        let released = daemon
+            .handle(Request::Release {
+                agent: a.id.to_string(),
+                lease: pulled.id.clone(),
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await;
+        assert!(matches!(released, Response::Lease { .. }), "{released:?}");
+
+        // Read after all of it: the same moments again, and the sender's.
+        charged(
+            &daemon,
+            vec![
+                sample("t1-late", "sess-recipient", recipient_before),
+                sample("t3-late", "sess-recipient", recipient_holding),
+                sample("t0-late", "sess-sender", sender_holding),
+                sample("between", "sess-sender", recipient_holding),
+                sample("t4-late", "sess-sender", sender_again),
+            ],
+        );
+        let by_agent_and_card = {
+            let mut seen = BTreeMap::new();
+            for (agent, session) in [(&a, "sess-sender"), (&b, "sess-recipient")] {
+                let Response::Usage { report } = daemon
+                    .handle(Request::Usage {
+                        project: None,
+                        agent: Some(agent.id.to_string()),
+                        since: Some("24h".into()),
+                        until: None,
+                        by: Group::Card,
+                    })
+                    .await
+                else {
+                    panic!("usage for {session}")
+                };
+                seen.insert(session, cards(report));
+            }
+            seen
+        };
+        let on = |n: u64| (Some(card.id.to_string()), n);
+        assert_eq!(
+            by_agent_and_card["sess-recipient"],
+            BTreeMap::from([(None, 2), on(2)]),
+            "the recipient: t1 never charged to the card, t3 always"
+        );
+        assert_eq!(
+            by_agent_and_card["sess-sender"],
+            BTreeMap::from([(None, 1), on(2)]),
+            "the sender: its first interval kept, its second taken from the hand back, \
+             and the time between the hand-overs not its"
         );
         drop(temp);
     }
