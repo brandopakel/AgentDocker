@@ -1789,7 +1789,7 @@ pub enum ErrorCode {
     /// it when one does.
     IdentityMismatch,
     /// The command could not be started: its program is missing or not
-    /// executable, or tmux would not start it in a new session. Nothing
+    /// executable, or tmux itself could not be started to run it. Nothing
     /// runs; a record made for it is ended with the reason.
     LaunchFailed,
     /// The change may have been made but could not be confirmed (a merge
