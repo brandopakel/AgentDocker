@@ -55,10 +55,19 @@ pub fn hook_stamps() -> PathBuf {
     crate::dirs::home().join("hooks")
 }
 
-/// Leave word that one of `runtime`'s hooks ran, now. Best effort: a
-/// hook never fails for it.
+/// Leave word that one of `runtime`'s hooks ran, now. Only where
+/// AgentDocker's home already is: a hook never makes the home for it, as
+/// it never starts a daemon. Best effort: a hook never fails for it.
 pub fn hook_ran(runtime: &str) {
-    let stamps = hook_stamps();
+    hook_ran_in(&crate::dirs::home(), runtime);
+}
+
+/// [`hook_ran`] beneath `home`.
+pub fn hook_ran_in(home: &Path, runtime: &str) {
+    if !home.is_dir() {
+        return;
+    }
+    let stamps = home.join("hooks");
     let _ = std::fs::create_dir_all(&stamps)
         .and_then(|()| std::fs::write(hook_stamp(&stamps, runtime), b""));
 }
@@ -588,6 +597,19 @@ pub fn missing_hook_events<'a>(
 
 #[cfg(test)]
 mod tests {
+
+    /// A hook leaves word that it ran only where AgentDocker's home already
+    /// is: it never makes the home for it.
+    #[test]
+    fn a_hook_stamps_only_an_existing_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("state");
+        hook_ran_in(&home, "codex");
+        assert!(!home.exists(), "the home is not made");
+        std::fs::create_dir(&home).unwrap();
+        hook_ran_in(&home, "codex");
+        assert!(hook_stamp(&home.join("hooks"), "codex").is_file());
+    }
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
