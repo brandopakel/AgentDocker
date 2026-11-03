@@ -87,6 +87,10 @@ pub struct TaskTransition<'a> {
 // Nor do `topic_messages` and `topic_cursors`, by the same rule: an older
 // daemon keeps no topic messages and moves no cursor while it runs, so a
 // reader may later be replayed less or again, never anything wrong.
+// A `code_verdict` document's `superseded` marks need no bump either: an
+// older daemon ignores them and counts the verdict again, which can only
+// block a gate a newer one opened, and no daemon rewrites a verdict it did
+// not just mark.
 pub(crate) const SCHEMA_VERSION: i64 = 28;
 
 const SCHEMA: &str = "

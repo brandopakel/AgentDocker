@@ -1544,7 +1544,10 @@ pub enum Request {
     },
     /// Whether a branch at a commit may land: approved at exactly that
     /// commit by a holder of `role` (`reviewer` when absent) or the person,
-    /// with nobody asking for changes. Answers `review_gate`.
+    /// with nobody asking for changes. A departed reviewer's request for
+    /// changes is set aside at the role's gate here, once a holder of the
+    /// role or the person passed that commit or a later one after it, and
+    /// the lift kept on the verdict. Answers `review_gate`.
     ReviewGate {
         #[serde(default)]
         agent: Option<String>,
@@ -1554,6 +1557,19 @@ pub enum Request {
         head: String,
         #[serde(default)]
         role: Option<String>,
+    },
+    /// The person sets a verdict aside, so that it counts at no gate:
+    /// the way out when a reviewer asked for changes and is gone with no
+    /// successor's pass to lift it. Answers `code_verdict` with the
+    /// verdict as marked.
+    SupersedeVerdict {
+        agent: String,
+        #[serde(default)]
+        project: Option<String>,
+        /// The verdict's id.
+        verdict: String,
+        #[serde(default)]
+        reason: Option<String>,
     },
     /// Attach a terminal to a managed agent that was given one. The reply
     /// is a stream of `output`; the client may then send `attach_input`
@@ -1845,6 +1861,11 @@ pub enum Response {
     },
     ReviewGate {
         gate: crate::gate::Gate,
+        /// The branch's verdicts that would count at this gate but are
+        /// superseded there, each with its marks: who set it aside, why
+        /// and for which role.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        superseded: Vec<crate::gate::CodeVerdict>,
     },
     BranchReview {
         review: crate::review::Review,

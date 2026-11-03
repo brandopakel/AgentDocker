@@ -784,6 +784,23 @@ pub fn event_line(event: &Event) -> String {
             by.short(),
             head.chars().take(8).collect::<String>()
         ),
+        EventKind::CodeVerdictSuperseded {
+            branch,
+            verdict,
+            was_by,
+            by,
+            reason,
+            role,
+            ..
+        } => format!(
+            "verdict          {} set aside {}'s {verdict} on {branch} ({}{})",
+            by.short(),
+            was_by.short(),
+            reason.as_str(),
+            role.as_deref()
+                .map(|role| format!(", at the {role} gate"))
+                .unwrap_or_default()
+        ),
         EventKind::WatcherStarting => "watcher starting".to_owned(),
         EventKind::WatcherStarted => "watcher started".to_owned(),
         EventKind::WatcherUnavailable { reason } => format!("watcher unavailable ({reason})"),

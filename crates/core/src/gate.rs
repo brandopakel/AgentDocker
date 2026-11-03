@@ -3,12 +3,18 @@
 //! head as it is now lets it through. A commit added after the approval,
 //! a merge of the target branch included, makes it stale until the
 //! reviewer has read that commit too; a request for changes blocks until
-//! the same reviewer says otherwise.
+//! the same reviewer says otherwise — or, once that reviewer's record has
+//! ended, until somebody who holds the role now, or the person, passes
+//! that commit or a later one. A verdict so set aside is marked
+//! superseded at that role's gate, and the person can set any verdict
+//! aside at every gate.
 //!
 //! Whose word counts is the project's to say, by role: a verdict records
 //! the roles its reviewer held when it was given, and the gate is asked
 //! for one of them (`reviewer` by default). The person's word always
 //! counts. Nothing here names a provider or a repository.
+
+use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -31,6 +37,48 @@ pub struct Findings {
     pub p2: u32,
     #[serde(default)]
     pub p3: u32,
+}
+
+/// Why a verdict was set aside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupersedeReason {
+    /// Its reviewer's record had ended, and somebody holding the role
+    /// passed the commit it read or a later one.
+    ReviewerEnded,
+    /// The person lifted it.
+    Person,
+}
+
+impl SupersedeReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReviewerEnded => "reviewer_ended",
+            Self::Person => "person",
+        }
+    }
+}
+
+/// That a verdict no longer counts at a gate: who set it aside, why, and
+/// with which verdict when a successor's pass did.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Supersession {
+    pub by: AgentId,
+    pub by_name: String,
+    /// The id of the pass that took its place; none when the person
+    /// lifted it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub with: Option<String>,
+    /// The role whose gate it no longer counts at: a successor's pass
+    /// speaks for the role it was given in. None when the person lifted
+    /// it, at every gate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    pub reason: SupersedeReason,
+    /// What the person said when lifting it, if anything.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+    pub at: DateTime<Utc>,
 }
 
 /// One reviewer's word on one branch at one commit.
@@ -63,6 +111,10 @@ pub struct CodeVerdict {
     pub findings: Findings,
     pub note: String,
     pub at: DateTime<Utc>,
+    /// Where it was set aside, one mark per role (or one for every gate):
+    /// it is nobody's standing word at a gate a mark covers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub superseded: Vec<Supersession>,
 }
 
 /// Whether `text` is a full commit id: 40 (SHA-1) or 64 (SHA-256)
@@ -118,6 +170,30 @@ impl CodeVerdict {
     pub fn counts_for(&self, role: &str) -> bool {
         self.human || self.roles.iter().any(|r| r == role)
     }
+
+    /// The mark that sets it aside at `role`'s gate, if one does.
+    pub fn superseded_at(&self, role: &str) -> Option<&Supersession> {
+        self.superseded
+            .iter()
+            .find(|mark| mark.role.as_deref().is_none_or(|r| r == role))
+    }
+
+    /// Whether `role`'s gate reads it: a pass or a request for changes
+    /// that counts for the role and was not set aside there.
+    fn stands_for(&self, role: &str) -> bool {
+        self.verdict != Verdict::Comment
+            && self.counts_for(role)
+            && self.superseded_at(role).is_none()
+    }
+
+    /// Set it aside at every gate, as the person does. Refused once it is.
+    pub fn supersede(&mut self, mark: Supersession) -> Result<(), &'static str> {
+        if self.superseded.iter().any(|m| m.role.is_none()) {
+            return Err("that verdict is already superseded");
+        }
+        self.superseded.push(Supersession { role: None, ..mark });
+        Ok(())
+    }
 }
 
 /// An id that sorts by the moment it was made, then by a random tail.
@@ -149,10 +225,7 @@ pub fn standing(verdicts: &[CodeVerdict]) -> std::collections::BTreeSet<&str> {
     for role in roles {
         let mut latest: std::collections::BTreeMap<(&str, &AgentId), &CodeVerdict> =
             Default::default();
-        for verdict in verdicts
-            .iter()
-            .filter(|v| v.verdict != Verdict::Comment && v.counts_for(role))
-        {
+        for verdict in verdicts.iter().filter(|v| v.stands_for(role)) {
             let kept = latest
                 .entry((verdict.branch.as_str(), &verdict.by))
                 .or_insert(verdict);
@@ -296,22 +369,33 @@ impl Gate {
     }
 }
 
-/// The gate for `branch` at `head`, counting the verdicts of `role`
-/// holders and the person. Each reviewer's latest approval or request for
-/// changes on the branch is their word (a comment is neither); one
-/// request for changes blocks; otherwise an approval of `head` passes it,
-/// and an approval of anything else is stale.
-pub fn gate(verdicts: &[CodeVerdict], branch: &str, head: &str, role: &str) -> Gate {
+/// Each reviewer's latest standing word on `branch` for `role`.
+fn latest_words<'a>(
+    verdicts: &'a [CodeVerdict],
+    branch: &str,
+    role: &str,
+) -> std::collections::BTreeMap<&'a AgentId, &'a CodeVerdict> {
     let mut latest: std::collections::BTreeMap<&AgentId, &CodeVerdict> = Default::default();
     for verdict in verdicts
         .iter()
-        .filter(|v| v.branch == branch && v.verdict != Verdict::Comment && v.counts_for(role))
+        .filter(|v| v.branch == branch && v.stands_for(role))
     {
         let kept = latest.entry(&verdict.by).or_insert(verdict);
         if verdict.order() > kept.order() {
             *kept = verdict;
         }
     }
+    latest
+}
+
+/// The gate for `branch` at `head`, counting the verdicts of `role`
+/// holders and the person. Each reviewer's latest approval or request for
+/// changes on the branch is their word (a comment is neither, and nor is
+/// a superseded verdict); one request for changes blocks; otherwise an
+/// approval of `head` passes it, and an approval of anything else is
+/// stale.
+pub fn gate(verdicts: &[CodeVerdict], branch: &str, head: &str, role: &str) -> Gate {
+    let latest = latest_words(verdicts, branch, role);
     let newest = |verdict: Verdict| {
         latest
             .values()
@@ -334,6 +418,181 @@ pub fn gate(verdicts: &[CodeVerdict], branch: &str, head: &str, role: &str) -> G
     match newest(Verdict::Approve) {
         Some(verdict) => Gate::Stale { verdict },
         None => Gate::Missing,
+    }
+}
+
+/// What the gate is told beyond the verdicts, to say whether a departed
+/// reviewer's request for changes has a successor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Succession {
+    /// Reviewers whose records have ended: exited, failed or forgotten (a
+    /// record that lives on under another id has not).
+    pub ended: BTreeSet<AgentId>,
+    /// Who holds the gate's role now and may speak for it. The person is
+    /// not among them: their word stands on its own.
+    pub holders: BTreeSet<AgentId>,
+    /// `(earlier, later)` commits where `later` is known to be `earlier`
+    /// or to come after it. A pair not here is not known to be in that
+    /// order; a commit always is at or after itself.
+    pub descends: BTreeSet<(String, String)>,
+}
+
+impl Succession {
+    fn at_or_after(&self, earlier: &str, later: &str) -> bool {
+        earlier == later
+            || self
+                .descends
+                .contains(&(earlier.to_owned(), later.to_owned()))
+    }
+}
+
+/// Each departed reviewer's standing request for changes, with the passes
+/// that could take its place: each the latest word of somebody else who
+/// holds the role now, or of the person, given after it.
+fn candidates<'a>(
+    latest: &std::collections::BTreeMap<&'a AgentId, &'a CodeVerdict>,
+    succession: &Succession,
+) -> Vec<(&'a CodeVerdict, Vec<&'a CodeVerdict>)> {
+    latest
+        .values()
+        .filter(|v| v.verdict == Verdict::Changes && !v.human && succession.ended.contains(&v.by))
+        .map(|changes| {
+            let passes = latest
+                .values()
+                .filter(|v| {
+                    v.verdict == Verdict::Approve
+                        && v.by != changes.by
+                        && v.order() > changes.order()
+                        && (v.human || succession.holders.contains(&v.by))
+                })
+                .copied()
+                .collect();
+            (*changes, passes)
+        })
+        .collect()
+}
+
+/// The commit orders a lift on `branch` at `role`'s gate turns on: for
+/// each departed reviewer's request for changes and each pass that could
+/// take its place on another commit, `(the commit the request read, the
+/// commit the pass read)`. The asker finds out which are in that order
+/// ([`Succession::descends`]); one it cannot tell is not.
+pub fn ancestry_questions(
+    verdicts: &[CodeVerdict],
+    branch: &str,
+    role: &str,
+    succession: &Succession,
+) -> BTreeSet<(String, String)> {
+    let latest = latest_words(verdicts, branch, role);
+    candidates(&latest, succession)
+        .into_iter()
+        .flat_map(|(changes, passes)| {
+            passes
+                .into_iter()
+                .filter(|pass| pass.head != changes.head)
+                .map(|pass| (changes.head.clone(), pass.head.clone()))
+        })
+        .collect()
+}
+
+/// A request for changes a gate set aside, and how.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Lifted {
+    /// The request for changes, its new mark included.
+    pub verdict: CodeVerdict,
+    pub mark: Supersession,
+    /// The pass that took its place.
+    pub pass: CodeVerdict,
+}
+
+/// The requests for changes `role`'s gate on `branch` sets aside now: a
+/// departed reviewer's standing request for changes, once somebody else
+/// who holds the role now, or the person, passed the commit it read or a
+/// later one after it was given. Only a pass lifts it, never a comment; a
+/// live reviewer's request stands until that reviewer says otherwise; and
+/// a pass of an earlier commit, or of one not known to come after it,
+/// lifts nothing.
+pub fn supersessions(
+    verdicts: &[CodeVerdict],
+    branch: &str,
+    role: &str,
+    succession: &Succession,
+    at: DateTime<Utc>,
+) -> Vec<Lifted> {
+    let latest = latest_words(verdicts, branch, role);
+    let mut lifted: Vec<Lifted> = candidates(&latest, succession)
+        .into_iter()
+        .filter_map(|(changes, passes)| {
+            let pass = passes
+                .into_iter()
+                .filter(|pass| succession.at_or_after(&changes.head, &pass.head))
+                .max_by_key(|pass| pass.order())?;
+            let mark = Supersession {
+                by: pass.by.clone(),
+                by_name: pass.by_name.clone(),
+                with: Some(pass.id.clone()),
+                role: Some(role.to_owned()),
+                reason: SupersedeReason::ReviewerEnded,
+                note: String::new(),
+                at,
+            };
+            let mut verdict = changes.clone();
+            verdict.superseded.push(mark.clone());
+            Some(Lifted {
+                verdict,
+                mark,
+                pass: pass.clone(),
+            })
+        })
+        .collect();
+    lifted.sort_by(|a, b| a.verdict.order().cmp(&b.verdict.order()));
+    lifted
+}
+
+/// A gate with the verdicts it set aside.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Gated {
+    pub gate: Gate,
+    /// The branch's passes and requests for changes that would count at
+    /// this gate but are set aside there, the ones lifted now included,
+    /// oldest first.
+    pub superseded: Vec<CodeVerdict>,
+    /// The ones set aside now, for the caller to keep.
+    pub lifted: Vec<Lifted>,
+}
+
+/// The gate for `branch` at `head`, after setting aside what
+/// [`supersessions`] says no longer blocks.
+pub fn gated(
+    verdicts: &[CodeVerdict],
+    branch: &str,
+    head: &str,
+    role: &str,
+    succession: &Succession,
+    at: DateTime<Utc>,
+) -> Gated {
+    let lifted = supersessions(verdicts, branch, role, succession, at);
+    let mut all = verdicts.to_vec();
+    for verdict in &mut all {
+        if let Some(lift) = lifted.iter().find(|l| l.verdict.id == verdict.id) {
+            verdict.superseded.push(lift.mark.clone());
+        }
+    }
+    let gate = gate(&all, branch, head, role);
+    let mut superseded: Vec<CodeVerdict> = all
+        .into_iter()
+        .filter(|v| {
+            v.branch == branch
+                && v.verdict != Verdict::Comment
+                && v.counts_for(role)
+                && v.superseded_at(role).is_some()
+        })
+        .collect();
+    superseded.sort_by(|a, b| a.order().cmp(&b.order()));
+    Gated {
+        gate,
+        superseded,
+        lifted,
     }
 }
 
@@ -362,6 +621,7 @@ mod tests {
             findings: Findings::default(),
             note: String::new(),
             at,
+            superseded: Vec::new(),
         }
     }
 
@@ -397,6 +657,238 @@ mod tests {
         ));
         said.push(verdict("r", &["reviewer"], B, Verdict::Approve, 3));
         assert!(gate(&said, "feature/x", B, GATE_ROLE).approved());
+    }
+
+    const C: &str = "cccccccccccccccccccccccccccccccccccccccc";
+
+    fn succession(ended: &[&str], holders: &[&str], descends: &[(&str, &str)]) -> Succession {
+        Succession {
+            ended: ended.iter().map(|id| AgentId::from(*id)).collect(),
+            holders: holders.iter().map(|id| AgentId::from(*id)).collect(),
+            descends: descends
+                .iter()
+                .map(|(e, l)| ((*e).to_owned(), (*l).to_owned()))
+                .collect(),
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_009_000, 0).unwrap()
+    }
+
+    #[test]
+    fn a_departed_reviewer_s_changes_are_lifted_by_a_successor_s_pass_of_a_later_commit() {
+        // R asked for changes at A, holding the reviewer and tester roles;
+        // S, a reviewer, passed B, which came after A.
+        let said = vec![
+            verdict("r", &["reviewer", "tester"], A, Verdict::Changes, 0),
+            verdict("s", &["reviewer"], B, Verdict::Approve, 1),
+        ];
+        let b_after_a = [(A, B)];
+        // While R lives, its word stands whatever S says.
+        let live = gated(
+            &said,
+            "feature/x",
+            B,
+            GATE_ROLE,
+            &succession(&[], &["r", "s"], &b_after_a),
+            now(),
+        );
+        assert!(matches!(&live.gate, Gate::Changes { verdict } if verdict.by.as_str() == "r"));
+        assert!(live.lifted.is_empty() && live.superseded.is_empty());
+        // R gone, the lift turns on B coming after A: asked, and not
+        // known, nothing is lifted.
+        let ended = succession(&["r"], &["s"], &[]);
+        assert_eq!(
+            ancestry_questions(&said, "feature/x", GATE_ROLE, &ended),
+            [(A.to_owned(), B.to_owned())].into_iter().collect()
+        );
+        assert!(matches!(
+            gated(&said, "feature/x", B, GATE_ROLE, &ended, now()).gate,
+            Gate::Changes { .. }
+        ));
+        // Known: S's pass lifts it, and the gate says so.
+        let ended = succession(&["r"], &["s"], &b_after_a);
+        let after = gated(&said, "feature/x", B, GATE_ROLE, &ended, now());
+        assert!(after.gate.approved(), "{after:?}");
+        assert_eq!(after.lifted.len(), 1);
+        let lift = &after.lifted[0];
+        assert_eq!(lift.verdict.id, said[0].id);
+        assert_eq!(lift.pass.id, said[1].id);
+        assert_eq!(lift.mark.by.as_str(), "s");
+        assert_eq!(lift.mark.with.as_deref(), Some(said[1].id.as_str()));
+        assert_eq!(lift.mark.role.as_deref(), Some(GATE_ROLE));
+        assert_eq!(lift.mark.reason, SupersedeReason::ReviewerEnded);
+        assert_eq!(after.superseded, std::slice::from_ref(&lift.verdict));
+        // Whatever head the gate is asked about: at a commit since, it is
+        // S's pass that is stale, not R's word that blocks.
+        assert!(matches!(
+            gated(&said, "feature/x", C, GATE_ROLE, &ended, now()).gate,
+            Gate::Stale { verdict } if verdict.by.as_str() == "s"
+        ));
+        // Kept on the record, it stays lifted when S no longer holds the
+        // role, and nothing is lifted twice.
+        let kept = vec![lift.verdict.clone(), said[1].clone()];
+        let later = gated(
+            &kept,
+            "feature/x",
+            B,
+            GATE_ROLE,
+            &succession(&["r"], &[], &[]),
+            now(),
+        );
+        assert!(later.gate.approved());
+        assert!(later.lifted.is_empty());
+        assert_eq!(later.superseded.len(), 1, "still said");
+        // S spoke for the reviewers: the tester gate still reads R's word,
+        // and so R's word still stands for forgetting.
+        assert!(matches!(
+            gated(&kept, "feature/x", B, "tester", &succession(&["r"], &[], &[]), now()).gate,
+            Gate::Changes { verdict } if verdict.by.as_str() == "r"
+        ));
+        assert!(standing(&kept).contains(said[0].id.as_str()));
+        // The person's pass of the very commit R read lifts it too, with
+        // nothing to ask.
+        let person = vec![
+            said[0].clone(),
+            verdict("user", &[], A, Verdict::Approve, 1),
+        ];
+        let nobody = succession(&["r"], &[], &[]);
+        assert!(ancestry_questions(&person, "feature/x", GATE_ROLE, &nobody).is_empty());
+        let lifted = gated(&person, "feature/x", A, GATE_ROLE, &nobody, now());
+        assert!(lifted.gate.approved());
+        assert_eq!(lifted.lifted[0].mark.by.as_str(), "user");
+    }
+
+    #[test]
+    fn nothing_but_a_later_pass_of_a_later_commit_by_a_role_holder_lifts_it() {
+        let changes = verdict("r", &["reviewer"], B, Verdict::Changes, 1);
+        let blocked = |said: &[CodeVerdict], head: &str, who: &Succession| {
+            let got = gated(said, "feature/x", head, GATE_ROLE, who, now());
+            got.lifted.is_empty()
+                && matches!(&got.gate, Gate::Changes { verdict } if verdict.by.as_str() == "r")
+        };
+        // C comes after B; A came before it.
+        let order = [(B, C), (A, B), (A, C)];
+        let ended = succession(&["r"], &["s"], &order);
+        // A pass by somebody who does not hold the role now.
+        let outsider = [
+            changes.clone(),
+            verdict("t", &["reviewer"], C, Verdict::Approve, 2),
+        ];
+        assert!(blocked(&outsider, C, &ended), "not a holder now");
+        // A pass given in another role.
+        let tester = [
+            changes.clone(),
+            verdict("s", &["tester"], C, Verdict::Approve, 2),
+        ];
+        assert!(blocked(&tester, C, &ended), "another role's word");
+        // A comment (`none`) is not a pass.
+        let comment = [
+            changes.clone(),
+            verdict("s", &["reviewer"], C, Verdict::Comment, 2),
+        ];
+        assert!(blocked(&comment, C, &ended), "a comment");
+        // A pass of a commit before the one R read, wherever the gate is
+        // asked.
+        let older = [
+            changes.clone(),
+            verdict("s", &["reviewer"], A, Verdict::Approve, 2),
+        ];
+        assert!(blocked(&older, A, &ended), "an older commit, asked there");
+        assert!(blocked(&older, C, &ended), "an older commit, asked later");
+        // A pass given before the request for changes.
+        let earlier = [
+            verdict("s", &["reviewer"], C, Verdict::Approve, 0),
+            changes.clone(),
+        ];
+        assert!(blocked(&earlier, C, &ended), "given before");
+        // The departed reviewer's own word is not a successor's.
+        let own = [
+            changes.clone(),
+            verdict("r", &["tester"], C, Verdict::Approve, 2),
+        ];
+        assert!(blocked(&own, C, &ended), "its own");
+        // A live reviewer's request stands, a successor's pass or not.
+        let pass = verdict("s", &["reviewer"], C, Verdict::Approve, 2);
+        let lifts = [changes.clone(), pass.clone()];
+        assert!(
+            blocked(&lifts, C, &succession(&[], &["r", "s"], &order)),
+            "live"
+        );
+        // The successor's own later request for changes is its word, not
+        // its pass.
+        let changed_mind = [
+            changes.clone(),
+            pass.clone(),
+            verdict("s", &["reviewer"], C, Verdict::Changes, 3),
+        ];
+        let got = gated(&changed_mind, "feature/x", C, GATE_ROLE, &ended, now());
+        assert!(got.lifted.is_empty());
+        assert!(matches!(&got.gate, Gate::Changes { verdict } if verdict.by.as_str() == "s"));
+        // And the pass lifts it when it is all that was missing.
+        assert!(!blocked(&lifts, C, &ended));
+        assert!(
+            gated(&lifts, "feature/x", C, GATE_ROLE, &ended, now())
+                .gate
+                .approved()
+        );
+    }
+
+    #[test]
+    fn the_person_lifts_any_verdict_at_every_gate_once() {
+        let mut said = vec![
+            verdict("r", &["reviewer", "tester"], A, Verdict::Changes, 0),
+            verdict("s", &["reviewer", "tester"], B, Verdict::Approve, 1),
+        ];
+        let live = succession(&[], &["r", "s"], &[]);
+        assert!(matches!(
+            gated(&said, "feature/x", B, GATE_ROLE, &live, now()).gate,
+            Gate::Changes { .. }
+        ));
+        let mark = Supersession {
+            by: AgentId::from("user"),
+            by_name: "user".into(),
+            with: None,
+            role: Some("reviewer".into()),
+            reason: SupersedeReason::Person,
+            note: String::new(),
+            at: now(),
+        };
+        said[0].supersede(mark.clone()).unwrap();
+        assert_eq!(said[0].superseded[0].role, None, "at every gate");
+        assert_eq!(
+            said[0].supersede(mark),
+            Err("that verdict is already superseded")
+        );
+        for role in [GATE_ROLE, "tester"] {
+            let got = gated(&said, "feature/x", B, role, &live, now());
+            assert!(got.gate.approved(), "{role}");
+            assert!(got.lifted.is_empty(), "nothing newly set aside");
+            assert_eq!(
+                got.superseded
+                    .iter()
+                    .map(|v| v.superseded_at(role).map(|m| m.reason))
+                    .collect::<Vec<_>>(),
+                [Some(SupersedeReason::Person)]
+            );
+        }
+        // A verdict set aside everywhere is forgettable.
+        let next = verdict("s", &["reviewer"], B, Verdict::Comment, 9);
+        assert_eq!(to_forget(&said, &next, 2).unwrap(), [said[0].id.clone()]);
+    }
+
+    #[test]
+    fn a_verdict_kept_without_marks_reads_back_with_none() {
+        let bare: CodeVerdict = serde_json::from_value(serde_json::json!({
+            "id": "1", "seq": 1, "project": "p", "branch": "feature/x", "head": A,
+            "by": "r", "by_name": "reviewer-1", "roles": ["reviewer"],
+            "verdict": "changes", "note": "", "at": "2000-01-01T00:00:00Z"
+        }))
+        .unwrap();
+        assert!(bare.superseded.is_empty());
+        let text = serde_json::to_value(&bare).unwrap();
+        assert!(text.get("superseded").is_none(), "nothing written for none");
     }
 
     #[test]
