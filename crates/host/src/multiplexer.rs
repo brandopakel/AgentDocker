@@ -477,6 +477,27 @@ pub mod tmux {
 
     impl std::error::Error for Refused {}
 
+    /// The pane `new-session -P` made, from what tmux printed and how it
+    /// exited. tmux prints the pane once it has made the session and only
+    /// then runs its `after-new-session` hooks, so a failure with no pane
+    /// printed is a refusal ([`Refused`]: nothing started), while a pane
+    /// printed beside a failure (a hook that failed) was made and its
+    /// command may be running: an error, never a refusal.
+    fn created_pane(success: bool, stdout: &[u8], stderr: &[u8]) -> io::Result<String> {
+        let id = String::from_utf8_lossy(stdout).trim().to_owned();
+        let why = String::from_utf8_lossy(stderr).trim().to_owned();
+        match (success, id.is_empty()) {
+            (true, false) => Ok(id),
+            (false, true) => Err(io::Error::other(Refused(format!(
+                "tmux refused to create the session: {why}"
+            )))),
+            (false, false) => Err(io::Error::other(format!(
+                "tmux made pane {id} but then reported a failure: {why}"
+            ))),
+            (true, true) => Err(io::Error::other("tmux created a pane but did not name it")),
+        }
+    }
+
     /// Whether `error` from [`new_session`] says nothing was started.
     pub fn refused(error: &io::Error) -> bool {
         error.get_ref().is_some_and(|inner| inner.is::<Refused>())
@@ -507,16 +528,7 @@ pub mod tmux {
         let output = tmux.output().map_err(|error| {
             io::Error::other(Refused(format!("tmux could not be run: {error}")))
         })?;
-        if !output.status.success() {
-            return Err(io::Error::other(Refused(format!(
-                "tmux refused to create the session: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))));
-        }
-        let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if id.is_empty() {
-            return Err(io::Error::other("tmux created a pane but did not name it"));
-        }
+        let id = created_pane(output.status.success(), &output.stdout, &output.stderr)?;
         let pid = pane_pid(&id)?;
         Ok(Pane {
             session: describe_pane(&id, "#{session_name}").unwrap_or_else(|_| session.to_owned()),
@@ -705,6 +717,16 @@ pub mod tmux {
                 "tmux created a pane but did not name it"
             )));
             assert!(!refused(&io::Error::from(io::ErrorKind::NotFound)));
+            assert_eq!(created_pane(true, b"%3\n", b"").unwrap(), "%3");
+            // tmux would not make the session: nothing printed, nothing ran.
+            let duplicate = created_pane(false, b"", b"duplicate session: probe").unwrap_err();
+            assert!(refused(&duplicate), "{duplicate}");
+            // The pane was made and printed, then an after-new-session hook
+            // failed and tmux exited 1: its command may be running.
+            let hooked = created_pane(false, b"%1\n", b"'exit 1' returned 1").unwrap_err();
+            assert!(!refused(&hooked), "{hooked}");
+            assert!(hooked.to_string().contains("%1"), "{hooked}");
+            assert!(!refused(&created_pane(true, b"\n", b"").unwrap_err()));
         }
 
         #[test]
