@@ -405,6 +405,14 @@ enum Step {
     Waiting,
 }
 
+/// A tool that declares its MCP servers in each agent's own file (Docker
+/// Agent's YAML), so that there is no file of its own to read as
+/// configured or not, and setup takes the agent file it should edit.
+fn per_agent_file(runtime: &RuntimeInfo) -> bool {
+    agentdocker_core::runtime::spec(&runtime.name)
+        .is_some_and(|spec| spec.mcp == McpWiring::AgentConfig)
+}
+
 /// Words for how a tool's integration is wired, and their tone.
 fn wiring_word(wiring: Wiring, c: Colors) -> (&'static str, iced::Color) {
     match wiring {
@@ -543,6 +551,15 @@ impl App {
                 },
                 super::in_browser_word(runtime, sessions.len(), self.connector.as_ref()),
                 true,
+            )
+        } else if per_agent_file(runtime) {
+            // Not "integration unavailable": setup wires it, one agent file
+            // at a time, as its details say.
+            (
+                None,
+                Tone::Neutral,
+                "Installed · set up per agent file".to_owned(),
+                false,
             )
         } else if !supported {
             (
@@ -820,10 +837,7 @@ impl App {
             let (word, tone) = wiring_word(wiring, c);
             status_word(word, tone, c)
         };
-        // Docker Agent declares its MCP servers in each agent's YAML, so
-        // there is no file of its own to read as configured or not.
-        let per_agent_file = agentdocker_core::runtime::spec(&runtime.name)
-            .is_some_and(|spec| spec.mcp == McpWiring::AgentConfig);
+        let per_agent_file = per_agent_file(runtime);
         let mut facts: Vec<(String, Element<'a, Message>)> = vec![
             (
                 "MCP".into(),
@@ -2524,6 +2538,42 @@ mod tests {
     /// A tool's word sums up its sessions' readiness decisions: a held
     /// delivery — paused, or a provider block, which pauses it — and a
     /// receiver gone quiet say so; a ready one says it receives.
+    /// Docker Agent, set up one agent file at a time, is not a tool with
+    /// no integration: its row says where its setup goes.
+    #[test]
+    fn a_tool_set_up_per_agent_file_says_so() {
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let app = crate::app::App::bare(tx, rx);
+        let runtime = RuntimeInfo {
+            name: "docker-agent".into(),
+            vendor: "fixture".into(),
+            label: "Docker Agent".into(),
+            cli: Some("/fixture/docker-agent".into()),
+            version: None,
+            apps: vec![],
+            extensions: vec![],
+            incomplete: vec![],
+            config_dir: None,
+            mcp: Wiring::Unsupported,
+            hooks: Wiring::Unsupported,
+            hooks_missing: vec![],
+            shell: Wiring::Unsupported,
+            running: 0,
+        };
+        let chip = app.tool_state(&runtime).chip;
+        assert_eq!(
+            (chip.words, chip.detail),
+            (
+                "Set up per agent file".to_owned(),
+                Some("Installed".to_owned())
+            )
+        );
+        let mut other = runtime.clone();
+        other.name = "aider".into();
+        assert_eq!(app.tool_state(&other).chip.words, "Integration unavailable");
+    }
+
     #[test]
     fn a_tools_word_sums_up_its_sessions_decisions() {
         use agentdocker_core::{

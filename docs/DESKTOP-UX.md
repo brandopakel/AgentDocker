@@ -901,8 +901,9 @@ its readiness chip and its contact chips (*MCP · recent*, *Hooks · none*), plu
 **Check connections** and **Setup history**; an incomplete inventory is the
 alert mark. A tool that declares its MCP servers in each agent's file rather
 than in one of its own (Docker Agent) shows MCP as *In each agent's YAML*,
-with the `setup … --agent <file>` command that adds AgentDocker's as its tip,
-and offers no Set up of its own. **Other tools (n)** expands
+with the `setup … --agent <file>` command that adds AgentDocker's as its tip;
+its row reads *Set up per agent file* rather than *Integration unavailable*,
+and it offers no Set up of its own, since the app does not name an agent file. **Other tools (n)** expands
 the inventory. Delivery, a session's readiness chip, says the same words as `ps`
 and a send's warning: **Ready for messages** (nothing taken
 yet), **Receiving messages**, **Not receiving messages**, **Not heard from

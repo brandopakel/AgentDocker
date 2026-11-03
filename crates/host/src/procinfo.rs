@@ -482,7 +482,9 @@ const DOCKER_AGENT_VALUE_FLAGS: &[&str] = &[
 ];
 
 /// Flags under which Docker Agent prints and exits rather than running:
-/// cobra's help flag, and the version flag.
+/// cobra's help flag, and the version flag. Its flag parser (pflag) takes
+/// them anywhere among the arguments, after the agent file too, up to a
+/// `--`.
 const DOCKER_AGENT_EXIT_FLAGS: &[&str] = &["--help", "-h", "--version"];
 
 /// Docker Agent's subcommand: the first word that is neither a flag nor a
@@ -491,7 +493,9 @@ const DOCKER_AGENT_EXIT_FLAGS: &[&str] = &["--help", "-h", "--version"];
 /// `docker-agent agent run x.yaml`). `None` with `exits` false is the
 /// default invocation, which Docker Agent's root command dispatches to
 /// `run` (a bare `docker-agent`, or `docker agent`, runs the project's
-/// agent file); with `exits` true a help or version flag ends it at once.
+/// agent file); with `exits` true a help or version flag, as an argument
+/// of its own before any `--`, ends it at once. A prompt that says
+/// `--help` inside one argument is the prompt's.
 struct DockerAgentMode<'a> {
     mode: Option<&'a str>,
     exits: bool,
@@ -502,19 +506,17 @@ fn docker_agent_mode(arguments: &[String]) -> DockerAgentMode<'_> {
     let mut exits = false;
     let mut arguments = arguments.iter().map(String::as_str);
     while let Some(word) = arguments.next() {
+        if word == "--" {
+            // Every word past it is the run's own: a file, a message.
+            break;
+        }
         if DOCKER_AGENT_VALUE_FLAGS.contains(&word) {
             arguments.next();
         } else if DOCKER_AGENT_EXIT_FLAGS.contains(&word) {
             exits = true;
-        } else if !word.starts_with('-') {
+        } else if !word.starts_with('-') && words.len() < 2 {
+            // The mode, with the `agent` the plugin form has in front.
             words.push(word);
-            // The mode and the word after it (an agent file, a message):
-            // past those the words are the run's own, a prompt that may
-            // well say `--help`. The plugin form has `agent` in front.
-            let limit = if words[0] == "agent" { 3 } else { 2 };
-            if words.len() == limit {
-                break;
-            }
         }
     }
     let mode = match words.first() {
@@ -1436,9 +1438,6 @@ mod tests {
             "docker-agent --tlsverify --tlscacert /c/ca.pem --tlscert /c/cert.pem --tlskey /c/key.pem agent run a.yaml",
             "docker-agent --context=desktop-linux --host=tcp://h:2376 agent run agent.yaml",
             "docker-agent --context desktop-linux agent",
-            // A prompt that says `--help` is the run's, not a help flag.
-            "docker-agent run agent.yaml explain --help",
-            "docker-agent agent run agent.yaml explain --help",
         ] {
             assert_eq!(
                 runtime_of(&argv(session)),
@@ -1446,6 +1445,24 @@ mod tests {
                 "{session}"
             );
             assert_eq!(helper_of(&argv(session)), None, "{session}");
+        }
+        // A prompt that says `--help` in one argument is the run's, and so
+        // is every word after a `--`.
+        let whole = |words: &[&str]| words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+        for session in [
+            whole(&["docker-agent", "run", "agent.yaml", "explain --help"]),
+            whole(&[
+                "docker-agent",
+                "agent",
+                "run",
+                "agent.yaml",
+                "what does -h do",
+            ]),
+            whole(&["docker-agent", "run", "agent.yaml", "--", "--help"]),
+            whole(&["docker-agent", "agent", "run", "--", "-h", "--version"]),
+        ] {
+            assert_eq!(runtime_of(&session), Some("docker-agent"), "{session:?}");
+            assert_eq!(helper_of(&session), None, "{session:?}");
         }
         for (helper, word) in [
             ("docker-agent serve api ./agents", "serving"),
@@ -1476,6 +1493,13 @@ mod tests {
             "docker-agent run --help",
             "docker-agent agent run --help",
             "docker-agent --context desktop-linux agent run -h",
+            // pflag takes a help flag after the agent file and the message
+            // words too.
+            "docker-agent run agent.yaml --help",
+            "docker-agent agent run agent.yaml -h",
+            "docker-agent run agent.yaml explain --help",
+            "cagent run --yolo team.yaml hello --version",
+            "docker-agent agent serve api ./agents --help",
             "docker-agent docker-cli-plugin-metadata",
             "docker-agent --context desktop-linux agent version",
             // The Docker CLI in front of the plugin is not the session; the

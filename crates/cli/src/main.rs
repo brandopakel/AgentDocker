@@ -542,7 +542,7 @@ enum Command {
         /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
         #[arg(long, conflicts_with_all = ["dry_run", "apply", "undo", "health", "list", "show", "shell"])]
         remove: bool,
-        /// Docker Agent only: the agent YAML file to add AgentDocker's MCP toolset to (its first agent, the one `docker agent run` runs), or to take it out of with `--remove`. Docker Agent reads MCP servers from each agent's file, so `setup docker-agent` needs one.
+        /// Docker Agent only: the agent YAML file to add AgentDocker's MCP toolset to (its default agent, the one `docker agent run` runs: `root`, else the first), or to take it out of with `--remove`. Docker Agent reads MCP servers from each agent's file, so `setup docker-agent` needs one.
         #[arg(long, value_name = "FILE", conflicts_with_all = ["apply", "undo", "health", "list", "show", "shell"])]
         agent: Option<PathBuf>,
     },

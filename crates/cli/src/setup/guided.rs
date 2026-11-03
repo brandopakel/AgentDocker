@@ -1053,10 +1053,17 @@ fn prepare_for(
 
 /// Ordinary setup must not report success after silently omitting Claude MCP.
 /// An explicit preview can still offer hooks for a partially configured tool.
-/// The one change Docker Agent takes: our MCP toolset in the first agent
-/// of the YAML file named with `--agent`, read and rewritten like any
-/// other configuration file. Without a file there is nothing to plan, and
-/// the note says what to pass.
+/// The agent file `--agent` names, made absolute as the plan saves it, so
+/// that `--apply` and `--undo` find it from any directory.
+fn agent_file(path: &Path) -> Result<PathBuf> {
+    std::path::absolute(path)
+        .with_context(|| format!("cannot resolve the agent file {}", path.display()))
+}
+
+/// The one change Docker Agent takes: our MCP toolset in the default
+/// agent (`root`, else the first) of the YAML file named with `--agent`,
+/// read and rewritten like any other configuration file. Without a file
+/// there is nothing to plan, and the note says what to pass.
 fn docker_agent_change(
     plan: &mut Plan,
     runtime: &RuntimeInfo,
@@ -1065,11 +1072,12 @@ fn docker_agent_change(
 ) -> Result<()> {
     let Some(path) = agent else {
         plan.notes.push(format!(
-            "{}: MCP servers are declared in each agent's YAML file, not in a file of its own; `agentdocker setup {} --agent <file>` adds the toolset to that file's first agent, and `agentdocker setup {} --dry-run` prints the entry to add by hand",
+            "{}: MCP servers are declared in each agent's YAML file, not in a file of its own; `agentdocker setup {} --agent <file>` adds the toolset to that file's default agent (`root`, else the first), and `agentdocker setup {} --dry-run` prints the entry to add by hand",
             runtime.label, runtime.name, runtime.name
         ));
         return Ok(());
     };
+    let path = &agent_file(path)?;
     let before =
         read_config(path)?.with_context(|| format!("no agent file at {}", path.display()))?;
     let (after, target) = super::docker_agent_edit(path, &before, executable)?;
@@ -1099,14 +1107,16 @@ fn docker_agent_change(
     Ok(())
 }
 
-/// The removal of our toolset from the first agent of a Docker Agent
-/// YAML file, when it lists one.
+/// The removal of our toolset from the default agent of a Docker Agent
+/// YAML file. A file that is not there is refused, as setup refuses it,
+/// and one that lists no toolset of ours says so, so that a mistyped path
+/// never reads as a removal done.
 fn docker_agent_removal(plan: &mut Plan, path: &Path) -> Result<()> {
-    let Some(before) = read_config(path)? else {
-        return Ok(());
-    };
-    if let Some(after) = super::docker_agent_removal(path, &before)? {
-        plan.changes.push(Change {
+    let path = &agent_file(path)?;
+    let before =
+        read_config(path)?.with_context(|| format!("no agent file at {}", path.display()))?;
+    match super::docker_agent_removal(path, &before)? {
+        Some(after) => plan.changes.push(Change {
             runtime: agentdocker_core::docker_agent::RUNTIME.into(),
             channel: "mcp".into(),
             target: project::try_canonical(path)?,
@@ -1114,7 +1124,11 @@ fn docker_agent_removal(plan: &mut Plan, path: &Path) -> Result<()> {
             before: Some(before),
             after: Some(after),
             removal: true,
-        });
+        }),
+        None => plan.notes.push(format!(
+            "Docker Agent: the default agent in {} lists no AgentDocker toolset; there is nothing to take out",
+            path.display()
+        )),
     }
     Ok(())
 }
@@ -1742,17 +1756,29 @@ mod tests {
                 .any(|note| note.contains("--agent <file>"))
         );
 
-        // A missing file is refused before anything is planned.
+        // A missing file is refused before anything is planned, for a
+        // removal too, and one that lists nothing of ours says so.
+        let missing = tmp.path().join("none.yaml");
+        assert!(prepare_for(&roots, &names, &executable, false, Some(&missing)).is_err());
+        let error = prepare_remove_for(&roots, &names, Some(&missing)).unwrap_err();
+        assert!(format!("{error:#}").contains("no agent file"), "{error:#}");
+        let plain = tmp.path().join("plain.yaml");
+        std::fs::write(&plain, before).unwrap();
+        let untouched = prepare_remove_for(&roots, &names, Some(&plain)).unwrap();
+        assert!(untouched.changes.is_empty());
         assert!(
-            prepare_for(
-                &roots,
-                &names,
-                &executable,
-                false,
-                Some(&tmp.path().join("none.yaml"))
-            )
-            .is_err()
+            untouched
+                .notes
+                .iter()
+                .any(|note| note.contains("lists no AgentDocker toolset")),
+            "{:?}",
+            untouched.notes
         );
+        // A relative path is saved absolute, so apply and undo find it
+        // from any directory.
+        let relative = agent_file(Path::new("team.yaml")).unwrap();
+        assert!(relative.is_absolute() && relative.ends_with("team.yaml"));
+        assert_eq!(agent_file(&yaml).unwrap(), yaml);
     }
 
     /// A removal takes out only AgentDocker's own wiring, across the tools

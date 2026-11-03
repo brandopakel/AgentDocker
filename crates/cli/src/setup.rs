@@ -120,7 +120,7 @@ pub async fn run(
                     }
                 }
                 None => eprintln!(
-                    "{}: MCP servers are declared in each agent's YAML file, not in a file of {}'s own. `{} setup {} --agent <file>` adds this to the file's first agent; every run of an agent that lists it joins as one agent:\n\n{}",
+                    "{}: MCP servers are declared in each agent's YAML file, not in a file of {}'s own. `{} setup {} --agent <file>` adds this to the file's default agent (`root`, else the first); every run of an agent that lists it joins as one agent:\n\n{}",
                     runtime.name,
                     runtime.label,
                     exe.display(),
@@ -246,7 +246,7 @@ pub(crate) fn ensure_agent_names_docker_agent(names: &[String]) -> Result<()> {
     )
 }
 
-/// Our MCP toolset in a Docker Agent YAML file's first agent, added when
+/// Our MCP toolset in a Docker Agent YAML file's default agent, added when
 /// missing, left alone when there.
 pub fn register_docker_agent(
     path: &Path,
@@ -266,7 +266,7 @@ pub fn register_docker_agent(
     Ok((Outcome::Added, target))
 }
 
-/// The agent file with our toolset in its first agent (`None` when it is
+/// The agent file with our toolset in its default agent (`None` when it is
 /// there), and that agent as found. A file the pure editor cannot place
 /// the entry in is refused with the reason, and the person adds the entry
 /// `setup docker-agent` prints by hand.
@@ -283,7 +283,7 @@ pub(super) fn docker_agent_edit(
     Ok((after, found))
 }
 
-/// The agent file with our toolset taken out of its first agent, `None`
+/// The agent file with our toolset taken out of its default agent, `None`
 /// when it lists none.
 pub(super) fn docker_agent_removal(path: &Path, existing: &str) -> Result<Option<String>> {
     agentdocker_core::docker_agent::without_toolset(existing, "agentdocker")
@@ -990,7 +990,7 @@ mod tests {
     }
 
     /// Docker Agent's registration is a toolset in the agent file the
-    /// person names: added once to its first agent, previewed without a
+    /// person names: added once to its default agent, previewed without a
     /// write, left alone when there, and refused for a file the editor
     /// cannot place it in rather than rewritten.
     #[test]
