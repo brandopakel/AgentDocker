@@ -249,6 +249,14 @@ CREATE TABLE IF NOT EXISTS usage_gaps (
     session TEXT,
     reason TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS usage_holdings (
+    agent TEXT NOT NULL,
+    kind  TEXT NOT NULL,
+    since TEXT NOT NULL,
+    until TEXT,
+    value TEXT,
+    PRIMARY KEY (agent, kind, since)
+);
 CREATE TABLE IF NOT EXISTS read_cursors (
     reader       TEXT NOT NULL,
     conversation TEXT NOT NULL,
@@ -312,6 +320,9 @@ pub const CONVERSATION_CAP: usize = 5_000;
 /// at its first write, after the timeout no longer applies, and fail. The
 /// store has one connection and no nested transactions, so the unchecked
 /// form is sound here.
+/// The document kind a board card is kept under.
+pub(crate) const TASK_DOCUMENT: &str = "task";
+
 pub(crate) fn write_transaction(conn: &Connection) -> rusqlite::Result<rusqlite::Transaction<'_>> {
     rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
 }
@@ -483,8 +494,7 @@ impl Store {
         let tx = write_transaction(&self.conn)?;
         self.upsert_agent(record)?;
         for id in leases {
-            self.conn
-                .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
+            self.delete_lease(id)?;
         }
         for entry in journal {
             self.insert_journal(entry)?;
@@ -1314,6 +1324,28 @@ impl Store {
     }
 
     pub fn upsert_agent(&self, record: &AgentRecord) -> Result<()> {
+        // A change of roles is kept as it happens, so usage made before it
+        // is charged to the roles held then (`usage_holdings`).
+        let stored: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT json_extract(json,'$.spec.labels.role') FROM agents WHERE id=?1",
+                [record.id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(before) = stored {
+            let after = record.spec.labels.get(agentdocker_core::agent::ROLE_LABEL);
+            if before.as_ref() != after {
+                self.usage_role_changed(
+                    record.id.as_str(),
+                    record.created_at,
+                    before.as_deref(),
+                    after.map(String::as_str),
+                    Utc::now(),
+                )?;
+            }
+        }
         self.conn.execute(
             "INSERT INTO agents (id, name, live, created_at, json)
              VALUES (?1, ?2, ?3, ?4, ?5)
@@ -1408,6 +1440,13 @@ impl Store {
     // ----- leases ---------------------------------------------------------
 
     pub fn upsert_lease(&self, lease: &Lease) -> Result<()> {
+        // A lease passed to another holder (a handoff's transfer) ends the
+        // holding of the one it leaves.
+        if let Some(previous) = self.stored_lease(&lease.id)?
+            && previous.holder != lease.holder
+        {
+            self.usage_holding_ended(&previous, Utc::now())?;
+        }
         self.conn.execute(
             "INSERT INTO leases (id, holder, resource, json) VALUES (?1, ?2, ?3, ?4)
              ON CONFLICT(id) DO UPDATE SET
@@ -1424,10 +1463,31 @@ impl Store {
         Ok(())
     }
 
+    /// Every lease that ends leaves here: released, lapsed, its agent
+    /// gone, or taken over. What it held is kept for usage first: a card
+    /// stays chargeable for the responses made while it was held, however
+    /// late their records arrive (`usage_holdings`).
     pub fn delete_lease(&self, id: &LeaseId) -> Result<()> {
+        if let Some(lease) = self.stored_lease(id)? {
+            self.usage_holding_ended(&lease, Utc::now())?;
+        }
         self.conn
             .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
         Ok(())
+    }
+
+    /// A lease as the store holds it; one whose JSON does not read is
+    /// left to the callers that load leases, never an error here.
+    fn stored_lease(&self, id: &LeaseId) -> Result<Option<Lease>> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT json FROM leases WHERE id = ?1",
+                [id.as_str()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(json.and_then(|json| serde_json::from_str(&json).ok()))
     }
 
     /// A removed lease and its replay evidence must survive or roll back together.
@@ -2450,8 +2510,7 @@ impl Store {
     ) -> Result<()> {
         let tx = write_transaction(&self.conn)?;
         for id in leases {
-            self.conn
-                .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
+            self.delete_lease(id)?;
         }
         if let Some(entry) = entry {
             self.insert_journal(entry)?;

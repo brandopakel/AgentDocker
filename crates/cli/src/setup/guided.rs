@@ -777,15 +777,16 @@ fn daemon_usage_config() -> Option<agentdocker_core::config::UsageConfig> {
 fn telemetry_note(usage: Option<&agentdocker_core::config::UsageConfig>) -> String {
     match usage.and_then(|usage| usage.otlp_listen().ok().flatten()) {
         Some(address) => format!(
-            "claude-code: to count each response's exact cost and tokens per card, lease and role, \
-             turn Claude Code's telemetry towards the daemon's receiver at {address}. Add to the \
+            "claude-code: to count each response's provider-reported estimated cost and its tokens \
+             per card, lease and role, turn Claude Code's telemetry towards the daemon's receiver \
+             at {address}. Add to the \
              `env` object of ~/.claude/settings.json, or export in your shell: \
              CLAUDE_CODE_ENABLE_TELEMETRY=1 OTEL_LOGS_EXPORTER=otlp \
              OTEL_EXPORTER_OTLP_PROTOCOL=http/json OTEL_EXPORTER_OTLP_ENDPOINT=http://{address}. \
              Setup does not write these for you; new sessions pick them up."
         ),
-        None => "claude-code: the daemon takes Claude Code's telemetry (exact cost and tokens per \
-                 response) once agentd.toml sets `[usage] otlp_listen = \"127.0.0.1:4318\"`; run \
+        None => "claude-code: the daemon takes Claude Code's telemetry (each response's \
+                 provider-reported estimated cost and its tokens) once agentd.toml sets `[usage] otlp_listen = \"127.0.0.1:4318\"`; run \
                  `agentdocker setup claude-code --preview` again afterwards for the environment \
                  lines to add."
             .to_owned(),
@@ -1509,6 +1510,7 @@ mod tests {
             "OTEL_LOGS_EXPORTER=otlp",
             "OTEL_EXPORTER_OTLP_PROTOCOL=http/json",
             "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318",
+            "provider-reported estimated cost",
             "does not write these",
         ] {
             assert!(note.contains(line), "{line}: {note}");

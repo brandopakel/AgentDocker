@@ -3,7 +3,7 @@
 //! Claude Code exports its events as OTLP log records (`OTEL_LOGS_EXPORTER=otlp`);
 //! this module reads the OTLP/HTTP JSON encoding of an `ExportLogsServiceRequest`
 //! and keeps one thing from it: each `api_request` event, which carries the
-//! tokens of one API response and what the provider charged for it. Nothing
+//! tokens of one API response and Claude Code's estimate of its cost. Nothing
 //! else in the payload is kept — not prompts, tool arguments or any other
 //! event — and no byte of the payload persists past this decoding.
 //!

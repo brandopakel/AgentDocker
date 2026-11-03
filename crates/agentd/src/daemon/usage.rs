@@ -340,7 +340,7 @@ impl Daemon {
         let result = state.commit_produced(
             "usage accounting",
             |store, seq| {
-                let event = store.usage_ingest(Ingest {
+                let events = store.usage_ingest(Ingest {
                     key,
                     progress: &progress,
                     samples: &samples,
@@ -351,7 +351,7 @@ impl Daemon {
                     event_seq: seq,
                     finished_job,
                 })?;
-                Ok((vec![event], ()))
+                Ok((events, ()))
             },
             |_, _, ()| {},
         );
@@ -369,14 +369,20 @@ pub(crate) enum Received {
 }
 
 impl Daemon {
-    /// Record the samples one received telemetry export decoded to: each
+    /// Record what one received telemetry export decoded to: each sample
     /// attributed to the agent whose session it names, as a collected
-    /// transcript record would be, stamped with the card and roles that
-    /// agent holds, and committed through the usage transaction with its
-    /// `usage_recorded` event. Replays of responses already counted, by
-    /// this route or from a transcript, add nothing but a price the first
-    /// record lacked.
-    pub(crate) fn record_telemetry(&self, samples: &[agentdocker_host::usage::Sample]) -> Received {
+    /// transcript record would be, and charged to the card and roles that
+    /// agent held when the response was made; each accounting event that
+    /// could not be read (`rejected`, its reason) a source gap, so the
+    /// report does not claim it. Committed through the usage transaction
+    /// with its `usage_recorded` event. Replays of responses already
+    /// counted, by this route or from a transcript, add nothing but a price
+    /// the first record lacked.
+    pub(crate) fn record_telemetry(
+        &self,
+        samples: &[agentdocker_host::usage::Sample],
+        rejected: &[String],
+    ) -> Received {
         let config = configuration(&self.home).unwrap_or_default();
         let now = Utc::now();
         let mut state = lock(&self.state);
@@ -388,13 +394,21 @@ impl Daemon {
         let result = state.commit_produced(
             "usage telemetry",
             |store, seq| {
-                let event =
-                    store.usage_ingest_telemetry(&samples, retained(now, &config), now, seq)?;
-                let count = match &event.kind {
-                    EventKind::UsageRecorded { samples, .. } => *samples,
-                    _ => 0,
-                };
-                Ok((vec![event], count))
+                let events = store.usage_ingest_telemetry(
+                    &samples,
+                    rejected,
+                    retained(now, &config),
+                    now,
+                    seq,
+                )?;
+                let count = events
+                    .iter()
+                    .find_map(|event| match &event.kind {
+                        EventKind::UsageRecorded { samples, .. } => Some(*samples),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                Ok((events, count))
             },
             |_, _, count| accepted = count,
         );
@@ -418,38 +432,49 @@ fn attribution_at(state: &State, sample: &agentdocker_host::usage::Sample) -> Us
     attribution
 }
 
-/// The card and roles an attributed agent holds, onto its sample: of the
-/// live exclusive `task:` leases it already held at the sample's time (a
-/// card taken afterwards was not being worked then) on a card that is on
-/// a board (a `task:` lease on a build campaign is not one), the latest
-/// taken; and its `role` label as it stands. Nothing for an unattributed
-/// sample.
+/// The card and roles an attributed agent held when the response was
+/// made, onto its sample, however late its record arrives. The card: of
+/// the exclusive `task:` leases on a board card it held at `at` (one it
+/// still holds, taken by then and not lapsed, or one the store kept when
+/// it ended), the latest taken; a `task:` lease on anything else (a build
+/// campaign) is never one. The roles: those its kept history says it held
+/// then, or its current ones when they have never changed. Nothing for an
+/// unattributed sample.
 fn stamp(state: &State, attribution: &mut UsageAttribution, at: DateTime<Utc>) {
-    let Some(agent) = attribution.agent.as_deref() else {
+    let Some(agent) = attribution.agent.clone() else {
         return;
     };
-    let id = AgentId::from(agent.to_owned());
-    let now = Utc::now();
-    attribution.card = state
+    let id = AgentId::from(agent.clone());
+    let live = state
         .leases
         .by_holder(&id)
         .into_iter()
         .filter(|lease| {
-            lease.mode == LeaseMode::Exclusive && !lease.is_expired(now) && lease.acquired_at <= at
+            lease.mode == LeaseMode::Exclusive && lease.acquired_at <= at && at < lease.expires_at
         })
         .filter_map(|lease| {
             let card = lease.resource.as_str().strip_prefix("task:")?;
-            Some((lease.acquired_at, card))
-        })
-        .filter(|(_, card)| state.is_card(card))
-        .max_by_key(|(acquired, _)| *acquired)
-        .map(|(_, card)| card.to_owned());
-    attribution.role = state
-        .registry
-        .get(&id)
-        .and_then(|record| record.spec.labels.get(agentdocker_core::agent::ROLE_LABEL))
-        .filter(|label| !label.is_empty())
-        .cloned();
+            state
+                .store
+                .usage_is_card(card)
+                .unwrap_or(false)
+                .then(|| (lease.acquired_at, card.to_owned()))
+        });
+    let ended = state.store.usage_card_held(&agent, at).ok().flatten();
+    attribution.card = live
+        .chain(ended)
+        .max_by_key(|(taken, _)| *taken)
+        .map(|(_, card)| card);
+    attribution.role = match state.store.usage_role_held(&agent, at) {
+        Ok(Some(held)) => held.filter(|label| !label.is_empty()),
+        Ok(None) => state
+            .registry
+            .get(&id)
+            .and_then(|record| record.spec.labels.get(agentdocker_core::agent::ROLE_LABEL))
+            .filter(|label| !label.is_empty())
+            .cloned(),
+        Err(_) => None,
+    };
 }
 
 fn alive_wait(weak: &Weak<Daemon>, ticks: usize) -> bool {
@@ -1275,6 +1300,215 @@ mod tests {
             "timestamp":(Utc::now()-Duration::hours(2)).to_rfc3339(),
             "message":{"id":id,"model":"fixture-model","content":[{"text":"TRANSCRIPT_SECRET_MUST_NOT_PERSIST"}],
                 "usage":{"input_tokens":input,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":2}}}).to_string()+"\n"
+    }
+
+    async fn query_by(daemon: &Arc<Daemon>, by: Group) -> Report {
+        match daemon
+            .handle(Request::Usage {
+                project: None,
+                agent: None,
+                since: Some("24h".into()),
+                until: None,
+                by,
+            })
+            .await
+        {
+            Response::Usage { report } => report,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A response is charged to the card and roles its agent held when it
+    /// was made, not when its record is read: every record here arrives
+    /// after all of it. A card released before then still takes what was
+    /// made while it was held; a lapsed lease takes what was made before
+    /// its expiry and not what came after, whenever the sweep removed it;
+    /// a `task:` lease that is not a card takes nothing; and a change of
+    /// roles in between leaves what was made before it with the roles held
+    /// then.
+    #[tokio::test]
+    async fn responses_are_charged_to_what_was_held_when_they_were_made() {
+        use agentdocker_core::usage::Counters;
+        use agentdocker_host::usage::{Sample, Semantics};
+        let (temp, daemon, _, _) = fixture();
+        let checkout = temp.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let mut spec = AgentSpec {
+            name: "claude-held".into(),
+            runtime: "claude-code".into(),
+            workdir: Some(checkout.clone()),
+            ..Default::default()
+        };
+        spec.labels
+            .insert("session_id".into(), "held-session".into());
+        spec.labels.insert("role".into(), "reviewer".into());
+        let Response::Agent { agent } = daemon
+            .handle(Request::Register {
+                spec,
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("registration")
+        };
+        let file = |title: &str| Request::TaskCreate {
+            from: agent.id.to_string(),
+            project: Some(checkout.display().to_string()),
+            title: title.to_owned(),
+            acceptance: "done".to_owned(),
+            column: Some(agentdocker_core::Column::Ready),
+            links: Vec::new(),
+            board: None,
+            lane: None,
+            description: String::new(),
+            priority: None,
+            size: None,
+            due: None,
+            external_blocker: String::new(),
+            parent: None,
+            blocked_by: Vec::new(),
+            tags: Vec::new(),
+            plan: None,
+        };
+        let Response::Task { task: first } = daemon.handle(file("first")).await else {
+            panic!("the first card is filed")
+        };
+        let Response::Task { task: second } = daemon.handle(file("second")).await else {
+            panic!("the second card is filed")
+        };
+        let claim = |resource: String, ttl_secs: u64| Request::Claim {
+            agent: agent.id.to_string(),
+            resource,
+            mode: LeaseMode::Exclusive,
+            amount: None,
+            ttl_secs,
+            note: None,
+            wait_secs: 0,
+            priority: 0,
+            automatic: false,
+        };
+
+        // The first card: pulled, worked on, released.
+        let Response::TaskDetail {
+            lease: Some(pulled),
+            ..
+        } = daemon
+            .handle(Request::TaskPull {
+                agent: agent.id.to_string(),
+                task: Some(first.id.to_string()),
+                take_over_from: None,
+                project: None,
+                board: None,
+            })
+            .await
+        else {
+            panic!("the first card is pulled")
+        };
+        let during_first = Utc::now();
+        let released = daemon
+            .handle(Request::Release {
+                agent: agent.id.to_string(),
+                lease: pulled.id.clone(),
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await;
+        assert!(matches!(released, Response::Lease { .. }), "{released:?}");
+
+        // The second card: held by hand for a second, and let lapse; a
+        // build campaign's lease taken meanwhile is not a card.
+        let Response::Lease { lease: held } =
+            daemon.handle(claim(format!("task:{}", second.id), 1)).await
+        else {
+            panic!("the second card is held")
+        };
+        assert!(matches!(
+            daemon.handle(claim("task:local-build".into(), 600)).await,
+            Response::Lease { .. }
+        ));
+        let during_second = Utc::now();
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        let lapsed_unswept = Utc::now();
+        assert!(lapsed_unswept > held.expires_at);
+        daemon.expire_leases();
+        assert!(
+            lock(&daemon.state).leases.get(&held.id).is_none(),
+            "the sweep removed the lapsed lease"
+        );
+
+        // The roles change after all of that.
+        let Response::Agent { agent: changed } = daemon
+            .handle(Request::Role {
+                agent: agent.id.to_string(),
+                role: Some("tester".into()),
+            })
+            .await
+        else {
+            panic!("the role changes")
+        };
+        let now_held = changed.spec.labels.get("role").cloned().unwrap();
+        assert_ne!(now_held, "reviewer");
+        let after_all = Utc::now();
+
+        let sample = |id: &str, at: DateTime<Utc>| Sample {
+            source_id: format!("held-{id}"),
+            runtime: "claude-code".into(),
+            format: "fixture".into(),
+            session_id: "held-session".into(),
+            at,
+            provider: None,
+            model: Some("fixture-model".into()),
+            counters: Counters {
+                input_tokens: Some(10),
+                output_tokens: Some(1),
+                ..Counters::default()
+            },
+            semantics: Semantics::Response,
+            proves_zero_baseline: false,
+            cost_usd_micros: Some(100),
+            aliases: Vec::new(),
+        };
+        assert_eq!(
+            daemon.record_telemetry(
+                &[
+                    sample("first", during_first),
+                    sample("second", during_second),
+                    sample("lapsed", lapsed_unswept),
+                    sample("after", after_all),
+                ],
+                &[],
+            ),
+            Received::Recorded { accepted: 4 }
+        );
+
+        let by_card: BTreeMap<_, _> = query_by(&daemon, Group::Card)
+            .await
+            .rows
+            .into_iter()
+            .map(|row| (row.key, row.samples))
+            .collect();
+        assert_eq!(
+            by_card,
+            BTreeMap::from([
+                (None, 2),
+                (Some(first.id.to_string()), 1),
+                (Some(second.id.to_string()), 1),
+            ]),
+            "released and lapsed cards keep what was made while held"
+        );
+        let by_role: BTreeMap<_, _> = query_by(&daemon, Group::Role)
+            .await
+            .rows
+            .into_iter()
+            .map(|row| (row.key, row.samples))
+            .collect();
+        assert_eq!(
+            by_role,
+            BTreeMap::from([(Some("reviewer".to_owned()), 3), (Some(now_held), 1)]),
+            "what was made before the change keeps the roles held then"
+        );
+        drop(temp);
     }
 
     async fn query(daemon: &Arc<Daemon>) -> Report {

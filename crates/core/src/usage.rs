@@ -156,7 +156,7 @@ struct Total {
 pub struct Aggregate {
     samples: u64,
     totals: [Total; 5],
-    /// The provider's own price for the samples that carried one, in
+    /// The provider-reported estimated cost of the samples that carried one, in
     /// micro-dollars (USD × 10⁶). Absent from buckets written before cost
     /// was collected, which read as a bucket no sample priced.
     #[serde(default, skip_serializing_if = "Total::is_empty")]

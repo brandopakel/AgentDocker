@@ -101,7 +101,7 @@ pub struct Row {
     pub key: Option<String>,
     pub samples: u64,
     pub counters: CounterReports,
-    /// What the provider said the samples cost, in micro-dollars (USD ×
+    /// The provider-reported estimated cost of the samples, in micro-dollars (USD ×
     /// 10⁶), with the same coverage terms as a counter: a sum only over the
     /// samples that carried a price (Claude Code's telemetry events do;
     /// transcripts do not). Unknown on an older daemon's report.
@@ -124,7 +124,8 @@ impl Row {
         if input == 0 {
             return None;
         }
-        Some((read.min(input) * 100 / input) as u8)
+        // In u128: a hundred times a large u64 count does not fit a u64.
+        Some((u128::from(read.min(input)) * 100 / u128::from(input)) as u8)
     }
 }
 
@@ -336,6 +337,19 @@ mod tests {
             Some(100)
         );
         assert_eq!(Row::cache_read_share(&counters(Some(0), Some(0))), None);
+        // Counts whose hundredfold overflows a u64 keep their share.
+        assert_eq!(
+            Row::cache_read_share(&counters(Some(10_u64.pow(19)), Some(10_u64.pow(18)))),
+            Some(10)
+        );
+        assert_eq!(
+            Row::cache_read_share(&counters(Some(u64::MAX), Some(u64::MAX / 2))),
+            Some(49)
+        );
+        assert_eq!(
+            Row::cache_read_share(&counters(Some(u64::MAX), Some(u64::MAX))),
+            Some(100)
+        );
         assert_eq!(Row::cache_read_share(&counters(None, Some(5))), None);
         assert_eq!(Row::cache_read_share(&counters(Some(5), None)), None);
         let older: Row = serde_json::from_value(serde_json::json!({

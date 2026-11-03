@@ -2092,7 +2092,7 @@ pub enum Response {
         files: Vec<crate::ProjectFile>,
         /// What the card has cost to date: the retained usage recorded
         /// while an agent held it, as one usage row keyed by the card
-        /// (tokens with coverage, the provider's price where it said).
+        /// (tokens with coverage, the provider-reported estimated cost where it said one).
         /// Absent when no retained sample was made under the card.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<crate::usage::report::Row>,

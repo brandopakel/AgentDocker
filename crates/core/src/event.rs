@@ -73,6 +73,15 @@ pub enum EventKind {
         agent: AgentId,
         samples: u64,
     },
+    /// Responses already counted took what a second source said of them:
+    /// `priced` learnt their provider-reported cost from a telemetry event
+    /// that arrived after their transcript record; `folded` had been
+    /// counted twice, once from each source before anything tied them, and
+    /// now count once.
+    UsageJoined {
+        priced: u64,
+        folded: u64,
+    },
     /// Volatile review metadata changed. Live-only seq:0, no prompt, answer or capability.
     SecretReviewChanged {
         review: String,

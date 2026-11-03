@@ -30,7 +30,7 @@ pub struct Sample {
     pub counters: Counters,
     pub semantics: Semantics,
     pub proves_zero_baseline: bool,
-    /// What the provider said this response cost, in micro-dollars (USD ×
+    /// The provider-reported estimated cost of this response, in micro-dollars (USD ×
     /// 10⁶), when its record said: Claude Code's telemetry events carry a
     /// price, transcripts do not. Absent from samples made before cost
     /// was collected, and left out of the wire form so their fingerprints

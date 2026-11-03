@@ -22,7 +22,7 @@ mod roles;
 mod rules;
 pub(in crate::daemon) mod verdicts;
 
-const DOCUMENT: &str = "task";
+const DOCUMENT: &str = crate::store::TASK_DOCUMENT;
 const BOARD: &str = "board";
 const COMMENT: &str = "task_comment";
 const ENTRY: &str = "task_entry";
@@ -353,19 +353,6 @@ impl State {
             .into_iter()
             .find(|l| &l.holder == holder && l.mode == LeaseMode::Exclusive)
             .cloned()
-    }
-
-    /// Whether `id` names a card on a board. A `task:` lease on one is a
-    /// card held; a `task:` lease on anything else is a resource of
-    /// another kind (a build campaign, say), never a card. A store that
-    /// cannot say counts as no: usage stays uncharged rather than charged
-    /// to a card that may not exist.
-    pub(in crate::daemon) fn is_card(&self, id: &str) -> bool {
-        self.store
-            .document::<serde_json::Value>(DOCUMENT, id)
-            .ok()
-            .flatten()
-            .is_some()
     }
 
     /// Every live lease on a card: its holder's, and any taken by hand.

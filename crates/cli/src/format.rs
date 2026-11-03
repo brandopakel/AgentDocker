@@ -1052,6 +1052,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::UsageReconciled { agent, samples } => {
             format!("usage reconciled {} {samples} sample(s)", agent.short())
         }
+        EventKind::UsageJoined { priced, folded } => {
+            format!("usage joined     {priced} priced, {folded} counted twice now once")
+        }
         EventKind::UsageEmissionRecorded { agent, emission } => {
             format!(
                 "output counted  {} {} bytes ({:?})",
@@ -1100,9 +1103,9 @@ pub fn counter(report: &agentdocker_core::usage::CounterReport) -> String {
     }
 }
 
-/// A price as the report knows it: the provider's sum when every sample
-/// in the row carried one, marked `~` when some did not (transcripts
-/// carry no price; telemetry events do), `—` when none did.
+/// The provider-reported estimated cost as the report knows it: the sum
+/// when every sample in the row carried one, marked `~` when some did not
+/// (transcripts carry none; telemetry events do), `—` when none did.
 pub fn cost(report: &agentdocker_core::usage::CounterReport) -> String {
     use agentdocker_core::usage::{Coverage, dollars};
     match (report.sum, report.coverage) {
@@ -1314,7 +1317,7 @@ pub fn usage_report(
             &rows,
         );
         println!(
-            "~ some samples did not say; — none did; CACHED is cache reads over input; COST is what the provider's telemetry said"
+            "~ some samples did not say; — none did; CACHED is cache reads over input; COST is the provider-reported estimated cost"
         );
     }
     println!(

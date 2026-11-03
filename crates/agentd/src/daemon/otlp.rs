@@ -4,7 +4,9 @@
 //! daemon takes `POST /v1/logs` and `POST /v1/metrics` in the OTLP/JSON
 //! encoding (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`) from exporters on
 //! this machine, keeps the `api_request` events as usage samples and
-//! acknowledges everything else without reading it. One small HTTP/1.1
+//! acknowledges everything else without reading it. An `api_request` event
+//! it cannot account is answered as OTLP's partial success
+//! (`rejectedLogRecords`, `errorMessage`) and kept as a source gap. One small HTTP/1.1
 //! server of its own, as the webhook and judge tests stand one up: the
 //! daemon's HTTP otherwise is outbound, and a dependency for two routes
 //! would be weight without use.
@@ -225,10 +227,27 @@ impl Reply {
         }
     }
 
+    /// Everything accepted: OTLP leaves `partialSuccess` unset.
     fn accepted() -> Self {
         Self {
             status: 200,
-            body: serde_json::json!({"partialSuccess": {}}).to_string(),
+            body: "{}".to_owned(),
+        }
+    }
+
+    /// Accepted but for `rejected` accounting events, which were not
+    /// counted: OTLP's partial success, with why. A 64-bit count is a
+    /// decimal string in the protobuf JSON mapping.
+    fn partial(rejected: usize, reason: &str) -> Self {
+        Self {
+            status: 200,
+            body: serde_json::json!({"partialSuccess": {
+                "rejectedLogRecords": rejected.to_string(),
+                "errorMessage": format!(
+                    "{rejected} api_request event(s) not accounted: {reason}"
+                ),
+            }})
+            .to_string(),
         }
     }
 
@@ -382,25 +401,24 @@ pub(crate) fn respond(daemon: &Daemon, request: &Request) -> Reply {
         Ok(decoded) => decoded,
         Err(reason) => return Reply::new(400, &reason),
     };
-    if !decoded.skipped.is_empty() {
-        debug!(
-            skipped = decoded.skipped.len(),
-            reason = %decoded.skipped[0],
-            "usage telemetry events left out"
-        );
-    }
-    if decoded.samples.is_empty() {
+    // Only accounting events can be rejected: every other event is
+    // deliberately not read, and is neither a rejection nor a gap.
+    if decoded.samples.is_empty() && decoded.skipped.is_empty() {
         return Reply::accepted();
     }
-    match daemon.record_telemetry(&decoded.samples) {
+    match daemon.record_telemetry(&decoded.samples, &decoded.skipped) {
         Received::Recorded { accepted } => {
             debug!(
                 records = decoded.records,
                 samples = decoded.samples.len(),
                 accepted,
+                rejected = decoded.skipped.len(),
                 "usage telemetry recorded"
             );
-            Reply::accepted()
+            match decoded.skipped.first() {
+                None => Reply::accepted(),
+                Some(reason) => Reply::partial(decoded.skipped.len(), reason),
+            }
         }
         Received::Unavailable => Reply::new(503, "usage accounting is not taking records now"),
     }
@@ -409,7 +427,10 @@ pub(crate) fn respond(daemon: &Daemon, request: &Request) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentdocker_core::usage::report::{Group, Report};
+    use agentdocker_core::usage::{
+        self,
+        report::{Group, Report},
+    };
     use agentdocker_core::{AgentSpec, Request as Rq, Response};
     use serde_json::json;
     use std::io::{Read, Write};
@@ -494,7 +515,7 @@ mod tests {
 
     /// Over the wire: an export's `api_request` events are recorded for
     /// the agent whose session they name, charged to the card it pulled
-    /// and its role, priced exactly, and the card's detail says what it
+    /// and its role, with its provider-reported cost, and the card's detail says what it
     /// has cost; a replay adds nothing; what is not an export, not JSON,
     /// not a known route or not a POST is refused and nothing changes;
     /// metrics are acknowledged and not counted; the report says where
@@ -610,7 +631,11 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!((status, reply.as_str()), (200, r#"{"partialSuccess":{}}"#));
+        assert_eq!(
+            (status, reply.as_str()),
+            (200, "{}"),
+            "everything taken: no partial success"
+        );
         let seq_after = super::super::lock(&daemon.state).next_seq;
         assert_eq!(seq_after, seq_before + 1, "one usage_recorded event");
 
@@ -650,7 +675,7 @@ mod tests {
         assert_eq!(spent.samples, 1);
         assert_eq!(spent.cost_usd_micros.sum, Some(12_500));
 
-        // The same request again: acknowledged, counted once.
+        // The same request again: acknowledged, counted once, nothing to say.
         let (status, _) = tokio::task::spawn_blocking(move || {
             post(address, "/v1/logs", "application/json", &body)
         })
@@ -658,6 +683,57 @@ mod tests {
         .unwrap();
         assert_eq!(status, 200);
         assert_eq!(report(&daemon, Group::Agent).await.rows[0].samples, 1);
+        assert_eq!(
+            super::super::lock(&daemon.state).next_seq,
+            seq_after,
+            "a replay appends no event"
+        );
+
+        // An accounting event that cannot be counted beside one that can:
+        // the one is counted, the other is OTLP's partial success and a gap.
+        let mut mixed: serde_json::Value =
+            serde_json::from_str(&export("sess-otlp", "req_2", 0.5)).unwrap();
+        let records = mixed["resourceLogs"][0]["scopeLogs"][0]["logRecords"]
+            .as_array_mut()
+            .unwrap();
+        let mut unnamed = records[0].clone();
+        unnamed["attributes"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|pair| pair["key"] != "request_id");
+        records.push(unnamed);
+        let mixed = mixed.to_string();
+        let (status, reply) = tokio::task::spawn_blocking({
+            let mixed = mixed.clone();
+            move || post(address, "/v1/logs", "application/json", &mixed)
+        })
+        .await
+        .unwrap();
+        assert_eq!(status, 200);
+        let reply: serde_json::Value = serde_json::from_str(&reply).unwrap();
+        assert_eq!(reply["partialSuccess"]["rejectedLogRecords"], "1");
+        assert!(
+            reply["partialSuccess"]["errorMessage"]
+                .as_str()
+                .is_some_and(|m| m.contains("api_request without request_id")),
+            "{reply}"
+        );
+        let after_mixed = report(&daemon, Group::Agent).await;
+        assert_eq!(after_mixed.rows[0].samples, 2, "the readable one counts");
+        assert_eq!(after_mixed.coverage.source_gaps, 1, "the other is a gap");
+        assert!(after_mixed.rows[0].counters.input_tokens.coverage != usage::Coverage::Complete);
+        // Only the unreadable one again: still partial success, the same
+        // gap, and no event for a rejection already on record this hour.
+        let seq_mixed = super::super::lock(&daemon.state).next_seq;
+        let (status, reply) = tokio::task::spawn_blocking(move || {
+            post(address, "/v1/logs", "application/json", &mixed)
+        })
+        .await
+        .unwrap();
+        assert_eq!(status, 200);
+        assert!(reply.contains("rejectedLogRecords"), "{reply}");
+        assert_eq!(report(&daemon, Group::Agent).await.coverage.source_gaps, 1);
+        assert_eq!(super::super::lock(&daemon.state).next_seq, seq_mixed);
 
         // Metrics are taken and not counted; the rest is refused.
         let cases: Vec<(&str, &str, String, u16)> = vec![
@@ -689,8 +765,8 @@ mod tests {
         .unwrap();
         assert_eq!(status, 405);
         let after_refusals = report(&daemon, Group::Agent).await;
-        assert_eq!(after_refusals.rows[0].samples, 1);
-        assert_eq!(after_refusals.rows[0].cost_usd_micros.sum, Some(12_500));
+        assert_eq!(after_refusals.rows[0].samples, 2);
+        assert_eq!(after_refusals.rows[0].cost_usd_micros.sum, Some(512_500));
         keeper.abort();
     }
 
