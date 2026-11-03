@@ -436,6 +436,18 @@ pub enum EventKind {
         agent: AgentId,
         session: String,
     },
+    /// A record has learned what its provider says of its conversation:
+    /// the role the provider gave the thread and the thread that spawned
+    /// it (Codex's multi-agent threads), from the rollout's first record or
+    /// from the shared server. Published again only when something new is
+    /// learned, a parent's agent included.
+    AgentThreadLearned {
+        agent: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<crate::ThreadRef>,
+    },
     /// Maintenance committed an exact-ID redirect and all operational moves.
     /// Original history and before-images remain available in the repair archive.
     AgentReconciled {

@@ -316,11 +316,16 @@ impl Daemon {
             .samples
             .iter()
             .map(|sample| {
-                let attribution = usage::registration_at(
-                    &registrations(&state, &sample.runtime, &sample.session_id),
-                    sample.at,
-                )
-                .unwrap_or_default();
+                // A thread another thread spawned, with no record of its
+                // own, is its parent's work: its usage is the parent's.
+                let mut registered = registrations(&state, &sample.runtime, &sample.session_id);
+                if registered.is_empty()
+                    && let Some(parent) = &sample.parent_session
+                {
+                    registered = registrations(&state, &sample.runtime, parent);
+                }
+                let attribution =
+                    usage::registration_at(&registered, sample.at).unwrap_or_default();
                 (sample.clone(), attribution)
             })
             .collect();
@@ -662,6 +667,7 @@ fn collect_pass(
                     "codex-rollout-0.153.4-0.154.0-v1".into(),
                     "codex-rollout-0.155.1-v1".into(),
                     "codex-rollout-0.160.0-v1".into(),
+                    agentdocker_host::usage::CODEX_RESPONSES_FORMAT.into(),
                     "claude-transcript-2.1.268-270-v1".into(),
                     "claude-transcript-2.1.271-276-v1".into(),
                     "claude-transcript-2.1.277-278-280-v1".into(),
@@ -1969,6 +1975,62 @@ mod tests {
                 .filter(|e| matches!(e.kind, EventKind::UsageReconciled { .. }))
                 .count(),
             events
+        );
+    }
+
+    /// A Codex rollout of a thread another spawned, two hours ago: its
+    /// first record names the parent, and one response's own count follows.
+    fn spawned_rollout(thread: &str, parent: &str, input: u64) -> String {
+        let at = (Utc::now() - Duration::hours(2)).to_rfc3339();
+        let meta = serde_json::json!({"type":"session_meta","timestamp":at,"payload":{"id":thread,
+            "cli_version":"0.164.0","model_provider":"fixture-provider",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":parent,"depth":1,"agent_role":"reviewer"}}}}});
+        let usage = serde_json::json!({"input_tokens":input,"cached_input_tokens":0,"cache_write_input_tokens":0,
+            "output_tokens":2,"reasoning_output_tokens":0,"total_tokens":input+2});
+        let response = serde_json::json!({"type":"token_usage_record","timestamp":at,"payload":{"thread_id":thread,
+            "turn_id":"turn-1","response_id":"response-1","usage":usage,"turn_token_usage":usage,"thread_token_usage":usage}});
+        let totals = serde_json::json!({"type":"event_msg","timestamp":at,"payload":{"type":"token_count",
+            "info":{"total_token_usage":usage,"last_token_usage":usage}}});
+        format!("{meta}\n{response}\n{totals}\n")
+    }
+
+    #[tokio::test]
+    async fn a_spawned_codex_threads_usage_is_its_parents_and_exact() {
+        let (temp, daemon, mut config, _root) = fixture();
+        let codex = temp.path().join("codex");
+        std::fs::create_dir(&codex).unwrap();
+        config.codex_roots = vec![codex.clone()];
+        let response = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "codex-parent".into(),
+                    runtime: "codex".into(),
+                    labels: BTreeMap::from([("session_id".into(), "fixture-root-thread".into())]),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        let Response::Agent { agent } = response else {
+            panic!("{response:?}")
+        };
+        std::fs::write(
+            codex.join("rollout-child.jsonl"),
+            spawned_rollout("fixture-child-thread", "fixture-root-thread", 5),
+        )
+        .unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows.len(), 1, "{report:?}");
+        // The parent's, counted once from the response's own figure (the
+        // running totals after it are the same tokens), and so exact.
+        assert_eq!(report.rows[0].key.as_deref(), Some(agent.id.as_str()));
+        assert_eq!(report.rows[0].samples, 1);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(5));
+        assert_eq!(
+            report.rows[0].usage_source,
+            Some(agentdocker_core::usage::UsageSource::Exact)
         );
     }
 

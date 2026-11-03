@@ -66,6 +66,12 @@ pub struct Row {
     pub key: Option<String>,
     pub samples: u64,
     pub counters: CounterReports,
+    /// Whether every figure in the row is the provider's own per-response
+    /// count (`exact`), or at least one is a difference between its
+    /// running totals (`estimated`); absent where buckets written before
+    /// this was kept are in the row ([`super::UsageSource`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_source: Option<super::UsageSource>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

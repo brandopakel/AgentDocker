@@ -87,7 +87,11 @@ pub struct TaskTransition<'a> {
 // Nor do `topic_messages` and `topic_cursors`, by the same rule: an older
 // daemon keeps no topic messages and moves no cursor while it runs, so a
 // reader may later be replayed less or again, never anything wrong.
-pub(crate) const SCHEMA_VERSION: i64 = 28;
+// v29 is a bump although its one new table (`usage_accounts`) alone would
+// not be: each usage bucket now counts its exact samples, a field an older
+// daemon's strict bucket reader refuses, and an older daemon would count
+// both of a Codex session's accounts of the same tokens. It must refuse.
+pub(crate) const SCHEMA_VERSION: i64 = 29;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS usage_emissions (
@@ -230,6 +234,10 @@ CREATE INDEX IF NOT EXISTS usage_buckets_scope ON usage_buckets (hour, project, 
 CREATE TABLE IF NOT EXISTS usage_baselines (
     key TEXT PRIMARY KEY,
     json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_accounts (
+    key TEXT PRIMARY KEY,
+    account TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS usage_files (
     key TEXT PRIMARY KEY,
@@ -999,6 +1007,9 @@ impl Store {
         // database rather than open it and quietly not hold anyone. v28's
         // boards, comments and card history are new documents too; a card
         // without a board is on its project's main board, made on demand.
+        // v29's bucket counts and session accounts start empty: a bucket
+        // without one cannot say whether it is exact, and a session with a
+        // cumulative baseline is on the account of running totals.
         Ok(())
     }
 

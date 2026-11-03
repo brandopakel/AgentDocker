@@ -853,6 +853,24 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentSessionBound { agent, session } => {
             format!("agent bound      {} to session {session}", agent.short())
         }
+        EventKind::AgentThreadLearned {
+            agent,
+            role,
+            parent,
+        } => {
+            let role = role
+                .as_deref()
+                .map(|role| format!(" as {role}"))
+                .unwrap_or_default();
+            let parent = parent
+                .as_ref()
+                .map(|parent| match &parent.agent {
+                    Some(agent) => format!(", spawned by {}", agent.short()),
+                    None => format!(", spawned by thread {}", short(&parent.thread)),
+                })
+                .unwrap_or_else(|| ", a root thread".to_owned());
+            format!("thread learned   {}{role}{parent}", agent.short())
+        }
         EventKind::HumanLocationChanged { agent, workdir, .. } => {
             format!(
                 "human moved      {} to {}",
@@ -1066,7 +1084,9 @@ pub fn event_line(event: &Event) -> String {
 }
 
 /// Escape control characters so untrusted metadata cannot create terminal commands or extra rows.
-fn single_line(text: &str) -> String {
+/// One line of `text`: every control character spelled out, so nothing
+/// read from a log or a provider can break a row or move the cursor.
+pub(crate) fn single_line(text: &str) -> String {
     text.chars()
         .flat_map(|c| {
             if c.is_control() {
@@ -1117,6 +1137,16 @@ pub use agentdocker_core::usage::thousands;
 /// A usage row's first column: the agent or project by name when it is
 /// still known, else its ID (history outlives the registry), and
 /// `(unattributed)` for usage no session could be matched to.
+/// Whether a row's figures are the provider's own per-response counts.
+fn usage_source(source: Option<agentdocker_core::usage::UsageSource>) -> &'static str {
+    use agentdocker_core::usage::UsageSource;
+    match source {
+        Some(UsageSource::Exact) => "exact",
+        Some(UsageSource::Estimated) => "estimated",
+        None => "—",
+    }
+}
+
 fn usage_key(key: Option<&str>, names: &std::collections::HashMap<String, String>) -> String {
     match key {
         None => "(unattributed)".to_owned(),
@@ -1243,6 +1273,7 @@ pub fn usage_report(
                     counter(&row.counters.cache_write_input_tokens),
                     counter(&row.counters.output_tokens),
                     counter(&row.counters.reasoning_output_tokens),
+                    usage_source(row.usage_source).to_owned(),
                 ]
             })
             .collect();
@@ -1255,10 +1286,13 @@ pub fn usage_report(
                 "CACHE WRITE",
                 "OUTPUT",
                 "REASONING",
+                "FIGURES",
             ],
             &rows,
         );
-        println!("~ some samples did not say; — none did");
+        println!(
+            "~ some samples did not say; — none did. FIGURES: exact are the provider's own per-response counts, estimated has differences between its running totals in it"
+        );
     }
     println!(
         "Range {} to {}{}{}; retained since {}{}",
@@ -1563,10 +1597,62 @@ mod tests {
     /// when it is not.
     #[test]
     fn usage_rows_name_what_they_can() {
+        use agentdocker_core::usage::UsageSource;
         let names = [("abc123".to_owned(), "codex-4242".to_owned())].into();
         assert_eq!(super::usage_key(Some("abc123"), &names), "codex-4242");
         assert_eq!(super::usage_key(Some("gone"), &names), "gone");
         assert_eq!(super::usage_key(None, &names), "(unattributed)");
+        assert_eq!(super::usage_source(Some(UsageSource::Exact)), "exact");
+        assert_eq!(
+            super::usage_source(Some(UsageSource::Estimated)),
+            "estimated"
+        );
+        assert_eq!(super::usage_source(None), "—");
+    }
+
+    #[test]
+    fn a_learned_thread_names_its_role_and_parent_without_their_text_injected() {
+        use agentdocker_core::{AgentId, Event, EventKind, ThreadRef};
+        let child = AgentId::from("child-agent-id".to_owned());
+        let parent = AgentId::from("parent-agent-id".to_owned());
+        let line = |role: Option<&str>, parent: Option<ThreadRef>| {
+            super::event_line(&Event::new(
+                EventKind::AgentThreadLearned {
+                    agent: child.clone(),
+                    role: role.map(str::to_owned),
+                    parent,
+                },
+                chrono::Utc::now(),
+            ))
+        };
+        let known = line(
+            Some("reviewer"),
+            Some(ThreadRef {
+                thread: "0199a6f1-0000-7000-8000-0000000000d1".into(),
+                agent: Some(parent.clone()),
+            }),
+        );
+        assert!(known.contains("as reviewer"), "{known}");
+        assert!(
+            known.contains(&format!("spawned by {}", parent.short())),
+            "{known}"
+        );
+        let unresolved = line(
+            None,
+            Some(ThreadRef {
+                thread: "0199a6f1-0000-7000-8000-0000000000d1".into(),
+                agent: None,
+            }),
+        );
+        assert!(unresolved.contains("spawned by thread"), "{unresolved}");
+        assert!(!unresolved.contains(" as "), "{unresolved}");
+        let root = line(None, None);
+        assert!(root.contains("a root thread"), "{root}");
+        let injected = line(Some("x\n\u{1b}[2Jy"), None);
+        assert!(
+            !injected.contains('\n') && !injected.contains('\u{1b}'),
+            "{injected}"
+        );
     }
 
     #[test]
