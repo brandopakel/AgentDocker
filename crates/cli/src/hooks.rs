@@ -2206,11 +2206,15 @@ fn last_prompts(path: &Path) -> String {
         .filter(|p| person_prompt(p))
         .collect();
     let mut left = COMPACT_QUERY_CHARS;
-    let mut kept = Vec::new();
+    let mut kept: Vec<String> = Vec::new();
     for prompt in prompts.iter().rev().take(COMPACT_PROMPTS) {
-        if left == 0 {
+        // The line break that will join this prompt to the newer ones is
+        // counted in the budget too.
+        let separator = usize::from(!kept.is_empty());
+        if left <= separator {
             break;
         }
+        left -= separator;
         let piece: String = prompt.trim().chars().take(left).collect();
         left -= piece.chars().count();
         kept.push(piece);
@@ -3748,8 +3752,12 @@ mod tests {
         )
         .unwrap();
         let query = last_prompts(&path);
-        assert_eq!(query.chars().count(), 600 + 1, "{query}");
-        assert!(query.ends_with(&long) && query.starts_with("an older p"));
+        assert_eq!(
+            query.chars().count(),
+            600,
+            "the line break counted: {query}"
+        );
+        assert!(query.ends_with(&long) && query.starts_with("an older \n"));
         assert_eq!(last_prompts(&dir.path().join("missing.jsonl")), "");
     }
 
