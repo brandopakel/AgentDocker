@@ -1,6 +1,8 @@
 //! Terminal output helpers.
 
-use agentdocker_core::{Activity, Envelope, Event, EventKind, Question, ResourceKey};
+use agentdocker_core::{
+    Activity, AgentActivity, Envelope, Event, EventKind, Question, ResourceKey,
+};
 use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
@@ -194,12 +196,26 @@ pub fn question_line(question: &Question) -> String {
     )
 }
 
-/// One cell for a `ps` row: the word, and for the one state that has a
-/// reason, the reason.
-pub fn activity_cell(activity: &Activity) -> String {
-    match activity {
-        Activity::Blocked { resource: key, .. } => format!("blocked on {}", resource(key)),
-        other => other.label().to_owned(),
+/// One cell for a `ps` row: the daemon's three-part answer in words —
+/// state, status and, when it waits on the person, what for — and for a
+/// block on a lease, the resource. From a daemon predating the three
+/// parts, the one activity word as before.
+pub fn activity_cell(activity: &AgentActivity) -> String {
+    let on = match &activity.activity {
+        Activity::Blocked { resource: key, .. } => format!(" on {}", resource(key)),
+        _ => String::new(),
+    };
+    match activity.identity() {
+        Some(identity) => {
+            let mut cell = format!("{} · {}", identity.state.word(), identity.status.word());
+            if identity.waiting_for != agentdocker_core::status::WaitingFor::None {
+                cell.push_str(" · ");
+                cell.push_str(identity.waiting_for.word());
+            }
+            cell.push_str(&on);
+            cell
+        }
+        None => format!("{}{on}", activity.activity.label()),
     }
 }
 
@@ -209,6 +225,7 @@ pub fn judged_errand(reason: agentdocker_core::WaitReason) -> &'static str {
         agentdocker_core::WaitReason::Permission => "for permission",
         agentdocker_core::WaitReason::Question => "for an answer",
         agentdocker_core::WaitReason::Draft => "with an unsent draft",
+        agentdocker_core::WaitReason::Sandbox => "for a sandbox request",
         agentdocker_core::WaitReason::Other => "for you",
     }
 }
@@ -234,6 +251,21 @@ pub fn event_line(event: &Event) -> String {
                 observation.activity
             )
         }
+        EventKind::AgentStatusChanged {
+            agent,
+            state,
+            status,
+            waiting_for,
+            evidence,
+            ..
+        } => format!(
+            "status   {} {} · {} · waiting for {} ({} evidence)",
+            agent.short(),
+            state.word(),
+            status.word(),
+            waiting_for.word(),
+            evidence.word()
+        ),
         EventKind::AgentJudgedNeedsYou { agent, judgment } => format!(
             "judged waiting   {} {} ({}, from its screen)",
             agent.short(),
@@ -1713,6 +1745,7 @@ mod tests {
                         reason: Some(agentdocker_core::WaitReason::Other),
                         detail: None,
                         source,
+                        evidence: None,
                     },
                 },
                 chrono::Utc::now(),

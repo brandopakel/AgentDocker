@@ -1062,7 +1062,11 @@ async fn a_fenced_daemon_leaves_a_returning_session_unfolded() {
         assert_eq!(answered.id, old.id, "folded once authority is back");
         assert_eq!(answered.pid, Some(new_life.id()));
         assert_eq!(state.registry.get(&fresh.id).map(|r| &r.id), Some(&old.id));
-        assert_eq!(state.next_seq, seq + 1, "the fold's one event");
+        assert_eq!(
+            committed_since(&state, seq).len(),
+            1,
+            "the fold's one event"
+        );
         assert_eq!(
             state
                 .store
@@ -1647,6 +1651,35 @@ async fn one_process_is_not_one_agent_on_the_pid_alone() {
 fn distinct_pid() -> Option<u32> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
     Some(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+/// What `state` committed from `seq` on, in order, but for status
+/// announcements, which follow the changes that cause them.
+fn committed_since(state: &State, seq: u64) -> Vec<EventKind> {
+    let mut events: Vec<Event> = state
+        .store
+        .recent_events(1000)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.seq >= seq)
+        .filter(|event| !matches!(event.kind, EventKind::AgentStatusChanged { .. }))
+        .collect();
+    events.sort_by_key(|event| event.seq);
+    events.into_iter().map(|event| event.kind).collect()
+}
+
+/// The next event that is not a status announcement: a change to what an
+/// agent is up to is said after the change that caused it, so a test of
+/// that change's own event reads past it.
+fn next_event(
+    events: &mut broadcast::Receiver<Event>,
+) -> Result<Event, broadcast::error::TryRecvError> {
+    loop {
+        let event = events.try_recv()?;
+        if !matches!(event.kind, EventKind::AgentStatusChanged { .. }) {
+            return Ok(event);
+        }
+    }
 }
 
 async fn register(daemon: &Arc<Daemon>, name: &str, pid: Option<u32>) -> AgentRecord {
@@ -4673,6 +4706,229 @@ async fn a_quiet_agent_is_unknown_and_a_finished_one_is_finished() {
     );
 }
 
+/// The three-part answer — state, status, what it waits for, with its
+/// evidence — travels with `activity`, and `agent_status_changed` says it
+/// once per change, whatever changed it: a report, a word that expired
+/// on the tick, a question, an exit. A report that leaves it as it was, a
+/// weak word a current strong one keeps off, and a tick that finds it
+/// unchanged say nothing.
+#[tokio::test]
+async fn status_changes_are_said_once_and_answer_with_activity() {
+    use agentdocker_core::status::{Evidence, State, Status, WaitingFor};
+    use agentdocker_core::{ActivityObservation, IdentityStatus, ReportedActivity, WaitReason};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let human = me(&daemon).await;
+    let mut events = daemon.subscribe_events();
+    let agent = register(&daemon, "status-fixture", None).await;
+    let changes = |events: &mut broadcast::Receiver<Event>| {
+        let mut said = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentStatusChanged {
+                agent: who,
+                state,
+                status,
+                waiting_for,
+                evidence,
+                ..
+            } = event.kind
+            {
+                assert_eq!(who, agent.id);
+                said.push((state, status, waiting_for, evidence));
+            }
+        }
+        said
+    };
+    // Registered: live, with nothing reported — idle, on weak evidence.
+    assert_eq!(
+        changes(&mut events),
+        vec![(
+            State::Working,
+            Status::Idle,
+            WaitingFor::None,
+            Evidence::Weak
+        )]
+    );
+
+    let now = Utc::now();
+    let said = |activity, reason, evidence, secs_ago: i64| ActivityObservation {
+        activity,
+        observed_at: now - Duration::seconds(secs_ago),
+        reason,
+        detail: None,
+        source: None,
+        evidence,
+    };
+    let report = |observation: ActivityObservation| {
+        let response = lock(&daemon.state).report_activity(agent.id.as_str(), observation, now);
+        assert!(matches!(response, Response::Ok), "{response:?}");
+    };
+    report(said(ReportedActivity::Working, None, None, 10));
+    assert_eq!(
+        changes(&mut events),
+        vec![(
+            State::Working,
+            Status::Busy,
+            WaitingFor::None,
+            Evidence::Strong
+        )]
+    );
+    // The same word again, newer: recorded, but the answer is as it was.
+    report(said(ReportedActivity::Working, None, None, 9));
+    assert_eq!(changes(&mut events), vec![]);
+    // The idle timer, while a turn runs: a weak word the strong one keeps off.
+    report(said(ReportedActivity::Idle, None, Some(Evidence::Weak), 8));
+    assert_eq!(changes(&mut events), vec![]);
+    assert_eq!(
+        lock(&daemon.state)
+            .registry
+            .get(&agent.id)
+            .unwrap()
+            .reported_activity
+            .as_ref()
+            .map(|o| o.activity),
+        Some(ReportedActivity::Working)
+    );
+
+    // A word that expired is noticed on the tick, once.
+    lock(&daemon.state)
+        .registry
+        .get_mut(&agent.id)
+        .unwrap()
+        .reported_activity
+        .as_mut()
+        .unwrap()
+        .observed_at = now - Duration::minutes(6);
+    daemon.expire_leases();
+    assert_eq!(
+        changes(&mut events),
+        vec![(
+            State::Working,
+            Status::Idle,
+            WaitingFor::None,
+            Evidence::Weak
+        )]
+    );
+    daemon.expire_leases();
+    assert_eq!(changes(&mut events), vec![]);
+
+    // A permission prompt: waiting, for permission, first-hand.
+    report(said(
+        ReportedActivity::Waiting,
+        Some(WaitReason::Permission),
+        None,
+        7,
+    ));
+    assert_eq!(
+        changes(&mut events),
+        vec![(
+            State::Working,
+            Status::Waiting,
+            WaitingFor::Permission,
+            Evidence::Strong
+        )]
+    );
+    // The idle timer fires while the prompt stands: nothing changes.
+    report(said(ReportedActivity::Idle, None, Some(Evidence::Weak), 6));
+    assert_eq!(changes(&mut events), vec![]);
+
+    // The response says the same three parts beside the activity.
+    let Response::Activity { activity } = daemon
+        .handle(Request::Activity {
+            agent: Some(agent.id.to_string()),
+            project: None,
+            all: true,
+        })
+        .await
+    else {
+        panic!("activity did not answer with activity")
+    };
+    assert!(matches!(activity[0].activity, Activity::Waiting { .. }));
+    assert_eq!(
+        activity[0].identity(),
+        Some(IdentityStatus {
+            state: State::Working,
+            status: Status::Waiting,
+            waiting_for: WaitingFor::Permission,
+            evidence: Evidence::Strong,
+        })
+    );
+    assert_eq!(changes(&mut events), vec![], "a read says nothing new");
+
+    // A question it asks outranks its own prompt, and outlives it.
+    assert!(matches!(
+        daemon
+            .handle(Request::PostQuestion {
+                from: agent.id.to_string(),
+                to: human.id.to_string(),
+                question: "ship it?".to_owned(),
+                presentation: None,
+                timeout_secs: 600,
+            })
+            .await,
+        Response::Sent { .. }
+    ));
+    assert_eq!(
+        changes(&mut events),
+        vec![(
+            State::Working,
+            Status::Waiting,
+            WaitingFor::Question,
+            Evidence::Strong
+        )]
+    );
+    daemon.mark_exited(&agent.id, AgentStatus::Exited { code: Some(0) });
+    assert_eq!(
+        changes(&mut events),
+        vec![(
+            State::Done,
+            Status::Waiting,
+            WaitingFor::Question,
+            Evidence::Strong
+        )]
+    );
+    // Ended and said: the tick has nothing more to say of it.
+    daemon.expire_leases();
+    assert_eq!(changes(&mut events), vec![]);
+    // Its question outlived it; when that closes, its last answer is said.
+    let Response::Questions { questions } = daemon.handle(Request::Questions { agent: None }).await
+    else {
+        panic!("questions did not answer with questions")
+    };
+    assert!(matches!(
+        daemon
+            .handle(Request::CancelQuestion {
+                agent: agent.id.to_string(),
+                message: questions[0].id.clone(),
+            })
+            .await,
+        Response::Ok
+    ));
+    assert_eq!(
+        changes(&mut events),
+        vec![(
+            State::Done,
+            Status::Idle,
+            WaitingFor::None,
+            Evidence::Strong
+        )]
+    );
+    daemon.expire_leases();
+    assert_eq!(changes(&mut events), vec![]);
+    // A person's own record carries no such answer.
+    let Response::Activity { activity } = daemon
+        .handle(Request::Activity {
+            agent: Some(human.id.to_string()),
+            project: None,
+            all: true,
+        })
+        .await
+    else {
+        panic!("activity did not answer with activity")
+    };
+    assert_eq!(activity[0].identity(), None);
+}
+
 /// What a wait is for travels with the report, into the store and out
 /// of the agent's activity, so the app can say which errand it is — and
 /// what it is about: the one line its adapter sent, made printable and
@@ -4691,6 +4947,7 @@ async fn a_wait_keeps_what_it_is_for_through_the_store() {
         reason: Some(WaitReason::Permission),
         detail: Some("Bash: cargo\u{202E} test\nrm -rf target".into()),
         source: None,
+        evidence: None,
     };
     let mut events = daemon.subscribe_events();
     let mut state = lock(&daemon.state);
@@ -4824,6 +5081,7 @@ async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
                     reason: Some(WaitReason::Permission),
                     detail: Some(detail.clone()),
                     source: None,
+                    evidence: None,
                 },
                 at,
             ),
@@ -4837,7 +5095,7 @@ async fn a_password_in_a_wait_detail_is_never_kept_or_announced() {
             .reported_activity
             .clone();
         drop(state);
-        let event = events.try_recv().unwrap().kind;
+        let event = next_event(&mut events).unwrap().kind;
         let announced = serde_json::to_string(&event).unwrap();
         for text in [&stored, &announced] {
             assert!(
@@ -4886,6 +5144,7 @@ async fn a_search_detail_keeps_only_the_tool_name() {
                     reason: Some(WaitReason::Permission),
                     detail: Some(sent.into()),
                     source: None,
+                    evidence: None,
                 },
                 at,
             ),
@@ -4903,7 +5162,7 @@ async fn a_search_detail_keeps_only_the_tool_name() {
         );
         assert!(!serde_json::to_string(stored).unwrap().contains("hunter2"));
         drop(state);
-        let event = events.try_recv().unwrap().kind;
+        let event = next_event(&mut events).unwrap().kind;
         assert!(!serde_json::to_string(&event).unwrap().contains("hunter2"));
         match event {
             EventKind::AgentActivityReported { observation, .. } => {
@@ -4927,6 +5186,7 @@ async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
         reason: None,
         detail: None,
         source: None,
+        evidence: None,
     };
     let idle = ActivityObservation {
         activity: ReportedActivity::Idle,
@@ -4934,6 +5194,7 @@ async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
         reason: None,
         detail: None,
         source: None,
+        evidence: None,
     };
     let mut events = daemon.subscribe_events();
     {
@@ -4944,7 +5205,7 @@ async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
                 Response::Ok
             ));
             assert!(matches!(
-                events.try_recv().unwrap().kind,
+                next_event(&mut events).unwrap().kind,
                 EventKind::AgentActivityReported { .. }
             ));
         }
@@ -4953,7 +5214,7 @@ async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
             Response::Ok
         ));
         assert!(
-            events.try_recv().is_err(),
+            next_event(&mut events).is_err(),
             "late reports do not revive a stopped turn"
         );
         let record = state.registry.get(&agent.id).unwrap();
@@ -4978,7 +5239,7 @@ async fn provider_activity_is_ordered_expires_and_commits_with_its_event() {
             }
         ));
     }
-    assert!(events.try_recv().is_err());
+    assert!(next_event(&mut events).is_err());
 }
 
 #[tokio::test]
@@ -5580,6 +5841,7 @@ async fn failed_activity_write_publishes_no_state_or_event() {
                 reason: None,
                 detail: None,
                 source: None,
+                evidence: None,
             },
         })
         .await;
@@ -5616,6 +5878,7 @@ async fn delayed_idle_report_cannot_become_work_when_it_expires() {
             reason: None,
             detail: None,
             source: None,
+            evidence: None,
         },
         now,
     );
@@ -5664,6 +5927,7 @@ async fn polling_does_not_turn_a_hooked_agents_idle_report_into_work() {
             reason: None,
             detail: None,
             source: None,
+            evidence: None,
         },
         now,
     );
@@ -7878,7 +8142,7 @@ async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery()
     let mut events = daemon.subscribe_events();
     let delivered = inbox(&daemon, "receiver", true).await;
     assert_eq!(delivered.len(), 2);
-    let event = events.try_recv().unwrap();
+    let event = next_event(&mut events).unwrap();
     assert!(
         matches!(&event.kind, EventKind::InboxAcknowledged { agent, messages }
             if agent == &receiver.id && *messages == delivered.iter().map(|message| message.id.clone()).collect::<Vec<_>>())
@@ -7897,8 +8161,14 @@ async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery()
             .unwrap()
             .contains_key(&receiver.id)
     );
-    assert_eq!(state.store.recent_events(1).unwrap()[0].seq, event.seq);
-    assert!(events.try_recv().is_err());
+    assert!(
+        matches!(
+            &committed_since(&state, event.seq)[..],
+            [EventKind::InboxAcknowledged { .. }]
+        ),
+        "nothing but the acknowledgement since"
+    );
+    assert!(next_event(&mut events).is_err());
 }
 
 #[tokio::test]
@@ -8148,7 +8418,7 @@ async fn inbox_receipts_name_only_real_unacknowledged_ids_once() {
         Response::Ok
     ));
     assert_eq!(lock(&daemon.state).next_seq, next_seq);
-    assert!(events.try_recv().is_err());
+    assert!(next_event(&mut events).is_err());
     let ids = vec![bogus, accepted[0].id.clone(), accepted[0].id.clone()];
     for _ in 0..2 {
         assert!(matches!(
@@ -8161,13 +8431,13 @@ async fn inbox_receipts_name_only_real_unacknowledged_ids_once() {
             Response::Ok
         ));
     }
-    let event = events.try_recv().unwrap();
+    let event = next_event(&mut events).unwrap();
     assert!(
         matches!(event.kind, EventKind::InboxAcknowledged { agent, messages }
         if agent == receiver.id && messages == vec![accepted[0].id.clone()])
     );
-    assert!(events.try_recv().is_err());
-    assert_eq!(lock(&daemon.state).next_seq, next_seq + 1);
+    assert!(next_event(&mut events).is_err());
+    assert_eq!(committed_since(&lock(&daemon.state), next_seq).len(), 1);
     assert!(inbox(&daemon, "receiver", false).await.is_empty());
 }
 
@@ -8570,19 +8840,28 @@ async fn events_are_stored_for_replay() {
     let daemon = open(&dir);
     register(&daemon, "a", None).await;
     let recent = daemon.recent_events(10);
-    assert!(matches!(
-        recent.as_slice(),
-        [
-            Event {
-                kind: EventKind::AgentCreated { .. },
-                ..
-            },
-            Event {
-                kind: EventKind::AgentStarted { .. },
-                ..
-            }
-        ]
-    ));
+    let kinds: Vec<&EventKind> = recent.iter().map(|event| &event.kind).collect();
+    // Its first answer to what it is up to is stored too, once, after the
+    // change that made it.
+    let (said, rest): (Vec<&EventKind>, Vec<&EventKind>) = kinds
+        .iter()
+        .copied()
+        .partition(|kind| matches!(kind, EventKind::AgentStatusChanged { .. }));
+    assert_eq!(said.len(), 1, "{kinds:?}");
+    assert!(
+        matches!(
+            rest.as_slice(),
+            [
+                EventKind::AgentCreated { .. },
+                EventKind::AgentStarted { .. }
+            ]
+        ),
+        "{kinds:?}"
+    );
+    assert!(
+        !matches!(kinds[0], EventKind::AgentStatusChanged { .. }),
+        "{kinds:?}"
+    );
     assert!(daemon.recent_events(0).is_empty());
 }
 
@@ -8593,8 +8872,9 @@ async fn event_seqs_increase_and_survive_restart() {
     let mut receiver = daemon.subscribe_events();
     register(&daemon, "a", None).await;
     let replayed = daemon.recent_events(10);
-    assert_eq!(replayed.len(), 2);
-    assert!(replayed[0].seq < replayed[1].seq);
+    // Created, started, and its first status.
+    assert_eq!(replayed.len(), 3);
+    assert!(replayed.windows(2).all(|pair| pair[0].seq < pair[1].seq));
     // The same event reaches a live subscriber with the same seq, which
     // is what lets the server drop it after a replay.
     let live = receiver.recv().await.unwrap();
@@ -8604,7 +8884,8 @@ async fn event_seqs_increase_and_survive_restart() {
     let daemon = open(&dir);
     register(&daemon, "b", None).await;
     let all = daemon.recent_events(10);
-    assert_eq!(all.len(), 4);
+    // A restart says nothing of `a`, whose answer is as it was.
+    assert_eq!(all.len(), 6);
     assert!(all.windows(2).all(|pair| pair[0].seq < pair[1].seq));
 }
 

@@ -725,8 +725,10 @@ enum Command {
     /// Scan selected local transcripts without starting a daemon or changing its accounting.
     #[command(hide = true)]
     UsageScan(UsageScanArgs),
-    /// What each agent is doing: working, idle, or blocked on a named
-    /// resource held by a named agent.
+    /// What each agent is up to, in three words: its state (working,
+    /// blocked, done, failed, stopped), its status this moment (busy,
+    /// waiting, idle) and what it waits for from you (permission, input,
+    /// sandbox, question), with a block's resource and its holder.
     Activity {
         /// Only this agent.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -4481,6 +4483,7 @@ async fn run() -> Result<()> {
                         reason: None,
                         detail: None,
                         source: None,
+                        evidence: None,
                     },
                 })
                 .await?;
@@ -5634,16 +5637,52 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                 Activity::Unknown => ("no fresh activity reports".into(), None),
                 Activity::Starting | Activity::Finished => (String::new(), None),
             };
+            // The three parts in words; a daemon predating them gives
+            // none, and the one activity word stands in for the state.
+            let (state, status, waiting_for) = match a.identity() {
+                Some(identity) => (
+                    identity.state.word().to_owned(),
+                    identity.status.word().to_owned(),
+                    identity.waiting_for.word().to_owned(),
+                ),
+                None => (
+                    a.activity.label().to_owned(),
+                    "-".to_owned(),
+                    "-".to_owned(),
+                ),
+            };
+            let detail = match a.evidence {
+                Some(agentdocker_core::status::Evidence::Weak) if detail.is_empty() => {
+                    "weak evidence".to_owned()
+                }
+                Some(agentdocker_core::status::Evidence::Weak) => {
+                    format!("{detail} (weak evidence)")
+                }
+                _ => detail,
+            };
             vec![
                 a.agent.short().to_owned(),
                 a.name.clone(),
-                a.activity.label().to_owned(),
+                state,
+                status,
+                waiting_for,
                 detail,
                 since.map(format::ago).unwrap_or_else(|| "-".to_owned()),
             ]
         })
         .collect();
-    format::table(&["AGENT ID", "NAME", "DOING", "DETAIL", "SINCE"], &rows);
+    format::table(
+        &[
+            "AGENT ID",
+            "NAME",
+            "STATE",
+            "STATUS",
+            "WAITING FOR",
+            "DETAIL",
+            "SINCE",
+        ],
+        &rows,
+    );
 }
 
 /// Agents, then — dimmed — running agent processes nobody registered,
@@ -5660,7 +5699,7 @@ fn print_agents(
         activity
             .iter()
             .find(|a| a.agent == *id)
-            .map(|a| format::activity_cell(&a.activity))
+            .map(format::activity_cell)
             .unwrap_or_else(|| "-".to_owned())
     };
     let in_session =

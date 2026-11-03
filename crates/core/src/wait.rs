@@ -21,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::status::Evidence;
 use crate::{AgentId, LeaseMode, ResourceKey};
 
 /// A ticket: arrival order across the whole queue, so that waiters on
@@ -412,6 +413,10 @@ pub enum WaitReason {
     /// Words typed at its prompt and never sent. Only the judge reads
     /// this, from the screen; no adapter reports it.
     Draft,
+    /// A sandbox request: something its sandbox will not let it do until
+    /// the person allows it. Accepted from any client; no adapter in this
+    /// build reports it.
+    Sandbox,
     /// A kind this build does not know, from a newer adapter.
     #[serde(other)]
     Other,
@@ -479,6 +484,12 @@ pub struct ActivityObservation {
     /// sets it. A daemon predating it ignores it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<ActivitySource>,
+    /// How good this word is, when the reporter says: a provider's own
+    /// lifecycle event is strong, an idle timer weak. Left out, the source
+    /// decides ([`ActivityObservation::evidence`]). A daemon predating it
+    /// ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Evidence>,
 }
 
 /// The most characters a wait's detail keeps.
@@ -845,19 +856,41 @@ impl ActivityObservation {
         })
     }
 
+    /// How good this word is: what the reporter said, or else what its
+    /// source is worth. The agent's own adapter (no source) and Codex's
+    /// shared server speak first-hand for the process or the conversation,
+    /// so their word is strong; herdr reads a terminal, so its word, and a
+    /// source this build does not know, is weak. An adapter marks the one
+    /// report of its own that is an inference — Claude Code's idle timer —
+    /// weak itself.
+    pub fn evidence(&self) -> Evidence {
+        self.evidence.unwrap_or(match self.source {
+            None | Some(ActivitySource::CodexServer) => Evidence::Strong,
+            Some(ActivitySource::Herdr | ActivitySource::Other) => Evidence::Weak,
+        })
+    }
+
     /// Whether this observation, standing on an agent's record, keeps
-    /// `next` off it at `now`: while it is current, a source that outranks
-    /// `next`'s ([`ActivitySource::outranks`]) keeps that source's word out.
-    /// Past its expiry it keeps nothing out. The agent's own report (no
-    /// source) is never kept off and keeps nothing off: between it and a
-    /// source's word, the newer stands.
+    /// `next` off it at `now`. While it is current, a source that outranks
+    /// `next`'s ([`ActivitySource::outranks`]) keeps that source's word
+    /// out, and a strong word keeps a weak one from the same reporter out
+    /// ([`Self::evidence`]): the idle timer that fires while a permission
+    /// prompt stands open, or after a turn the adapter says is running,
+    /// changes nothing. Past its expiry it keeps nothing out. Between the
+    /// agent's own word and a source's, which no rank divides, the newer
+    /// stands, as between two words of one strength.
     pub fn keeps_off(&self, next: &ActivityObservation, now: DateTime<Utc>) -> bool {
-        match (self.source, next.source) {
-            (Some(standing), Some(coming)) => {
-                standing.outranks(coming) && self.current(now).is_some()
-            }
-            _ => false,
+        if self.current(now).is_none() {
+            return false;
         }
+        if let (Some(standing), Some(coming)) = (self.source, next.source)
+            && standing.outranks(coming)
+        {
+            return true;
+        }
+        self.source == next.source
+            && self.evidence() == Evidence::Strong
+            && next.evidence() == Evidence::Weak
     }
 }
 
@@ -876,6 +909,40 @@ pub struct AgentActivity {
     /// earlier receipt says nothing about them. None on older daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub awaiting_receipt: Option<usize>,
+    /// Where it stands with its task ([`crate::status`]). None on older
+    /// daemons, as are the three below.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<crate::status::State>,
+    /// What it is doing this moment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<crate::status::Status>,
+    /// What it waits for from the person, `none` when nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub waiting_for: Option<crate::status::WaitingFor>,
+    /// How good the evidence behind `status` and `waiting_for` is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<Evidence>,
+}
+
+impl AgentActivity {
+    /// The three-part answer, when the daemon gave one.
+    pub fn identity(&self) -> Option<crate::status::IdentityStatus> {
+        Some(crate::status::IdentityStatus {
+            state: self.state?,
+            status: self.status?,
+            waiting_for: self.waiting_for?,
+            evidence: self.evidence?,
+        })
+    }
+
+    /// With the three-part answer set from `identity`.
+    pub fn with_identity(mut self, identity: crate::status::IdentityStatus) -> Self {
+        self.state = Some(identity.state);
+        self.status = Some(identity.status);
+        self.waiting_for = Some(identity.waiting_for);
+        self.evidence = Some(identity.evidence);
+        self
+    }
 }
 
 #[cfg(test)]
@@ -912,6 +979,7 @@ mod tests {
                 reason: None,
                 detail: None,
                 source: None,
+                evidence: None,
             };
             assert!(observation.current(now).is_some());
             assert!(
@@ -939,6 +1007,7 @@ mod tests {
             reason: Some(WaitReason::Permission),
             detail: None,
             source: None,
+            evidence: None,
         };
         assert_eq!(
             observation.current(now + chrono::Duration::hours(2)),
@@ -1177,6 +1246,7 @@ mod tests {
                 reason,
                 detail: detail.map(str::to_owned),
                 source: None,
+                evidence: None,
             };
         let permission = Some(WaitReason::Permission);
         let asked = observation(
@@ -1260,6 +1330,7 @@ mod tests {
             reason: Some(WaitReason::Other),
             detail: None,
             source: Some(ActivitySource::Herdr),
+            evidence: None,
         };
         assert!(
             waiting
@@ -1300,6 +1371,7 @@ mod tests {
                 reason,
                 detail: None,
                 source: Some(ActivitySource::CodexServer),
+                evidence: None,
             };
             assert!(
                 observation
@@ -1336,6 +1408,7 @@ mod tests {
                 reason: None,
                 detail: None,
                 source,
+                evidence: None,
             };
         let server = said(Some(ActivitySource::CodexServer), ReportedActivity::Idle);
         let herdr = said(Some(ActivitySource::Herdr), ReportedActivity::Working);
@@ -1359,6 +1432,70 @@ mod tests {
         assert!(!herdr.keeps_off(&herdr, soon));
         assert!(!server.keeps_off(&unknown, soon));
         assert!(!unknown.keeps_off(&herdr, soon));
+    }
+
+    /// An adapter's own weak word — Claude Code's idle timer — is kept off
+    /// by its own current strong one, whatever that says, and by nothing
+    /// else; a strong word is never kept off by a weak one, and herdr's
+    /// weak words rank with each other and with the agent's own as before.
+    #[test]
+    fn a_strong_word_keeps_a_weak_one_from_the_same_reporter_off() {
+        let now = now();
+        let said = |source: Option<ActivitySource>,
+                    activity: ReportedActivity,
+                    evidence: Option<Evidence>| ActivityObservation {
+            activity,
+            observed_at: now,
+            reason: (activity == ReportedActivity::Waiting).then_some(WaitReason::Permission),
+            detail: None,
+            source,
+            evidence,
+        };
+        let prompt = said(None, ReportedActivity::Waiting, None);
+        let turn = said(None, ReportedActivity::Working, None);
+        let stop = said(None, ReportedActivity::Idle, None);
+        let timer = said(None, ReportedActivity::Idle, Some(Evidence::Weak));
+        let herdr = said(Some(ActivitySource::Herdr), ReportedActivity::Idle, None);
+        let soon = now + chrono::Duration::seconds(30);
+        assert_eq!(prompt.evidence(), Evidence::Strong);
+        assert_eq!(timer.evidence(), Evidence::Weak);
+        assert_eq!(herdr.evidence(), Evidence::Weak, "a terminal's look");
+        assert_eq!(
+            said(
+                Some(ActivitySource::CodexServer),
+                ReportedActivity::Idle,
+                None
+            )
+            .evidence(),
+            Evidence::Strong,
+            "the conversation's own server"
+        );
+        for strong in [&prompt, &turn, &stop] {
+            assert!(strong.keeps_off(&timer, soon), "{:?}", strong.activity);
+            assert!(!timer.keeps_off(strong, soon));
+            assert!(
+                !strong.keeps_off(&timer, now + chrono::Duration::hours(13)),
+                "past its expiry"
+            );
+        }
+        assert!(
+            !timer.keeps_off(&timer, soon),
+            "a weak word renews a weak one"
+        );
+        assert!(
+            !turn.keeps_off(&herdr, soon),
+            "another reporter: the newer stands"
+        );
+        assert!(!herdr.keeps_off(&timer, soon));
+        // On the wire the mark travels only when set.
+        let plain = serde_json::json!({"activity": "idle", "observed_at": now});
+        let read: ActivityObservation = serde_json::from_value(plain.clone()).unwrap();
+        assert_eq!(read.evidence, None);
+        assert_eq!(serde_json::to_value(&read).unwrap(), plain);
+        assert_eq!(
+            serde_json::to_value(&timer).unwrap()["evidence"],
+            serde_json::json!("weak")
+        );
     }
 
     fn agent(name: &str) -> AgentId {

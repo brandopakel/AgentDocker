@@ -394,6 +394,16 @@ impl ScreenJudgment {
         }
     }
 
+    /// How good a standing judgment is as evidence of a wait: strong. The
+    /// judge records a judgment only when the model's reading cleared the
+    /// confidence bar `[judge]` sets ([`decide`]), so one that stands is a
+    /// confident read; a reading that did not clear it was never recorded
+    /// and counts for nothing. First-hand reports still come first: see
+    /// [`Self::stands_for`].
+    pub fn evidence(&self) -> crate::status::Evidence {
+        crate::status::Evidence::Strong
+    }
+
     /// Whether it still stands for `record`: the same live process, and
     /// nothing its own adapter reported since the screen was read. A
     /// report from the agent is first-hand and outranks any reading of

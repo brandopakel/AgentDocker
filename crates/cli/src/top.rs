@@ -285,6 +285,10 @@ mod tests {
             AgentActivity {
                 queued_inputs: None,
                 awaiting_receipt: None,
+                state: None,
+                status: None,
+                waiting_for: None,
+                evidence: None,
                 agent: writer.id.clone(),
                 name: "writer".into(),
                 project: None,
@@ -295,6 +299,10 @@ mod tests {
             AgentActivity {
                 queued_inputs: None,
                 awaiting_receipt: None,
+                state: None,
+                status: None,
+                waiting_for: None,
+                evidence: None,
                 agent: reviewer.id.clone(),
                 name: "reviewer".into(),
                 project: None,

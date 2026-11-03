@@ -72,6 +72,7 @@ impl Keyed {
                 reason,
                 detail: None,
                 source: None,
+                evidence: None,
             },
             at,
         );
@@ -88,6 +89,7 @@ impl Keyed {
                 reason: (activity == ReportedActivity::Waiting).then_some(WaitReason::Other),
                 detail: None,
                 source: Some(source),
+                evidence: None,
             },
             at,
         );

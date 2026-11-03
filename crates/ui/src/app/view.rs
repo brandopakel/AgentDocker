@@ -3134,6 +3134,16 @@ impl App {
         .spacing(12)
         .align_y(Center);
         let mut body = column![].spacing(12);
+        // The daemon's three-part answer — state, this moment, what it
+        // waits for — one chip each, so idle and needs-input never share a
+        // word; the standing chip above stays the one-word summary.
+        if let Some(status) = self.identity.get(&id) {
+            let mut parts = row![].spacing(6).align_y(Center);
+            for chip in super::chip::identity("inspector", *status) {
+                parts = parts.push(chip.view(c));
+            }
+            body = body.push(parts);
+        }
         let delivery = agent.input_delivery.as_ref();
         let paused = delivery.is_some_and(|d| d.paused_for(agent.process_started_at));
         if let Some(roles) = self.roles_control(agent, c) {
@@ -5211,6 +5221,61 @@ mod tests {
         assert_eq!(label(&panel, "inspector-standing"), "Working");
         let readiness = app.input_readiness(&worker);
         assert_eq!(label(&panel, "inspector-readiness"), readiness.label());
+        assert!(
+            panel.control("inspector-state").is_none(),
+            "a daemon predating the three-part answer shows no chips for it"
+        );
+
+        // The daemon's three parts, each a chip in words: idle and
+        // needs-input are never one word.
+        use agentdocker_core::status::{Evidence, IdentityStatus, State, Status, WaitingFor};
+        let status = |status: Status, waiting_for: WaitingFor, evidence: Evidence| IdentityStatus {
+            state: State::Working,
+            status,
+            waiting_for,
+            evidence,
+        };
+        app.identity.insert(
+            worker.id.to_string(),
+            status(Status::Idle, WaitingFor::None, Evidence::Weak),
+        );
+        let panel = seen(app.inspector(&worker, c));
+        assert_eq!(label(&panel, "inspector-state"), "Working");
+        assert_eq!(label(&panel, "inspector-status"), "Idle");
+        assert_eq!(
+            panel.control("inspector-status").unwrap().2.as_deref(),
+            Some("Weak evidence: inferred, not reported"),
+            "how good the word is travels as the chip's detail"
+        );
+        assert!(
+            panel.control("inspector-waiting-for").is_none(),
+            "idle waits for nothing"
+        );
+        app.identity.insert(
+            worker.id.to_string(),
+            status(Status::Waiting, WaitingFor::Input, Evidence::Strong),
+        );
+        let panel = seen(app.inspector(&worker, c));
+        assert_eq!(label(&panel, "inspector-status"), "Waiting");
+        assert_eq!(label(&panel, "inspector-waiting-for"), "Needs input");
+        app.identity.insert(
+            worker.id.to_string(),
+            status(Status::Waiting, WaitingFor::Permission, Evidence::Strong),
+        );
+        let panel = seen(app.inspector(&worker, c));
+        assert_eq!(label(&panel, "inspector-waiting-for"), "Wants permission");
+        app.identity.insert(
+            worker.id.to_string(),
+            IdentityStatus {
+                state: State::Blocked,
+                ..status(Status::Waiting, WaitingFor::None, Evidence::Strong)
+            },
+        );
+        let panel = seen(app.inspector(&worker, c));
+        assert_eq!(label(&panel, "inspector-state"), "Blocked");
+        assert_eq!(label(&panel, "inspector-status"), "Waiting");
+        assert!(panel.control("inspector-waiting-for").is_none());
+        app.identity.clear();
 
         // Two that need the person: the project's chip says so and counts.
         let asked = |from: &AgentRecord, id: &str| agentdocker_core::Question {

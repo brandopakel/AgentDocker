@@ -551,6 +551,14 @@ struct State {
     /// and never persisted: a restart drops every waiting client, which
     /// reconnects and takes a new place.
     waiting: agentdocker_core::WaitQueue,
+    /// The three-part answer last announced for each agent
+    /// (`agent_status_changed`), so a recomputation that leaves it as it
+    /// was says nothing. Memory only: derived from the records, seeded
+    /// from them at startup without an announcement.
+    statuses: HashMap<AgentId, agentdocker_core::IdentityStatus>,
+    /// A status refresh is announcing: its own announcements' commits do
+    /// not start another.
+    refreshing_statuses: bool,
     /// Where desktop notifications are handed off to be posted. `None`
     /// until the daemon starts its notifier, and in tests.
     notifier: Option<mpsc::Sender<humans::Notice>>,
@@ -1332,6 +1340,9 @@ impl Daemon {
         state.expire_leases();
         state.expire_questions(Utc::now());
         state.expire_secret_reviews();
+        // A word that expired changes an agent's answer with no event of
+        // its own; the tick is where that is noticed.
+        state.refresh_statuses(Utc::now());
     }
     /// Send the stale and contested notices that accumulated since the
     /// last tick, one message per reader and per channel.
@@ -1617,67 +1628,72 @@ impl Daemon {
             home,
             socket,
             started: Instant::now(),
-            state: Mutex::new(State {
-                discovered: Discovered::default(),
-                store,
-                storage_error: None,
-                starting_cards: BTreeMap::new(),
-                ledger_since: HashMap::new(),
-                content_proofs: read_content::Proofs::default(),
-                coordination: match pending_transfer {
-                    Some(transfer) => Coordination::Quiescing {
-                        transfer: transfer.id,
+            state: Mutex::new(
+                State {
+                    discovered: Discovered::default(),
+                    store,
+                    storage_error: None,
+                    starting_cards: BTreeMap::new(),
+                    ledger_since: HashMap::new(),
+                    content_proofs: read_content::Proofs::default(),
+                    coordination: match pending_transfer {
+                        Some(transfer) => Coordination::Quiescing {
+                            transfer: transfer.id,
+                        },
+                        None => Coordination::Serving,
                     },
-                    None => Coordination::Serving,
-                },
-                owner_successor: None,
-                deferred_recovery: deferred,
-                in_flight: 0,
-                skipped_write: false,
-                registry,
-                leases,
-                inboxes,
-                inbox_bytes,
-                live_subscribers: HashMap::new(),
-                supervised: HashMap::new(),
-                pending_restarts: HashSet::new(),
-                container_busy: HashSet::new(),
-                transports: HashMap::new(),
-                projects,
-                next_seq,
-                bus,
-                events,
-                journal_seq: HashMap::new(),
-                journal_rings: HashMap::new(),
-                config_notice: None,
-                agent_config_notice: None,
-                read_set_notice: None,
-                topic_config_notice: None,
-                last_head: HashMap::new(),
-                last_branch: HashMap::new(),
-                worktree_creators: HashMap::new(),
-                project_checkouts: HashMap::new(),
-                committing: std::collections::BTreeSet::new(),
-                controller_pins: HashMap::new(),
-                question_waiters: HashSet::new(),
-                held_answers: HashMap::new(),
-                pending_stale: HashMap::new(),
-                stale_outstanding: HashMap::new(),
-                pending_contested: HashMap::new(),
-                journal_cursors: HashMap::new(),
-                channels,
-                contested: HashMap::new(),
-                questions,
-                secret_reviews: HashMap::new(),
-                pauses,
-                waiting: agentdocker_core::WaitQueue::new(),
-                notifier: None,
-                host_policy: policies::Loaded::default(),
-                project_policies: HashMap::new(),
-                judge_generation: 0,
-                judge_status: agentdocker_core::judgment::JudgeState::Off,
-                judge_reason: None,
-            }),
+                    owner_successor: None,
+                    deferred_recovery: deferred,
+                    in_flight: 0,
+                    skipped_write: false,
+                    registry,
+                    leases,
+                    inboxes,
+                    inbox_bytes,
+                    live_subscribers: HashMap::new(),
+                    supervised: HashMap::new(),
+                    pending_restarts: HashSet::new(),
+                    container_busy: HashSet::new(),
+                    transports: HashMap::new(),
+                    projects,
+                    next_seq,
+                    bus,
+                    events,
+                    journal_seq: HashMap::new(),
+                    journal_rings: HashMap::new(),
+                    config_notice: None,
+                    agent_config_notice: None,
+                    read_set_notice: None,
+                    topic_config_notice: None,
+                    last_head: HashMap::new(),
+                    last_branch: HashMap::new(),
+                    worktree_creators: HashMap::new(),
+                    project_checkouts: HashMap::new(),
+                    committing: std::collections::BTreeSet::new(),
+                    controller_pins: HashMap::new(),
+                    question_waiters: HashSet::new(),
+                    held_answers: HashMap::new(),
+                    pending_stale: HashMap::new(),
+                    stale_outstanding: HashMap::new(),
+                    pending_contested: HashMap::new(),
+                    journal_cursors: HashMap::new(),
+                    channels,
+                    contested: HashMap::new(),
+                    questions,
+                    secret_reviews: HashMap::new(),
+                    pauses,
+                    waiting: agentdocker_core::WaitQueue::new(),
+                    statuses: HashMap::new(),
+                    refreshing_statuses: false,
+                    notifier: None,
+                    host_policy: policies::Loaded::default(),
+                    project_policies: HashMap::new(),
+                    judge_generation: 0,
+                    judge_status: agentdocker_core::judgment::JudgeState::Off,
+                    judge_reason: None,
+                }
+                .seeded(now),
+            ),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
@@ -3795,6 +3811,9 @@ impl State {
             for event in events {
                 let _ = self.events.send(event);
             }
+            // Whatever changed may have changed what an agent is up to;
+            // said once, only where it did, and not for this saying.
+            self.refresh_statuses(Utc::now());
         }
         committed
     }
@@ -3841,6 +3860,9 @@ impl State {
             for event in events {
                 let _ = self.events.send(event);
             }
+            // Whatever changed may have changed what an agent is up to;
+            // said once, only where it did, and not for this saying.
+            self.refresh_statuses(Utc::now());
         }
         committed
     }
