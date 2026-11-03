@@ -488,7 +488,7 @@ each one by pid.
 |---|---|
 | `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds the one fix for each session that cannot take messages now |
 | `top` | The fleet live, redrawing as the daemon reports changes |
-| `activity` | What each agent is doing: working, idle, or blocked on a named resource |
+| `activity` | What each agent is up to, in three words — STATE (working, blocked, done, failed, stopped), STATUS this moment (busy, waiting, idle) and WAITING FOR from you (permission, input, sandbox, question) — with a block's resource and holder, and *(weak evidence)* where the word is inferred rather than reported; `ps` prints the three as one cell, `working · waiting · permission` |
 | `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour`), each count with its coverage (`~` where some samples did not say, `—` where none did), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output, at most 16 MiB kept per agent (the newest 8 MiB and the 8 MiB before them); `-f` to follow, `--compress` for an rtk view |

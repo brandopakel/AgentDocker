@@ -252,6 +252,7 @@ async fn finish_report<B: Backend>(
                 reason: None,
                 detail: None,
                 source: None,
+                evidence: None,
             },
         })
         .await?
@@ -290,6 +291,7 @@ async fn report_keyed<B: Backend>(
                 reason: None,
                 detail: None,
                 source: None,
+                evidence: None,
             },
         })
         .await?
@@ -813,6 +815,7 @@ async fn deliver<B: Backend>(
                         reason: None,
                         detail: None,
                         source: None,
+                        evidence: None,
                     },
                 }),
             )

@@ -620,6 +620,9 @@ pub struct App {
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
+    /// The daemon's three-part answer for each agent — state, status, what
+    /// it waits for — with its evidence; absent from a daemon predating it.
+    identity: BTreeMap<String, agentdocker_core::IdentityStatus>,
     /// The board on view.
     tasks: Option<Board>,
     /// The usage report on view: which project's, and the report — kept
@@ -811,6 +814,7 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            identity: BTreeMap::new(),
             tasks: None,
             usage: None,
             agent_tokens: BTreeMap::new(),
@@ -904,6 +908,7 @@ impl App {
             secrets: secret_reviews::State::default(),
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
+            identity: BTreeMap::new(),
             tasks: None,
             usage: None,
             agent_tokens: BTreeMap::new(),
@@ -1569,6 +1574,10 @@ impl App {
                             a.awaiting_receipt.map(|count| (a.agent.to_string(), count))
                         })
                         .collect();
+                    self.identity = activity
+                        .iter()
+                        .filter_map(|a| a.identity().map(|status| (a.agent.to_string(), status)))
+                        .collect();
                     let fresh: BTreeMap<String, Activity> = activity
                         .into_iter()
                         .map(|a| (a.agent.to_string(), a.activity))
@@ -2194,6 +2203,9 @@ impl App {
                 self.send(Cmd::Agents);
                 self.send(Cmd::Activity);
             }
+            // The three-part answer changed, a word that expired on the
+            // daemon's tick included: its chips are read again.
+            EventKind::AgentStatusChanged { .. } => self.send(Cmd::Activity),
             EventKind::RoleSet { .. }
             | EventKind::AgentRenamed { .. }
             | EventKind::AgentLaunchedBy { .. } => self.send(Cmd::Agents),
@@ -6469,6 +6481,10 @@ pub(crate) mod tests {
                 activity: Activity::Finished,
                 queued_inputs: Some(2),
                 awaiting_receipt: None,
+                state: None,
+                status: None,
+                waiting_for: None,
+                evidence: None,
             }]))
             .unwrap();
         messages
@@ -6507,6 +6523,10 @@ pub(crate) mod tests {
                 activity: Activity::Unknown,
                 queued_inputs: None,
                 awaiting_receipt: None,
+                state: None,
+                status: None,
+                waiting_for: None,
+                evidence: None,
             }]))
             .unwrap();
         app.drain();
@@ -7616,6 +7636,10 @@ pub(crate) mod tests {
                         activity: activity.clone(),
                         queued_inputs: Some(0),
                         awaiting_receipt: None,
+                        state: None,
+                        status: None,
+                        waiting_for: None,
+                        evidence: None,
                     })
                     .collect(),
             )

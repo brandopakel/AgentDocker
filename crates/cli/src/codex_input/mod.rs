@@ -267,6 +267,7 @@ async fn activity(client: &Client, agent: &str, activity: ReportedActivity) -> R
                         reason: None,
                         detail: None,
                         source: None,
+                        evidence: None,
                     }
                 }
             )

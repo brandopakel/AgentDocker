@@ -13,6 +13,7 @@
 //! to infer.
 
 use super::*;
+use agentdocker_core::status::{self, IdentityStatus, Inputs, Lifecycle};
 use agentdocker_core::wait::{self, Priority, Ticket};
 use agentdocker_core::{Activity, AgentActivity, Blocked, WaitOutcome};
 
@@ -601,30 +602,10 @@ impl State {
                 since: waiter.since,
             };
         }
-        // A provider whose lifecycle hooks have run in this process reports
-        // its own turns and says when the next one starts. Contact between
-        // them is its MCP server polling for messages, which is presence, not
-        // work: counting it turned every idle report into "working" within
-        // seconds, and a finished turn was never seen to finish. The same
-        // holds while herdr, watching its terminal, or Codex's shared
-        // server, hosting its conversation, says what it is doing: that
-        // observation stands over contact until it expires, and past it
-        // contact counts again, since the source is no longer saying.
-        let reports_turns = reports_turns(record);
-        if let Some(observation) = &record.reported_activity
-            && (reports_turns
-                || (observation.source.is_some() && observation.current(now).is_some())
-                || record.last_seen <= observation.observed_at
-                || record.last_seen == record.created_at)
-        {
+        if let Some(observation) = counting_observation(record, now) {
             return observation.current(now).unwrap_or(Activity::Unknown);
         }
-        if reports_turns {
-            return Activity::Unknown;
-        }
-        // Adoption/registration proves presence, not work. Nor does silence
-        // prove idleness: MCP calls are optional, and hooks may be disconnected.
-        if record.last_seen > record.created_at && now - record.last_seen < ACTIVE_WINDOW {
+        if recent_contact(record, now) {
             Activity::Working {
                 since: record.last_seen,
             }
@@ -632,6 +613,168 @@ impl State {
             Activity::Unknown
         }
     }
+
+    /// The askers of questions still open at `now`, by id.
+    fn asking(&self, now: DateTime<Utc>) -> HashSet<String> {
+        self.questions
+            .values()
+            .filter(|question| !question.expired(now))
+            .map(|question| question.from.clone())
+            .collect()
+    }
+
+    /// The three-part answer to what one agent is up to
+    /// ([`agentdocker_core::status`]), from the same facts as
+    /// [`Self::activity_of`]: its lifecycle, its place in the lease queue,
+    /// a question of its the person has not answered (`asking`, the open
+    /// questions' askers, gathered once for many records), the observation
+    /// that counts for it, a judgment that still stands, and contact. None
+    /// for a person's own record: a person has no turns to report.
+    fn identity_status_of(
+        &self,
+        record: &AgentRecord,
+        now: DateTime<Utc>,
+        asking: &HashSet<String>,
+    ) -> Option<IdentityStatus> {
+        if humans::is_human(record) {
+            return None;
+        }
+        Some(status::derive(&Inputs {
+            lifecycle: Lifecycle::from(&record.status),
+            blocked: self.waiting.waiting_for(&record.id).is_some(),
+            open_question: asking.contains(record.id.as_str()),
+            observation: counting_observation(record, now),
+            judgment: record.judged.as_ref().filter(|j| j.stands_for(record)),
+            contact: recent_contact(record, now),
+            now,
+        }))
+    }
+
+    /// With the answer for every agent [`Self::refresh_statuses`] follows
+    /// remembered as already said — every live one, and every one that has
+    /// ended while a question of its stays open — so the first
+    /// announcements after a start are of changes, and closing such a
+    /// question after a restart is still said.
+    pub(super) fn seeded(mut self, now: DateTime<Utc>) -> Self {
+        let asking = self.asking(now);
+        self.statuses = self
+            .registry
+            .all()
+            .filter(|record| record.status.is_live() || asking.contains(record.id.as_str()))
+            .filter_map(|record| {
+                self.identity_status_of(record, now, &asking)
+                    .map(|status| (record.id.clone(), status))
+            })
+            .collect();
+        self
+    }
+
+    /// Say `agent_status_changed` for every agent whose answer differs
+    /// from the one last said: every live agent, and an agent that has
+    /// ended for its last answer — and again when a question of its that
+    /// outlived it closes. Nothing for one that is as it was. Run after
+    /// every committed change and on the tick, so an expiry is noticed
+    /// too. Not run again from inside its own announcements, which change
+    /// nothing it reads, and not run while writes cannot land: what it
+    /// would say is said once they can.
+    pub(super) fn refresh_statuses(&mut self, now: DateTime<Utc>) {
+        if self.refreshing_statuses || self.fenced() || self.storage_error.is_some() {
+            return;
+        }
+        let registry = &self.registry;
+        self.statuses
+            .retain(|agent, _| registry.get(agent).is_some());
+        let asking = self.asking(now);
+        let changes: Vec<(AgentId, Option<ProjectId>, bool, IdentityStatus)> = self
+            .registry
+            .all()
+            .filter(|record| {
+                record.status.is_live()
+                    || self.statuses.contains_key(&record.id)
+                    || asking.contains(record.id.as_str())
+            })
+            .filter_map(|record| {
+                let status = self.identity_status_of(record, now, &asking)?;
+                (self.statuses.get(&record.id) != Some(&status)).then(|| {
+                    (
+                        record.id.clone(),
+                        record.project.as_ref().map(ProjectRef::id),
+                        record.status.is_live(),
+                        status,
+                    )
+                })
+            })
+            .collect();
+        self.refreshing_statuses = true;
+        for (agent, project, live, status) in changes {
+            let said = self.transition(
+                "status change",
+                Event::new(
+                    EventKind::AgentStatusChanged {
+                        agent: agent.clone(),
+                        project,
+                        state: status.state,
+                        status: status.status,
+                        waiting_for: status.waiting_for,
+                        evidence: status.evidence,
+                    },
+                    now,
+                ),
+                |store, event| store.append_event(event),
+                |_| {},
+            );
+            if said != Persisted::Committed {
+                // Said when writes land again.
+                break;
+            }
+            // A live agent is remembered as said; so is one that has ended
+            // while a question of its stays open, until that closes. Any
+            // other that has ended is said once, for its last answer, and
+            // then forgotten.
+            if live || status.waiting_for != status::WaitingFor::None {
+                self.statuses.insert(agent, status);
+            } else {
+                self.statuses.remove(&agent);
+            }
+        }
+        self.refreshing_statuses = false;
+    }
+}
+
+/// The observation that counts for `record` at `now`, current or not: its
+/// own adapter's, herdr's or Codex's shared server's. A provider whose
+/// lifecycle hooks have run in this process reports its own turns and
+/// says when the next one starts. Contact between them is its MCP server
+/// polling for messages, which is presence, not work: counting it turned
+/// every idle report into "working" within seconds, and a finished turn
+/// was never seen to finish. The same holds while herdr, watching its
+/// terminal, or Codex's shared server, hosting its conversation, says what
+/// it is doing: that observation stands over contact until it expires, and
+/// past it contact counts again, since the source is no longer saying. An
+/// expired observation that counts says only that nothing fresh is known.
+pub(super) fn counting_observation(
+    record: &AgentRecord,
+    now: DateTime<Utc>,
+) -> Option<&agentdocker_core::ActivityObservation> {
+    let reports_turns = reports_turns(record);
+    record.reported_activity.as_ref().filter(|observation| {
+        reports_turns
+            || (observation.source.is_some() && observation.current(now).is_some())
+            || record.last_seen <= observation.observed_at
+            || record.last_seen == record.created_at
+    })
+}
+
+/// Whether contact through the daemon is the one sign of work there is:
+/// no observation counts, its hooks have not run in this process, and it
+/// acted within the activity window. Adoption and registration prove
+/// presence, not work; nor does silence prove idleness, since MCP calls
+/// are optional and hooks may be disconnected.
+pub(super) fn recent_contact(record: &AgentRecord, now: DateTime<Utc>) -> bool {
+    !reports_turns(record)
+        && counting_observation(record, now).is_none()
+        && record.last_seen > record.created_at
+        && now - record.last_seen < ACTIVE_WINDOW
 }
 
 /// Whether the agent's lifecycle hooks have run in its current process, so
@@ -666,6 +809,9 @@ impl Daemon {
             None => None,
         };
         let now = Utc::now();
+        // What is answered here is what the stream has said.
+        state.refresh_statuses(now);
+        let asking = state.asking(now);
         let records: Vec<AgentRecord> = state
             .registry
             .all()
@@ -691,7 +837,7 @@ impl Daemon {
                     .and_then(|d| d.received.as_ref())
                     .map(|r| r.messages.as_slice())
                     .unwrap_or(&[]);
-                AgentActivity {
+                let activity = AgentActivity {
                     agent: record.id.clone(),
                     name: record.spec.name.clone(),
                     project: record.project.as_ref().map(ProjectRef::id),
@@ -700,6 +846,14 @@ impl Daemon {
                     awaiting_receipt: Some(queue.map_or(0, |queue| {
                         queue.iter().filter(|m| !receipted.contains(&m.id)).count()
                     })),
+                    state: None,
+                    status: None,
+                    waiting_for: None,
+                    evidence: None,
+                };
+                match state.identity_status_of(record, now, &asking) {
+                    Some(identity) => activity.with_identity(identity),
+                    None => activity,
                 }
             })
             .collect();

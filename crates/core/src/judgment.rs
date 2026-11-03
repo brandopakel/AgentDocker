@@ -25,7 +25,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{Activity, AgentRecord, WaitReason, wait::Judged};
+use crate::status::Evidence;
+use crate::{Activity, ActivityObservation, AgentRecord, WaitReason, wait::Judged};
 
 /// TypeSafe's System One endpoint.
 pub const DEFAULT_URL: &str = "https://api.typesafe.ai/v1/systemone";
@@ -394,17 +395,38 @@ impl ScreenJudgment {
         }
     }
 
+    /// How good a standing judgment is as evidence of a wait: strong. The
+    /// judge records a judgment only when the model's reading cleared the
+    /// confidence bar `[judge]` sets ([`decide`]), so one that stands is a
+    /// confident read; a reading that did not clear it was never recorded
+    /// and counts for nothing. First-hand reports still come first: see
+    /// [`Self::superseded_by`].
+    pub fn evidence(&self) -> Evidence {
+        Evidence::Strong
+    }
+
+    /// Whether `observation`, on the agent's record, takes this judgment
+    /// off: a first-hand word ([`ActivityObservation::evidence`] strong —
+    /// the agent's own adapter, Codex's shared server) made after the
+    /// screen was read. A weak word made after it — Claude Code's idle
+    /// timer, herdr's reading of the terminal — is a poorer read than the
+    /// judged screen and leaves the judgment standing; the judge's own
+    /// pass takes it off once the screen moves ([`review`]).
+    pub fn superseded_by(&self, observation: &ActivityObservation) -> bool {
+        observation.observed_at > self.judged_at && observation.evidence() == Evidence::Strong
+    }
+
     /// Whether it still stands for `record`: the same live process, and
-    /// nothing its own adapter reported since the screen was read. A
-    /// report from the agent is first-hand and outranks any reading of
-    /// its screen.
+    /// nothing first-hand reported since the screen was read
+    /// ([`Self::superseded_by`]). A report from the agent is first-hand and
+    /// outranks any reading of its screen; an inference does not.
     pub fn stands_for(&self, record: &AgentRecord) -> bool {
         record.status.is_live()
             && record.process_started_at == self.process_started_at
             && record
                 .reported_activity
                 .as_ref()
-                .is_none_or(|observation| observation.observed_at <= self.judged_at)
+                .is_none_or(|observation| !self.superseded_by(observation))
     }
 }
 
@@ -853,6 +875,30 @@ mod tests {
         );
         record.reported_activity.as_mut().unwrap().observed_at = at(21);
         assert!(!judged.stands_for(&record), "a report after it outranks it");
+        // A weak word after it does not: the idle timer, herdr's reading.
+        let weak: ActivityObservation = serde_json::from_value(
+            json!({"activity": "idle", "observed_at": at(21), "evidence": "weak"}),
+        )
+        .unwrap();
+        assert!(!judged.superseded_by(&weak));
+        record.reported_activity = Some(weak);
+        assert!(judged.stands_for(&record), "an idle timer after it");
+        let herdr: ActivityObservation = serde_json::from_value(
+            json!({"activity": "idle", "observed_at": at(22), "source": "herdr"}),
+        )
+        .unwrap();
+        record.reported_activity = Some(herdr);
+        assert!(judged.stands_for(&record), "herdr's reading after it");
+        let server: ActivityObservation = serde_json::from_value(
+            json!({"activity": "working", "observed_at": at(23), "source": "codex_server"}),
+        )
+        .unwrap();
+        assert!(
+            judged.superseded_by(&server),
+            "the conversation's own server"
+        );
+        record.reported_activity = Some(server);
+        assert!(!judged.stands_for(&record));
         record.reported_activity = None;
         record.process_started_at = Some(at(-5));
         assert!(!judged.stands_for(&record), "another process");

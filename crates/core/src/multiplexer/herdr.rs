@@ -65,6 +65,7 @@ impl Status {
             reason,
             detail: None,
             source: Some(ActivitySource::Herdr),
+            evidence: None,
         })
     }
 }

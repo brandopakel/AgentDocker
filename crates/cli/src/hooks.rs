@@ -13,7 +13,7 @@
 //! | `Stop`             | release every lease with the transcript's last message as the journal summary; block once when messages wait |
 //! | `StopFailure`      | retain queued work and report the provider interruption without releasing leases or waking the model |
 //! | `SessionEnd`       | release every lease and deregister                                     |
-//! | `Notification`     | a permission prompt or question dialog: the session waits for the person |
+//! | `Notification`     | `permission_prompt`, `elicitation_dialog`, `agent_needs_input`: the session waits for the person (strong evidence); `idle_prompt`: it is idle, as weak evidence an own stronger current word keeps off |
 //! | `PermissionRequest` | the session waits for the person's permission, with the tool and one line of what for; never answered |
 //! | `SubagentStart`, `SubagentStop` | the session's own activity: working while a subagent runs; never an agent of its own |
 //! | `CwdChanged`       | read the session's branch and commit again from where its shell went  |
@@ -115,14 +115,15 @@ pub enum Host {
 }
 
 /// What a Claude Code `Notification` says the session stopped for the
-/// person for, if it did: a permission prompt or a question dialog in its
-/// terminal. The reminder that a finished turn is waiting for input is not
-/// one; `Stop` already said it is idle.
+/// person for, if it did: a permission prompt, or a question dialog or
+/// other call for input in its terminal. Each is the provider's own word
+/// as the dialog opens: strong evidence. The idle reminder is not one of
+/// these; it is a timer, and [`observation`] reports it as weak idleness.
 fn wait_for_person(input: &HookInput) -> Option<agentdocker_core::WaitReason> {
     use agentdocker_core::WaitReason;
     match input.notification_type.as_deref() {
         Some("permission_prompt") => Some(WaitReason::Permission),
-        Some("elicitation_dialog") => Some(WaitReason::Question),
+        Some("elicitation_dialog" | "agent_needs_input") => Some(WaitReason::Question),
         Some(_) => None,
         // Before `notification_type` existed, only the text told them apart.
         None => input
@@ -480,6 +481,9 @@ struct Observed {
     activity: agentdocker_core::ReportedActivity,
     reason: Option<agentdocker_core::WaitReason>,
     detail: Option<String>,
+    /// Set only for the one report that is an inference rather than the
+    /// provider's own lifecycle event: the idle timer, weak.
+    evidence: Option<agentdocker_core::status::Evidence>,
 }
 
 impl From<agentdocker_core::ReportedActivity> for Observed {
@@ -488,6 +492,7 @@ impl From<agentdocker_core::ReportedActivity> for Observed {
             activity,
             reason: None,
             detail: None,
+            evidence: None,
         }
     }
 }
@@ -502,6 +507,13 @@ impl From<agentdocker_core::ReportedActivity> for Observed {
 /// it does at `Stop`. `PermissionRequest` is the dialog as it opens: the
 /// session waits for the person, for the tool and one line of what for,
 /// and the hook never answers it.
+///
+/// Every one of these is the provider's own lifecycle event — strong
+/// evidence — but the `idle_prompt` notification: a timer that fires after
+/// a minute at the prompt, which says idle weakly. The daemon lets it
+/// stand only when no stronger word of the session's own is current, so
+/// it fills a gap (a missed `Stop`) and never unseats a permission prompt
+/// or a running turn.
 fn observation(input: &HookInput, output: Option<&Value>) -> Option<Observed> {
     use agentdocker_core::ReportedActivity::{Idle, Waiting, Working};
     let activity = match input.hook_event_name.as_str() {
@@ -510,11 +522,20 @@ fn observation(input: &HookInput, output: Option<&Value>) -> Option<Observed> {
         // Background work it started keeps a session working.
         "Stop" | "SubagentStop" if background_work(input) => Working,
         "Stop" => Idle,
+        "Notification" if input.notification_type.as_deref() == Some("idle_prompt") => {
+            return Some(Observed {
+                activity: Idle,
+                reason: None,
+                detail: None,
+                evidence: Some(agentdocker_core::status::Evidence::Weak),
+            });
+        }
         "Notification" => {
             return Some(Observed {
                 activity: Waiting,
                 reason: Some(wait_for_person(input)?),
                 detail: None,
+                evidence: None,
             });
         }
         "PermissionRequest" => {
@@ -522,6 +543,7 @@ fn observation(input: &HookInput, output: Option<&Value>) -> Option<Observed> {
                 activity: Waiting,
                 reason: Some(agentdocker_core::WaitReason::Permission),
                 detail: permission_detail(input),
+                evidence: None,
             });
         }
         _ => return None,
@@ -611,6 +633,7 @@ async fn report_hook_completion<B: Backend>(
         activity,
         reason,
         detail,
+        evidence,
     }) = observed
     {
         backend
@@ -622,6 +645,7 @@ async fn report_hook_completion<B: Backend>(
                     reason,
                     detail,
                     source: None,
+                    evidence,
                 },
             })
             .await
@@ -2314,6 +2338,10 @@ mod tests {
             wait_for_person(&event(Some("elicitation_dialog"), None)),
             Some(WaitReason::Question)
         );
+        assert_eq!(
+            wait_for_person(&event(Some("agent_needs_input"), None)),
+            Some(WaitReason::Question)
+        );
         for kind in ["idle_prompt", "auth_success", ""] {
             assert_eq!(
                 wait_for_person(&event(
@@ -2778,6 +2806,7 @@ mod tests {
                 activity: Waiting,
                 reason: Some(WaitReason::Permission),
                 detail: Some("Bash: cargo test".into()),
+                evidence: None,
             })
         );
         // Inside a subagent the dialog is still the session's to answer.
@@ -2803,8 +2832,20 @@ mod tests {
             observation(&input("Stop"), Some(&json!({"decision": "block"}))),
             Some(Working.into())
         );
+        // The idle reminder is a timer: idle, as weak evidence, so the
+        // daemon lets a current stronger word of the session's own stand.
         let mut idle = input("Notification");
         idle.notification_type = Some("idle_prompt".into());
+        assert_eq!(
+            observation(&idle, None),
+            Some(Observed {
+                activity: Idle,
+                reason: None,
+                detail: None,
+                evidence: Some(agentdocker_core::status::Evidence::Weak),
+            })
+        );
+        idle.notification_type = Some("auth_success".into());
         assert_eq!(observation(&idle, None), None);
         idle.notification_type = Some("permission_prompt".into());
         assert_eq!(
@@ -2813,7 +2854,13 @@ mod tests {
                 activity: Waiting,
                 reason: Some(WaitReason::Permission),
                 detail: None,
+                evidence: None,
             })
+        );
+        idle.notification_type = Some("agent_needs_input".into());
+        assert_eq!(
+            observation(&idle, None).unwrap().reason,
+            Some(WaitReason::Question)
         );
     }
 

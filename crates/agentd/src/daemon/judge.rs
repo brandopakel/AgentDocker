@@ -1071,7 +1071,9 @@ impl Daemon {
 
     /// Keep a promotion on the agent's record, if it still applies: the
     /// setup it was asked under still in force by the state lock, the same live process,
-    /// nothing reported by its adapter since the screen was read,
+    /// nothing first-hand reported since the screen was read
+    /// (`ScreenJudgment::superseded_by`: a weak word, such as the idle
+    /// timer, does not count),
     /// working, idle or unknown by its record, and, for a herdr pane,
     /// still the only live agent claiming the session it was read by.
     fn record_judgment(
@@ -1104,7 +1106,7 @@ impl Daemon {
             || record
                 .reported_activity
                 .as_ref()
-                .is_some_and(|observation| observation.observed_at > judgment.judged_at)
+                .is_some_and(|observation| judgment.superseded_by(observation))
             || !matches!(
                 state.recorded_activity_of(&record, now),
                 Activity::Working { .. } | Activity::Idle { .. } | Activity::Unknown
@@ -1593,6 +1595,114 @@ mod tests {
         for agent in [agent, unsure, reported] {
             stop(&daemon, &agent).await;
         }
+    }
+
+    /// The daemon's three-part answer for one agent.
+    async fn identity(
+        daemon: &Arc<Daemon>,
+        agent: &AgentId,
+    ) -> Option<agentdocker_core::IdentityStatus> {
+        let Response::Activity { activity } = daemon
+            .handle(Request::Activity {
+                agent: Some(agent.to_string()),
+                project: None,
+                all: false,
+            })
+            .await
+        else {
+            panic!("no activity");
+        };
+        activity.into_iter().next().unwrap().identity()
+    }
+
+    /// An observation as a client sends it.
+    async fn report(daemon: &Arc<Daemon>, agent: &AgentId, observation: Value) {
+        let observation: agentdocker_core::ActivityObservation =
+            serde_json::from_value(observation).unwrap();
+        assert!(matches!(
+            daemon
+                .handle(Request::ReportActivity {
+                    agent: agent.to_string(),
+                    observation,
+                })
+                .await,
+            Response::Ok
+        ));
+    }
+
+    /// A weak word made after the judged screen was read — Claude Code's
+    /// idle timer — leaves the judgment standing and the agent waiting on
+    /// the person, through the next pass over the same screen too; a
+    /// first-hand word made after it takes it off.
+    #[tokio::test]
+    async fn a_weak_idle_after_a_judgment_leaves_it_standing() {
+        use agentdocker_core::IdentityStatus;
+        use agentdocker_core::status::{Evidence, State, Status, WaitingFor};
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.96, 0.31, 0.02, 0.01]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let agent = showing(&daemon, &dir, "timer-after-judgment", DIALOG).await;
+        daemon.judge_once().await;
+        assert_eq!(calls(&fake), 1);
+        assert!(record(&daemon, &agent).judged.is_some());
+        let waiting = IdentityStatus {
+            state: State::Working,
+            status: Status::Waiting,
+            waiting_for: WaitingFor::Permission,
+            evidence: Evidence::Strong,
+        };
+        assert_eq!(identity(&daemon, &agent).await, Some(waiting));
+
+        // The idle timer fires after the screen was read.
+        report(
+            &daemon,
+            &agent,
+            json!({"activity": "idle", "observed_at": Utc::now(), "evidence": "weak"}),
+        )
+        .await;
+        assert_eq!(
+            record(&daemon, &agent)
+                .reported_activity
+                .and_then(|observation| observation.evidence),
+            Some(Evidence::Weak),
+            "recorded"
+        );
+        assert!(matches!(
+            activity(&daemon, &agent).await,
+            Activity::Waiting {
+                judged: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(identity(&daemon, &agent).await, Some(waiting));
+        // The next pass finds the same screen: not asked again, and the
+        // judgment still stands.
+        daemon.judge_once().await;
+        assert_eq!(calls(&fake), 1);
+        assert!(record(&daemon, &agent).judged.is_some());
+        assert_eq!(identity(&daemon, &agent).await, Some(waiting));
+
+        // The agent's own first-hand word after it takes it off.
+        report(
+            &daemon,
+            &agent,
+            json!({"activity": "working", "observed_at": Utc::now()}),
+        )
+        .await;
+        assert!(matches!(
+            activity(&daemon, &agent).await,
+            Activity::Working { .. }
+        ));
+        assert_eq!(
+            identity(&daemon, &agent).await,
+            Some(IdentityStatus {
+                status: Status::Busy,
+                waiting_for: WaitingFor::None,
+                ..waiting
+            })
+        );
+        stop(&daemon, &agent).await;
     }
 
     /// The budget holds whatever goes quiet: with one call a minute, a

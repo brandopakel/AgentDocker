@@ -1622,6 +1622,8 @@ mod tests {
     }
 
     /// Durable events from `since` on: what a replaying subscriber gets.
+    /// The events from `since` on, in order, but for status announcements,
+    /// which follow the changes that cause them and are tested on their own.
     async fn events_since(daemon: &Arc<Daemon>, since: u64) -> Vec<EventKind> {
         let state = lock(&daemon.state);
         let mut events: Vec<Event> = state
@@ -1630,6 +1632,7 @@ mod tests {
             .unwrap()
             .into_iter()
             .filter(|e| e.seq >= since)
+            .filter(|e| !matches!(e.kind, EventKind::AgentStatusChanged { .. }))
             .collect();
         events.sort_by_key(|e| e.seq);
         events.into_iter().map(|e| e.kind).collect()

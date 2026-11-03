@@ -294,6 +294,7 @@ impl State {
             reason,
             detail: None,
             source: SOURCE,
+            evidence: None,
         };
         if !matches!(self.record_activity(id, observation, now), Response::Ok) {
             return false;
@@ -339,6 +340,7 @@ impl State {
                     reason: None,
                     detail: None,
                     source: SOURCE,
+                    evidence: None,
                 },
                 after,
             );

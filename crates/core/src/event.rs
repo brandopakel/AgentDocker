@@ -106,6 +106,23 @@ pub enum EventKind {
         agent: AgentId,
         observation: crate::ActivityObservation,
     },
+    /// The three-part answer to what an agent is up to changed
+    /// ([`crate::status`]): where it stands with its task (`state`), what
+    /// it is doing this moment (`status`), what it waits for from the
+    /// person (`waiting_for`, `none` for nothing) and how good the
+    /// evidence is (`evidence`). Said once per change, whatever caused it
+    /// — a report, a judgment, a question, a lease, an exit, or a word
+    /// that expired — and never for a recomputation that left it as it
+    /// was.
+    AgentStatusChanged {
+        agent: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<ProjectId>,
+        state: crate::status::State,
+        status: crate::status::Status,
+        waiting_for: crate::status::WaitingFor,
+        evidence: crate::status::Evidence,
+    },
     /// A person gave an agent a name; `name` is the new one.
     AgentRenamed {
         agent: AgentId,
@@ -658,8 +675,9 @@ pub enum EventKind {
     /// person: what for, how sure, and which screen of which process (by
     /// digest, never its text). Its record carries the judgment and its
     /// activity reads as waiting, marked judged, until the screen changes
-    /// or can no longer be read, its own adapter reports, or another
-    /// process is behind it.
+    /// or can no longer be read, something first-hand is reported (its own
+    /// adapter, Codex's shared server; never a weak word such as an idle
+    /// timer), or another process is behind it.
     AgentJudgedNeedsYou {
         agent: AgentId,
         judgment: crate::judgment::ScreenJudgment,
