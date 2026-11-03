@@ -2634,6 +2634,7 @@ impl Daemon {
                 supersedes,
                 standing,
                 forget_after,
+                roles,
             } => {
                 self.memory_add(
                     &from,
@@ -2643,6 +2644,7 @@ impl Daemon {
                     supersedes,
                     standing,
                     forget_after,
+                    roles,
                 )
                 .await
             }

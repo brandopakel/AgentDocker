@@ -18,6 +18,23 @@ pub const MEMORY_CHARS: usize = 2048;
 pub const MEMORIES_PER_PROJECT: usize = 1000;
 /// Links a memory carries at most.
 pub const MEMORY_LINKS: usize = 8;
+/// Roles a memory names at most.
+pub const MEMORY_ROLES: usize = 8;
+
+/// Who reads a project's memory. The person reads all of it; anybody else
+/// reads the memories that name no role and those that name a role it
+/// holds, so one holding none (a copy of the memory elsewhere, a client
+/// that names nobody) reads only what is for everyone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reader<'a> {
+    Person,
+    Holding(&'a [String]),
+}
+
+impl Reader<'_> {
+    /// A reader holding no role: what is for everyone.
+    pub const EVERYONE: Reader<'static> = Reader::Holding(&[]);
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Memory {
@@ -40,6 +57,10 @@ pub struct Memory {
     /// until somebody forgets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forget_after: Option<DateTime<Utc>>,
+    /// Said only to the agents holding one of these roles, and to the
+    /// person; to everyone when it names none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
 }
 
 impl Memory {
@@ -61,6 +82,7 @@ impl Memory {
             created_at: now,
             standing: false,
             forget_after: None,
+            roles: Vec::new(),
         };
         memory.check()?;
         Ok(memory)
@@ -81,9 +103,29 @@ impl Memory {
         Ok(self)
     }
 
+    /// Said only to the holders of these roles, and to the person.
+    pub fn roles(mut self, roles: Vec<String>) -> Result<Self, &'static str> {
+        self.roles = roles;
+        self.roles.sort();
+        self.roles.dedup();
+        self.check()?;
+        Ok(self)
+    }
+
     /// Whether it is still said at `now`: not past its `forget_after`.
     pub fn said_at(&self, now: DateTime<Utc>) -> bool {
         self.forget_after.is_none_or(|when| now < when)
+    }
+
+    /// Whether `reader` may read it: the person always; anybody else when
+    /// it names no role or one the reader holds.
+    pub fn seen_by(&self, reader: Reader<'_>) -> bool {
+        match reader {
+            Reader::Person => true,
+            Reader::Holding(held) => {
+                self.roles.is_empty() || self.roles.iter().any(|role| held.contains(role))
+            }
+        }
     }
 
     pub fn check(&self) -> Result<(), &'static str> {
@@ -92,6 +134,12 @@ impl Memory {
         }
         if self.links.len() > MEMORY_LINKS {
             return Err("a memory carries at most 8 links");
+        }
+        if self.roles.len() > MEMORY_ROLES {
+            return Err("a memory names at most 8 roles");
+        }
+        for role in &self.roles {
+            crate::agent::check_role(role)?;
         }
         for link in &self.links {
             link.check()?;
@@ -166,15 +214,22 @@ fn high_entropy(word: &str) -> bool {
         && word.chars().filter(|c| c.is_ascii_digit()).count() >= 4
 }
 
-/// The memories still said at `now`: none another memory supersedes, none
-/// past its `forget_after`; newest first.
-pub fn current(memories: &[Memory], now: DateTime<Utc>) -> Vec<&Memory> {
-    let replaced: std::collections::HashSet<&str> = memories
+/// The memories still said to `reader` at `now`: those it may read, none
+/// another it may read supersedes, none past its `forget_after`; newest
+/// first. Supersession is the reader's: a memory replaced by one only
+/// another role's holders read is still said to everybody else.
+pub fn current<'a>(
+    memories: &'a [Memory],
+    reader: Reader<'_>,
+    now: DateTime<Utc>,
+) -> Vec<&'a Memory> {
+    let read: Vec<&Memory> = memories.iter().filter(|m| m.seen_by(reader)).collect();
+    let replaced: std::collections::HashSet<&str> = read
         .iter()
         .filter_map(|m| m.supersedes.as_deref())
         .collect();
-    let mut kept: Vec<&Memory> = memories
-        .iter()
+    let mut kept: Vec<&Memory> = read
+        .into_iter()
         .filter(|m| !replaced.contains(m.id.as_str()) && m.said_at(now))
         .collect();
     kept.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
@@ -191,7 +246,8 @@ fn words(text: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// The current memories that answer `query`, the best first. A memory
+/// The current memories `reader` may read that answer `query`, the best
+/// first. A memory
 /// answers a word it holds whole (`test` is not in `latest`), and a word
 /// few memories hold counts for more than one most of them hold; a newer
 /// memory wins a tie, and between two kept at the same moment the lower
@@ -201,10 +257,11 @@ pub fn search<'a>(
     memories: &'a [Memory],
     query: &str,
     limit: usize,
+    reader: Reader<'_>,
     now: DateTime<Utc>,
 ) -> Vec<&'a Memory> {
     let asked = words(query);
-    let said = current(memories, now);
+    let said = current(memories, reader, now);
     let held: Vec<std::collections::HashSet<String>> =
         said.iter().map(|m| words(&m.text)).collect();
     let total = said.len() as f64;
@@ -239,11 +296,16 @@ pub fn search<'a>(
     scored.into_iter().take(limit).map(|(_, m)| m).collect()
 }
 
-/// What a project's agents should know first, as many as fit in
-/// `max_chars`: its standing memories, the oldest first, then the others,
-/// newest first.
-pub fn profile(memories: &[Memory], max_chars: usize, now: DateTime<Utc>) -> Vec<&Memory> {
-    let said = current(memories, now);
+/// What `reader` should know first of a project's memory, as many as fit
+/// in `max_chars`: its standing memories, the oldest first, then the
+/// others, newest first.
+pub fn profile<'a>(
+    memories: &'a [Memory],
+    max_chars: usize,
+    reader: Reader<'_>,
+    now: DateTime<Utc>,
+) -> Vec<&'a Memory> {
+    let said = current(memories, reader, now);
     let (mut standing, recent): (Vec<&Memory>, Vec<&Memory>) =
         said.into_iter().partition(|m| m.standing);
     // Oldest first; two kept at the same moment by id, as everywhere else.
@@ -266,16 +328,17 @@ pub fn profile(memories: &[Memory], max_chars: usize, now: DateTime<Utc>) -> Vec
 }
 
 /// What a copy of a project's memory elsewhere must do to hold exactly its
-/// current memories, given the ids it holds: the memories to add, and the
-/// ids to take out — forgotten, past their `forget_after`, or superseded
-/// by a newer one. A memory
-/// never changes once kept, so its id says everything.
+/// current memories for everyone, given the ids it holds: the memories to
+/// add, and the ids to take out — forgotten, past their `forget_after`,
+/// superseded by a newer one, or said only to some roles, which never
+/// leave the machine. A memory never changes once kept, so its id says
+/// everything.
 pub fn mirror_plan<'a>(
     memories: &'a [Memory],
     mirrored: &std::collections::BTreeSet<String>,
     now: DateTime<Utc>,
 ) -> (Vec<&'a Memory>, Vec<String>) {
-    let said = current(memories, now);
+    let said = current(memories, Reader::EVERYONE, now);
     let wanted: std::collections::BTreeSet<&str> = said.iter().map(|m| m.id.as_str()).collect();
     let add = said
         .into_iter()
@@ -306,7 +369,71 @@ mod tests {
                 + Duration::minutes(minutes),
             standing: false,
             forget_after: None,
+            roles: vec![],
         }
+    }
+
+    /// A memory naming roles is said to their holders and to the person,
+    /// one naming none to everyone. Supersession is each reader's own: a
+    /// memory replaced by one only reviewers read is still said to everybody
+    /// else, and a copy elsewhere holds only what is for everyone.
+    #[test]
+    fn a_memory_with_roles_is_said_to_their_holders_and_the_person() {
+        let roles = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        let mut for_reviewers = memory("rev", "review against the full diff", 2, None);
+        for_reviewers.roles = roles(&["reviewer"]);
+        let mut replaced_for_reviewers =
+            memory("new", "the build runs with nextest", 3, Some("old"));
+        replaced_for_reviewers.roles = roles(&["reviewer"]);
+        let all = vec![
+            memory("old", "the build runs with cargo test", 1, None),
+            for_reviewers,
+            replaced_for_reviewers,
+        ];
+        let ids = |reader: Reader<'_>| {
+            let mut ids: Vec<&str> = current(&all, reader, now())
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect();
+            ids.sort();
+            ids
+        };
+        let reviewer = roles(&["reviewer"]);
+        let tester = roles(&["tester"]);
+        assert_eq!(ids(Reader::Holding(&reviewer)), ["new", "rev"]);
+        assert_eq!(
+            ids(Reader::Holding(&tester)),
+            ["old"],
+            "the old one stands for them"
+        );
+        assert_eq!(ids(Reader::EVERYONE), ["old"]);
+        assert_eq!(ids(Reader::Person), ["new", "rev"]);
+        assert!(search(&all, "diff", 10, Reader::Holding(&tester), now()).is_empty());
+        assert_eq!(
+            search(&all, "diff", 10, Reader::Holding(&reviewer), now())[0].id,
+            "rev"
+        );
+        assert_eq!(
+            profile(&all, 4000, Reader::Holding(&tester), now()).len(),
+            1
+        );
+        let (add, _) = mirror_plan(&all, &Default::default(), now());
+        assert_eq!(
+            add.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["old"]
+        );
+
+        let kept = Memory::new(ProjectId::from("p"), "a", "fact", vec![], None, now())
+            .unwrap()
+            .roles(roles(&["tester", "reviewer", "tester"]))
+            .unwrap();
+        assert_eq!(kept.roles, ["reviewer", "tester"], "sorted, once each");
+        assert!(
+            Memory::new(ProjectId::from("p"), "a", "fact", vec![], None, now())
+                .unwrap()
+                .roles(roles(&["not a role!"]))
+                .is_err()
+        );
     }
 
     /// A moment after every memory these tests keep.
@@ -388,7 +515,10 @@ mod tests {
             memory("new", "deploys go out on Mondays", 5, Some("old")),
             memory("other", "the reviewer is Codex", 3, None),
         ];
-        let ids: Vec<&str> = current(&all, now()).iter().map(|m| m.id.as_str()).collect();
+        let ids: Vec<&str> = current(&all, Reader::Person, now())
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
         assert_eq!(ids, ["new", "other"], "newest first, the replaced one gone");
     }
 
@@ -400,7 +530,7 @@ mod tests {
             memory("c", "nothing about it", 9, None),
         ];
         let ids = |q: &str| -> Vec<String> {
-            search(&all, q, 10, now())
+            search(&all, q, 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.clone())
                 .collect()
@@ -409,7 +539,7 @@ mod tests {
         assert_eq!(ids("REVIEWER"), ["b", "a"], "case is not a difference");
         assert_eq!(ids("absent"), Vec::<String>::new());
         assert_eq!(ids(""), ["c", "b", "a"], "no words, the newest");
-        assert_eq!(search(&all, "", 1, now()).len(), 1);
+        assert_eq!(search(&all, "", 1, Reader::Person, now()).len(), 1);
     }
 
     #[test]
@@ -436,15 +566,15 @@ mod tests {
             memory("b", &"b".repeat(10), 1, None),
             memory("c", &"c".repeat(10), 2, None),
         ];
-        let ids: Vec<&str> = profile(&all, 22, now())
+        let ids: Vec<&str> = profile(&all, 22, Reader::Person, now())
             .iter()
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(ids, ["c", "b"]);
-        assert!(profile(&all, 5, now()).is_empty());
+        assert!(profile(&all, 5, Reader::Person, now()).is_empty());
         let mut long = all.clone();
         long.push(memory("big", &"z".repeat(900), 3, None));
-        let ids: Vec<&str> = profile(&long, 22, now())
+        let ids: Vec<&str> = profile(&long, 22, Reader::Person, now())
             .iter()
             .map(|m| m.id.as_str())
             .collect();
@@ -465,7 +595,7 @@ mod tests {
             memory("latest", "the latest build", 4, None),
         ];
         let ids = |q: &str| -> Vec<String> {
-            search(&all, q, 10, now())
+            search(&all, q, 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.clone())
                 .collect()
@@ -495,7 +625,7 @@ mod tests {
         // Whatever order the query's words are held in, the sums match.
         for query in ["a b c d common", "common d c b a", "b common a d c"] {
             for _ in 0..20 {
-                let ids: Vec<&str> = search(&all, query, 10, now())
+                let ids: Vec<&str> = search(&all, query, 10, Reader::Person, now())
                     .iter()
                     .map(|m| m.id.as_str())
                     .collect();
@@ -514,12 +644,12 @@ mod tests {
         ];
         all[0].standing = true;
         all[2].standing = true;
-        let ids: Vec<&str> = profile(&all, 4000, now())
+        let ids: Vec<&str> = profile(&all, 4000, Reader::Person, now())
             .iter()
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(ids, ["rule", "later rule", "latest", "news"]);
-        let ids: Vec<&str> = profile(&all, 30, now())
+        let ids: Vec<&str> = profile(&all, 30, Reader::Person, now())
             .iter()
             .map(|m| m.id.as_str())
             .collect();
@@ -535,7 +665,7 @@ mod tests {
             memory("accent", "L'ÉTÉ est long", 3, None),
         ];
         let ids = |q: &str| -> Vec<String> {
-            search(&all, q, 10, now())
+            search(&all, q, 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.clone())
                 .collect()
@@ -563,12 +693,12 @@ mod tests {
         let mut backward = forward.clone();
         backward.reverse();
         for all in [&forward, &backward] {
-            let ids: Vec<&str> = search(all, "deploy", 10, now())
+            let ids: Vec<&str> = search(all, "deploy", 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect();
             assert_eq!(ids, ["newer", "a1", "b2", "c3"], "newer, then by id");
-            let ids: Vec<&str> = search(all, "monday deploy", 10, now())
+            let ids: Vec<&str> = search(all, "monday deploy", 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect();
@@ -592,7 +722,7 @@ mod tests {
         let mut backward = all.clone();
         backward.reverse();
         for stored in [&all, &backward] {
-            let ids: Vec<&str> = profile(stored, 4000, now())
+            let ids: Vec<&str> = profile(stored, 4000, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect();
@@ -607,14 +737,21 @@ mod tests {
             memory("brief", "the main branch is frozen", 1, None),
         ];
         all[1].forget_after = Some(now() - Duration::minutes(1));
-        let said: Vec<&str> = current(&all, now()).iter().map(|m| m.id.as_str()).collect();
+        let said: Vec<&str> = current(&all, Reader::Person, now())
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
         assert_eq!(said, ["kept"]);
-        assert!(search(&all, "frozen", 10, now()).is_empty());
-        assert_eq!(profile(&all, 4000, now()).len(), 1);
+        assert!(search(&all, "frozen", 10, Reader::Person, now()).is_empty());
+        assert_eq!(profile(&all, 4000, Reader::Person, now()).len(), 1);
         let (_, remove) = mirror_plan(&all, &["kept", "brief"].map(str::to_owned).into(), now());
         assert_eq!(remove, ["brief"], "a mirror lets it go too");
         let before = now() - Duration::minutes(2);
-        assert_eq!(current(&all, before).len(), 2, "said until then");
+        assert_eq!(
+            current(&all, Reader::Person, before).len(),
+            2,
+            "said until then"
+        );
 
         let kept = Memory::new(ProjectId::from("p"), "a", "frozen", vec![], None, now()).unwrap();
         assert!(

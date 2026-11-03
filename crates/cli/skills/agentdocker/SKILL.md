@@ -39,8 +39,11 @@ commit, pr, url, task, message, memory) — read them first. When you file a
 card, send a message or hand work over, put what the reader should open in
 `links` rather than in prose. Take work with `pull_task`: with no card named
 it takes the next ready one that waits on nothing, and says so when there is
-none; it becomes yours, in progress, and nobody else can take it; if a card
-you name is refused, somebody holds it, so pull another. The pull holds the
+none; it becomes yours, in progress, and nobody else can take it. A card you
+name may sit in any open lane (one the person asked you to work on, or one an
+agent that has ended left behind) and is yours when nobody holds it; if it is
+refused, the answer says why: somebody holds it (pull another), it waits on
+another card or on something off the board, or its holder's hold has lapsed. The pull holds the
 card as a `task:<id>` lease for four hours: `renew` it during longer work
 (pulling your own held card renews it too); your exit releases it. A card
 whose holder's lease has lapsed is refused with `hold: lapsed`: take it over
@@ -50,7 +53,8 @@ be on. Read the card's acceptance text before starting, and say what you find
 on it with `comment_task`. Move it with `move_task`, with a `comment` saying
 why, to review when it is ready for eyes and to done when the acceptance text
 is met; file follow-up work with `create_task`, or a plan of several cards at
-once with `create_tasks`. Do not move cards you do not hold.
+once with `create_tasks`. Do not move cards you do not hold: pull one nobody
+holds by name first.
 
 Message kinds `pause` and `resume` are reserved for committed project lifecycle
 changes; ordinary sends cannot use them. Check the current project state before
