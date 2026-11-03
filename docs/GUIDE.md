@@ -1528,7 +1528,7 @@ Current behaviour that the sections above do not already state, by area.
   identifier such as `task_id` is one word, so `task` does not find it,
   while `-` and `:` separate words. A memory that is no longer true is
   replaced (`--supersedes`) or forgotten. Each prompt you type is also told
-  the few memories that answer it, beyond those the session started with.
+  the few memories that answer it, each once a session.
   One kept for some roles only
   (`--role reviewer`, `roles` on `add_memory`) is told to their holders and
   to you, and never copied off the machine. It stays on this machine; anything that

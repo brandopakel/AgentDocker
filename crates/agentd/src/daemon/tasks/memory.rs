@@ -268,8 +268,14 @@ impl Daemon {
         let at = as_of.map_or(now, |at| at.min(now));
         let limit = limit.unwrap_or(20).clamp(1, 100);
         if include_superseded {
-            let (found, replaced) =
-                memory::search_history(&memories, query, limit, reading.reader(), at);
+            let (found, replaced) = memory::search_history(
+                &memories,
+                query,
+                limit,
+                min_score.unwrap_or(0.0),
+                reading.reader(),
+                at,
+            );
             return Response::MemoryHistory {
                 memories: found.into_iter().cloned().collect(),
                 replaced,
