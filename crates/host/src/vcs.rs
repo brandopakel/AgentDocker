@@ -47,6 +47,42 @@ pub fn state(dir: &Path) -> Option<VcsState> {
     })
 }
 
+/// The file a project keeps its worktree includes in: one git pathspec per
+/// line of files git ignores that a worktree still needs (`.env`, local
+/// settings). The name is the one other session managers read.
+pub const WORKTREE_INCLUDE: &str = ".worktreeinclude";
+
+/// The `git` arguments that list, NUL-separated, the files a
+/// `.worktreeinclude` reading `text` names: those its pathspecs match that
+/// git ignores, and so that no worktree made from a commit has. Blank
+/// lines, `#` comments and lines starting with `-` (which git would read
+/// as an option) name nothing; `None` when nothing is named. The daemon
+/// copies what this lists into a worktree it makes, and a client asking
+/// what such a worktree will hold lists it the same way.
+pub fn worktree_include_listing(text: &str) -> Option<Vec<String>> {
+    let specs: Vec<String> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('-'))
+        .map(str::to_owned)
+        .collect();
+    if specs.is_empty() {
+        return None;
+    }
+    let mut args: Vec<String> = [
+        "ls-files",
+        "-z",
+        "--others",
+        "--ignored",
+        "--exclude-standard",
+        "--",
+    ]
+    .map(str::to_owned)
+    .into();
+    args.extend(specs);
+    Some(args)
+}
+
 /// The subject line of a commit, via `git log`; `None` when git is
 /// missing, the object is unknown, or `timeout` passes.
 pub fn subject(dir: &Path, sha: &str, timeout: std::time::Duration) -> Option<String> {
@@ -265,6 +301,32 @@ mod tests {
             &["commit", "-q", "--allow-empty", "-m", "root"],
         );
         main
+    }
+
+    #[test]
+    fn a_worktree_include_names_pathspecs_and_nothing_else() {
+        assert_eq!(worktree_include_listing(""), None);
+        assert_eq!(
+            worktree_include_listing("# only a comment\n\n  \n-x\n"),
+            None
+        );
+        assert_eq!(
+            worktree_include_listing(" .env \n# keys\n.claude/settings.local.json\n--all\n"),
+            Some(
+                [
+                    "ls-files",
+                    "-z",
+                    "--others",
+                    "--ignored",
+                    "--exclude-standard",
+                    "--",
+                    ".env",
+                    ".claude/settings.local.json",
+                ]
+                .map(str::to_owned)
+                .into()
+            )
+        );
     }
 
     #[test]

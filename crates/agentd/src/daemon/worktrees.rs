@@ -102,10 +102,9 @@ pub(super) async fn add_worktree(
     }
 }
 
-/// The file a project keeps its worktree includes in: one git pathspec per
-/// line of files git ignores that a worktree still needs (`.env`, local
-/// settings). The name is the one other session managers read.
-pub const INCLUDE_FILE: &str = ".worktreeinclude";
+/// The file a project keeps its worktree includes in
+/// ([`agentdocker_host::vcs::WORKTREE_INCLUDE`]).
+pub const INCLUDE_FILE: &str = agentdocker_host::vcs::WORKTREE_INCLUDE;
 /// At most this much is copied into one worktree.
 const INCLUDE_BYTES: u64 = 256 * 1024 * 1024;
 
@@ -129,24 +128,9 @@ pub(super) async fn copy_includes(root: PathBuf, path: PathBuf) -> (usize, Optio
             )),
         );
     }
-    let specs: Vec<String> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('-'))
-        .map(str::to_owned)
-        .collect();
-    if specs.is_empty() {
+    let Some(args) = agentdocker_host::vcs::worktree_include_listing(&text) else {
         return (0, None);
-    }
-    let mut args = vec![
-        "ls-files".to_owned(),
-        "-z".to_owned(),
-        "--others".to_owned(),
-        "--ignored".to_owned(),
-        "--exclude-standard".to_owned(),
-        "--".to_owned(),
-    ];
-    args.extend(specs);
+    };
     let listed = match git(root.clone(), args).await {
         Ok(output) if output.success => output.stdout,
         Ok(output) => return (0, Some(output.text)),

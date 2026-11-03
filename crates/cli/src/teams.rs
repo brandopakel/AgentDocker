@@ -28,12 +28,9 @@ use crate::client::Client;
 /// why, and makes the command fail.
 pub async fn up(client: &Client, file: Option<&Path>, only: &[String]) -> Result<()> {
     let (agentfile, path) = Agentfile::load(file)?;
-    // Refuses a name that is not in the file.
-    agentfile.names(&path, only)?;
     // Every entry is built, selected or not: an entry left out is judged
     // against the launch the file gives it now.
-    let host = crate::agentfile::SystemHost::new();
-    let built = agentfile.specs(&path, &[], &host)?;
+    let built = agentfile.launches(&path, only, &crate::agentfile::SystemHost::new())?;
     for note in built.iter().flat_map(|built| &built.notes) {
         eprintln!("note: {note}");
     }
@@ -512,12 +509,38 @@ pub async fn down(
 /// will run, so a secret belongs in `env`, not in `args` or `prompt`.
 pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
     let (agentfile, path) = Agentfile::load(file)?;
-    let built = agentfile.specs(&path, only, &crate::agentfile::SystemHost::new())?;
+    let host = crate::agentfile::SystemHost::new();
+    print!("{}", check_report(&agentfile, &path, only, json, &host)?);
+    Ok(())
+}
+
+/// What `check` prints. The whole file is built as `up` builds it
+/// ([`Agentfile::launches`]), so the check fails wherever `up` would, an
+/// unset variable in an entry `only` leaves out included; what is shown is
+/// the entries `only` selects.
+fn check_report(
+    agentfile: &Agentfile,
+    path: &Path,
+    only: &[String],
+    json: bool,
+    host: &dyn crate::agentfile::launch::Host,
+) -> Result<String> {
+    use std::fmt::Write as _;
+    let built = agentfile.launches(path, only, host)?;
     let entries = agentfile.entries();
     let ordered: Vec<&crate::agentfile::Built> = agentfile::order(&entries)
         .into_iter()
+        .filter(|&i| only.is_empty() || only.contains(&entries[i].name))
         .filter_map(|i| built.iter().find(|b| b.spec.name == entries[i].name))
         .collect();
+    let after = |name: &str| -> Vec<String> {
+        entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.after.iter().map(ToString::to_string).collect())
+            .unwrap_or_default()
+    };
+    let mut out = String::new();
     if json {
         let rows: Vec<serde_json::Value> = ordered
             .iter()
@@ -537,11 +560,7 @@ pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
                     "isolate": spec.isolate,
                     "restart": spec.restart.describe(),
                     "depends_on": spec.depends_on,
-                    "after": entries
-                        .iter()
-                        .find(|entry| entry.name == spec.name)
-                        .map(|entry| entry.after.iter().map(ToString::to_string).collect::<Vec<_>>())
-                        .unwrap_or_default(),
+                    "after": after(&spec.name),
                     "notes": built.notes,
                 })
             })
@@ -552,10 +571,11 @@ pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
             "version": agentfile.version,
             "agents": rows,
         });
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        return Ok(());
+        writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+        return Ok(out);
     }
-    println!(
+    writeln!(
+        out,
         "{}: version {}{}, {} agent{}",
         path.display(),
         agentfile.declared,
@@ -569,12 +589,12 @@ pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
         },
         ordered.len(),
         if ordered.len() == 1 { "" } else { "s" }
-    );
+    )?;
     for built in ordered {
         let spec = &built.spec;
-        println!(
-            "
-{}  {}{}{}",
+        writeln!(
+            out,
+            "\n{}  {}{}{}",
             spec.name,
             spec.runtime,
             spec.model
@@ -585,9 +605,9 @@ pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
                 .get(agentdocker_core::model_choice::EFFORT_LABEL)
                 .map(|e| format!("  effort {e}"))
                 .unwrap_or_default()
-        );
+        )?;
         if let Some(dir) = &spec.workdir {
-            println!("  in     {}", dir.display());
+            writeln!(out, "  in     {}", dir.display())?;
         }
         // A wired-in settings or MCP document is long JSON; its size says
         // enough here, and `--json` shows it whole.
@@ -602,10 +622,11 @@ pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
                 }
             })
             .collect();
-        println!(
+        writeln!(
+            out,
             "  runs   {}",
             shlex::try_join(words.iter().map(String::as_str)).unwrap_or_else(|_| words.join(" "))
-        );
+        )?;
         let mut how = Vec::new();
         if spec.tty {
             how.push("tty".to_owned());
@@ -620,35 +641,24 @@ pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
             how.push(format!("restart {}", spec.restart.describe()));
         }
         if !how.is_empty() {
-            println!("  with   {}", how.join(", "));
+            writeln!(out, "  with   {}", how.join(", "))?;
         }
         if !spec.env.is_empty() {
-            println!(
-                "  env    {}",
-                spec.env.keys().cloned().collect::<Vec<_>>().join(", ")
-            );
+            let names: Vec<&str> = spec.env.keys().map(String::as_str).collect();
+            writeln!(out, "  env    {}", names.join(", "))?;
         }
-        if let Some(entry) = entries.iter().find(|entry| entry.name == spec.name) {
-            if !entry.depends_on.is_empty() {
-                println!("  needs  {} running", entry.depends_on.join(", "));
-            }
-            if !entry.after.is_empty() {
-                println!(
-                    "  after  {}",
-                    entry
-                        .after
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
-            }
+        if !spec.depends_on.is_empty() {
+            writeln!(out, "  needs  {} running", spec.depends_on.join(", "))?;
+        }
+        let after = after(&spec.name);
+        if !after.is_empty() {
+            writeln!(out, "  after  {}", after.join(", "))?;
         }
         for note in &built.notes {
-            println!("  note   {note}");
+            writeln!(out, "  note   {note}")?;
         }
     }
-    Ok(())
+    Ok(out)
 }
 
 /// `agentfile upgrade`: rewrite a version 1 file as the latest version, in
@@ -723,5 +733,53 @@ async fn recorded_agents(client: &Client, path: &Path) -> Result<Vec<AgentRecord
     {
         Response::Agents { agents, .. } => Ok(agents),
         other => bail!("unexpected reply to list: {other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agentfile::launch::tests::Fake;
+
+    /// `check <names>` builds the whole file as `up <names>` does, so an
+    /// unset variable in an entry that was not named fails both; once it
+    /// is set, only what was named is shown.
+    #[test]
+    fn check_fails_where_up_would_and_shows_only_what_was_named() {
+        let file = Agentfile::parse(
+            "version = 2\n[agents.a]\ncommand = [\"${NOPE}\"]\n\n[agents.b]\ncommand = [\"true\"]\n",
+        )
+        .unwrap();
+        let path = Path::new("/work/app/Agentfile.toml");
+        let only = ["b".to_owned()];
+        let checked = check_report(&file, path, &only, false, &Fake::default()).unwrap_err();
+        let checked = format!("{checked:#}");
+        assert!(checked.contains("agents.a.command[0]"), "{checked}");
+        assert!(checked.contains("`NOPE` is not set"), "{checked}");
+        // `up` builds through the same function, and fails the same way.
+        let up = file.launches(path, &only, &Fake::default()).unwrap_err();
+        assert_eq!(format!("{up:#}"), checked);
+
+        let mut host = Fake::default();
+        host.vars.insert("NOPE", "sh");
+        let shown = check_report(&file, path, &only, false, &host).unwrap();
+        assert!(shown.contains("1 agent\n"), "{shown}");
+        assert!(shown.contains("\nb  custom\n"), "{shown}");
+        assert!(!shown.contains("\na  "), "{shown}");
+        let json: serde_json::Value =
+            serde_json::from_str(&check_report(&file, path, &only, true, &host).unwrap()).unwrap();
+        let names: Vec<&str> = json["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|agent| agent["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["b"]);
+        assert!(
+            check_report(&file, path, &["c".to_owned()], false, &host)
+                .unwrap_err()
+                .to_string()
+                .contains("no agent `c`")
+        );
     }
 }

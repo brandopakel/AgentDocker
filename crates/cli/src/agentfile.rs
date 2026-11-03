@@ -37,12 +37,15 @@
 pub mod launch;
 pub mod upgrade;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
-use agentdocker_core::AgentSpec;
 use agentdocker_core::agentfile::expand::{escape, expand};
 use agentdocker_core::agentfile::{self, After};
+use agentdocker_core::{AgentSpec, Wiring};
+use agentdocker_host::runtimes::Roots;
 use anyhow::{Context, Result, bail};
 use indexmap::IndexMap;
 use serde::Deserialize;
@@ -526,6 +529,22 @@ impl Agentfile {
             .collect())
     }
 
+    /// What `up` works from for this file, and what `agentfile check`
+    /// shows: every entry built, whichever `only` selects — an entry left
+    /// out is still judged against the launch the file gives it now — once
+    /// a name the file does not have has been refused. One function for
+    /// both, so the check fails wherever `up` would, an unset `${VAR}` in
+    /// an entry that was not named included.
+    pub fn launches(
+        &self,
+        file_path: &Path,
+        only: &[String],
+        host: &dyn launch::Host,
+    ) -> Result<Vec<Built>> {
+        self.names(file_path, only)?;
+        self.specs(file_path, &[], host)
+    }
+
     /// Specs for the named agents (all when `only` is empty), in file
     /// order, with `${VAR}` expanded, working directories resolved, built
     /// commands built and bookkeeping labels (`agentfile`, `team`) added.
@@ -581,37 +600,99 @@ impl Agentfile {
     }
 }
 
-/// The machine as it is: the process environment, the runtimes the
-/// inventory finds on `PATH` and in the standard installation directories,
-/// and the person's own runtime configuration.
+/// The machine as it is, asked about each entry where it will run: the
+/// environment `up` runs in with the entry's own `env` laid over it — so an
+/// entry's `PATH` chooses its CLI and its `CLAUDE_CONFIG_DIR` or
+/// `CODEX_HOME` the profile whose wiring counts — and the checkout the
+/// session will hold.
 pub struct SystemHost {
-    roots: agentdocker_host::runtimes::Roots,
-    /// One inventory per runtime asked about; the lookups cost file reads.
-    found: std::cell::RefCell<BTreeMap<String, Option<agentdocker_core::RuntimeInfo>>>,
+    /// The environment `up` runs in: what `${VAR}` reads, and what an
+    /// entry's `env` is laid over.
+    base: Vars,
+    /// What has been found, by runtime and the roots it was looked for
+    /// under, so two entries with different environments are asked about
+    /// separately.
+    found: RefCell<Vec<Found>>,
 }
+
+/// An environment as a process reads it: a variable's value, or `None`
+/// when it is not set.
+type Vars = Box<dyn Fn(&str) -> Option<OsString>>;
+
+/// What was found for one runtime under one set of roots: its CLI, and
+/// whether its configuration registers our MCP server.
+struct Found {
+    runtime: String,
+    roots: Roots,
+    cli: Option<PathBuf>,
+    mcp: Wiring,
+}
+
+/// How long one `git` question about a checkout may take.
+const GIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The project settings files Claude Code reads in a session's working
+/// directory.
+const PROJECT_SETTINGS: [&str; 2] = [".claude/settings.json", ".claude/settings.local.json"];
 
 impl SystemHost {
     pub fn new() -> Self {
-        let mut roots = agentdocker_host::runtimes::Roots::from_env();
-        // The versions are not needed, and each one is a process run.
-        roots.versions = false;
+        Self::with_env(|name| std::env::var_os(name))
+    }
+
+    /// A machine whose `up` runs with the environment `vars` answers.
+    pub fn with_env(vars: impl Fn(&str) -> Option<OsString> + 'static) -> Self {
         Self {
-            roots,
-            found: Default::default(),
+            base: Box::new(vars),
+            found: RefCell::default(),
         }
     }
 
-    fn info(&self, runtime: &str) -> Option<agentdocker_core::RuntimeInfo> {
-        if let Some(info) = self.found.borrow().get(runtime) {
-            return info.clone();
-        }
-        let info = agentdocker_core::runtime::spec(runtime).and_then(|spec| {
-            agentdocker_host::runtimes::inspect(spec, &self.roots, launch::MARKER).ok()
+    /// The roots the agent at `at` will see: its `env` over `up`'s.
+    fn roots(&self, at: &launch::Destination) -> Roots {
+        let mut roots = Roots::from_vars(&|name| {
+            at.env
+                .iter()
+                .find(|(key, _)| {
+                    // Windows reads variable names without regard to case.
+                    if cfg!(windows) {
+                        key.eq_ignore_ascii_case(name)
+                    } else {
+                        key.as_str() == name
+                    }
+                })
+                .map(|(_, value)| OsString::from(value))
+                .or_else(|| (self.base)(name))
         });
-        self.found
-            .borrow_mut()
-            .insert(runtime.to_owned(), info.clone());
-        info
+        // The versions are not needed, and each one is a process run.
+        roots.versions = false;
+        roots
+    }
+
+    fn found(&self, runtime: &str, at: &launch::Destination) -> (Option<PathBuf>, Wiring) {
+        let roots = self.roots(at);
+        if let Some(found) = self
+            .found
+            .borrow()
+            .iter()
+            .find(|found| found.runtime == runtime && found.roots == roots)
+        {
+            return (found.cli.clone(), found.mcp);
+        }
+        let (cli, mcp) = match agentdocker_core::runtime::spec(runtime) {
+            Some(spec) => (
+                agentdocker_host::runtimes::find_cli(spec, &roots),
+                agentdocker_host::runtimes::mcp_wiring(spec, &roots, launch::MARKER),
+            ),
+            None => (None, Wiring::Unsupported),
+        };
+        self.found.borrow_mut().push(Found {
+            runtime: runtime.to_owned(),
+            roots,
+            cli: cli.clone(),
+            mcp,
+        });
+        (cli, mcp)
     }
 }
 
@@ -623,11 +704,11 @@ impl Default for SystemHost {
 
 impl launch::Host for SystemHost {
     fn var(&self, name: &str) -> Option<String> {
-        std::env::var(name).ok()
+        (self.base)(name).and_then(|value| value.into_string().ok())
     }
 
-    fn program(&self, runtime: &str) -> Option<PathBuf> {
-        self.info(runtime).and_then(|info| info.cli)
+    fn program(&self, runtime: &str, at: &launch::Destination) -> Option<PathBuf> {
+        self.found(runtime, at).0
     }
 
     fn agentdocker(&self) -> Result<PathBuf> {
@@ -635,36 +716,85 @@ impl launch::Host for SystemHost {
             .context("cannot locate this agentdocker executable")
     }
 
-    fn mcp_wired(&self, runtime: &str) -> bool {
-        self.info(runtime)
-            .is_some_and(|info| info.mcp == agentdocker_core::Wiring::Wired)
+    fn mcp_wired(&self, runtime: &str, at: &launch::Destination) -> bool {
+        self.found(runtime, at).1 == Wiring::Wired
     }
 
-    fn claude_hooks_present(&self, workdir: &Path) -> bool {
+    /// The user's settings, from the profile `at` names, and the project's
+    /// as the session will find them: in `workdir` for an ordinary launch;
+    /// for an isolated one, as the worktree the daemon makes holds them
+    /// ([`isolated_project_settings`]).
+    fn claude_hooks_present(&self, at: &launch::Destination) -> bool {
         let Some(spec) = agentdocker_core::runtime::spec("claude-code") else {
             return false;
         };
-        [
-            agentdocker_host::runtimes::hook_config_path(spec, &self.roots),
-            workdir.join(".claude/settings.json"),
-            workdir.join(".claude/settings.local.json"),
-        ]
-        .iter()
-        .any(|file| {
-            std::fs::read_to_string(file)
-                .ok()
-                .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
-                .is_some_and(|settings| {
-                    settings.get("hooks").is_some()
-                        && agentdocker_host::runtimes::missing_hook_events(
-                            &settings,
-                            launch::MARKER,
-                            "claude-code",
-                        )
-                        .is_empty()
-                })
-        })
+        let user = agentdocker_host::runtimes::hook_config_path(spec, &self.roots(at));
+        if agentdocker_host::runtimes::claude_settings_file_runs_hooks(&user, launch::MARKER) {
+            return true;
+        }
+        if at.isolate {
+            isolated_project_settings(at.workdir).iter().any(|text| {
+                agentdocker_host::runtimes::claude_settings_run_hooks(text, launch::MARKER)
+            })
+        } else {
+            PROJECT_SETTINGS.iter().any(|file| {
+                agentdocker_host::runtimes::claude_settings_file_runs_hooks(
+                    &at.workdir.join(file),
+                    launch::MARKER,
+                )
+            })
+        }
     }
+}
+
+/// The project settings a session in a worktree the daemon makes for
+/// `workdir` will read. The daemon makes it from the `HEAD` of the checkout
+/// `workdir` is in and starts the session at its top level, so a tracked
+/// settings file is what `HEAD` holds — an uncommitted edit stays behind —
+/// and an untracked one is there only when `.worktreeinclude` has it copied
+/// (on Unix; elsewhere the daemon copies nothing). Nothing, when `workdir`
+/// is in no checkout or git cannot say.
+fn isolated_project_settings(workdir: &Path) -> Vec<String> {
+    let git = |dir: &Path, args: Vec<String>| -> Option<String> {
+        let mut argv = vec!["git".to_owned()];
+        argv.extend(args);
+        let output = agentdocker_host::command::run(dir, &argv, GIT_TIMEOUT).ok()?;
+        output.success.then_some(output.stdout)
+    };
+    let words =
+        |args: &[&str]| -> Vec<String> { args.iter().map(|arg| (*arg).to_owned()).collect() };
+    let Some(top) = git(workdir, words(&["rev-parse", "--show-toplevel"])) else {
+        return Vec::new();
+    };
+    let top = PathBuf::from(top.trim_end_matches(['\n', '\r']));
+    let copied: Vec<String> = if cfg!(unix) {
+        std::fs::read_to_string(top.join(agentdocker_host::vcs::WORKTREE_INCLUDE))
+            .ok()
+            .and_then(|text| agentdocker_host::vcs::worktree_include_listing(&text))
+            .and_then(|args| git(&top, args))
+            .map(|listed| {
+                listed
+                    .split('\0')
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    PROJECT_SETTINGS
+        .iter()
+        .filter_map(|file| {
+            git(&top, words(&["cat-file", "blob", &format!("HEAD:{file}")])).or_else(|| {
+                copied
+                    .iter()
+                    .any(|path| path == file)
+                    .then(|| std::fs::read_to_string(top.join(file)).ok())
+                    .flatten()
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1232,6 +1362,228 @@ depends_on = []
                         .is_some_and(|text| text.contains("${VAR}")),
                 "{field} says it expands"
             );
+        }
+    }
+
+    /// A machine of files: `up`'s environment is `vars`, nothing else.
+    fn machine(vars: &[(&str, &Path)]) -> SystemHost {
+        let vars: BTreeMap<String, OsString> = vars
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), value.as_os_str().to_owned()))
+            .collect();
+        SystemHost::with_env(move |name| vars.get(name).cloned())
+    }
+
+    /// Claude Code settings that run every one of our hooks.
+    fn wired_settings(exe: &Path) -> String {
+        let mut settings = serde_json::json!({});
+        crate::hooks::merge_claude_code_hooks(
+            &mut settings,
+            &agentdocker_host::runtimes::claude_hook_command(exe).unwrap(),
+        )
+        .unwrap();
+        settings.to_string()
+    }
+
+    /// The command one Claude Code entry gets on `host`, with `extra` lines
+    /// in its table, from an Agentfile in `dir`.
+    fn claude_command(host: &SystemHost, dir: &Path, extra: &str) -> Vec<String> {
+        let text = format!(
+            "version = 2\n[agents.w]\nruntime = \"claude-code\"\nprompt = \"go\"\n{extra}\n"
+        );
+        Agentfile::parse(&text)
+            .unwrap()
+            .specs(&dir.join("Agentfile.toml"), &[], host)
+            .unwrap()
+            .remove(0)
+            .spec
+            .command
+    }
+
+    /// Whether a built `--settings` document runs every one of our hooks,
+    /// judged as the inventory judges a settings file. Its commands run
+    /// this test binary, which is not named `agentdocker`, so they are
+    /// judged as they would be from the installed one.
+    fn runs_our_hooks(settings: &str) -> bool {
+        let me = agentdocker_host::runtimes::claude_hook_command(
+            &agentdocker_host::procinfo::executable_path().unwrap(),
+        )
+        .unwrap();
+        let installed =
+            agentdocker_host::runtimes::claude_hook_command(Path::new("/opt/ad/agentdocker"))
+                .unwrap();
+        let mut value: serde_json::Value = serde_json::from_str(settings).unwrap();
+        for entries in value["hooks"]
+            .as_object_mut()
+            .into_iter()
+            .flat_map(|events| events.values_mut())
+        {
+            for entry in entries.as_array_mut().into_iter().flatten() {
+                for hook in entry["hooks"].as_array_mut().into_iter().flatten() {
+                    if hook["command"] == me.as_str() {
+                        hook["command"] = installed.clone().into();
+                    }
+                }
+            }
+        }
+        agentdocker_host::runtimes::claude_settings_run_hooks(&value.to_string(), launch::MARKER)
+    }
+
+    fn settings_of(command: &[String]) -> Option<&str> {
+        command
+            .iter()
+            .position(|word| word == "--settings")
+            .map(|at| command[at + 1].as_str())
+    }
+
+    /// The profile an entry's own `env` names is the one whose wiring
+    /// counts: with the person's default profile wired, an entry pointing
+    /// `CLAUDE_CONFIG_DIR` at an unwired one gets the MCP server and the
+    /// hooks in its launch, and one that names no profile gets neither.
+    #[test]
+    fn an_entrys_own_profile_decides_what_is_wired_into_its_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        let exe = Path::new("/opt/ad/agentdocker");
+        std::fs::write(
+            home.join(".claude.json"),
+            serde_json::json!({"mcpServers": {"agentdocker": {
+                "type": "stdio", "command": exe, "args": ["mcp", "--runtime", "claude-code"]
+            }}})
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(home.join(".claude/settings.json"), wired_settings(exe)).unwrap();
+        let profile = temp.path().join("profile");
+        std::fs::create_dir_all(&profile).unwrap();
+        let host = machine(&[("HOME", home.as_path()), ("USERPROFILE", home.as_path())]);
+
+        let default = claude_command(&host, temp.path(), "");
+        assert!(!default.contains(&"--mcp-config".to_owned()), "{default:?}");
+        assert_eq!(settings_of(&default), None, "{default:?}");
+
+        let own = claude_command(
+            &host,
+            temp.path(),
+            &format!(
+                "env = {{ CLAUDE_CONFIG_DIR = {:?} }}",
+                profile.display().to_string()
+            ),
+        );
+        let mcp = own
+            .iter()
+            .position(|word| word == "--mcp-config")
+            .expect("the unwired profile gets the MCP server");
+        assert!(own[mcp + 1].contains(r#""mcp","--runtime","claude-code""#));
+        let settings = settings_of(&own).expect("and the hooks");
+        assert!(runs_our_hooks(settings), "{settings}");
+    }
+
+    /// An entry's own `PATH` chooses its CLI, and what was found for one
+    /// environment is not reused for another.
+    #[cfg(unix)]
+    #[test]
+    fn an_entrys_own_path_chooses_its_cli() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        for dir in ["a", "b"] {
+            let bin = temp.path().join(dir);
+            std::fs::create_dir_all(&bin).unwrap();
+            let cli = bin.join("claude");
+            std::fs::write(&cli, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&cli, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let home = temp.path().join("home");
+        let first = temp.path().join("a");
+        let host = machine(&[("HOME", home.as_path()), ("PATH", first.as_path())]);
+        assert_eq!(
+            claude_command(&host, temp.path(), "")[0],
+            first.join("claude").display().to_string()
+        );
+        let second = temp.path().join("b");
+        assert_eq!(
+            claude_command(
+                &host,
+                temp.path(),
+                &format!("env = {{ PATH = {:?} }}", second.display().to_string())
+            )[0],
+            second.join("claude").display().to_string()
+        );
+    }
+
+    fn have_git() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    fn git(home: &Path, dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .env("HOME", home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    /// An isolated agent runs in a worktree the daemon makes from `HEAD`,
+    /// so its project settings are the committed ones: hooks that are only
+    /// an uncommitted edit count for an ordinary launch and not for an
+    /// isolated one, which gets them in its launch; an ignored local
+    /// settings file that `.worktreeinclude` has copied counts for both.
+    #[test]
+    fn an_isolated_launch_counts_the_settings_its_worktree_will_hold() {
+        if !have_git() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(repo.join(".claude")).unwrap();
+        git(&home, &repo, &["init", "-q"]);
+        std::fs::write(repo.join(".claude/settings.json"), "{}\n").unwrap();
+        git(&home, &repo, &["add", ".claude/settings.json"]);
+        git(&home, &repo, &["commit", "-q", "-m", "shared settings"]);
+        let exe = Path::new("/opt/ad/agentdocker");
+        std::fs::write(repo.join(".claude/settings.json"), wired_settings(exe)).unwrap();
+        let host = machine(&[("HOME", home.as_path()), ("USERPROFILE", home.as_path())]);
+
+        let here = claude_command(&host, &repo, "");
+        assert_eq!(settings_of(&here), None, "the edit is here: {here:?}");
+        let isolated = claude_command(&host, &repo, "isolate = true");
+        let settings = settings_of(&isolated).expect("the worktree has only what HEAD has");
+        assert!(runs_our_hooks(settings), "{settings}");
+
+        if cfg!(unix) {
+            std::fs::write(repo.join(".gitignore"), ".claude/settings.local.json\n").unwrap();
+            std::fs::write(
+                repo.join(".worktreeinclude"),
+                ".claude/settings.local.json\n",
+            )
+            .unwrap();
+            std::fs::write(
+                repo.join(".claude/settings.local.json"),
+                wired_settings(exe),
+            )
+            .unwrap();
+            let copied = claude_command(&host, &repo, "isolate = true");
+            assert_eq!(settings_of(&copied), None, "copied in: {copied:?}");
         }
     }
 

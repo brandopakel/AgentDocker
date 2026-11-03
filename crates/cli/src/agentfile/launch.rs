@@ -8,8 +8,11 @@
 //! `runtime = "codex"` and `prompt = "…"` instead of every flag. Judging a
 //! file ([`check`]) needs nothing from the machine; building the command
 //! ([`apply`]) reads it through a [`Host`], so a test supplies a machine of
-//! its own and asserts the exact argument vector.
+//! its own and asserts the exact argument vector. What the machine is asked
+//! is asked of the entry's own [`Destination`]: the environment and the
+//! checkout the agent will run in, not only the one `up` runs in.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use agentdocker_core::AgentSpec;
@@ -25,19 +28,38 @@ pub const BUILT: &[&str] = &["claude-code", "codex", "gemini-cli"];
 /// name, as the inventory looks for it.
 pub const MARKER: &str = "agentdocker";
 
+/// Where a built command will run, which is what the machine is asked
+/// about: a CLI on the `PATH` the agent gets, the profile its
+/// `CLAUDE_CONFIG_DIR` or `CODEX_HOME` names, the settings its checkout
+/// holds.
+#[derive(Clone, Copy, Debug)]
+pub struct Destination<'a> {
+    /// The entry's own `env`, expanded, laid over the environment `up`
+    /// runs in.
+    pub env: &'a BTreeMap<String, String>,
+    /// The working directory the file gives the entry, resolved.
+    pub workdir: &'a Path,
+    /// `isolate = true`: the daemon runs the agent in a worktree it makes
+    /// from the checkout's `HEAD`, at the checkout's top level, rather
+    /// than in `workdir` itself.
+    pub isolate: bool,
+}
+
 /// What building a command needs from the machine.
 pub trait Host {
-    /// An environment variable, for `${VAR}`.
+    /// An environment variable of the process reading the file, for
+    /// `${VAR}`; an entry's own `env` is not consulted.
     fn var(&self, name: &str) -> Option<String>;
-    /// The runtime's command-line tool, as the inventory found it.
-    fn program(&self, runtime: &str) -> Option<PathBuf>;
+    /// The runtime's command-line tool, as the inventory finds it for `at`.
+    fn program(&self, runtime: &str, at: &Destination) -> Option<PathBuf>;
     /// This `agentdocker`, which the coordination adapters run.
     fn agentdocker(&self) -> anyhow::Result<PathBuf>;
-    /// The runtime's own configuration already runs our MCP server.
-    fn mcp_wired(&self, runtime: &str) -> bool;
-    /// Some Claude Code settings a session in `workdir` loads already run
-    /// our hooks: adding them again would run each one twice.
-    fn claude_hooks_present(&self, workdir: &Path) -> bool;
+    /// The runtime's own configuration, as `at` reads it, already runs our
+    /// MCP server.
+    fn mcp_wired(&self, runtime: &str, at: &Destination) -> bool;
+    /// Some Claude Code settings the session at `at` loads already run our
+    /// hooks: adding them again would run each one twice.
+    fn claude_hooks_present(&self, at: &Destination) -> bool;
 }
 
 /// Runtimes with an input adapter, for `idle_messages`.
@@ -200,7 +222,12 @@ fn build(
 ) -> anyhow::Result<(Vec<String>, Vec<String>)> {
     let runtime = entry.runtime.as_str();
     let mut notes = Vec::new();
-    let program = match host.program(runtime) {
+    let at = Destination {
+        env: &entry.env,
+        workdir: spec.workdir.as_deref().unwrap_or(Path::new(".")),
+        isolate: entry.isolate,
+    };
+    let program = match host.program(runtime, &at) {
         Some(path) => path.to_string_lossy().into_owned(),
         None => {
             let name = agentdocker_core::runtime::spec(runtime)
@@ -233,7 +260,7 @@ fn build(
             if coordinate {
                 let exe = host.agentdocker()?;
                 // The channel enabler adds its own MCP entry.
-                if !entry.idle_messages && !host.mcp_wired(runtime) {
+                if !entry.idle_messages && !host.mcp_wired(runtime, &at) {
                     command.push("--mcp-config".into());
                     command.push(
                         json!({"mcpServers": {MARKER: {
@@ -247,8 +274,7 @@ fn build(
             let mut settings = settings_json(&entry.config)?;
             if coordinate {
                 let exe = host.agentdocker()?;
-                let workdir = spec.workdir.clone().unwrap_or_else(|| PathBuf::from("."));
-                if !host.claude_hooks_present(&workdir) {
+                if !host.claude_hooks_present(&at) {
                     crate::hooks::merge_claude_code_hooks(
                         &mut settings,
                         &agentdocker_host::runtimes::claude_hook_command(&exe)?,
@@ -271,7 +297,7 @@ fn build(
             command.extend(choices);
             command.extend(codex_config_args(&entry.config));
             // The idle-input bridge serves its own MCP connection.
-            if coordinate && !entry.idle_messages && !host.mcp_wired(runtime) {
+            if coordinate && !entry.idle_messages && !host.mcp_wired(runtime, &at) {
                 let exe = host.agentdocker()?;
                 command.extend([
                     "-c".to_owned(),
@@ -304,7 +330,7 @@ fn build(
                     }
                 ));
             }
-            if coordinate && !host.mcp_wired(runtime) {
+            if coordinate && !host.mcp_wired(runtime, &at) {
                 notes.push(format!(
                     "{}: Gemini CLI reads MCP servers only from its settings file; \
                      `agentdocker setup gemini-cli` registers AgentDocker there",
@@ -318,16 +344,14 @@ fn build(
 }
 
 /// `config` as the JSON object Claude Code's `--settings` takes.
-fn settings_json(
-    config: &std::collections::BTreeMap<String, toml::Value>,
-) -> anyhow::Result<serde_json::Value> {
+fn settings_json(config: &BTreeMap<String, toml::Value>) -> anyhow::Result<serde_json::Value> {
     Ok(serde_json::to_value(config)?)
 }
 
 /// `config` as Codex's `-c key=value` pairs, one per leaf, nested tables
 /// as dotted keys (`-c mcp_servers.x.command="…"`), each value written as
 /// TOML, which is what `-c` reads.
-fn codex_config_args(config: &std::collections::BTreeMap<String, toml::Value>) -> Vec<String> {
+fn codex_config_args(config: &BTreeMap<String, toml::Value>) -> Vec<String> {
     fn leaves(prefix: &str, value: &toml::Value, out: &mut Vec<String>) {
         match value {
             toml::Value::Table(table) => {
@@ -402,7 +426,7 @@ pub(crate) mod tests {
         fn var(&self, name: &str) -> Option<String> {
             self.vars.get(name).map(|v| (*v).to_owned())
         }
-        fn program(&self, runtime: &str) -> Option<PathBuf> {
+        fn program(&self, runtime: &str, _: &Destination) -> Option<PathBuf> {
             self.installed
                 .then(|| PathBuf::from(format!("/bin/{runtime}")))
         }
@@ -412,10 +436,10 @@ pub(crate) mod tests {
                 .clone()
                 .unwrap_or_else(|| PathBuf::from("/opt/ad/agentdocker")))
         }
-        fn mcp_wired(&self, _: &str) -> bool {
+        fn mcp_wired(&self, _: &str, _: &Destination) -> bool {
             self.wired
         }
-        fn claude_hooks_present(&self, _: &Path) -> bool {
+        fn claude_hooks_present(&self, _: &Destination) -> bool {
             self.wired
         }
     }

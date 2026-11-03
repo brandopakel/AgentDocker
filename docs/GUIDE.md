@@ -1384,7 +1384,13 @@ Current behaviour that the sections above do not already state, by area.
   `xhigh`, `max`; Codex `minimal`, `low`, `medium`, `high`, `xhigh`; Gemini
   CLI has none. `config` reaches Claude Code as its `--settings` document and
   Codex as `-c key=value` per entry (`sandbox = { mode = "workspace-write" }`
-  becomes `-c sandbox.mode="workspace-write"`). What cannot work is refused
+  becomes `-c sandbox.mode="workspace-write"`). The tool and its
+  configuration are looked for with the entry's `env` laid over yours: an
+  entry's `PATH` chooses its CLI, and its `CLAUDE_CONFIG_DIR` or `CODEX_HOME`
+  the profile whose wiring counts, so set such a variable in the entry's
+  `env` for the agent to use that profile too. With `isolate = true` the
+  project's Claude Code settings count as the agent's new worktree will have
+  them: as committed, since an uncommitted edit stays in your checkout. What cannot work is refused
   when the file is read, naming the agent and the field: `command` beside a
   launch field, an effort the tool does not take, a tool AgentDocker cannot
   build for, a `prompt` on a Codex entry with `idle_messages` (it takes none
@@ -1399,8 +1405,9 @@ Current behaviour that the sections above do not already state, by area.
   `effort`, `provider`, `workdir`, the values of `env` and `labels` and the
   strings in `config`; names, the runtime, `restart` and the waits are taken
   as written. `agentdocker agentfile check` shows the result before anything
-  starts; `down` needs only the names, so an unset variable never keeps you
-  from stopping what runs.
+  starts; like `up`, `check <names>` reads every entry, so an unset variable
+  in one you did not name stops both. `down` needs only the names, so an
+  unset variable never keeps you from stopping what runs.
 
 ### Sessions and worktrees
 
