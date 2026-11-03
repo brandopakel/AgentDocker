@@ -231,6 +231,11 @@ fn title(from: &str, kind: &str) -> String {
 /// answer to its question is held for it; when it ends, whatever is still
 /// held is released to the asker's queue. Dropped on every exit from
 /// `ask`, including a client that went away.
+///
+/// Dropping it takes the state lock, so it must never be dropped by a
+/// holder of a state guard: it is made after the hold that opened the
+/// question ends and dropped, explicitly, before the hold that follows
+/// the wait.
 struct Waiter {
     daemon: Arc<Daemon>,
     question: MessageId,
