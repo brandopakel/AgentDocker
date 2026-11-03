@@ -206,17 +206,22 @@ impl State {
     }
 
     /// Questions whose stale window has passed unanswered go stale, once
-    /// each: the mark is stored with its `question_stale` event, then the
-    /// asker's stale action is applied. Keeping waiting changes nothing
-    /// else; the default answer goes through the publish path every answer
-    /// takes, from `agentd`; withdrawing closes the question as expiry
-    /// does. Runs after expiry on every sweep, so an expired question is
-    /// never also made stale.
+    /// each, in one commit with whatever their asker's stale action does:
+    /// keeping waiting stores the mark with its `question_stale` event;
+    /// the default answer goes through the publish path every answer
+    /// takes, from `agentd`, its stale event in the answer's transaction;
+    /// withdrawing closes the question as expiry does, both events in one
+    /// transaction. A refused or failed step leaves the question unmarked,
+    /// so the next sweep tries it again. Runs after expiry on every sweep,
+    /// so an expired question is never also made stale, and each question
+    /// is read afresh before it is acted on: publishing a default answer
+    /// does not run the sweep again, and nothing already stale or gone is
+    /// touched twice.
     pub(super) fn stale_questions(&mut self, now: DateTime<Utc>) {
         if self.storage_error.is_some() {
             return;
         }
-        let mut due: Vec<Question> = self
+        let mut due: Vec<MessageId> = self
             .questions
             .values()
             .filter(|question| {
@@ -224,34 +229,45 @@ impl State {
                     && !question.expired(now)
                     && question.stale_at().is_some_and(|at| now >= at)
             })
-            .cloned()
+            .map(|question| question.id.clone())
             .collect();
-        due.sort_by(|a, b| a.id.cmp(&b.id));
-        for question in due {
-            let mut marked = question.clone();
-            marked.stale_since = Some(now);
-            let event = Event::new(
-                EventKind::QuestionStale {
-                    question: question.id.clone(),
-                    action: question.form.stale_action.clone(),
-                },
-                now,
-            );
-            let committed = self.transition(
-                "question stale",
-                event,
-                |store, event| {
-                    store.put_document_with_event("question", question.id.as_str(), &marked, event)
-                },
-                |state| {
-                    state.questions.insert(marked.id.clone(), marked.clone());
-                },
-            );
-            if committed != Persisted::Committed {
-                return;
-            }
+        due.sort();
+        for id in due {
+            let Some(question) = self
+                .questions
+                .get(&id)
+                .filter(|question| question.stale_since.is_none())
+                .cloned()
+            else {
+                continue;
+            };
             match &question.form.stale_action {
-                StaleAction::KeepWaiting => {}
+                StaleAction::KeepWaiting => {
+                    let mut marked = question.clone();
+                    marked.stale_since = Some(now);
+                    let event = Event::new(
+                        EventKind::QuestionStale {
+                            question: question.id.clone(),
+                            action: StaleAction::KeepWaiting,
+                        },
+                        now,
+                    );
+                    let _ = self.transition(
+                        "question stale",
+                        event,
+                        |store, event| {
+                            store.put_document_with_event(
+                                "question",
+                                question.id.as_str(),
+                                &marked,
+                                event,
+                            )
+                        },
+                        |state| {
+                            state.questions.insert(marked.id.clone(), marked.clone());
+                        },
+                    );
+                }
                 StaleAction::AnswerDefault { label } => {
                     let Ok(mut answer) = QuestionAnswer::resolve(
                         &question.form,
@@ -275,23 +291,32 @@ impl State {
                     if let Response::Error { message, .. } =
                         self.publish_default_answer(envelope, &question.id)
                     {
-                        warn!(question = %question.id, %message, "stale default answer was not published; the question stays open");
+                        warn!(question = %question.id, %message, "stale default answer was not published; the question stays open for the next sweep");
                     }
                 }
                 StaleAction::Withdraw => {
                     let closed = vec![question.id.clone()];
-                    let event = Event::new(
-                        EventKind::QuestionClosed {
-                            question: question.id.clone(),
-                            answer: None,
-                        },
-                        now,
-                    );
-                    let _ = self.transition(
+                    let events = vec![
+                        Event::new(
+                            EventKind::QuestionStale {
+                                question: question.id.clone(),
+                                action: StaleAction::Withdraw,
+                            },
+                            now,
+                        ),
+                        Event::new(
+                            EventKind::QuestionClosed {
+                                question: question.id.clone(),
+                                answer: None,
+                            },
+                            now,
+                        ),
+                    ];
+                    let _ = self.commit(
                         "question withdrawal",
-                        event,
-                        |store, event| store.close_questions(&closed, std::slice::from_ref(event)),
-                        |state| {
+                        events,
+                        |store, events| store.close_questions(&closed, events),
+                        |state, _, ()| {
                             state.questions.remove(&question.id);
                         },
                     );
@@ -2404,6 +2429,86 @@ mod tests {
         assert!(reply.payload.get("default").is_none());
     }
 
+    /// A reply through Send closes a typed question under the same rules
+    /// as `answer`: a choice outside the options is refused when Other is
+    /// not allowed, a number is normalised to its label, and the question
+    /// stays open until a reply fits.
+    #[tokio::test]
+    async fn a_send_reply_is_held_to_the_options_like_an_answer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let mut form = colours(None, StaleAction::KeepWaiting);
+        form.allow_other = false;
+        let Response::Sent { message, .. } = daemon
+            .post_question(
+                "asker".into(),
+                "recipient".into(),
+                "Which theme?".into(),
+                None,
+                300,
+                form,
+            )
+            .await
+        else {
+            panic!("the typed question was not posted");
+        };
+        let reply = |text: &str| {
+            lock(&daemon.state).send(
+                recipient.id.to_string(),
+                Destination::Agent(asker.id.clone()),
+                "chat".into(),
+                json!({"text": text}),
+                Some(message.clone()),
+            )
+        };
+        assert!(
+            matches!(
+                reply("Red"),
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "outside the options, no Other"
+        );
+        assert!(lock(&daemon.state).questions.contains_key(&message));
+        assert!(
+            matches!(
+                daemon
+                    .handle(Request::Answer {
+                        from: Some("recipient".into()),
+                        message: message.clone(),
+                        text: "Red".into(),
+                        choices: Vec::new(),
+                        note: None,
+                    })
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "the same through answer"
+        );
+        let Response::Sent {
+            message: answer, ..
+        } = reply("2")
+        else {
+            panic!("a number is a choice");
+        };
+        let state = lock(&daemon.state);
+        assert!(!state.questions.contains_key(&message));
+        let accepted = state.inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == answer)
+            .expect("the reply reached the asker");
+        assert_eq!(accepted.kind, "answer");
+        assert_eq!(accepted.payload["text"], "Green", "normalised to its label");
+        assert_eq!(accepted.payload["choices"], json!(["Green"]));
+    }
+
     /// Keeping waiting marks the question stale once, durably, with its
     /// event, and leaves it open; a question past both windows at once
     /// only expires.
@@ -2517,6 +2622,130 @@ mod tests {
             kinds,
             vec!["stale:answer:Blue".to_owned(), "closed:true".to_owned()]
         );
+    }
+
+    /// Two defaults due in one sweep are each answered exactly once: the
+    /// publish of one does not run the sweep again, and the other is read
+    /// afresh before it is acted on.
+    #[tokio::test]
+    async fn two_due_defaults_in_one_sweep_are_each_answered_once() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let mut first = typed(
+            300,
+            colours(
+                Some(10),
+                StaleAction::AnswerDefault {
+                    label: "Blue".into(),
+                },
+            ),
+        );
+        first.from = asker.id.to_string();
+        let mut second = typed(
+            300,
+            colours(
+                Some(10),
+                StaleAction::AnswerDefault {
+                    label: "Green".into(),
+                },
+            ),
+        );
+        second.from = asker.id.to_string();
+        {
+            let mut state = lock(&daemon.state);
+            assert!(remember(&mut state, first.clone()));
+            assert!(remember(&mut state, second.clone()));
+            // Both were asked twenty seconds ago, so both are due by the
+            // real clock: the clock a sweep run again from inside the first
+            // default's publish would read, which is how the second would
+            // be defaulted twice.
+            let earlier = Utc::now() - Duration::seconds(20);
+            for question in state.questions.values_mut() {
+                question.asked_at = earlier;
+            }
+            state.expire_questions(Utc::now());
+            assert!(state.questions.is_empty(), "both answered by default");
+            assert!(
+                state
+                    .store
+                    .documents::<Question>("question", None)
+                    .unwrap()
+                    .is_empty()
+            );
+            let answers: Vec<_> = state.inboxes[&asker.id]
+                .iter()
+                .filter(|m| m.kind == "answer")
+                .map(|m| (m.reply_to.clone().unwrap(), m.payload["text"].clone()))
+                .collect();
+            assert_eq!(answers.len(), 2, "{answers:?}");
+            assert!(answers.contains(&(first.id.clone(), json!("Blue"))));
+            assert!(answers.contains(&(second.id.clone(), json!("Green"))));
+        }
+        for id in [&first.id, &second.id] {
+            assert_eq!(stale_events(&daemon, id), 1);
+            let closed = daemon
+                .recent_events(50)
+                .iter()
+                .filter(|event| {
+                    matches!(&event.kind, EventKind::QuestionClosed { question, answer: Some(_) } if question == id)
+                })
+                .count();
+            assert_eq!(closed, 1);
+        }
+        lock(&daemon.state).expire_questions(Utc::now() + Duration::seconds(20));
+        assert_eq!(stale_events(&daemon, &first.id), 1);
+        assert_eq!(stale_events(&daemon, &second.id), 1);
+    }
+
+    /// A default answer that cannot be published leaves the question as it
+    /// was, unmarked, so the next sweep tries again; once it can be, it is
+    /// answered once, its stale event in the answer's transaction.
+    #[tokio::test]
+    async fn a_default_that_cannot_be_published_is_tried_again_next_sweep() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let mut pending = typed(
+            300,
+            colours(
+                Some(10),
+                StaleAction::AnswerDefault {
+                    label: "Blue".into(),
+                },
+            ),
+        );
+        pending.from = asker.id.to_string();
+        let stale_at = pending.asked_at + Duration::seconds(10);
+        {
+            let mut state = lock(&daemon.state);
+            assert!(remember(&mut state, pending.clone()));
+            state.store.reject_event_for_test("question_stale");
+            state.expire_questions(stale_at);
+            assert!(state.write_failure().is_some());
+            assert_eq!(state.questions[&pending.id].stale_since, None);
+            assert!(state.inboxes.get(&asker.id).is_none_or(|q| q.is_empty()));
+        }
+        assert_eq!(stale_events(&daemon, &pending.id), 0);
+        drop(daemon);
+        let daemon = state(&dir);
+        {
+            let mut state = lock(&daemon.state);
+            assert_eq!(
+                state.questions[&pending.id].stale_since, None,
+                "nothing was stored"
+            );
+            state.expire_questions(stale_at + Duration::seconds(1));
+            assert!(!state.questions.contains_key(&pending.id));
+            assert_eq!(
+                state.inboxes[&asker.id]
+                    .iter()
+                    .filter(|m| m.kind == "answer")
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(stale_events(&daemon, &pending.id), 1);
     }
 
     /// Withdrawing closes the question unanswered and ends the wait with a

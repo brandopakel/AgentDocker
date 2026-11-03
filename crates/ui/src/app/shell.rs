@@ -3505,25 +3505,29 @@ impl App {
                 }
             }
             Message::AnswerChoices(id) => {
+                // The picked rows, and the written words as the Other
+                // where the question allows one: a choice of its own,
+                // alone or beside the rows, never a note.
+                let mut choices = self.shell.picked.get(&id).cloned().unwrap_or_default();
+                if let Some(other) = self
+                    .questions
+                    .iter()
+                    .find(|q| q.id == id && q.form.multi_select && q.form.allow_other)
+                    .and_then(|_| self.shell.answers.get(&id))
+                    .map(|words| words.trim().to_owned())
+                    .filter(|words| !words.is_empty())
+                    && !choices.contains(&other)
+                {
+                    choices.push(other);
+                }
                 if self.connected.is_ok()
                     && !self.sending.contains(&id)
+                    && !choices.is_empty()
                     && self
                         .questions
                         .iter()
                         .any(|q| q.id == id && q.form.multi_select && !q.expired(Utc::now()))
-                    && let Some(picked) = self
-                        .shell
-                        .picked
-                        .get(&id)
-                        .filter(|p| !p.is_empty())
-                        .cloned()
                 {
-                    let note = self
-                        .shell
-                        .answers
-                        .get(&id)
-                        .map(|note| note.trim().to_owned())
-                        .filter(|note| !note.is_empty());
                     self.shell.answer_errors.remove(&id);
                     self.sending.insert(id.clone());
                     self.shell.pending_answer_reveal = Some(id.clone());
@@ -3533,8 +3537,8 @@ impl App {
                         .retain(|id, _| sending.contains(id));
                     self.shell
                         .chosen_answers
-                        .insert(id.clone(), picked.join(", "));
-                    self.send(Cmd::AnswerChoices(id, picked, note));
+                        .insert(id.clone(), choices.join(", "));
+                    self.send(Cmd::AnswerChoices(id, choices, None));
                 }
             }
             Message::SecretEdit(id, field, value) => {

@@ -346,8 +346,25 @@ impl QuestionForm {
             if option.description.len() > 16_000 {
                 return Err("an option description is too long".to_owned());
             }
-            if !labels.insert(option.label.as_str()) {
-                return Err(format!("option {:?} is offered twice", option.label));
+            if !labels.insert(option.label.to_lowercase()) {
+                return Err(format!(
+                    "option {:?} is offered twice (labels differ by more than case)",
+                    option.label
+                ));
+            }
+        }
+        // Numbers are how options are chosen, so a label that is a number
+        // must be its own: "2" may only be the second option.
+        for (index, option) in self.options.iter().enumerate() {
+            if let Ok(number) = option.label.parse::<usize>()
+                && number >= 1
+                && number <= self.options.len()
+                && number != index + 1
+            {
+                return Err(format!(
+                    "option label {:?} reads as the number of another option",
+                    option.label
+                ));
             }
         }
         if self.multi_select && self.options.is_empty() {
@@ -368,7 +385,7 @@ impl QuestionForm {
                 if label != label.trim() || !bounded(label) {
                     return Err("the default answer needs words".to_owned());
                 }
-            } else if !labels.contains(label.as_str()) {
+            } else if !self.options.iter().any(|option| option.label == *label) {
                 return Err(format!(
                     "the default answer {label:?} is not one of the options"
                 ));
@@ -402,19 +419,28 @@ impl QuestionForm {
         Some(text)
     }
 
-    /// The option `value` names: its 1-based number, or its label (case
-    /// does not matter, surrounding space does not either).
+    /// The option `value` names: the one whose label it is, exactly;
+    /// else the one whose label it is but for case; else, when it is a
+    /// number, the option in that 1-based place. Surrounding space never
+    /// matters. A label that is a number is its own option's number, so
+    /// the exact match and the place agree (`validate`).
     pub fn resolve_choice(&self, value: &str) -> Option<&QuestionOption> {
         let value = value.trim();
-        if let Ok(number) = value.parse::<usize>()
-            && number >= 1
-            && let Some(option) = self.options.get(number - 1)
+        if let Some(option) = self.options.iter().find(|option| option.label == value) {
+            return Some(option);
+        }
+        if let Some(option) = self
+            .options
+            .iter()
+            .find(|option| option.label.eq_ignore_ascii_case(value))
         {
             return Some(option);
         }
-        self.options
-            .iter()
-            .find(|option| option.label.eq_ignore_ascii_case(value))
+        value
+            .parse::<usize>()
+            .ok()
+            .filter(|number| *number >= 1)
+            .and_then(|number| self.options.get(number - 1))
     }
 }
 
@@ -1315,6 +1341,31 @@ mod form_tests {
             ..QuestionForm::default()
         };
         assert!(twice.validate(300).is_err(), "a repeated label");
+        let by_case = QuestionForm {
+            options: vec![option("Blue", ""), option("blue", "")],
+            ..QuestionForm::default()
+        };
+        assert!(
+            by_case.validate(300).is_err(),
+            "labels that differ only by case"
+        );
+        let misnumbered = QuestionForm {
+            options: vec![option("2", ""), option("3", "")],
+            ..QuestionForm::default()
+        };
+        assert!(
+            misnumbered.validate(300).is_err(),
+            "a label that is another option's number"
+        );
+        let numbered = QuestionForm {
+            options: vec![option("1", "one"), option("2", "two"), option("10", "ten")],
+            ..QuestionForm::default()
+        };
+        assert_eq!(
+            numbered.validate(300),
+            Ok(()),
+            "a label that is its own number, or no option's"
+        );
         let padded = QuestionForm {
             options: vec![option(" Blue", "")],
             ..QuestionForm::default()
@@ -1437,6 +1488,24 @@ mod form_tests {
         assert_eq!(form.resolve_choice("3"), None);
         assert_eq!(form.resolve_choice("0"), None);
         assert_eq!(form.resolve_choice("Red"), None);
+        let numbered = QuestionForm {
+            options: vec![option("1", ""), option("2", ""), option("10", "")],
+            ..QuestionForm::default()
+        };
+        assert_eq!(
+            numbered.resolve_choice("10").map(|o| o.label.as_str()),
+            Some("10"),
+            "the label, not the tenth place"
+        );
+        assert_eq!(
+            numbered.resolve_choice("3").map(|o| o.label.as_str()),
+            Some("10"),
+            "the third place"
+        );
+        assert_eq!(
+            numbered.resolve_choice("2").map(|o| o.label.as_str()),
+            Some("2")
+        );
         let asked = question(form);
         assert!(asked.permits_choice("Blue"));
         assert!(!asked.permits_choice("Red"));

@@ -1127,12 +1127,13 @@ Current behaviour that the sections above do not already state, by area.
   # A permission: leave to do one operation once; stale after ten minutes,
   # and then denied by default rather than left hanging.
   agentdocker ask --to user --kind permission --option Allow --option Deny \
-      --no-other --stale-after 600 --stale-action answer:Deny \
+      --no-other --timeout 1800 --stale-after 600 --stale-action answer:Deny \
       "Run the migration against the staging database?"
   # An access request: standing access to a resource; withdrawn if nobody
   # answers within the hour, so the agent moves on.
   agentdocker ask --to user --kind access --option "Read only" \
-      --option "Read and write" --stale-after 3600 --stale-action withdraw \
+      --option "Read and write" --timeout 7200 --stale-after 3600 \
+      --stale-action withdraw \
       "Which access to the deploy credentials should agent-1 have?"
   ```
 

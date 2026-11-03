@@ -5104,7 +5104,9 @@ impl State {
 
     /// The daemon's own answer to a question whose stale window passed:
     /// it closes `question` although no recipient sent it, and is
-    /// attributed to `agentd` as the default.
+    /// attributed to `agentd` as the default. The `question_stale` event
+    /// lands in the same transaction as the answer, so a refused or failed
+    /// publish leaves the question unmarked and the next sweep tries again.
     pub(super) fn publish_default_answer(
         &mut self,
         envelope: Envelope,
@@ -5130,7 +5132,10 @@ impl State {
 
     /// [`State::publish_with_channel`], with `default_for` naming the open
     /// question this envelope closes as the daemon's default answer: the
-    /// one closure that no addressed recipient sent.
+    /// one closure that no addressed recipient sent. That call comes from
+    /// the question sweep itself, which has just expired and staled what
+    /// was due, so it does not run the sweep again: doing so would re-enter
+    /// it and default the other due questions twice.
     fn publish_routed(
         &mut self,
         envelope: Envelope,
@@ -5146,9 +5151,11 @@ impl State {
         if let Some(error) = self.write_failure() {
             return error;
         }
-        self.expire_questions(Utc::now());
-        if let Some(error) = self.write_failure() {
-            return error;
+        if default_for.is_none() {
+            self.expire_questions(Utc::now());
+            if let Some(error) = self.write_failure() {
+                return error;
+            }
         }
         if question.is_some() && self.questions.len() >= humans::MAX_QUESTIONS {
             return Response::error(
@@ -5190,8 +5197,16 @@ impl State {
         // kind says so before it is sized, stored or routed, and the route
         // is chosen here for both. With an `ask` waiting the answer is held
         // for it; otherwise the queue is its route, said at once.
-        let closed = match default_for {
-            Some(question) => self.questions.contains_key(&question).then_some(question),
+        let stale = default_for.as_ref().and_then(|id| {
+            self.questions
+                .get(id)
+                .map(|pending| EventKind::QuestionStale {
+                    question: pending.id.clone(),
+                    action: pending.form.stale_action.clone(),
+                })
+        });
+        let closed = match &default_for {
+            Some(question) => self.questions.contains_key(question).then(|| question.clone()),
             None => envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
                 .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
                 .filter(|pending| self.put_to(pending, &AgentId::from(envelope.from.as_str())))
@@ -5218,6 +5233,31 @@ impl State {
             );
         }
         let mut envelope = envelope;
+        // A reply that closes a typed question answers it as `answer` does,
+        // whichever request carried it: a number becomes its label, a
+        // choice outside the options is refused unless Other is allowed,
+        // and the accepted payload is the resolved one. The daemon's own
+        // default answer arrives resolved and marked, so it is left alone.
+        if default_for.is_none()
+            && let Some(pending) = closed.as_ref().and_then(|id| self.questions.get(id))
+            && !pending.form.options.is_empty()
+        {
+            let given = agentdocker_core::QuestionAnswer::from_payload(&envelope.payload);
+            match agentdocker_core::QuestionAnswer::resolve(
+                &pending.form,
+                &given.text,
+                &given.choices,
+                given.note.as_deref(),
+            ) {
+                Ok(answer) => envelope.payload = answer.payload(),
+                Err(reason) => {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        format!("answer does not fit the question's options: {reason}"),
+                    );
+                }
+            }
+        }
         if closed.is_some() {
             envelope.kind = "answer".to_owned();
         }
@@ -5269,6 +5309,8 @@ impl State {
         if let Some(document) = &document {
             kinds.push(document.event.clone());
         }
+        // Said before the answer that follows from it, in one commit.
+        kinds.extend(stale);
         kinds.push(EventKind::MessageSent {
             message: envelope.id.clone(),
             from: envelope.from.clone(),

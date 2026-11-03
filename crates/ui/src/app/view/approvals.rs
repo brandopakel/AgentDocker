@@ -1278,11 +1278,15 @@ impl App {
                 body = body.push(list);
             }
             let answer = self.shell.answers.get(&id).cloned().unwrap_or_default();
+            // On a multi-select the written words are the Other: one more
+            // choice, alone or beside the picked rows.
+            let other = question.form.allow_other && !answer.trim().is_empty();
             let (send, label, placeholder) = if multi {
                 (
-                    (enabled && !picked.is_empty()).then_some(Message::AnswerChoices(id.clone())),
+                    (enabled && (!picked.is_empty() || other))
+                        .then_some(Message::AnswerChoices(id.clone())),
                     if busy { "Sending…" } else { "Send choices" },
-                    "A note beside your choices",
+                    "Another answer, in your words",
                 )
             } else {
                 (
@@ -1301,7 +1305,7 @@ impl App {
             };
             // Writing is the Other; a question that takes no other answer
             // has no box to write one in.
-            let writes = options.is_empty() || question.form.allow_other || multi;
+            let writes = options.is_empty() || question.form.allow_other;
             let mut line = row![].spacing(8).align_y(Center);
             if writes {
                 line = line.push(composer(
@@ -2463,9 +2467,9 @@ mod tests {
     }
 
     /// A multi-select picks and unpicks, then sends the picked labels
-    /// together with the written words as a note.
+    /// together with the written words as one more choice, the Other.
     #[test]
-    fn a_multi_select_picks_then_sends_its_choices_with_a_note() {
+    fn a_multi_select_picks_then_sends_its_choices_with_the_written_other() {
         let (mut app, commands) = app();
         let question = typed(
             &mut app,
@@ -2492,21 +2496,85 @@ mod tests {
             "a picked row says so"
         );
         assert!(card.control("send-answer-multi").is_some());
-        app.shell
-            .answers
-            .insert(id.clone(), " the mock-ups won ".into());
+        app.shell.answers.insert(id.clone(), " Red ".into());
         let _ = app.update(Message::AnswerChoices(id.clone()));
         assert!(app.sending.contains(&id));
         assert_eq!(
             app.shell.chosen_answers.get(&id).map(String::as_str),
-            Some("Green")
+            Some("Green, Red")
         );
         let sent: Vec<_> = commands.try_iter().collect();
         assert!(
             matches!(
                 sent.as_slice(),
-                [Cmd::AnswerChoices(sent_id, choices, Some(note))]
-                    if *sent_id == id && choices == &["Green".to_owned()] && note == "the mock-ups won"
+                [Cmd::AnswerChoices(sent_id, choices, None)]
+                    if *sent_id == id && choices == &["Green".to_owned(), "Red".to_owned()]
+            ),
+            "{sent:?}"
+        );
+    }
+
+    /// The Other alone answers a multi-select that allows it; one that
+    /// does not has no box and sends only what is picked.
+    #[test]
+    fn a_multi_select_takes_the_other_alone_only_where_it_is_allowed() {
+        let (mut app, commands) = app();
+        let question = typed(
+            &mut app,
+            "other",
+            agentdocker_core::QuestionForm {
+                options: colours(),
+                multi_select: true,
+                ..Default::default()
+            },
+        );
+        let id = question.id.clone();
+        app.shell.answers.insert(id.clone(), "Red".into());
+        let card = seen(app.question_card(&question, Colors::new(false)));
+        assert!(card.control("answer-other").is_some(), "the box");
+        let _ = app.update(Message::AnswerChoices(id.clone()));
+        assert!(app.sending.contains(&id));
+        let sent: Vec<_> = commands.try_iter().collect();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [Cmd::AnswerChoices(sent_id, choices, None)]
+                    if *sent_id == id && choices == &["Red".to_owned()]
+            ),
+            "{sent:?}"
+        );
+
+        let (mut app, commands) = self::app();
+        let question = typed(
+            &mut app,
+            "strict",
+            agentdocker_core::QuestionForm {
+                options: colours(),
+                multi_select: true,
+                allow_other: false,
+                ..Default::default()
+            },
+        );
+        let id = question.id.clone();
+        let card = seen(app.question_card(&question, Colors::new(false)));
+        assert!(
+            card.control("answer-strict").is_none(),
+            "no box without Other"
+        );
+        app.shell.answers.insert(id.clone(), "Red".into());
+        let _ = app.update(Message::AnswerChoices(id.clone()));
+        assert!(
+            !app.sending.contains(&id),
+            "words alone are not a choice here"
+        );
+        let _ = app.update(Message::ToggleChoice(id.clone(), "Blue".into()));
+        let _ = app.update(Message::AnswerChoices(id.clone()));
+        let sent: Vec<_> = commands.try_iter().collect();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [Cmd::AnswerChoices(sent_id, choices, None)]
+                    if *sent_id == id && choices == &["Blue".to_owned()]
             ),
             "{sent:?}"
         );
