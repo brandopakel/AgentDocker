@@ -9855,6 +9855,29 @@ async fn a_scan_started_before_registration_cannot_restore_an_adopted_process() 
     child.wait().unwrap();
 }
 
+/// Run `fake`, a link to bash under a provider's name, for `seconds`, as a
+/// provider looks in the process table: its own name, no arguments. Bash
+/// and not `sleep` runs under that name, since the multi-call coreutils
+/// some Linux distributions ship refuse to run as a utility they are not.
+fn spawn_fake(fake: &std::path::Path, seconds: u32, cwd: &std::path::Path) -> std::process::Child {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut child = std::process::Command::new(fake)
+        .current_dir(cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("sleep {seconds}\nexit 0\n").as_bytes())
+        .unwrap();
+    child
+}
+
 #[tokio::test]
 async fn scans_announce_agents_appearing_going_and_adopted() {
     let dir = TempDir::new().unwrap();
@@ -9863,14 +9886,10 @@ async fn scans_announce_agents_appearing_going_and_adopted() {
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("Agentfile.toml"), "").unwrap();
     let fake = dir.path().join("codex");
-    std::os::unix::fs::symlink("/bin/sleep", &fake).unwrap();
+    std::os::unix::fs::symlink("/bin/bash", &fake).unwrap();
     let mut events = daemon.subscribe_events();
     daemon.scan_agents().await.unwrap();
-    let mut child = std::process::Command::new(&fake)
-        .arg("60")
-        .current_dir(&project)
-        .spawn()
-        .unwrap();
+    let mut child = spawn_fake(&fake, 60, &project);
     let pid = child.id();
 
     daemon.scan_agents().await.unwrap();
@@ -9931,11 +9950,7 @@ async fn scans_announce_agents_appearing_going_and_adopted() {
     );
 
     // Gone: a second fake that exits is announced as vanished.
-    let mut short = std::process::Command::new(&fake)
-        .arg("30")
-        .current_dir(&project)
-        .spawn()
-        .unwrap();
+    let mut short = spawn_fake(&fake, 30, &project);
     let short_pid = short.id();
     daemon.scan_agents().await.unwrap();
     assert!(
@@ -9964,12 +9979,8 @@ async fn discover_finds_known_runtimes_and_adopt_registers_them() {
     std::fs::create_dir_all(&project).unwrap();
     std::fs::write(project.join("Agentfile.toml"), "").unwrap();
     let fake = dir.path().join("claude");
-    std::os::unix::fs::symlink("/bin/sleep", &fake).unwrap();
-    let mut child = std::process::Command::new(&fake)
-        .arg("60")
-        .current_dir(&project)
-        .spawn()
-        .unwrap();
+    std::os::unix::fs::symlink("/bin/bash", &fake).unwrap();
+    let mut child = spawn_fake(&fake, 60, &project);
     let pid = child.id();
 
     let found = match daemon.handle(Request::Discover).await {
