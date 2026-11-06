@@ -510,3 +510,180 @@ async fn a_fresh_server_status_wins_over_herdrs_reading_of_the_terminal() {
     assert_eq!(k.said(), (ReportedActivity::Idle, None, SERVER));
     assert!(!herdr(Status::Blocked, t0 + Duration::seconds(320)));
 }
+
+const PARENT: &str = "0199a6f1-0000-7000-8000-0000000000d0";
+
+/// A rollout under `profile` whose first record is `meta`, as Codex keeps
+/// them: nothing else of the file is read, so nothing else is written.
+fn write_rollout(profile: &Path, thread: &str, meta: serde_json::Value) {
+    let folder = profile.join("sessions").join("2026").join("10").join("20");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join(format!("rollout-2026-10-20T09-00-00-{thread}.jsonl")),
+        format!(
+            "{}\n",
+            serde_json::json!({"type":"session_meta","timestamp":"2026-10-20T09:00:00Z","payload":meta})
+        ),
+    )
+    .unwrap();
+}
+
+fn record(daemon: &Daemon, id: &AgentId) -> AgentRecord {
+    lock(&daemon.state).registry.get(id).unwrap().clone()
+}
+
+fn learned_events(daemon: &Daemon) -> Vec<(AgentId, Option<String>, Option<ThreadRef>)> {
+    daemon
+        .recent_events(100)
+        .into_iter()
+        .filter_map(|event| match event.kind {
+            EventKind::AgentThreadLearned {
+                agent,
+                role,
+                parent,
+            } => Some((agent, role, parent)),
+            _ => None,
+        })
+        .collect()
+}
+
+impl Keyed {
+    /// Another conversation under the same profile, bound to its own record.
+    async fn attach(&self, thread: &str) -> AgentId {
+        let checkout = self._dir.path().join(format!("checkout-{thread}"));
+        std::fs::create_dir_all(&checkout).unwrap();
+        let Response::Agent { agent } = self
+            .daemon
+            .handle(Request::SessionAttach {
+                runtime: "codex".into(),
+                profile: self.profile.display().to_string(),
+                session: thread.into(),
+                workdir: checkout,
+                adapter: AdapterKind::Hooks,
+            })
+            .await
+        else {
+            panic!("the conversation's keyed record");
+        };
+        agent.id
+    }
+}
+
+#[tokio::test]
+async fn a_bound_threads_rollout_teaches_its_record_its_role_and_parent() {
+    let k = keyed().await;
+    assert_eq!(record(&k.daemon, &k.id).thread, None);
+    // The child binds first: its rollout names a parent no record is bound
+    // to yet, so the parent is known by its thread alone.
+    write_rollout(
+        &k.profile,
+        THREAD,
+        serde_json::json!({"id": THREAD, "cli_version": "0.164.0", "cwd": "/work/app",
+            "source": {"subagent": {"thread_spawn": {"parent_thread_id": PARENT, "depth": 1,
+                "agent_nickname": "Quill", "agent_role": "reviewer",
+                "agent_path": "/work/app/.codex/agents/reviewer.toml"}}}}),
+    );
+    let mut looked = HashMap::new();
+    learn_from_rollouts(&k.daemon, &mut looked).await;
+    let thread = record(&k.daemon, &k.id).thread.expect("learned");
+    assert_eq!(thread.role.as_deref(), Some("reviewer"));
+    assert_eq!(thread.nickname.as_deref(), Some("Quill"));
+    assert_eq!(
+        thread.parent,
+        Some(ThreadRef {
+            thread: PARENT.into(),
+            agent: None,
+        })
+    );
+    assert_eq!(thread.source, ThreadSource::Rollout);
+    assert_eq!(learned_events(&k.daemon).len(), 1);
+    // Read once, the rollout is not read again for a while, and the
+    // record is not written again.
+    learn_from_rollouts(&k.daemon, &mut looked).await;
+    assert_eq!(learned_events(&k.daemon).len(), 1);
+    // The parent binds later, a root thread: its record says it was read
+    // and has neither role nor parent, and the child learns whose it is.
+    let parent = k.attach(PARENT).await;
+    write_rollout(
+        &k.profile,
+        PARENT,
+        serde_json::json!({"id": PARENT, "cli_version": "0.164.0", "source": "cli"}),
+    );
+    learn_from_rollouts(&k.daemon, &mut looked).await;
+    assert_eq!(
+        record(&k.daemon, &parent).thread,
+        Some(ProviderThread {
+            role: None,
+            nickname: None,
+            parent: None,
+            source: ThreadSource::Rollout,
+        })
+    );
+    let child = record(&k.daemon, &k.id).thread.expect("kept");
+    assert_eq!(child.role.as_deref(), Some("reviewer"));
+    assert_eq!(
+        child.parent,
+        Some(ThreadRef {
+            thread: PARENT.into(),
+            agent: Some(parent.clone()),
+        })
+    );
+    let events = learned_events(&k.daemon);
+    assert_eq!(events.len(), 3, "{events:?}");
+    assert_eq!(events[2].0, k.id);
+    assert_eq!(
+        events[2].2.as_ref().and_then(|p| p.agent.clone()),
+        Some(parent.clone())
+    );
+    // The server's word adds nothing the rollout did not say.
+    assert!(!k.daemon.learn_codex_thread(&k.id, from_server(PARENT)));
+    assert_eq!(learned_events(&k.daemon).len(), 3);
+    // Only a live Codex record learns.
+    let response = k
+        .daemon
+        .handle(Request::Deregister {
+            agent: parent.to_string(),
+        })
+        .await;
+    assert!(matches!(response, Response::Agent { .. }), "{response:?}");
+    assert!(!record(&k.daemon, &parent).status.is_live());
+    assert!(!k.daemon.learn_codex_thread(&parent, from_server(THREAD)));
+}
+
+#[tokio::test]
+async fn the_server_names_a_parent_before_the_rollout_exists_and_the_rollout_adds_the_role() {
+    let k = keyed().await;
+    let mut looked = HashMap::new();
+    learn_from_rollouts(&k.daemon, &mut looked).await;
+    assert_eq!(record(&k.daemon, &k.id).thread, None);
+    assert!(
+        looked.contains_key(&k.id),
+        "looked for, to be looked for again later"
+    );
+    assert!(k.daemon.learn_codex_thread(&k.id, from_server(PARENT)));
+    assert_eq!(
+        record(&k.daemon, &k.id).thread,
+        Some(ProviderThread {
+            role: None,
+            nickname: None,
+            parent: Some(ThreadRef {
+                thread: PARENT.into(),
+                agent: None,
+            }),
+            source: ThreadSource::CodexServer,
+        })
+    );
+    write_rollout(
+        &k.profile,
+        THREAD,
+        serde_json::json!({"id": THREAD, "cli_version": "0.164.0",
+            "source": {"subagent": {"thread_spawn": {"parent_thread_id": PARENT, "agent_role": "tester"}}}}),
+    );
+    looked.clear();
+    learn_from_rollouts(&k.daemon, &mut looked).await;
+    let thread = record(&k.daemon, &k.id).thread.expect("learned");
+    assert_eq!(thread.role.as_deref(), Some("tester"));
+    assert_eq!(thread.parent.map(|p| p.thread), Some(PARENT.to_owned()));
+    assert_eq!(thread.source, ThreadSource::Rollout);
+    assert_eq!(learned_events(&k.daemon).len(), 2);
+}

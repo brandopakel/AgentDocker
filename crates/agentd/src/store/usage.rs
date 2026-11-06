@@ -40,6 +40,17 @@ struct Contribution {
     bucket: Bucket,
     session: String,
     counters: Counters,
+    /// Whether the sample is the provider's own count for one response
+    /// (`Semantics::Response`) rather than a difference between running
+    /// totals. Absent on a contribution written before this was kept, which
+    /// leaves whatever bucket it moves to unable to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exact: Option<bool>,
+    /// The thread that spawned this sample's session, kept while that
+    /// session has no record of its own: the usage is the parent's record's
+    /// (once it has one), until the session's own record takes it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
     /// The price the sample carried, in micro-dollars, once known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cost_usd_micros: Option<u64>,
@@ -120,6 +131,7 @@ fn row(key: Option<String>, value: &Aggregate, complete: bool) -> Row {
     Row {
         key,
         samples: value.samples(),
+        usage_source: value.source(),
         cache_read_share_percent: Row::cache_read_share(value.samples(), &counters),
         counters,
         cost_usd_micros: value.cost(complete),
@@ -205,7 +217,11 @@ impl Store {
         };
         let agent = attribution.agent.as_ref().expect("attributed agent");
         let retained_since = self.usage_retained_since(retained_since)?;
-        let mut statement = self.conn.prepare("SELECT source_id,contribution FROM usage_samples WHERE at>=?1 AND contribution IS NOT NULL AND json_extract(contribution,'$.bucket.attribution.agent') IS NULL AND json_extract(contribution,'$.bucket.runtime')=?2 AND json_extract(contribution,'$.session')=?3 AND (?4 IS NULL OR at>=?4) AND (?5 IS NULL OR at<?5) ORDER BY source_id LIMIT 256")?;
+        // `session`'s own samples that are nobody's, or that were counted
+        // through its parent while it had no record (its own record comes
+        // first); and the samples of threads `session` spawned that are
+        // nobody's, counted while those threads had no record.
+        let mut statement = self.conn.prepare("SELECT source_id,contribution FROM usage_samples WHERE at>=?1 AND contribution IS NOT NULL AND json_extract(contribution,'$.bucket.runtime')=?2 AND ((json_extract(contribution,'$.session')=?3 AND (json_extract(contribution,'$.bucket.attribution.agent') IS NULL OR json_extract(contribution,'$.parent') IS NOT NULL)) OR (json_extract(contribution,'$.parent')=?3 AND json_extract(contribution,'$.bucket.attribution.agent') IS NULL)) AND (?4 IS NULL OR at>=?4) AND (?5 IS NULL OR at<?5) ORDER BY source_id LIMIT 256")?;
         let (from, until) = window;
         let records = statement
             .query_map(
@@ -223,24 +239,52 @@ impl Store {
         let mut tracking_gaps = 0;
         for (id, value) in records {
             let mut contribution: Contribution = serde_json::from_str(&value)?;
+            // A sample of the session's own is the session's from now on;
+            // a spawned thread's keeps its parent, so the thread's own
+            // record can still take it.
+            let own = contribution.session == session;
+            // Reconciliation moves whose the sample is, agent and project;
+            // the card and roles stamped on it when it was counted (to the
+            // parent's record, say) are history it keeps.
             let mut destination = contribution.bucket.clone();
-            destination.attribution = attribution.clone();
-            let Ok(next) = self
-                .usage_bucket(&destination)?
-                .add_priced(&contribution.counters, contribution.cost_usd_micros)
-            else {
+            destination.attribution.agent = attribution.agent.clone();
+            destination.attribution.project = attribution.project.clone();
+            if destination == contribution.bucket {
+                // Already this record's: only how it got here changes.
+                if own && contribution.parent.take().is_some() {
+                    self.usage_bounded_write(|| {
+                        Ok(self.conn.execute(
+                            "UPDATE usage_samples SET contribution=?1 WHERE source_id=?2",
+                            params![serde_json::to_string(&contribution)?, id],
+                        )?)
+                    })?;
+                }
+                continue;
+            }
+            let Ok(next) = self.usage_bucket(&destination)?.add_priced(
+                &contribution.counters,
+                contribution.exact,
+                contribution.cost_usd_micros,
+            ) else {
                 // An unrepresentable merge stays visibly unattributed. It must
                 // not disable unrelated coordination or lose the old total.
                 continue;
             };
             let previous = self
                 .usage_bucket(&contribution.bucket)?
-                .remove_priced(&contribution.counters, contribution.cost_usd_micros)
+                .remove_priced(
+                    &contribution.counters,
+                    contribution.exact,
+                    contribution.cost_usd_micros,
+                )
                 .map_err(anyhow::Error::msg)?;
             if self
                 .usage_bounded_write(|| {
                     self.write_usage_bucket(&contribution.bucket, &previous)?;
                     contribution.bucket = destination;
+                    if own {
+                        contribution.parent = None;
+                    }
                     self.write_usage_bucket(&contribution.bucket, &next)?;
                     self.conn.execute(
                         "UPDATE usage_samples SET contribution=?1 WHERE source_id=?2",
@@ -551,10 +595,11 @@ impl Store {
         let mut cost = None;
         if let Some(text) = contribution {
             let contribution: Contribution = serde_json::from_str(text)?;
-            let Ok(remaining) = self
-                .usage_bucket(&contribution.bucket)?
-                .remove_priced(&contribution.counters, contribution.cost_usd_micros)
-            else {
+            let Ok(remaining) = self.usage_bucket(&contribution.bucket)?.remove_priced(
+                &contribution.counters,
+                contribution.exact,
+                contribution.cost_usd_micros,
+            ) else {
                 return Ok(false);
             };
             self.write_usage_bucket(&contribution.bucket, &remaining)?;
@@ -608,6 +653,10 @@ impl Store {
         // a replay. Keep compatibility with draft stores that hashed it.
         let mut accounting = sample.clone();
         accounting.proves_zero_baseline = false;
+        // Whose the usage is when its session has no agent is attribution,
+        // not accounting: the same provider record hashes as older builds
+        // hashed it, so a copy or replay of it is never a conflict.
+        accounting.parent_session = None;
         // The other names a response goes by are dedupe evidence, not
         // accounting: a record first met without them is the same record.
         accounting.aliases = Vec::new();
@@ -645,6 +694,7 @@ impl Store {
                 self.usage_learn_aliases(&sample.source_id, &sample.aliases, sample.at)?;
             if old != hash {
                 let mut legacy = sample.clone();
+                legacy.parent_session = None;
                 if sample.semantics == Semantics::Response {
                     legacy.at = DateTime::parse_from_rfc3339(&first_at)?.with_timezone(&Utc);
                 }
@@ -680,6 +730,48 @@ impl Store {
                     u64::from(self.usage_price(&target, contribution.as_deref(), cost)?);
             }
             return Ok(done);
+        }
+        // A source may account for the same tokens twice (a Codex rollout:
+        // the provider's count per response, and its running totals after
+        // each). One session is counted by one account, the first one it is
+        // seen by; a session counted by totals before accounts were kept
+        // has a baseline and stays on totals, however its files move. The
+        // other account's samples of that session are not counted and not
+        // remembered: the same rule skips them again.
+        let account = match sample.semantics {
+            Semantics::Response => "responses",
+            Semantics::Cumulative => "totals",
+        };
+        let session_key = serde_json::to_string(&(&sample.runtime, &sample.session_id))?;
+        let counted_by: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT account FROM usage_accounts WHERE key=?1",
+                [&session_key],
+                |r| r.get(0),
+            )
+            .optional()?;
+        let counted_by = match counted_by {
+            Some(by) => Some(by),
+            None => self
+                .conn
+                .query_row(
+                    "SELECT 1 FROM usage_baselines WHERE key=?1",
+                    [&session_key],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .map(|()| "totals".to_owned()),
+        };
+        match counted_by {
+            Some(by) if by != account => return Ok(Ingested::default()),
+            Some(_) => {}
+            None => {
+                self.conn.execute(
+                    "INSERT INTO usage_accounts VALUES (?1,?2)",
+                    params![session_key, account],
+                )?;
+            }
         }
         let contribution = match sample.semantics {
             Semantics::Response => Some(sample.counters.clone()),
@@ -741,13 +833,16 @@ impl Store {
                 },
                 session: sample.session_id.clone(),
                 counters,
+                exact: Some(sample.semantics == Semantics::Response),
+                parent: sample.parent_session.clone(),
                 cost_usd_micros: sample.cost_usd_micros,
             });
         let counted = if let Some(contribution) = &contribution {
-            match self
-                .usage_bucket(&contribution.bucket)?
-                .add_priced(&contribution.counters, contribution.cost_usd_micros)
-            {
+            match self.usage_bucket(&contribution.bucket)?.add_priced(
+                &contribution.counters,
+                contribution.exact,
+                contribution.cost_usd_micros,
+            ) {
                 Ok(aggregate) => {
                     self.write_usage_bucket(&contribution.bucket, &aggregate)?;
                     true
@@ -1138,6 +1233,7 @@ mod tests {
                 Semantics::Response
             },
             proves_zero_baseline: false,
+            parent_session: None,
             cost_usd_micros: None,
             aliases: Vec::new(),
         }
@@ -1558,6 +1654,360 @@ mod tests {
             "only its hour"
         );
         assert_eq!(report(&store, 5, 6).coverage.source_gaps, 2);
+    }
+
+    #[test]
+    fn a_spawned_threads_samples_go_to_its_parent_until_its_own_record_takes_them() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let to = |agent: &str| Attribution {
+            agent: Some(agent.into()),
+            project: None,
+            ..Attribution::default()
+        };
+        let child = |id: &str, input: u64, attribution: Attribution| {
+            let mut sample = sample(id, 10, input, false);
+            sample.session_id = "child".into();
+            sample.parent_session = Some("parent".into());
+            (sample, attribution)
+        };
+        let rows = |store: &Store| -> BTreeMap<Option<String>, Option<u64>> {
+            report(store, 9, 12)
+                .rows
+                .into_iter()
+                .map(|row| (row.key, row.counters.input_tokens.sum))
+                .collect()
+        };
+        let grouped = |store: &Store, group: Group| -> BTreeMap<Option<String>, Option<u64>> {
+            store
+                .usage_report(
+                    Range::new(Some(at(9)), Some(at(12)), at(23), at(0)).unwrap(),
+                    group,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .unwrap()
+                .rows
+                .into_iter()
+                .map(|row| (row.key, row.counters.input_tokens.sum))
+                .collect()
+        };
+        let reconcile = |session: &str, agent: &str| {
+            let seq = store.max_event_seq().unwrap() + 1;
+            store
+                .usage_reconcile(
+                    "codex",
+                    session,
+                    Some(&to(agent)),
+                    (None, None),
+                    at(0),
+                    at(21),
+                    seq,
+                )
+                .unwrap()
+        };
+        // Counted while neither thread had a record, then while only the
+        // parent had one (the collector attributes those to the parent).
+        ingest(
+            &store,
+            &progress,
+            "k",
+            vec![
+                child("r1", 5, Attribution::default()),
+                child(
+                    "r2",
+                    7,
+                    Attribution {
+                        card: Some("card-a".into()),
+                        role: Some("reviewer".into()),
+                        ..to("parent-agent")
+                    },
+                ),
+            ],
+            at(0),
+        )
+        .unwrap();
+        assert_eq!(
+            rows(&store),
+            BTreeMap::from([(None, Some(5)), (Some("parent-agent".into()), Some(7))])
+        );
+        // The parent's record takes what was nobody's, once.
+        assert!(reconcile("parent", "parent-agent").is_some());
+        assert_eq!(
+            rows(&store),
+            BTreeMap::from([(Some("parent-agent".into()), Some(12))])
+        );
+        assert!(reconcile("parent", "parent-agent").is_none());
+        // The thread's own record takes all of it from the parent's; what
+        // was stamped on a sample when it was counted to the parent (the
+        // card and roles held then) stays with it.
+        assert!(reconcile("child", "child-agent").is_some());
+        assert_eq!(
+            rows(&store),
+            BTreeMap::from([(Some("child-agent".into()), Some(12))])
+        );
+        assert_eq!(
+            grouped(&store, Group::Card),
+            BTreeMap::from([(None, Some(5)), (Some("card-a".into()), Some(7))])
+        );
+        assert_eq!(
+            grouped(&store, Group::Role),
+            BTreeMap::from([(None, Some(5)), (Some("reviewer".into()), Some(7))])
+        );
+        // ... and keeps it: neither reconciles it again.
+        assert!(reconcile("parent", "parent-agent").is_none());
+        assert!(reconcile("child", "child-agent").is_none());
+        assert_eq!(
+            rows(&store),
+            BTreeMap::from([(Some("child-agent".into()), Some(12))])
+        );
+        // A thread's sample counted to its own record never goes to a parent.
+        let mut own = sample("r3", 10, 1, false);
+        own.session_id = "other-child".into();
+        ingest(
+            &store,
+            &progress,
+            "k",
+            vec![(own, to("other-agent"))],
+            at(0),
+        )
+        .unwrap();
+        assert!(reconcile("parent", "parent-agent").is_none());
+        assert_eq!(rows(&store)[&Some("other-agent".into())], Some(1));
+    }
+
+    #[test]
+    fn a_samples_parent_thread_is_not_part_of_its_identity() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        // As an older build stored it, without the parent thread.
+        let older = sample("c1", 10, 5, true);
+        ingest(
+            &store,
+            &progress,
+            "k",
+            vec![(older.clone(), Attribution::default())],
+            at(0),
+        )
+        .unwrap();
+        // The same provider record read again (an archived copy), now
+        // naming the thread that spawned it: a duplicate, not a conflict.
+        let mut again = older;
+        again.parent_session = Some("parent-thread".into());
+        let event = ingest(
+            &store,
+            &progress,
+            "k",
+            vec![(again, Attribution::default())],
+            at(0),
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                event.kind,
+                EventKind::UsageRecorded {
+                    samples: 0,
+                    gaps: 0,
+                    ..
+                }
+            ),
+            "{:?}",
+            event.kind
+        );
+    }
+
+    #[test]
+    fn one_session_is_counted_by_one_account_whichever_file_carries_it() {
+        use agentdocker_core::usage::UsageSource;
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let in_session = |mut sample: Sample, session: &str| {
+            sample.session_id = session.into();
+            sample.source_id = format!("{session}:{}", sample.source_id);
+            (sample, Attribution::default())
+        };
+        // A new session: the response's count first, then its totals, as a
+        // rollout writes them. The totals are the same tokens, not counted.
+        let event = ingest(
+            &store,
+            &progress,
+            "k",
+            vec![
+                in_session(sample("r1", 10, 5, false), "fresh"),
+                in_session(sample("c1", 10, 5, true), "fresh"),
+                in_session(sample("r2", 10, 7, false), "fresh"),
+                in_session(sample("c2", 11, 12, true), "fresh"),
+            ],
+            at(0),
+        )
+        .unwrap();
+        assert!(matches!(
+            event.kind,
+            EventKind::UsageRecorded {
+                samples: 2,
+                gaps: 0,
+                ..
+            }
+        ));
+        let rows = report(&store, 9, 12).rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].counters.input_tokens.sum, Some(12));
+        assert_eq!(rows[0].usage_source, Some(UsageSource::Exact));
+        // A session counted by totals before accounts were kept: its
+        // baseline says so, and the response account of the same tokens,
+        // arriving later from a moved or copied file, is not counted.
+        store
+            .conn
+            .execute("DELETE FROM usage_accounts", [])
+            .unwrap();
+        ingest(
+            &store,
+            &progress,
+            "k",
+            vec![
+                in_session(sample("c3", 10, 5, true), "older"),
+                in_session(sample("c4", 11, 9, true), "older"),
+            ],
+            at(0),
+        )
+        .unwrap();
+        store
+            .conn
+            .execute("DELETE FROM usage_accounts", [])
+            .unwrap();
+        ingest(
+            &store,
+            &progress,
+            "k",
+            vec![
+                in_session(sample("r3", 10, 5, false), "older"),
+                in_session(sample("r4", 10, 4, false), "older"),
+                in_session(sample("c5", 12, 15, true), "older"),
+            ],
+            at(0),
+        )
+        .unwrap();
+        let rows = report(&store, 9, 13).rows;
+        assert_eq!(rows.len(), 1);
+        // fresh: 12 exact; older: 4 (9-5) then 6 (15-9), estimated.
+        assert_eq!(rows[0].counters.input_tokens.sum, Some(22));
+        assert_eq!(rows[0].usage_source, Some(UsageSource::Estimated));
+        let accounts: i64 = store
+            .conn
+            .query_row("SELECT COUNT(*) FROM usage_accounts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            accounts, 0,
+            "the older session is known by its baseline alone; no row is written for it"
+        );
+    }
+
+    #[test]
+    fn usage_rows_say_whether_their_figures_are_exact() {
+        use agentdocker_core::usage::UsageSource;
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let exact = Attribution {
+            agent: Some("exact-agent".into()),
+            project: None,
+            ..Attribution::default()
+        };
+        let totals = Attribution {
+            agent: Some("totals-agent".into()),
+            project: None,
+            ..Attribution::default()
+        };
+        // Totals of another session: one session is counted by one account.
+        let of_totals = |mut sample: Sample| {
+            sample.session_id = "totals-session".into();
+            sample
+        };
+        ingest(
+            &store,
+            &progress,
+            "k",
+            vec![
+                (sample("r1", 10, 5, false), exact.clone()),
+                (sample("r2", 10, 7, false), exact.clone()),
+                (of_totals(sample("c1", 10, 5, true)), totals.clone()),
+                (of_totals(sample("c2", 11, 9, true)), totals.clone()),
+            ],
+            at(0),
+        )
+        .unwrap();
+        let first = report(&store, 9, 12);
+        let row = |key: &str| {
+            first
+                .rows
+                .iter()
+                .find(|row| row.key.as_deref() == Some(key))
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(row("exact-agent").usage_source, Some(UsageSource::Exact));
+        assert_eq!(row("exact-agent").counters.input_tokens.sum, Some(12));
+        // A cumulative source's first snapshot proves nothing; the second
+        // contributes the difference, an estimate.
+        assert_eq!(
+            row("totals-agent").usage_source,
+            Some(UsageSource::Estimated)
+        );
+        assert_eq!(row("totals-agent").counters.input_tokens.sum, Some(4));
+        // Moving an exact contribution to its agent keeps it exact, and a
+        // bucket written before exactness was counted cannot say.
+        ingest(
+            &store,
+            &progress,
+            "k",
+            vec![(sample("r3", 11, 1, false), Attribution::default())],
+            at(0),
+        )
+        .unwrap();
+        assert_eq!(report(&store, 9, 12).rows.len(), 3);
+        let moved = Attribution {
+            agent: Some("late-agent".into()),
+            project: None,
+            ..Attribution::default()
+        };
+        let seq = store.max_event_seq().unwrap() + 1;
+        store
+            .usage_reconcile(
+                "codex",
+                "session",
+                Some(&moved),
+                (None, None),
+                at(0),
+                at(21),
+                seq,
+            )
+            .unwrap();
+        let moved_report = report(&store, 9, 12);
+        let late = moved_report
+            .rows
+            .iter()
+            .find(|row| row.key.as_deref() == Some("late-agent"))
+            .unwrap();
+        assert_eq!(late.usage_source, Some(UsageSource::Exact));
+        store
+            .conn
+            .execute(
+                "UPDATE usage_buckets SET json=json_remove(json,'$.exact') WHERE agent='late-agent'",
+                [],
+            )
+            .unwrap();
+        let older = report(&store, 9, 12);
+        let late = older
+            .rows
+            .iter()
+            .find(|row| row.key.as_deref() == Some("late-agent"))
+            .unwrap();
+        assert_eq!(late.usage_source, None);
+        assert_eq!(late.counters.input_tokens.sum, Some(1));
     }
 
     #[test]

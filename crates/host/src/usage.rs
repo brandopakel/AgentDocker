@@ -30,6 +30,12 @@ pub struct Sample {
     pub counters: Counters,
     pub semantics: Semantics,
     pub proves_zero_baseline: bool,
+    /// The provider's thread that spawned this sample's session, when the
+    /// session's log says one did (a Codex thread another thread spawned):
+    /// whose the usage is when the session itself has no agent. Left out of
+    /// the serialized sample, and so of its identity, when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session: Option<String>,
     /// The provider-reported estimated cost of this response, in micro-dollars (USD ×
     /// 10⁶), when its record said: Claude Code's telemetry events carry a
     /// price, transcripts do not. Absent from samples made before cost
@@ -55,10 +61,35 @@ pub struct Codex {
     model: Option<String>,
     from_start: bool,
     saw_usage: bool,
+    /// The thread that spawned this one, from `session_meta`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    parent: Option<String>,
+}
+
+impl Codex {
+    /// What a cursor written before the parser kept the parent thread lacks,
+    /// from the rollout's first record (`session_meta`): only when that
+    /// record names the session this parser is reading.
+    fn recover_parent(&mut self, meta: &agentdocker_core::codex_thread::ThreadMeta) {
+        if self.session.as_deref() == Some(meta.thread.as_str()) {
+            self.parent = meta.parent_thread.clone();
+        }
+    }
 }
 
 /// Codex releases whose rollouts were checked against a fixture.
-const CODEX_CHECKED: [&str; 4] = ["0.153.4", "0.154.0", "0.155.1", "0.160.0"];
+const CODEX_CHECKED: [&str; 5] = ["0.153.4", "0.154.0", "0.155.1", "0.160.0", "0.164.0"];
+
+/// The format of a Codex sample taken from the provider's own count for one
+/// response (`token_usage_record`), whatever the release: the record has
+/// read the same since the oldest checked one. A rollout keeps two accounts
+/// of a thread's tokens, once per response and once as running totals
+/// (`token_count`, the cumulative formats). They agree except where the
+/// totals fall short: they do not move for the call that compacts a long
+/// conversation, and in older releases restarted at one response's count.
+/// The parser gives both, each under its own identity, and the store counts
+/// each session by one of them.
+pub const CODEX_RESPONSES_FORMAT: &str = "codex-thread-usage-v1";
 
 /// Claude Code releases whose transcripts were checked against a fixture.
 const CLAUDE_CHECKED: [&str; 21] = [
@@ -199,7 +230,41 @@ impl Codex {
                 self.version = Some(version);
                 self.provider = label(&payload["model_provider"]);
                 self.from_start = at_file_start && payload.get("forked_from_id").is_none();
+                self.parent = agentdocker_core::codex_thread::session_meta(record)
+                    .and_then(|meta| meta.parent_thread);
                 Ok(None)
+            }
+            Some("token_usage_record") => {
+                if self.version.is_none() {
+                    return Err("Codex usage has no supported format context".into());
+                }
+                let usage = agentdocker_core::codex_thread::usage_record(record)
+                    .ok_or("Codex thread usage record is malformed")?;
+                let counters = codex_counters(usage.usage.as_ref().unwrap_or(&Value::Null))?;
+                let response = usage
+                    .response
+                    .ok_or("Codex thread usage record has no response id")?;
+                let session = usage
+                    .thread
+                    .clone()
+                    .or_else(|| self.session.clone())
+                    .ok_or("Codex usage precedes session metadata")?;
+                let at = timestamp(&record["timestamp"])?;
+                Ok(Some(Sample {
+                    source_id: identity("codex", &session, &response),
+                    runtime: "codex".into(),
+                    format: CODEX_RESPONSES_FORMAT.into(),
+                    session_id: session,
+                    at,
+                    provider: self.provider.clone(),
+                    model: self.model.clone(),
+                    counters,
+                    semantics: Semantics::Response,
+                    proves_zero_baseline: false,
+                    cost_usd_micros: None,
+                    aliases: Vec::new(),
+                    parent_session: self.parent.clone(),
+                }))
             }
             Some("turn_context") => {
                 self.model = label(&payload["model"]);
@@ -246,6 +311,7 @@ impl Codex {
                     counters,
                     semantics: Semantics::Cumulative,
                     proves_zero_baseline: first,
+                    parent_session: self.parent.clone(),
                 }))
             }
             _ => Ok(None),
@@ -317,6 +383,7 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
         counters,
         semantics: Semantics::Response,
         proves_zero_baseline: false,
+        parent_session: None,
     }))
 }
 
@@ -482,6 +549,106 @@ mod tests {
     }
 
     #[test]
+    fn observed_codex_0164_records_give_both_accounts_and_name_the_parent_thread() {
+        let records: Vec<Value> = include_str!("usage/fixtures/codex-0.164.0.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let mut parser = Codex::default();
+        assert!(parser.feed(&records[0], true).unwrap().is_none());
+        assert!(parser.feed(&records[1], false).unwrap().is_none());
+        let mut samples = Vec::new();
+        for record in &records[2..] {
+            samples.push(parser.feed(record, false).unwrap().unwrap());
+            // The parent survives the cursor's round trip.
+            parser = serde_json::from_str(&serde_json::to_string(&parser).unwrap()).unwrap();
+        }
+        // Each turn: the response's own count, then the running totals.
+        let responses = [
+            [Some(5), Some(0), Some(0), Some(2), Some(0)],
+            [Some(9), Some(4), Some(0), Some(3), Some(1)],
+        ];
+        let totals = [
+            [Some(5), Some(0), Some(0), Some(2), Some(0)],
+            [Some(14), Some(4), Some(0), Some(5), Some(1)],
+        ];
+        assert_eq!(samples.len(), 4);
+        for (turn, pair) in samples.chunks(2).enumerate() {
+            let (response, total) = (&pair[0], &pair[1]);
+            assert_eq!(response.format, CODEX_RESPONSES_FORMAT);
+            assert_eq!(response.counters.values(), responses[turn]);
+            assert_eq!(response.semantics, Semantics::Response);
+            assert!(!response.proves_zero_baseline);
+            assert_eq!(total.format, "codex-rollout-0.160.0-v1");
+            assert_eq!(total.counters.values(), totals[turn]);
+            assert_eq!(total.semantics, Semantics::Cumulative);
+            assert_eq!(total.proves_zero_baseline, turn == 0);
+            for sample in pair {
+                assert_eq!(sample.session_id, "fixture-child-thread");
+                assert_eq!(
+                    sample.parent_session.as_deref(),
+                    Some("fixture-root-thread")
+                );
+                assert_eq!(sample.model.as_deref(), Some("fixture-model"));
+            }
+            assert_ne!(response.source_id, total.source_id);
+        }
+        assert_ne!(samples[0].source_id, samples[2].source_id);
+        let repeated = parser.feed(&records[2], false).unwrap().unwrap();
+        assert_eq!(repeated.source_id, samples[0].source_id);
+        // A rollout no thread spawned names no parent, and its sample's
+        // identity is the one older builds gave it.
+        let mut root = Codex::default();
+        root.feed(&json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":"0.164.0","source":"cli"}}), true).unwrap();
+        let sample = root.feed(&records[2], false).unwrap().unwrap();
+        assert_eq!(sample.parent_session, None);
+        assert!(
+            !serde_json::to_string(&sample)
+                .unwrap()
+                .contains("parent_session")
+        );
+    }
+
+    #[test]
+    fn codex_response_records_need_their_context_and_ids() {
+        let usage = json!({"input_tokens":5,"output_tokens":2});
+        let record = |payload: Value| json!({"type":"token_usage_record","timestamp":"2026-10-20T09:00:04Z","payload":payload});
+        let mut parser = Codex::default();
+        assert!(
+            parser
+                .feed(&record(json!({"response_id":"r","usage":usage})), false)
+                .is_err()
+        );
+        parser
+            .feed(
+                &json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":"0.164.0"}}),
+                true,
+            )
+            .unwrap();
+        assert!(parser.feed(&record(json!({"usage":usage})), false).is_err());
+        assert!(
+            parser
+                .feed(&record(json!({"response_id":"r"})), false)
+                .is_err()
+        );
+        assert!(
+            parser
+                .feed(
+                    &record(json!({"response_id":"r","usage":{"input_tokens":-1}})),
+                    false
+                )
+                .is_err()
+        );
+        let sample = parser
+            .feed(&record(json!({"response_id":"r","usage":usage})), false)
+            .unwrap()
+            .unwrap();
+        assert_eq!(sample.session_id, "thread-a");
+        assert_eq!(sample.counters.input_tokens, Some(5));
+        assert_eq!(sample.counters.cache_read_input_tokens, None);
+    }
+
+    #[test]
     fn codex_uses_cumulative_totals_once_and_retains_only_usage_context() {
         let mut parser = Codex::default();
         parser.feed(&json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":"0.154.0","model_provider":"local-fixture"}}), true).unwrap();
@@ -513,7 +680,7 @@ mod tests {
         let mut record = json!({"type":"event_msg","timestamp":"2026-09-16T12:00:00Z","payload":{"type":"token_count","info":{"total_token_usage":totals,"last_token_usage":{"input_tokens":1,"output_tokens":1}}}});
         let mut parser = Codex::default();
         assert!(parser.feed(&record, false).is_err());
-        for version in ["0.153.4", "0.154.0", "0.155.1", "0.160.0"] {
+        for version in ["0.153.4", "0.154.0", "0.155.1", "0.160.0", "0.164.0"] {
             let mut supported = Codex::default();
             supported.feed(&json!({"type":"session_meta","payload":{"id":"thread-a","cli_version":version}}), true).unwrap();
             assert!(

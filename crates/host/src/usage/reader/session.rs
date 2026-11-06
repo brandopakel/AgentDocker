@@ -21,6 +21,12 @@ pub struct Session {
     line: Vec<u8>,
     ready: bool,
     replay_parser: bool,
+    /// A version 7 cursor: its Codex parser lacks the parent thread, which
+    /// the whole proof reads from the first record it hashes. Nothing is
+    /// replayed and no token is read again.
+    recover_meta: bool,
+    /// What that first record says, kept until the proof is whole.
+    recovered: Option<agentdocker_core::codex_thread::ThreadMeta>,
     /// The proof started at byte zero: every accepted byte is rehashed.
     whole: bool,
     /// The last complete record hashed by this proof, as an anchor.
@@ -66,9 +72,13 @@ impl Session {
         // version 7 releases beyond the compatibility floor. Verify that proof
         // before replay; an upgrade must not hide a changed or truncated source.
         let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3..=6));
+        // Version 7 counted exactly as this version does, but its Codex
+        // parser did not keep the parent thread from `session_meta`, which
+        // a resumed parse never sees again. It takes a whole proof once.
+        let recover_meta = previous.is_some_and(|previous| previous.version == 7);
         let mut anchor = None;
         let cursor = if let Some(previous) = previous {
-            if (previous.version != CURSOR_VERSION && !replay_parser)
+            if (previous.version != CURSOR_VERSION && !replay_parser && !recover_meta)
                 || previous.runtime != runtime
                 || previous.offset > previous.generation.length
             {
@@ -79,7 +89,11 @@ impl Session {
             {
                 return Err(Error::Changed);
             }
-            if unchanged && !replay_parser && previous.generation == captured.generation {
+            if unchanged
+                && !replay_parser
+                && !recover_meta
+                && previous.generation == captured.generation
+            {
                 anchor = previous
                     .last_record
                     .filter(|last| last.offset < previous.offset);
@@ -100,6 +114,8 @@ impl Session {
             line: Vec::new(),
             ready: false,
             replay_parser,
+            recover_meta,
+            recovered: None,
             whole: anchor.is_none(),
             last_record: None,
         })
@@ -147,8 +163,18 @@ impl Session {
             reader.consume(count);
             self.checked += count as u64;
             if self.line.last() == Some(&b'\n') {
+                let offset = self.checked - self.line.len() as u64;
+                if self.recover_meta
+                    && offset == 0
+                    && self.cursor.runtime == Runtime::Codex
+                    && self.line.len() <= MAX_RECORD
+                {
+                    self.recovered = serde_json::from_slice(&self.line)
+                        .ok()
+                        .and_then(|first| agentdocker_core::codex_thread::session_meta(&first));
+                }
                 self.last_record = Some(Anchor {
-                    offset: self.checked - self.line.len() as u64,
+                    offset,
                     prefix_digest: self.prefix,
                 });
                 self.prefix = record_digest(self.prefix, &self.line);
@@ -172,6 +198,14 @@ impl Session {
             // not empty, so this anchor matches the one the scan retained, and
             // a cursor written before anchors existed gains one here.
             self.cursor.last_record = self.last_record;
+        }
+        if self.ready && self.recover_meta {
+            // The proof covered the first record: what it says is the file's.
+            if let Some(meta) = self.recovered.take() {
+                self.cursor.codex.recover_parent(&meta);
+            }
+            self.cursor.version = CURSOR_VERSION;
+            self.recover_meta = false;
         }
         if self.ready && self.replay_parser {
             self.cursor.version = CURSOR_VERSION;
@@ -433,6 +467,86 @@ mod tests {
         assert_eq!(replay.samples, current.samples);
         assert_eq!(replay.cursor, current.cursor);
         session.validate(&path, &replay.cursor).unwrap();
+    }
+
+    #[test]
+    fn a_v7_codex_cursor_learns_its_parent_from_its_first_record_without_replaying() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("child.jsonl");
+        std::fs::write(&path, include_str!("../fixtures/codex-0.164.0.jsonl")).unwrap();
+        let current = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
+        assert_eq!(current.samples.len(), 4);
+        // As a version 7 collector left it: the same offset and counts, its
+        // parser without the parent thread.
+        let mut old = current.cursor.clone();
+        old.version = 7;
+        old.codex.parent = None;
+        for unchanged in [false, true] {
+            let mut session = if unchanged {
+                Session::at_unchanged_snapshot(
+                    Cursor::capture(&path, Runtime::Codex).unwrap(),
+                    Some(&old),
+                )
+                .unwrap()
+            } else {
+                Session::open(&path, Runtime::Codex, Some(&old)).unwrap()
+            };
+            prepare(&mut session, &path).unwrap();
+            // Even an unchanged file is proven whole once, and resumes where
+            // it was: nothing is replayed and no token is read again.
+            assert!(session.proves_whole_prefix());
+            assert_eq!(session.offset(), old.offset);
+            let resumed = session.scan(&path, Budget::default()).unwrap();
+            assert!(resumed.samples.is_empty());
+            assert_eq!(resumed.cursor, current.cursor);
+            session.validate(&path, &resumed.cursor).unwrap();
+        }
+        // What is appended afterwards names the parent.
+        let usage = serde_json::json!({"input_tokens":3,"cached_input_tokens":0,
+            "cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":4});
+        let totals = serde_json::json!({"input_tokens":17,"cached_input_tokens":4,
+            "cache_write_input_tokens":0,"output_tokens":6,"reasoning_output_tokens":1,"total_tokens":23});
+        let appended = format!(
+            "{}\n{}\n",
+            serde_json::json!({"timestamp":"2026-10-20T09:00:20.000Z","type":"token_usage_record",
+                "payload":{"thread_id":"fixture-child-thread","turn_id":"fixture-turn-2",
+                    "response_id":"fixture-response-3","usage":usage,"turn_token_usage":usage,
+                    "thread_token_usage":totals}}),
+            serde_json::json!({"timestamp":"2026-10-20T09:00:20.010Z","type":"event_msg",
+                "payload":{"type":"token_count","info":{"total_token_usage":totals,"last_token_usage":usage}}})
+        );
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(appended.as_bytes())
+            .unwrap();
+        // The version 7 cursor resumed over the grown file: only what was
+        // appended is read, and it names the parent.
+        let mut session = Session::open(&path, Runtime::Codex, Some(&old)).unwrap();
+        prepare(&mut session, &path).unwrap();
+        assert_eq!(session.offset(), old.offset);
+        let next = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(next.samples.len(), 2);
+        for sample in &next.samples {
+            assert_eq!(
+                sample.parent_session.as_deref(),
+                Some("fixture-root-thread")
+            );
+        }
+        session.validate(&path, &next.cursor).unwrap();
+        // A version 7 cursor whose file does not begin with its session's
+        // metadata learns nothing, and is still upgraded in place.
+        let other = temp.path().join("claude.jsonl");
+        std::fs::write(&other, row(0)).unwrap();
+        let claude = scan(&other, Runtime::Claude, None, Budget::default()).unwrap();
+        let mut old = claude.cursor.clone();
+        old.version = 7;
+        let mut session = Session::open(&other, Runtime::Claude, Some(&old)).unwrap();
+        prepare(&mut session, &other).unwrap();
+        let resumed = session.scan(&other, Budget::default()).unwrap();
+        assert!(resumed.samples.is_empty());
+        assert_eq!(resumed.cursor, claude.cursor);
     }
 
     #[test]

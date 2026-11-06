@@ -327,7 +327,11 @@ impl Daemon {
         let held: Vec<_> = batch
             .samples
             .iter()
-            .map(|sample| (sample.clone(), attribution_at(&state, sample)))
+            .map(|sample| {
+                let mut sample = sample.clone();
+                let held = attribution_at(&state, &mut sample);
+                (sample, held)
+            })
             .collect();
         let progress = FileProgress {
             cursor: batch.cursor.clone(),
@@ -386,7 +390,11 @@ impl Daemon {
         let mut state = lock(&self.state);
         let held: Vec<_> = samples
             .iter()
-            .map(|sample| (sample.clone(), attribution_at(&state, sample)))
+            .map(|sample| {
+                let mut sample = sample.clone();
+                let held = attribution_at(&state, &mut sample);
+                (sample, held)
+            })
             .collect();
         let mut accepted = 0;
         let result = state.commit_produced(
@@ -430,12 +438,25 @@ struct Held {
     role_now: Option<String>,
 }
 
-fn attribution_at(state: &State, sample: &agentdocker_host::usage::Sample) -> Held {
-    let attribution = usage::registration_at(
-        &registrations(state, &sample.runtime, &sample.session_id),
-        sample.at,
-    )
-    .unwrap_or_default();
+/// Whose the sample is, and what that agent held when it was made. A
+/// thread another thread spawned, with no record of its own, is its
+/// parent's work: its usage is the parent's, and the store keeps the
+/// parent on it so that a parent record made later, or the thread's own,
+/// takes it (reconciliation). A thread with a record of its own is that
+/// record's alone, and the parent comes off the sample.
+fn attribution_at(state: &State, sample: &mut agentdocker_host::usage::Sample) -> Held {
+    let own = registrations(state, &sample.runtime, &sample.session_id);
+    let registered = if own.is_empty() {
+        sample
+            .parent_session
+            .as_deref()
+            .map(|parent| registrations(state, &sample.runtime, parent))
+            .unwrap_or_default()
+    } else {
+        sample.parent_session = None;
+        own
+    };
+    let attribution = usage::registration_at(&registered, sample.at).unwrap_or_default();
     let Some(agent) = attribution.agent.clone() else {
         return Held {
             attribution,
@@ -842,6 +863,7 @@ fn collect_pass(
                     "codex-rollout-0.153.4-0.154.0-v1".into(),
                     "codex-rollout-0.155.1-v1".into(),
                     "codex-rollout-0.160.0-v1".into(),
+                    agentdocker_host::usage::CODEX_RESPONSES_FORMAT.into(),
                     "claude-transcript-2.1.268-270-v1".into(),
                     "claude-transcript-2.1.271-276-v1".into(),
                     "claude-transcript-2.1.277-278-280-v1".into(),
@@ -1546,6 +1568,7 @@ mod tests {
             proves_zero_baseline: false,
             cost_usd_micros: Some(100),
             aliases: Vec::new(),
+            parent_session: None,
         };
         assert_eq!(
             daemon.record_telemetry(
@@ -1720,6 +1743,7 @@ mod tests {
             proves_zero_baseline: false,
             cost_usd_micros: Some(100),
             aliases: Vec::new(),
+            parent_session: None,
         };
         let charged = |daemon: &Arc<Daemon>, samples: Vec<Sample>| {
             assert_eq!(
@@ -2613,6 +2637,271 @@ mod tests {
                 .filter(|e| matches!(e.kind, EventKind::UsageReconciled { .. }))
                 .count(),
             events
+        );
+    }
+
+    /// A Codex rollout of a thread another spawned, two hours ago: its
+    /// first record names the parent, and one response's own count follows.
+    fn spawned_rollout(thread: &str, parent: &str, input: u64) -> String {
+        let at = (Utc::now() - Duration::hours(2)).to_rfc3339();
+        let meta = serde_json::json!({"type":"session_meta","timestamp":at,"payload":{"id":thread,
+            "cli_version":"0.164.0","model_provider":"fixture-provider",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":parent,"depth":1,"agent_role":"reviewer"}}}}});
+        let usage = serde_json::json!({"input_tokens":input,"cached_input_tokens":0,"cache_write_input_tokens":0,
+            "output_tokens":2,"reasoning_output_tokens":0,"total_tokens":input+2});
+        let response = serde_json::json!({"type":"token_usage_record","timestamp":at,"payload":{"thread_id":thread,
+            "turn_id":"turn-1","response_id":"response-1","usage":usage,"turn_token_usage":usage,"thread_token_usage":usage}});
+        let totals = serde_json::json!({"type":"event_msg","timestamp":at,"payload":{"type":"token_count",
+            "info":{"total_token_usage":usage,"last_token_usage":usage}}});
+        format!("{meta}\n{response}\n{totals}\n")
+    }
+
+    #[tokio::test]
+    async fn a_spawned_codex_threads_usage_is_its_parents_and_exact() {
+        let (temp, daemon, mut config, _root) = fixture();
+        let codex = temp.path().join("codex");
+        std::fs::create_dir(&codex).unwrap();
+        config.codex_roots = vec![codex.clone()];
+        let response = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "codex-parent".into(),
+                    runtime: "codex".into(),
+                    labels: BTreeMap::from([("session_id".into(), "fixture-root-thread".into())]),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        let Response::Agent { agent } = response else {
+            panic!("{response:?}")
+        };
+        std::fs::write(
+            codex.join("rollout-child.jsonl"),
+            spawned_rollout("fixture-child-thread", "fixture-root-thread", 5),
+        )
+        .unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows.len(), 1, "{report:?}");
+        // The parent's, counted once from the response's own figure (the
+        // running totals after it are the same tokens), and so exact.
+        assert_eq!(report.rows[0].key.as_deref(), Some(agent.id.as_str()));
+        assert_eq!(report.rows[0].samples, 1);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(5));
+        assert_eq!(
+            report.rows[0].usage_source,
+            Some(agentdocker_core::usage::UsageSource::Exact)
+        );
+    }
+
+    /// Codex token counters as a rollout writes them.
+    fn codex_counts(input: u64, output: u64) -> serde_json::Value {
+        serde_json::json!({"input_tokens":input,"cached_input_tokens":0,"cache_write_input_tokens":0,
+            "output_tokens":output,"reasoning_output_tokens":0,"total_tokens":input+output})
+    }
+
+    /// One more response of a spawned thread, an hour ago, and the running
+    /// totals after it.
+    fn next_response(thread: &str, response: &str, input: u64, totals: (u64, u64)) -> String {
+        let at = (Utc::now() - Duration::hours(1)).to_rfc3339();
+        let usage = codex_counts(input, 2);
+        let total = codex_counts(totals.0, totals.1);
+        let record = serde_json::json!({"type":"token_usage_record","timestamp":at,"payload":{
+            "thread_id":thread,"turn_id":"turn-2","response_id":response,"usage":usage,
+            "turn_token_usage":usage,"thread_token_usage":total}});
+        let count = serde_json::json!({"type":"event_msg","timestamp":at,"payload":{"type":"token_count",
+            "info":{"total_token_usage":total,"last_token_usage":usage}}});
+        format!("{record}\n{count}\n")
+    }
+
+    fn codex_fixture() -> (tempfile::TempDir, Arc<Daemon>, UsageConfig, PathBuf) {
+        let (temp, daemon, mut config, _root) = fixture();
+        let codex = temp.path().join("codex");
+        std::fs::create_dir(&codex).unwrap();
+        config.codex_roots = vec![codex.clone()];
+        (temp, daemon, config, codex)
+    }
+
+    /// A Codex record keyed by `thread`, as a bound terminal's is.
+    async fn register_codex(daemon: &Arc<Daemon>, name: &str, thread: &str) -> String {
+        let response = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: name.into(),
+                    runtime: "codex".into(),
+                    labels: BTreeMap::from([("session_id".into(), thread.into())]),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        let Response::Agent { agent } = response else {
+            panic!("{response:?}")
+        };
+        agent.id.to_string()
+    }
+
+    async fn input_by_agent(daemon: &Arc<Daemon>) -> BTreeMap<Option<String>, Option<u64>> {
+        query(daemon)
+            .await
+            .rows
+            .into_iter()
+            .map(|row| (row.key, row.counters.input_tokens.sum))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_spawned_threads_usage_goes_to_a_parent_registered_late_then_to_its_own_record() {
+        let (_temp, daemon, config, codex) = codex_fixture();
+        let log = codex.join("rollout-child.jsonl");
+        std::fs::write(
+            &log,
+            spawned_rollout("fixture-child-thread", "fixture-root-thread", 5),
+        )
+        .unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(None, Some(5))])
+        );
+        // The parent registers: what its thread spawned was its work, the
+        // tokens counted before it registered included.
+        let parent = register_codex(&daemon, "codex-parent", "fixture-root-thread").await;
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(parent.clone()), Some(5))])
+        );
+        append(
+            &log,
+            &next_response("fixture-child-thread", "response-2", 7, (12, 4)),
+        );
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(parent), Some(12))])
+        );
+        // The thread gets a record of its own: all of its usage is its own.
+        let child = register_codex(&daemon, "codex-child", "fixture-child-thread").await;
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(child.clone()), Some(12))])
+        );
+        append(
+            &log,
+            &next_response("fixture-child-thread", "response-3", 3, (15, 6)),
+        );
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(child), Some(15))])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spawned_threads_own_record_keeps_its_usage_from_a_parent_registered_later() {
+        let (_temp, daemon, config, codex) = codex_fixture();
+        let log = codex.join("rollout-child.jsonl");
+        std::fs::write(
+            &log,
+            spawned_rollout("fixture-child-thread", "fixture-root-thread", 5),
+        )
+        .unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let child = register_codex(&daemon, "codex-child", "fixture-child-thread").await;
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(child.clone()), Some(5))])
+        );
+        let parent = register_codex(&daemon, "codex-parent", "fixture-root-thread").await;
+        daemon.reconcile_usage(&config);
+        append(
+            &log,
+            &next_response("fixture-child-thread", "response-2", 7, (12, 4)),
+        );
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        daemon.reconcile_usage(&config);
+        let rows = input_by_agent(&daemon).await;
+        assert_eq!(rows, BTreeMap::from([(Some(child), Some(12))]));
+        assert!(!rows.contains_key(&Some(parent)));
+    }
+
+    #[tokio::test]
+    async fn a_child_log_counted_before_cursors_kept_its_parent_learns_it_after_restart() {
+        let (temp, daemon, config, codex) = codex_fixture();
+        let log = codex.join("rollout-child.jsonl");
+        // As the previous release counted a spawned thread: by its running
+        // totals, which it read past the thread's first record.
+        let at = (Utc::now() - Duration::hours(2)).to_rfc3339();
+        let meta = serde_json::json!({"type":"session_meta","timestamp":at,"payload":{
+            "id":"fixture-child-thread","cli_version":"0.164.0","model_provider":"fixture-provider",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":"fixture-root-thread","depth":1}}}}});
+        let totals = serde_json::json!({"type":"event_msg","timestamp":at,"payload":{"type":"token_count",
+            "info":{"total_token_usage":codex_counts(5, 2),"last_token_usage":codex_counts(5, 2)}}});
+        std::fs::write(&log, format!("{meta}\n{totals}\n")).unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(None, Some(5))])
+        );
+        drop(daemon);
+        // What that release left behind: its contributions and its cursor
+        // (version 7) without the parent thread, and no session accounts.
+        let conn = crate::sqlite_fixture::open(temp.path().join("state.db")).unwrap();
+        conn.execute_batch(
+            "UPDATE usage_samples SET contribution=json_remove(contribution,'$.parent');
+             DELETE FROM usage_accounts;",
+        )
+        .unwrap();
+        drop(conn);
+        edit_progress(temp.path(), |_, progress| {
+            progress["cursor"]["version"] = serde_json::json!(7);
+            progress["cursor"]["codex"]
+                .as_object_mut()
+                .unwrap()
+                .remove("parent");
+        });
+        // Restarted on this release; the parent registers and the thread
+        // goes on with a response and its totals.
+        let daemon = reopen(temp.path());
+        let parent = register_codex(&daemon, "codex-parent", "fixture-root-thread").await;
+        append(
+            &log,
+            &next_response("fixture-child-thread", "response-2", 7, (12, 4)),
+        );
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        daemon.reconcile_usage(&config);
+        // The new tokens are the parent's, counted once by the account the
+        // session was already on; the earlier ones are counted once too,
+        // still nobody's, since what counted them did not keep the parent.
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(None, Some(5)), (Some(parent), Some(7))])
+        );
+        edit_progress(temp.path(), |_, progress| {
+            assert_eq!(progress["cursor"]["version"], serde_json::json!(8));
+            assert_eq!(
+                progress["cursor"]["codex"]["parent"],
+                serde_json::json!("fixture-root-thread")
+            );
+        });
+        // Collecting again changes nothing.
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            query(&daemon)
+                .await
+                .rows
+                .iter()
+                .map(|row| row.samples)
+                .sum::<u64>(),
+            2
         );
     }
 

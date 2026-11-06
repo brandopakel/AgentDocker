@@ -13,6 +13,7 @@ const TABLES: &[(&str, &[&str])] = &[
         &["source_id", "fingerprint", "at", "contribution"],
     ),
     ("usage_baselines", &["key", "json"]),
+    ("usage_accounts", &["key", "account"]),
     ("usage_files", &["key", "json"]),
     (
         "usage_buckets",

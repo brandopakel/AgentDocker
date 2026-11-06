@@ -47,9 +47,10 @@ pub mod secret;
 pub mod seed;
 
 pub use agent::{
-    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, SessionContact,
-    SessionKey, VcsState, short,
+    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, ProviderThread, RestartPolicy,
+    SessionContact, SessionKey, ThreadRef, ThreadSource, VcsState, short,
 };
+pub mod codex_thread;
 pub use board::{Board, Lane};
 pub mod plan;
 pub use plan::{Plan, PlanStatus, ProjectFile};
