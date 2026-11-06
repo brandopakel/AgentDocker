@@ -66,6 +66,7 @@ mod journal;
 mod judge;
 mod launch;
 mod leases;
+pub(crate) mod otlp;
 mod panes;
 mod pause;
 mod person;
@@ -486,6 +487,9 @@ struct State {
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
     inbox_bytes: HashMap<AgentId, usize>,
     live_subscribers: HashMap<AgentId, usize>,
+    /// Answers to keyed sends, in memory only: a restarted daemon takes a
+    /// repeated key as new.
+    keyed_sends: agentdocker_core::idempotency::IdempotencyLedger<Response>,
     supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
     pending_restarts: HashSet<AgentId>,
     container_busy: HashSet<AgentId>,
@@ -501,6 +505,9 @@ struct State {
     /// The last `agentd.toml` problem reported, so a broken file is logged
     /// once when it breaks and once when it is fixed, not every minute.
     config_notice: Option<String>,
+    /// What the telemetry receiver is doing: off, listening on an address,
+    /// or why it is not; the usage report says it.
+    otlp_status: otlp::Status,
     /// The agent-retention notice, kept apart from `config_notice`: the
     /// journal-retention tick clears that one, and would otherwise re-warn
     /// here every minute for a problem that has not changed.
@@ -1703,6 +1710,7 @@ impl Daemon {
                 inboxes,
                 inbox_bytes,
                 live_subscribers: HashMap::new(),
+                keyed_sends: agentdocker_core::idempotency::IdempotencyLedger::default(),
                 supervised: HashMap::new(),
                 pending_restarts: HashSet::new(),
                 container_busy: HashSet::new(),
@@ -1714,6 +1722,7 @@ impl Daemon {
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
                 config_notice: None,
+                otlp_status: otlp::Status::default(),
                 agent_config_notice: None,
                 read_set_notice: None,
                 topic_config_notice: None,
@@ -2394,7 +2403,11 @@ impl Daemon {
                 payload,
                 reply_to,
                 links,
-            } => self.send(from, &to, kind, payload, reply_to, links).await,
+                idempotency_key,
+            } => {
+                self.send(from, &to, kind, payload, reply_to, links, idempotency_key)
+                    .await
+            }
             Request::Me { workdir } => self.me(workdir).await,
             Request::OpenSecretReview {
                 agent,
@@ -3393,6 +3406,7 @@ impl Daemon {
         Response::Agents { agents, aliases }
     }
 
+    #[allow(clippy::too_many_arguments)] // one per field of `Request::Send`
     async fn send(
         &self,
         from: String,
@@ -3401,8 +3415,14 @@ impl Daemon {
         payload: Value,
         reply_to: Option<MessageId>,
         links: Vec<agentdocker_core::Link>,
+        idempotency_key: Option<String>,
     ) -> Response {
         if let Err(reason) = agentdocker_core::link::check(&links) {
+            return Response::error(ErrorCode::Invalid, reason);
+        }
+        if let Some(key) = &idempotency_key
+            && let Err(reason) = agentdocker_core::idempotency::check_key(key)
+        {
             return Response::error(ErrorCode::Invalid, reason);
         }
         if pause::reserved_message_kind(&kind) {
@@ -3410,6 +3430,16 @@ impl Daemon {
                 ErrorCode::Forbidden,
                 "pause and resume notices require a project lifecycle request",
             );
+        }
+        // A repeat of a keyed send is answered as the first was before its
+        // destination is resolved again: since the first, the recipient may
+        // have been renamed or removed, a prefix grown ambiguous or a
+        // project's scope changed, and the message is queued all the same.
+        // The look-ups under the locks that publish, below, catch a repeat
+        // racing its first.
+        let replayed = lock(&self.state).replayed_send(&from, idempotency_key.as_deref());
+        if let Some(answer) = replayed {
+            return answer;
         }
         // What the project does with a remote sender's word, decided
         // before anything is routed: refused here, or held whole once the
@@ -3422,22 +3452,33 @@ impl Daemon {
         // An agent's word to a role goes to that role's room in its project.
         if inbound.is_none()
             && let Some(role) = to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX)
-            && let Some(response) = lock(&self.state).send_to_role(
+        {
+            let mut state = lock(&self.state);
+            if let Some(answer) = state.replayed_send(&from, idempotency_key.as_deref()) {
+                return answer;
+            }
+            if let Some(response) = state.send_to_role(
                 &from,
                 role,
                 kind.clone(),
                 payload.clone(),
                 reply_to.clone(),
                 links.clone(),
-            )
-        {
-            return response;
+            ) {
+                state.keep_keyed_send(&from, idempotency_key, &response);
+                return response;
+            }
         }
         let (from, to) = match self.endpoints(from, to).await {
             Ok(pair) => pair,
             Err(response) => return *response,
         };
         let mut state = lock(&self.state);
+        // The look-up and the publication happen under one lock: two
+        // retries racing each other cannot both miss.
+        if let Some(answer) = state.replayed_send(&from, idempotency_key.as_deref()) {
+            return answer;
+        }
         // `agentd` and a bare `user` speak without a record, and a rule
         // has nothing to match them against; the daemon's own notices
         // are not the thing a policy is for.
@@ -3460,12 +3501,16 @@ impl Daemon {
                 }
             }
         }
-        let mut envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
+        let mut envelope = Envelope::new(from.clone(), to, kind, payload, reply_to, Utc::now());
         envelope.links = links;
-        if let Some(ruling) = inbound {
-            return state.hold_message(envelope, ruling);
-        }
-        state.publish(envelope)
+        // A held send is remembered as a sent one is: its message and
+        // card are kept, so a retry must not hold a second copy.
+        let response = match inbound {
+            Some(ruling) => state.hold_message(envelope, ruling),
+            None => state.publish(envelope),
+        };
+        state.keep_keyed_send(&from, idempotency_key, &response);
+        response
     }
 
     /// Turn a sender name and a destination shorthand into what the bus
@@ -5219,6 +5264,39 @@ impl State {
     /// on the answer before an answer can arrive — so it builds its own.
     fn publish(&mut self, envelope: Envelope) -> Response {
         self.publish_question(envelope, None)
+    }
+
+    /// Who a keyed send is remembered under, as `endpoints` resolves the
+    /// sender: its id when it has a record, the name it gave when it has
+    /// none (`agentd`, a bare `user`). A sender that resolves to neither
+    /// (an ambiguous name) is refused there, and is remembered nowhere.
+    fn keyed_sender(&self, from: &str) -> Option<String> {
+        match self.registry.resolve(from) {
+            Ok(id) => Some(id.to_string()),
+            Err(RegistryError::NotFound(_)) => Some(from.to_owned()),
+            Err(_) => None,
+        }
+    }
+
+    /// The answer already given to this sender for this key, if any: the
+    /// send it repeats was queued then, and nothing is queued again.
+    fn replayed_send(&mut self, from: &str, key: Option<&str>) -> Option<Response> {
+        let key = key?;
+        let sender = self.keyed_sender(from)?;
+        self.keyed_sends.lookup(&sender, key, Utc::now()).cloned()
+    }
+
+    /// Remember a keyed send's answer, once it kept something: a message
+    /// queued (`sent`) or held with its card (`held`). A refusal kept
+    /// nothing, so repeating it is harmless and may now succeed.
+    fn keep_keyed_send(&mut self, from: &str, key: Option<String>, response: &Response) {
+        if let Some(key) = key
+            && matches!(response, Response::Sent { .. } | Response::Held { .. })
+            && let Some(sender) = self.keyed_sender(from)
+        {
+            self.keyed_sends
+                .record(&sender, &key, response.clone(), Utc::now());
+        }
     }
 
     fn publish_question(

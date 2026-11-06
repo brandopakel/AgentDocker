@@ -1882,6 +1882,11 @@ struct SendArgs {
     /// most 16): path, commit, pr, url, task, message or memory.
     #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
     links: Vec<agentdocker_core::Link>,
+    /// Your own token for this one send (a UUID, say): repeating the
+    /// command with the same key after a lost answer queues nothing and
+    /// prints the first message id again.
+    #[arg(long, value_name = "KEY")]
+    idempotency_key: Option<String>,
 }
 
 /// Its own struct, like `SendArgs`: the top-level command enum is parsed
@@ -2052,8 +2057,8 @@ struct UsageArgs {
     /// Until when, RFC 3339; now when not given.
     #[arg(long)]
     until: Option<chrono::DateTime<chrono::Utc>>,
-    /// One row per agent, model, provider, project or hour.
-    #[arg(long, default_value = "agent", value_parser = ["agent", "model", "provider", "project", "hour"])]
+    /// One row per agent, model, provider, project, hour, card (the board card held) or role.
+    #[arg(long, default_value = "agent", value_parser = ["agent", "model", "provider", "project", "hour", "card", "role"])]
     by: String,
     /// The report as JSON, as the daemon answered it.
     #[arg(long)]
@@ -3366,8 +3371,12 @@ async fn run() -> Result<()> {
                     lease,
                     plan,
                     files,
+                    usage,
                 } => {
                     println!("{}", card_line(&task));
+                    if let Some(usage) = &usage {
+                        println!("  {}", format::card_usage(usage));
+                    }
                     if let Some(plan) = &plan {
                         println!("  plan {}  {}", plan.id, plan.title);
                     }
@@ -4680,6 +4689,7 @@ async fn run() -> Result<()> {
                 payload,
                 reply_to: args.reply_to.map(MessageId::from),
                 links: args.links,
+                idempotency_key: args.idempotency_key,
             };
             match client.call(&request).await? {
                 Response::Sent {
@@ -4861,13 +4871,7 @@ async fn run() -> Result<()> {
         }
         Command::Usage(args) => {
             use agentdocker_core::usage::report::Group;
-            let by = match args.by.as_str() {
-                "model" => Group::Model,
-                "provider" => Group::Provider,
-                "project" => Group::Project,
-                "hour" => Group::Hour,
-                _ => Group::Agent,
-            };
+            let by = Group::parse(&args.by).unwrap_or_default();
             let request = Request::Usage {
                 project: args.project.as_deref().map(project_selector),
                 agent: args.agent,
@@ -5778,6 +5782,19 @@ async fn usage_names(
     report: &agentdocker_core::usage::report::Report,
 ) -> std::collections::HashMap<String, String> {
     use agentdocker_core::usage::report::Group;
+    if report.by == Group::Card {
+        // A card by its key, while the board still has it.
+        let mut names = std::collections::HashMap::new();
+        for id in report.rows.iter().filter_map(|row| row.key.clone()) {
+            if let Ok(Response::TaskDetail { task, .. }) =
+                client.call(&Request::TaskGet { task: id.clone() }).await
+                && !task.key.is_empty()
+            {
+                names.insert(id, task.key);
+            }
+        }
+        return names;
+    }
     if !matches!(report.by, Group::Agent | Group::Project) {
         return Default::default();
     }

@@ -458,6 +458,7 @@ mod tests {
             holder: holder.clone(),
             mode,
             acquired_at: Utc::now(),
+            held_since: None,
             change_seq: None,
             expires_at: Utc::now() + chrono::Duration::minutes(5),
             note: note.map(str::to_owned),

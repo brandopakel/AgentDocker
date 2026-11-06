@@ -1567,6 +1567,7 @@ impl<B: Backend> McpServer<B> {
                     payload,
                     reply_to: args.reply_to.map(MessageId::from),
                     links: args.links,
+                    idempotency_key: args.idempotency_key,
                 })
                 .await
             }
@@ -2095,6 +2096,8 @@ struct SendMessageArgs {
     reply_to: Option<String>,
     #[serde(default)]
     links: Vec<agentdocker_core::Link>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2890,7 +2893,8 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
                     "reply_to": { "type": "string", "description": "Id of the message this answers." },
-                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
+                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
+                    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Your own token for this one send (a UUID). Retrying with the same key after a lost result queues nothing and returns the first message_id again, for up to 24 hours: the daemon keeps the newest 4,096 keys in memory, so after they turn over or it restarts the key is new." }
                 },
                 "required": ["to"],
                 "additionalProperties": false
@@ -3169,7 +3173,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "usage",
-            "description": "Tokens the providers reported for this project's sessions, one row per agent (or model, provider, project, hour), each count with its coverage: a sum only where samples said, marked partial otherwise. The report says what it covers — the range answered, retention, gaps in the sources, whether collection is on and where it stands — and the overhead AgentDocker injected, which is 'not measured' until it is. Collection is off until agentd.toml enables it.",
+            "description": "Tokens the providers reported for this project's sessions, one row per agent (or model, provider, project, hour, card — the board card the agent held — or role), each count with its coverage: a sum only where samples said, marked partial otherwise; each row's cost_usd_micros is the provider-reported estimated cost where its telemetry said one (Claude Code's OTLP events, which it documents as an estimate; transcripts carry none) and cache_read_share_percent its share of input read from cache. The report says what it covers — the range answered, retention, gaps in the sources, whether collection is on and where it stands — and the overhead AgentDocker injected, which is 'not measured' until it is. Collection is off until agentd.toml enables it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3177,7 +3181,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "agent": { "type": "string", "description": "Only this agent: id, name or unique prefix." },
                     "since": { "type": "string", "description": "From when: a duration back from now (30m, 24h, 7d) or an RFC 3339 time." },
                     "until": { "type": "string", "format": "date-time", "description": "Until when, RFC 3339; now when absent." },
-                    "by": { "type": "string", "enum": ["agent", "model", "provider", "project", "hour"], "description": "One row per what; agent by default." }
+                    "by": { "type": "string", "enum": ["agent", "model", "provider", "project", "hour", "card", "role"], "description": "One row per what; agent by default. card groups by the board card (task:<id> lease) held when each sample was recorded, role by the agent's roles then." }
                 },
                 "additionalProperties": false
             }
@@ -5168,7 +5172,7 @@ mod tests {
             .handle(rpc(
                 5,
                 "tools/call",
-                json!({ "name": "send_message", "arguments": { "to": "reviewer", "text": "hi" } }),
+                json!({ "name": "send_message", "arguments": { "to": "reviewer", "text": "hi", "idempotency_key": "send-1" } }),
             ))
             .await
             .unwrap();
@@ -5188,6 +5192,7 @@ mod tests {
                 payload: json!({ "text": "hi" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: Some("send-1".to_owned()),
             }
         );
     }

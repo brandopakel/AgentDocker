@@ -1183,6 +1183,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::UsageReconciled { agent, samples } => {
             format!("usage reconciled {} {samples} sample(s)", agent.short())
         }
+        EventKind::UsageJoined { priced, folded } => {
+            format!("usage joined     {priced} priced, {folded} counted twice now once")
+        }
         EventKind::UsageEmissionRecorded { agent, emission } => {
             format!(
                 "output counted  {} {} bytes ({:?})",
@@ -1229,6 +1232,53 @@ pub fn counter(report: &agentdocker_core::usage::CounterReport) -> String {
         (Some(sum), Coverage::Complete) => thousands(sum),
         (Some(sum), Coverage::Partial) => format!("{}~", thousands(sum)),
     }
+}
+
+/// The provider-reported estimated cost as the report knows it: the sum
+/// when every sample in the row carried one, marked `~` when some did not
+/// (transcripts carry none; telemetry events do), `—` when none did.
+pub fn cost(report: &agentdocker_core::usage::CounterReport) -> String {
+    use agentdocker_core::usage::{Coverage, dollars};
+    match (report.sum, report.coverage) {
+        (None, _) | (_, Coverage::Unknown) => "—".to_owned(),
+        (Some(sum), Coverage::Complete) => dollars(sum),
+        (Some(sum), Coverage::Partial) => format!("{}~", dollars(sum)),
+    }
+}
+
+/// Where the telemetry receiver stands, when one is configured: the
+/// address it takes Claude Code's events on, or why it takes none.
+fn telemetry_line(collection: &agentdocker_core::usage::report::Collection) -> Option<String> {
+    match (&collection.otlp_listen, &collection.otlp_error) {
+        (Some(address), _) => Some(format!(
+            "Telemetry: taking Claude Code's events on {address}"
+        )),
+        (None, Some(reason)) => Some(format!("Telemetry: not listening: {reason}")),
+        (None, None) => None,
+    }
+}
+
+/// The share of input read from the cache, `87%`, or `—` when the row
+/// cannot say.
+fn cache_share(percent: Option<u8>) -> String {
+    percent.map_or_else(|| "—".to_owned(), |p| format!("{p}%"))
+}
+
+/// One line for a card's usage to date: its price, its tokens, how
+/// many responses and the share of input read from cache.
+pub fn card_usage(row: &agentdocker_core::usage::report::Row) -> String {
+    let mut line = format!(
+        "cost to date {} ({} in, {} out; {} response(s)",
+        cost(&row.cost_usd_micros),
+        counter(&row.counters.input_tokens),
+        counter(&row.counters.output_tokens),
+        thousands(row.samples)
+    );
+    if let Some(percent) = row.cache_read_share_percent {
+        line.push_str(&format!("; {percent}% of input from cache"));
+    }
+    line.push(')');
+    line
 }
 
 /// Each agent's tokens over a usage report grouped by agent, as `ps`
@@ -1350,11 +1400,15 @@ pub fn usage_report(
         Group::Provider => "PROVIDER",
         Group::Project => "PROJECT",
         Group::Hour => "HOUR",
+        Group::Card => "CARD",
+        Group::Role => "ROLE",
     };
     let collection = &report.coverage.collection;
     let off = collection.enabled == Some(false);
     if report.rows.is_empty() {
-        if off {
+        // With the receiver taking events, collection being off is not why
+        // there is nothing to show.
+        if off && collection.otlp_listen.is_none() {
             println!(
                 "Collection is off. Enable it in agentd.toml ([usage] enabled = true) to read the providers' local usage logs. Existing totals remain available."
             );
@@ -1371,9 +1425,11 @@ pub fn usage_report(
                     thousands(row.samples),
                     counter(&row.counters.input_tokens),
                     counter(&row.counters.cache_read_input_tokens),
+                    cache_share(row.cache_read_share_percent),
                     counter(&row.counters.cache_write_input_tokens),
                     counter(&row.counters.output_tokens),
                     counter(&row.counters.reasoning_output_tokens),
+                    cost(&row.cost_usd_micros),
                 ]
             })
             .collect();
@@ -1383,13 +1439,17 @@ pub fn usage_report(
                 "SAMPLES",
                 "INPUT",
                 "CACHE READ",
+                "CACHED",
                 "CACHE WRITE",
                 "OUTPUT",
                 "REASONING",
+                "COST",
             ],
             &rows,
         );
-        println!("~ some samples did not say; — none did");
+        println!(
+            "~ some samples did not say; — none did; CACHED is cache reads over input; COST is the provider-reported estimated cost"
+        );
     }
     println!(
         "Range {} to {}{}{}; retained since {}{}",
@@ -1464,6 +1524,9 @@ pub fn usage_report(
             format!(" ({} root(s))", collection.scope.roots.len())
         }
     );
+    if let Some(line) = telemetry_line(collection) {
+        println!("{line}");
+    }
     let overhead = &report.overhead;
     let overhead_line = match (&overhead.estimated_tokens, overhead.injected_bytes) {
         (Some(estimate), _) => format!(
@@ -1781,6 +1844,75 @@ mod tests {
         assert_eq!(super::thousands(999), "999");
         assert_eq!(super::thousands(1_000), "1,000");
         assert_eq!(super::thousands(10_000_000), "10,000,000");
+    }
+
+    /// A price shows as dollars with the counters' coverage marks, the
+    /// cache share as a percentage or nothing, and a card's line says its
+    /// cost, tokens, responses and cache share without inventing any.
+    #[test]
+    fn usage_prices_and_cache_shares_show_their_coverage() {
+        use agentdocker_core::usage::report::{CounterReports, Row};
+        use agentdocker_core::usage::{CounterReport, Coverage};
+        let report = |sum: Option<u64>, coverage| CounterReport {
+            sum,
+            known_samples: sum.map_or(0, |_| 1),
+            coverage,
+        };
+        assert_eq!(
+            super::cost(&report(Some(12_345), Coverage::Complete)),
+            "$0.0123"
+        );
+        assert_eq!(
+            super::cost(&report(Some(2_345_678), Coverage::Partial)),
+            "$2.35~"
+        );
+        assert_eq!(super::cost(&report(None, Coverage::Unknown)), "—");
+        assert_eq!(super::cache_share(Some(87)), "87%");
+        assert_eq!(super::cache_share(None), "—");
+        let row = Row {
+            key: Some("card-1".into()),
+            samples: 3,
+            counters: CounterReports {
+                input_tokens: report(Some(40_000), Coverage::Partial),
+                cache_read_input_tokens: report(Some(30_000), Coverage::Partial),
+                cache_write_input_tokens: report(None, Coverage::Unknown),
+                output_tokens: report(Some(2_000), Coverage::Partial),
+                reasoning_output_tokens: report(None, Coverage::Unknown),
+            },
+            cost_usd_micros: report(Some(250_000), Coverage::Partial),
+            cache_read_share_percent: Some(75),
+        };
+        assert_eq!(
+            super::card_usage(&row),
+            "cost to date $0.2500~ (40,000~ in, 2,000~ out; 3 response(s); 75% of input from cache)"
+        );
+        let unpriced = Row {
+            cost_usd_micros: CounterReport::default(),
+            cache_read_share_percent: None,
+            ..row
+        };
+        assert_eq!(
+            super::card_usage(&unpriced),
+            "cost to date — (40,000~ in, 2,000~ out; 3 response(s))"
+        );
+        use agentdocker_core::usage::report::Collection;
+        let mut collection = Collection::default();
+        assert_eq!(
+            super::telemetry_line(&collection),
+            None,
+            "no receiver configured"
+        );
+        collection.otlp_error = Some("cannot listen on 127.0.0.1:4318: address in use".into());
+        assert_eq!(
+            super::telemetry_line(&collection).as_deref(),
+            Some("Telemetry: not listening: cannot listen on 127.0.0.1:4318: address in use")
+        );
+        collection.otlp_error = None;
+        collection.otlp_listen = Some("127.0.0.1:4318".into());
+        assert_eq!(
+            super::telemetry_line(&collection).as_deref(),
+            Some("Telemetry: taking Claude Code's events on 127.0.0.1:4318")
+        );
     }
 
     /// Rows name the agent or project when it is known and keep the ID

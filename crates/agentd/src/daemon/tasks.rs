@@ -22,7 +22,7 @@ mod roles;
 mod rules;
 pub(in crate::daemon) mod verdicts;
 
-const DOCUMENT: &str = "task";
+const DOCUMENT: &str = crate::store::TASK_DOCUMENT;
 const BOARD: &str = "board";
 const COMMENT: &str = "task_comment";
 const ENTRY: &str = "task_entry";
@@ -322,6 +322,9 @@ impl State {
             .and_then(|id| self.plan_by_id(id).ok())
             .map(|p| p.summary());
         let files = self.card_files(&task.id);
+        let usage = self
+            .store_read("card usage", |store| store.usage_card_row(task.id.as_str()))
+            .flatten();
         Response::TaskDetail {
             task,
             board,
@@ -332,6 +335,7 @@ impl State {
             lease,
             plan,
             files,
+            usage,
         }
     }
 
@@ -2579,6 +2583,7 @@ mod tests {
                         agentdocker_core::LinkKind::Task,
                         "zz"
                     )],
+                    idempotency_key: None,
                 })
                 .await,
             Response::Error {
@@ -2596,6 +2601,7 @@ mod tests {
                     payload: serde_json::json!({"text": "this one is yours"}),
                     reply_to: None,
                     links: vec![card_link.clone()],
+                    idempotency_key: None,
                 })
                 .await,
             Response::Sent { .. }
