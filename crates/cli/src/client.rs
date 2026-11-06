@@ -766,13 +766,13 @@ pub const EXIT_UNAVAILABLE: i32 = 6;
 pub fn exit_code(code: &agentdocker_core::ErrorCode) -> i32 {
     use agentdocker_core::ErrorCode::*;
     match code {
-        Invalid => EXIT_USAGE,
+        Invalid | LaunchFailed => EXIT_USAGE,
         NotFound | Ambiguous => EXIT_NOT_FOUND,
         Conflict | NameTaken | Deadlock => EXIT_HELD,
         Forbidden | Paused | IdentityMismatch => EXIT_REFUSED,
         StorageUnavailable | Unavailable | EngineUnavailable | BuildFailed | Backpressure
         | Timeout | Cancelled | Transferring | EventHistoryLost => EXIT_UNAVAILABLE,
-        Internal => EXIT_UNEXPECTED,
+        Internal | Unconfirmed => EXIT_UNEXPECTED,
     }
 }
 
@@ -850,6 +850,8 @@ mod exit_tests {
             (ErrorCode::Transferring, EXIT_UNAVAILABLE),
             (ErrorCode::EventHistoryLost, EXIT_UNAVAILABLE),
             (ErrorCode::Internal, EXIT_UNEXPECTED),
+            (ErrorCode::Unconfirmed, EXIT_UNEXPECTED),
+            (ErrorCode::LaunchFailed, EXIT_USAGE),
         ];
         for (code, status) in classes {
             assert_eq!(exit_code(&code), status, "{code:?}");

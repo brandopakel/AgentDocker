@@ -16,6 +16,8 @@
 use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::Arc;
+
+use crate::sync::lock;
 use std::time::Duration;
 
 #[cfg(unix)]
@@ -222,7 +224,7 @@ impl Session {
     /// What the agent printed lately, as bytes, and the window it printed
     /// into: enough to draw its screen as it stands.
     pub fn screen(&self) -> (Vec<u8>, (u16, u16)) {
-        let bytes = lock_scrollback(&self.scrollback).iter().copied().collect();
+        let bytes = lock(&self.scrollback).iter().copied().collect();
         let size = *self
             .size
             .lock()
@@ -233,7 +235,7 @@ impl Session {
     /// What to show now, and what comes next, taken together under one
     /// lock so a byte cannot fall between them or arrive twice.
     pub fn attach(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
-        let history = lock_scrollback(&self.scrollback);
+        let history = lock(&self.scrollback);
         let seen: Vec<u8> = history.iter().copied().collect();
         let live = self
             .output
@@ -243,14 +245,6 @@ impl Session {
         drop(history);
         (seen, live)
     }
-}
-
-fn lock_scrollback(
-    scrollback: &std::sync::Mutex<VecDeque<u8>>,
-) -> std::sync::MutexGuard<'_, VecDeque<u8>> {
-    scrollback
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 fn launch_for(daemon: &Daemon, record: &AgentRecord) -> Launch {
@@ -270,6 +264,27 @@ fn launch_for(daemon: &Daemon, record: &AgentRecord) -> Launch {
 
 /// Start an owner for the agent's command and learn the prepared child's
 /// identity. The command does not run until [`Spawned::activate`].
+/// Why a prepared command never ran: it was stopped before it was let go,
+/// or it ended before the owner reported it running (its program could
+/// not be executed). Any other activation failure may come after the
+/// command started.
+#[derive(Debug)]
+pub enum NotActivated {
+    Stopped,
+    Exited(String),
+}
+
+impl std::fmt::Display for NotActivated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => f.write_str("launch was stopped before activation"),
+            Self::Exited(status) => write!(f, "command exited before it was activated: {status}"),
+        }
+    }
+}
+
+impl std::error::Error for NotActivated {}
+
 pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spawned> {
     anyhow::ensure!(!record.spec.command.is_empty(), "empty command");
     daemon.validate_native_launch(record)?;
@@ -588,10 +603,9 @@ impl Spawned {
     }
 
     async fn activate_inner(&mut self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.stop.borrow().is_none(),
-            "launch was stopped before activation"
-        );
+        if self.stop.borrow().is_some() {
+            return Err(NotActivated::Stopped.into());
+        }
         self.controller.send(&OwnerCommand::Activate).await?;
         // Nothing but activation, or an early exit, can arrive here: output
         // begins only once the command runs.
@@ -599,10 +613,7 @@ impl Spawned {
             match self.controller.next().await? {
                 Some(OwnerReport::Activated) => break,
                 Some(OwnerReport::Exited { status }) => {
-                    anyhow::bail!(
-                        "command exited before it was activated: {}",
-                        describe_exit(&status)
-                    )
+                    return Err(NotActivated::Exited(describe_exit(&status)).into());
                 }
                 Some(_) => continue,
                 None => anyhow::bail!("session owner closed during activation"),
@@ -644,7 +655,7 @@ impl Spawned {
 
     fn show(&self, bytes: &[u8]) {
         if let (Some(scrollback), Some(output)) = (&self.scrollback, &self.output) {
-            let mut history = lock_scrollback(scrollback);
+            let mut history = lock(scrollback);
             history.extend(bytes.iter().copied());
             let excess = history.len().saturating_sub(SCROLLBACK);
             history.drain(..excess);

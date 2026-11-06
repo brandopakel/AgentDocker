@@ -344,7 +344,7 @@ impl State {
                     kind,
                     channel.name.clone(),
                     channel.title(),
-                    channel.members.clone(),
+                    self.live_members(channel),
                 ))
             }
             ConversationKind::Dm => {

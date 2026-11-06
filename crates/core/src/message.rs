@@ -160,6 +160,115 @@ pub struct Question {
     pub expires_at: DateTime<Utc>,
 }
 
+/// The answer that releases a held message to its recipients.
+pub const RELEASE: &str = "Release";
+/// The answer that drops a held message unseen by its recipients.
+pub const DROP: &str = "Drop";
+/// How long a held message waits for the person before it is dropped as
+/// expired: long enough to come back to after a weekend, short enough that
+/// a forgotten connector cannot fill the question list for ever.
+pub const HELD_FOR: chrono::Duration = chrono::Duration::days(7);
+/// How much of a held message its card quotes.
+const HELD_PREVIEW_CHARS: usize = 2_000;
+
+/// A remote sender's message the project holds for the person
+/// ([`crate::policy::Trust::Hold`]): kept whole, delivered to nobody, until
+/// the person releases it or drops it from the question that carries it.
+/// Stored as a `held_message` document under its question's id, in the
+/// same transaction as the question.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeldMessage {
+    /// The question put to the person about it; the document's id.
+    pub question: MessageId,
+    /// The message as it was sent, to go out unchanged on release.
+    pub envelope: Envelope,
+    /// The setting that held it, as [`crate::policy::InboundRuling::rule`]
+    /// says it.
+    pub rule: String,
+    pub held_at: DateTime<Utc>,
+}
+
+/// What the person decided about a held message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeldDecision {
+    Release,
+    Drop,
+}
+
+impl HeldDecision {
+    /// Read an answer to a held message's question. Only the two words the
+    /// card offers, with case forgiven: an essay is not a decision.
+    pub fn parse(answer: &str) -> Option<Self> {
+        let word = answer.trim();
+        if word.eq_ignore_ascii_case(RELEASE) {
+            Some(Self::Release)
+        } else if word.eq_ignore_ascii_case(DROP) {
+            Some(Self::Drop)
+        } else {
+            None
+        }
+    }
+}
+
+impl HeldMessage {
+    /// The question that carries a held message to the person: who sent
+    /// what to whom, a bounded quotation, and the two answers. `sender` is
+    /// the sender's display name and `to` the destination as the person
+    /// reads it. Pure, so the card's shape is a unit test.
+    pub fn question(
+        envelope: &Envelope,
+        sender: &str,
+        runtime: &str,
+        to: &str,
+        human: AgentId,
+        rule: &str,
+        now: DateTime<Utc>,
+    ) -> Question {
+        let body = match envelope
+            .payload
+            .get("text")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(text) => text.to_owned(),
+            None => envelope.payload.to_string(),
+        };
+        let mut quoted: String = body
+            .chars()
+            .filter(|c| !c.is_control() || *c == '\n')
+            .take(HELD_PREVIEW_CHARS)
+            .collect();
+        if body.chars().count() > HELD_PREVIEW_CHARS {
+            quoted.push_str("\n[…]");
+        }
+        let prompt = format!(
+            "{sender} ({runtime}) sent a `{}` message to {to}, which this project holds for you ({rule}):\n\n{quoted}\n\nRelease delivers it as sent; Drop discards it and tells nobody.",
+            envelope.kind
+        );
+        let presentation = QuestionPresentation::Choices {
+            question: prompt,
+            options: vec![
+                QuestionOption {
+                    label: RELEASE.to_owned(),
+                    description: format!("Deliver it to {to} as sent."),
+                },
+                QuestionOption {
+                    label: DROP.to_owned(),
+                    description: "Discard it; the sender is not told.".to_owned(),
+                },
+            ],
+        };
+        Question {
+            id: MessageId::generate(),
+            from: envelope.from.clone(),
+            to: Destination::Agent(human),
+            text: presentation.text(),
+            presentation: Some(presentation),
+            asked_at: now,
+            expires_at: now + HELD_FOR,
+        }
+    }
+}
+
 /// Which way an answer reached its asker. A synchronous `ask` waiting on
 /// its connection is handed the answer and the queue never shows it; with
 /// no `ask` waiting, or one that ended first, the queue delivers it. One
@@ -580,6 +689,111 @@ pub fn topic_matches(pattern: &str, topic: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The card a held message rides on says who sent what to whom, quotes
+    /// it within bounds, offers exactly Release and Drop, and is put to the
+    /// person for a week; the sender is who the card is from, so the
+    /// person sees whose word they are judging.
+    #[test]
+    fn a_held_message_rides_on_a_card_with_two_answers() {
+        let now = Utc::now();
+        let human = AgentId::from("person");
+        let envelope = Envelope::new(
+            "remote",
+            Destination::Project(ProjectId::from("alpha")),
+            "message",
+            serde_json::json!({ "text": "the docs page says\u{7}\nthe flag was renamed" }),
+            None,
+            now,
+        );
+        let question = HeldMessage::question(
+            &envelope,
+            "claude-connector-7f3a",
+            "claude-browser",
+            "everyone in orchard",
+            human.clone(),
+            "project: inbound.connector",
+            now,
+        );
+        assert_eq!(question.from, "remote");
+        assert_eq!(question.to, Destination::Agent(human));
+        assert_eq!(question.expires_at, now + HELD_FOR);
+        let Some(presentation @ QuestionPresentation::Choices { options, .. }) =
+            &question.presentation
+        else {
+            panic!("{:?}", question.presentation)
+        };
+        assert!(presentation.valid_for(&question.text), "{}", question.text);
+        assert_eq!(
+            options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(),
+            [RELEASE, DROP]
+        );
+        assert!(question.text.contains(
+            "claude-connector-7f3a (claude-browser) sent a `message` message to everyone in orchard"
+        ));
+        assert!(question.text.contains("(project: inbound.connector)"));
+        // Control characters are not quoted; line breaks are.
+        assert!(
+            question
+                .text
+                .contains("the docs page says\nthe flag was renamed")
+        );
+        assert!(!question.text.contains('\u{7}'));
+        assert!(presentation.permits_choice(RELEASE) && presentation.permits_choice(DROP));
+        assert!(!presentation.permits_choice("Allow"));
+
+        // A long message is quoted up to the preview and said to go on;
+        // the card stays within a question's size.
+        let long = Envelope::new(
+            "remote",
+            Destination::Broadcast,
+            "message",
+            serde_json::json!({ "text": "x".repeat(10_000) }),
+            None,
+            now,
+        );
+        let card = HeldMessage::question(
+            &long,
+            "r",
+            "claude-browser",
+            "all",
+            AgentId::from("p"),
+            "host: inbound.connector",
+            now,
+        );
+        assert!(card.text.contains("[…]"));
+        assert!(card.presentation.as_ref().unwrap().valid_for(&card.text));
+        assert!(card.text.len() < 3_000);
+        // A payload without text is quoted as the JSON it is.
+        let raw = Envelope::new(
+            "remote",
+            Destination::Broadcast,
+            "note",
+            serde_json::json!({ "n": 1 }),
+            None,
+            now,
+        );
+        let card = HeldMessage::question(
+            &raw,
+            "r",
+            "claude-browser",
+            "all",
+            AgentId::from("p"),
+            "host",
+            now,
+        );
+        assert!(card.text.contains("{\"n\":1}"));
+    }
+
+    #[test]
+    fn a_decision_is_one_of_the_two_words_with_case_forgiven() {
+        assert_eq!(HeldDecision::parse("Release"), Some(HeldDecision::Release));
+        assert_eq!(HeldDecision::parse(" drop "), Some(HeldDecision::Drop));
+        assert_eq!(HeldDecision::parse("RELEASE"), Some(HeldDecision::Release));
+        assert_eq!(HeldDecision::parse("release it"), None);
+        assert_eq!(HeldDecision::parse("yes"), None);
+        assert_eq!(HeldDecision::parse(""), None);
+    }
 
     /// A question put to a project reaches the agents working in it, and
     /// no agent elsewhere; one put to everyone reaches anyone.

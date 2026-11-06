@@ -178,7 +178,7 @@ impl State {
             return Ok(());
         }
         Err(Box::new(self.write_failure().unwrap_or_else(|| {
-            Response::error(ErrorCode::Internal, "the roles were not recorded")
+            Response::error(ErrorCode::StorageUnavailable, "the roles were not recorded")
         })))
     }
 
