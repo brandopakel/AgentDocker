@@ -731,6 +731,33 @@ command.
 - Setup and installation preserve their existing exact-preview/apply and
   undo/rollback checks. A framework migration does not relax process identity,
   release lifetime pins, queue limits or private state requirements.
+- The menu-bar panel (macOS) is a second window of the one Iced application,
+  which runs as an Iced daemon so that it can open one: borderless, not
+  resizable, 448 by 600 logical points, placed with its top at the menu bar's
+  foot and its middle under the item's button (`status_item::Anchor`, the
+  button's frame flipped to the top-left coordinates a window is placed by,
+  slid sideways to stay on its screen), floating above other windows, and
+  focused as it opens. Its view is drawn from the same state as the main
+  window's (`App::view_in` picks by window id), so the Needs-you rows are the
+  card's own widgets (`needs_you_rows`, every project, narrow layout) and send
+  the card's messages; the agents at work come from the records, activity and
+  leases the window already holds (`app/panel.rs`; the card an agent holds is
+  the note of its `task:` lease, which the daemon writes as the card's title),
+  ordered by one pure function with its own test. Window events carry their
+  window (`Message::WindowEvent`): the panel's Escape, focus loss and close
+  request close it and reach nothing else; the main window's are handled as
+  before; a closed panel's last events are nobody's. While the panel is open
+  the clock sweep runs at the focused pace, so its time-left chips stay true
+  with the main window unfocused behind it. An action that goes to the window
+  (**Answer**, a row, an in-app terminal) closes the panel first and raises
+  the window; the panel never shows a pressed, hovered or focused state after
+  it closes, since its window goes with it, and a click on the item within
+  400 ms of a focus-loss close (`PANEL_REOPEN_GUARD`) is taken as the click
+  that took the focus and reopens nothing. In a smoke run the panel keeps to
+  the window's rule: beneath every ordinary window, centred since there is no
+  item. The panel has no native accessibility adapter of its own; its rows
+  carry the same spoken sentences as the card's, for the workflow driver and a
+  later adapter.
 
 Send receipts carry bounded recipient-readiness metadata into the draft for the
 original session, conversation or thread. The default presentation is
@@ -845,8 +872,11 @@ settle than release builds and are for review, not for the acceptance report.
 It drives the rendered controls' callbacks through question delivery, draft
 navigation, terminal attachment, the Messages rail (no channel, `#all` or
 contested room listed, a channel's messages read through), setup preview/apply/undo,
-folder pinning, agent launch/stop, CLI commands, focus reveal, resizing, appearance
-and a second launch. The Stop sequence waits for its control to disappear after confirmation, then
+folder pinning, agent launch/stop, CLI commands, focus reveal, resizing, appearance,
+a second launch and the menu-bar panel (the `menu_bar_panel` step sends the
+item's click, since a smoke run shows no item; a `capture` with `panel` reads
+the newest window, the panel's, which may be narrower than a main capture's
+floor). The Stop sequence waits for its control to disappear after confirmation, then
 checks that the exact launched record exited; two clicks alone are not success.
 Daemon and on-disk assertions verify outcomes. macOS also
 probes the app's native NSAccessibility hierarchy. The driver does not claim

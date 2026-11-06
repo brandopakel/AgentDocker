@@ -877,6 +877,26 @@ impl App {
     pub fn scale_factor(&self) -> f32 {
         self.settings.text_size / 14.0
     }
+    /// The same theme in every window of the app.
+    pub fn theme_in(&self, _window: iced::window::Id) -> iced::Theme {
+        self.theme()
+    }
+    /// The same text size in every window of the app.
+    pub fn scale_factor_in(&self, _window: iced::window::Id) -> f32 {
+        self.scale_factor()
+    }
+    /// Every window's title: the app's name.
+    pub fn title_in(&self, _window: iced::window::Id) -> String {
+        "AgentDocker".to_owned()
+    }
+    /// What a window shows: the menu-bar panel in its own window, the app
+    /// in the main one.
+    pub fn view_in(&self, window: iced::window::Id) -> Element<'_, Message> {
+        if self.shell.panel == Some(window) {
+            return self.panel_view(Colors::new(self.shell.catalog.dark));
+        }
+        self.view()
+    }
     /// The runtime of the agent with this id (or a former id of it).
     pub(super) fn runtime_of(&self, id: &str) -> Option<&str> {
         let id = self.canonical_agent(id);

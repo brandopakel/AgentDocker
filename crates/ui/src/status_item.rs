@@ -12,9 +12,9 @@
 //!
 //! A click arrives in the app as a message (`Message::StatusItemClicked`,
 //! through the wake that every other native callback uses), so what the
-//! click does is the app's to decide: today it raises the window; a panel
-//! attached to the item would hang off the same message, anchored to the
-//! item's button, without this module changing shape.
+//! click does is the app's to decide: it opens the panel under the item,
+//! placed from [`anchor`], the item's button frame in the window
+//! coordinates Iced takes.
 
 /// The item's tooltip: the app's name, and the count in words when there
 /// is one, so the number beside the mark is explained on hover and read
@@ -45,6 +45,46 @@ pub(crate) fn sync(shown: Option<usize>) {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn sync(_shown: Option<usize>) {}
 
+/// Where the item's button stands, for a panel to hang under it: in
+/// logical points with the origin at the top left of the main display,
+/// as Iced positions a window.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) struct Anchor {
+    /// The horizontal middle of the item's button.
+    pub middle: f32,
+    /// The bottom edge of the menu bar: where a panel's top goes.
+    pub bottom: f32,
+    /// The left and right edges of the screen the item is on; a panel
+    /// stays between them.
+    pub screen: (f32, f32),
+}
+
+impl Anchor {
+    /// The top-left corner of a panel `width` wide centred under the
+    /// item, kept inside the screen's edges.
+    pub(crate) fn panel_origin(self, width: f32) -> iced::Point {
+        let (left, right) = self.screen;
+        let x = (self.middle - width / 2.0)
+            .min(right - width)
+            .max(left);
+        iced::Point::new(x, self.bottom)
+    }
+}
+
+/// The item's anchor while it is shown, on the main thread; `None` with
+/// no item, elsewhere than macOS, or off the main thread.
+#[cfg(target_os = "macos")]
+pub(crate) fn anchor() -> Option<Anchor> {
+    native::anchor()
+}
+
+/// Other platforms have no menu-bar item here.
+#[cfg(not(target_os = "macos"))]
+pub(crate) fn anchor() -> Option<Anchor> {
+    None
+}
+
 /// Whether the item was clicked since the last call. The click sets a
 /// flag and wakes the app, whose next tick asks here and turns it into a
 /// message; polling keeps the native callback free of app state.
@@ -61,7 +101,7 @@ mod native {
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
     use objc2::{AnyThread, ClassType, MainThreadMarker, define_class, msg_send, sel};
-    use objc2_app_kit::{NSCellImagePosition, NSImage, NSStatusBar, NSStatusItem};
+    use objc2_app_kit::{NSCellImagePosition, NSImage, NSScreen, NSStatusBar, NSStatusItem};
     use objc2_foundation::{NSData, NSObject, NSObjectProtocol, NSSize, NSString};
 
     define_class!(
@@ -101,6 +141,32 @@ mod native {
         let image = NSImage::initWithData(NSImage::alloc(), &data)?;
         image.setSize(NSSize::new(18.0, 18.0));
         Some(image)
+    }
+
+    /// The item's button frame, turned from AppKit's bottom-left screen
+    /// coordinates into the top-left ones a window is placed by: the
+    /// main display (the first screen, the one with the menu bar) is the
+    /// reference, as it is for the window system's own flip.
+    pub(super) fn anchor() -> Option<super::Anchor> {
+        let main = MainThreadMarker::new()?;
+        SHOWN.with(|slot| {
+            let slot = slot.borrow();
+            let window = slot.as_ref()?.item.button(main)?.window()?;
+            let frame = window.frame();
+            let height = NSScreen::screens(main).firstObject()?.frame().size.height;
+            let screen = window
+                .screen()
+                .map(|screen| screen.frame())
+                .unwrap_or(frame);
+            Some(super::Anchor {
+                middle: (frame.origin.x + frame.size.width / 2.0) as f32,
+                bottom: (height - frame.origin.y) as f32,
+                screen: (
+                    screen.origin.x as f32,
+                    (screen.origin.x + screen.size.width) as f32,
+                ),
+            })
+        })
     }
 
     pub(super) fn sync(shown: Option<usize>) {
@@ -157,6 +223,28 @@ mod tests {
         assert_eq!(super::tooltip(1), "AgentDocker · 1 waiting on you");
         assert_eq!(super::tooltip(3), "AgentDocker · 3 waiting on you");
         assert_eq!(super::tooltip(250), "AgentDocker · 99+ waiting on you");
+    }
+
+    /// A panel is centred under the item and never off the screen: at
+    /// the right edge it slides left to fit, at the left edge right.
+    #[test]
+    fn a_panel_hangs_centred_under_the_item_and_inside_the_screen() {
+        let anchor = |middle: f32| super::Anchor {
+            middle,
+            bottom: 25.0,
+            screen: (0.0, 1440.0),
+        };
+        assert_eq!(
+            anchor(700.0).panel_origin(448.0),
+            iced::Point::new(476.0, 25.0)
+        );
+        assert_eq!(
+            anchor(1400.0).panel_origin(448.0),
+            iced::Point::new(992.0, 25.0),
+            "slid left to stay on the screen"
+        );
+        assert_eq!(anchor(40.0).panel_origin(448.0), iced::Point::new(0.0, 25.0));
+        assert_eq!(super::anchor(), None, "no item is shown in a test");
     }
 
     #[test]

@@ -461,19 +461,48 @@ impl App {
     /// install, with nothing waiting, it offers the two things that get a
     /// person started instead. Empty when there is nothing to say.
     pub(super) fn needs_you(&self, c: Colors) -> Option<Element<'_, Message>> {
-        let now = Utc::now();
         let narrow = self.narrow();
+        let mut rows = self.needs_you_rows(false, narrow, c);
+        // Nothing else: a session that is blocked, paused or ended with
+        // messages queued says so on its own row and in its details. It is
+        // not a decision for the person, and listing it here buried the
+        // questions that are.
+        // Nobody waiting: on a fresh install the card turns into the two
+        // things that get a person started, then disappears for good.
+        // Finished sessions are not in it; they are not asking for anything
+        // (the Done pill on their row is enough).
+        let guidance = rows.is_empty();
+        if guidance {
+            rows = self.guidance_rows(narrow, c);
+        }
+        if rows.is_empty() {
+            return None;
+        }
+        Some(self.needs_you_card(rows, guidance, c))
+    }
+
+    /// The rows Needs you holds, each the asker, the ask or the errand's
+    /// chip, the time left and one action: the unanswered questions, then
+    /// the sessions stopped at their own prompt. On view only, or
+    /// `everywhere` (every project, each row led by its project's name:
+    /// the menu-bar panel's list). `narrow` stacks who over what.
+    pub(in crate::app) fn needs_you_rows(
+        &self,
+        everywhere: bool,
+        narrow: bool,
+        c: Colors,
+    ) -> Vec<Element<'_, Message>> {
+        let now = Utc::now();
         let mut rows: Vec<Element<'_, Message>> = Vec::new();
         for question in self
             .questions
             .iter()
-            .filter(|q| !q.expired(now) && self.agent_on_view(&q.from))
+            .filter(|q| !q.expired(now) && (everywhere || self.agent_on_view(&q.from)))
         {
             // Seen across projects, a row says whose project it is: the
             // same tool names in several repositories are otherwise one
             // list of strangers.
-            let name = match self
-                .all_projects()
+            let name = match (everywhere || self.all_projects())
                 .then(|| self.project_name_of(&question.from))
                 .flatten()
             {
@@ -566,15 +595,14 @@ impl App {
         // goes to that terminal, where it is answered.
         for agent in self.agents.iter().filter(|a| {
             a.status.is_live()
-                && self.agent_on_view(a.id.as_str())
+                && (everywhere || self.agent_on_view(a.id.as_str()))
                 && matches!(
                     self.activity.get(a.id.as_str()),
                     Some(agentdocker_core::Activity::Waiting { .. })
                 )
         }) {
             let id = agent.id.to_string();
-            let name = match self
-                .all_projects()
+            let name = match (everywhere || self.all_projects())
                 .then(|| self.project_name_of(&id))
                 .flatten()
             {
@@ -659,75 +687,79 @@ impl App {
                 ),
             ));
         }
-        // Nothing else: a session that is blocked, paused or ended with
-        // messages queued says so on its own row and in its details. It is
-        // not a decision for the person, and listing it here buried the
-        // questions that are.
-        // Nobody waiting: on a fresh install the card turns into the two
-        // things that get a person started, then disappears for good.
-        // Finished sessions are not in it; they are not asking for anything
-        // (the Done pill on their row is enough).
-        let guidance = rows.is_empty();
-        if guidance {
-            for process in self.available_processes() {
-                // The tool, not a process number: nothing else tells
-                // them apart until one is connected and named.
-                let tool = super::super::runtime_label(&process.runtime).to_string();
-                let connecting = self.shell.adopting.contains(&process.pid);
+        rows
+    }
+
+    /// The first steps, for a fresh install with nothing waiting: a tool
+    /// running here and not connected, with Connect; a tool installed and
+    /// not set up, with Set up.
+    fn guidance_rows(&self, narrow: bool, c: Colors) -> Vec<Element<'_, Message>> {
+        let mut rows: Vec<Element<'_, Message>> = Vec::new();
+        for process in self.available_processes() {
+            // The tool, not a process number: nothing else tells
+            // them apart until one is connected and named.
+            let tool = super::super::runtime_label(&process.runtime).to_string();
+            let connecting = self.shell.adopting.contains(&process.pid);
+            rows.push(waiting_row(
+                spoken(
+                    format!("needs-you-line-process-{}", process.pid),
+                    format!("{tool} is running here, not connected"),
+                    waiting_words(tool, None, None, narrow, c),
+                ),
+                None,
+                compact(
+                    format!("needs-you-connect-{}", process.pid),
+                    if connecting {
+                        "Connecting…"
+                    } else {
+                        "Connect"
+                    },
+                    (self.connected.is_ok() && !connecting)
+                        .then_some(Message::Adopt(process.pid)),
+                    Kind::Secondary,
+                ),
+            ));
+        }
+        if self.all_projects() {
+            for runtime in self.runtimes.iter().filter(|r| {
+                r.installed()
+                    && !self.tool_reports(&r.name)
+                    && (r.mcp == agentdocker_core::runtime::Wiring::Missing
+                        || r.hooks == agentdocker_core::runtime::Wiring::Missing)
+            }) {
                 rows.push(waiting_row(
                     spoken(
-                        format!("needs-you-line-process-{}", process.pid),
-                        format!("{tool} is running here, not connected"),
-                        waiting_words(tool, None, None, narrow, c),
+                        format!("needs-you-line-tool-{}", runtime.name),
+                        format!("{} needs setup", runtime.label),
+                        waiting_words(runtime.label.clone(), None, None, narrow, c),
                     ),
                     None,
                     compact(
-                        format!("needs-you-connect-{}", process.pid),
-                        if connecting {
-                            "Connecting…"
-                        } else {
-                            "Connect"
-                        },
-                        (self.connected.is_ok() && !connecting)
-                            .then_some(Message::Adopt(process.pid)),
+                        format!("needs-you-tool-{}", runtime.name),
+                        "Set up",
+                        (!self.setup_busy).then_some(Message::Setup(vec![
+                            runtime.name.clone(),
+                            "--preview".into(),
+                        ])),
                         Kind::Secondary,
                     ),
                 ));
             }
-            if self.all_projects() {
-                for runtime in self.runtimes.iter().filter(|r| {
-                    r.installed()
-                        && !self.tool_reports(&r.name)
-                        && (r.mcp == agentdocker_core::runtime::Wiring::Missing
-                            || r.hooks == agentdocker_core::runtime::Wiring::Missing)
-                }) {
-                    rows.push(waiting_row(
-                        spoken(
-                            format!("needs-you-line-tool-{}", runtime.name),
-                            format!("{} needs setup", runtime.label),
-                            waiting_words(runtime.label.clone(), None, None, narrow, c),
-                        ),
-                        None,
-                        compact(
-                            format!("needs-you-tool-{}", runtime.name),
-                            "Set up",
-                            (!self.setup_busy).then_some(Message::Setup(vec![
-                                runtime.name.clone(),
-                                "--preview".into(),
-                            ])),
-                            Kind::Secondary,
-                        ),
-                    ));
-                }
-            }
         }
-        if rows.is_empty() {
-            return None;
-        }
+        rows
+    }
+
+    /// The card: what waits headed by its chip and how many, with
+    /// hairlines between rows and the rest behind *Show N more*. The
+    /// first steps need no heading: each row is a tool and the one control
+    /// that gets it going, Connect or Set up.
+    fn needs_you_card<'a>(
+        &self,
+        rows: Vec<Element<'a, Message>>,
+        guidance: bool,
+        c: Colors,
+    ) -> Element<'a, Message> {
         let total = rows.len();
-        // What waits is headed by its chip and how many. The first steps
-        // need no heading: each row is a tool and the one control that
-        // gets it going, Connect or Set up.
         let mut list = column![].width(Fill);
         if !guidance {
             let header = Chip::new(
@@ -764,12 +796,10 @@ impl App {
                 .padding([2, 6]),
             );
         }
-        Some(
-            container(list)
-                .width(Fill)
-                .style(move |_| c.card_style())
-                .into(),
-        )
+        container(list)
+            .width(Fill)
+            .style(move |_| c.card_style())
+            .into()
     }
 
     /// One question with its controls: a framed approval for a Codex

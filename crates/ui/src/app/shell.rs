@@ -281,6 +281,11 @@ pub(super) struct State {
     /// The window was closed to the menu bar: it exists, hidden, until
     /// the item is clicked or the app is activated again.
     pub hidden: bool,
+    /// The menu-bar panel's window while it is open.
+    pub panel: Option<window::Id>,
+    /// When the panel last closed because the focus left it: the click on
+    /// the item that took the focus closed it, and must not reopen it.
+    pub panel_closed: Option<Instant>,
     pub launching: bool,
     /// The session whose resume is on its way to the daemon, so its
     /// button alone says "Reconnecting…" (a launch from the Launch form
@@ -516,6 +521,9 @@ pub const WAIT_GRACE: Duration = Duration::from_secs(2);
 /// The same sweep while it does not: nobody reads those labels, and each
 /// tick paints the whole window.
 pub const UNFOCUSED_SWEEP: Duration = Duration::from_secs(30);
+/// How long after the panel closed for losing the focus a click on the
+/// menu-bar item is taken as the click that took it, and reopens nothing.
+pub const PANEL_REOPEN_GUARD: Duration = Duration::from_millis(400);
 
 /// Each conversation and session keeps its own draft; receipts clear only an
 /// untouched submission.
@@ -1284,9 +1292,19 @@ pub enum Message {
     Roomy(bool),
     NotifyFinished(bool),
     MenuBarItem(bool),
-    /// The menu-bar item was clicked: the window comes back, or comes to
-    /// the front. A panel on the item would hang off this message.
+    /// The menu-bar item was clicked: the panel opens under it, or closes
+    /// if it was open.
     StatusItemClicked,
+    /// The panel's own way to the window, for when nothing it lists is a
+    /// reason to open it: the panel closes and the window comes to the
+    /// front.
+    OpenWindow,
+    /// The panel goes.
+    ClosePanel,
+    /// An event with the window it happened in: the panel's are its own
+    /// (Escape and the focus leaving it close it), the main window's are
+    /// handled as `Event`.
+    WindowEvent(window::Id, iced::Event),
     /// Mark a session as something to come back to, and leave it.
     MarkUnread(String),
     /// A notice the window posted itself was taken or refused; either way
@@ -1542,13 +1560,13 @@ impl App {
             // looking at the window.
             iced::time::every(if self.smoke.is_some() {
                 Duration::from_millis(100)
-            } else if self.shell.unfocused {
+            } else if self.shell.unfocused && self.shell.panel.is_none() {
                 UNFOCUSED_SWEEP
             } else {
                 FOCUSED_SWEEP
             })
             .map(|_| Message::Tick),
-            iced::event::listen_with(|event, status, _| super::navigation::listened(event, status)),
+            iced::event::listen_with(super::navigation::listened),
         ])
     }
 
@@ -1596,11 +1614,15 @@ impl App {
         Some(editor)
     }
 
-    pub fn boot() -> (Self, Task<Message>) {
+    /// The app and its first task: the main window, opened with `settings`
+    /// (the app is an Iced daemon, so that it can open the menu-bar panel
+    /// as a second window; a daemon opens no window of its own).
+    pub fn boot(settings: window::Settings) -> (Self, Task<Message>) {
+        let (id, open) = window::open(settings);
         (
             Self::new(),
             Task::batch([
-                window::oldest().and_then(|id| Task::done(Message::Window(id))),
+                open.map(|_| Message::Window(id)),
                 Task::future(async {
                     crate::clock::warm();
                 })
@@ -1688,6 +1710,28 @@ impl App {
         ) && let Some(id) = self.shell.window
         {
             tasks.push(crate::accessibility::geometry(id));
+        }
+        // An action that goes somewhere in the window, taken in the panel,
+        // closes the panel and brings the window to the front: Answer, a
+        // row, an in-app terminal. A terminal elsewhere only closes it.
+        if self.shell.panel.is_some() {
+            match &message {
+                Message::OpenQuestion(_) | Message::OpenSession(_) => {
+                    tasks.push(self.leave_panel());
+                }
+                Message::OpenAgentTerminal(id) => {
+                    let in_app = self
+                        .agents
+                        .iter()
+                        .any(|a| a.id.as_str() == id.as_str() && a.managed && a.spec.tty);
+                    tasks.push(if in_app {
+                        self.leave_panel()
+                    } else {
+                        self.close_panel()
+                    });
+                }
+                _ => {}
+            }
         }
         match message {
             Message::Tick => {
@@ -4143,8 +4187,21 @@ impl App {
                 self.settings.menu_bar_item = on;
                 self.shell.catalog.appearance = Some(self.settings.clone());
                 self.shell.changed();
+                if !on {
+                    tasks.push(self.close_panel());
+                }
             }
-            Message::StatusItemClicked => tasks.push(self.raise_window()),
+            Message::StatusItemClicked => tasks.push(self.toggle_panel()),
+            Message::OpenWindow => tasks.push(self.leave_panel()),
+            Message::ClosePanel => tasks.push(self.close_panel()),
+            Message::WindowEvent(id, event) => {
+                if self.shell.panel == Some(id) {
+                    tasks.push(self.panel_event(event));
+                } else if self.shell.window.is_none_or(|main| main == id) {
+                    tasks.push(self.update(Message::Event(event)));
+                }
+                // A closed panel's last events (Closed) are nobody's.
+            }
             Message::DismissError => {
                 self.shell.error = None;
                 self.status.clear();
@@ -4679,6 +4736,77 @@ impl App {
         }
         task.chain(window::minimize(id, false))
             .chain(window::gain_focus(id))
+    }
+
+    /// Open the panel under the menu-bar item, or close it if it is open.
+    /// A click that itself took the focus from the panel has closed it
+    /// already, and reopens nothing.
+    fn toggle_panel(&mut self) -> Task<Message> {
+        if self.shell.panel.is_some() {
+            return self.close_panel();
+        }
+        if self
+            .shell
+            .panel_closed
+            .take()
+            .is_some_and(|at| at.elapsed() < PANEL_REOPEN_GUARD)
+        {
+            return Task::none();
+        }
+        // Under the item where there is one; a smoke run has none, and
+        // its panel stays beneath the person's windows like its window.
+        let position = crate::status_item::anchor().map_or(window::Position::Centered, |a| {
+            window::Position::Specific(a.panel_origin(super::panel::WIDTH))
+        });
+        let (id, open) = window::open(window::Settings {
+            size: iced::Size::new(super::panel::WIDTH, super::panel::HEIGHT),
+            position,
+            resizable: false,
+            decorations: false,
+            minimizable: false,
+            level: if self.smoke.is_some() {
+                window::Level::AlwaysOnBottom
+            } else {
+                window::Level::AlwaysOnTop
+            },
+            exit_on_close_request: false,
+            ..Default::default()
+        });
+        self.shell.panel = Some(id);
+        // Focused as it opens, so that Escape reaches it and the focus
+        // leaving it is what closes it.
+        open.discard().chain(window::gain_focus(id))
+    }
+
+    /// Close the panel, if it is open.
+    fn close_panel(&mut self) -> Task<Message> {
+        match self.shell.panel.take() {
+            Some(id) => window::close(id),
+            None => Task::none(),
+        }
+    }
+
+    /// Leave the panel for the window: the panel closes and the window
+    /// comes to the front.
+    fn leave_panel(&mut self) -> Task<Message> {
+        self.close_panel().chain(self.raise_window())
+    }
+
+    /// The panel's own events: it closes on Escape, when the focus leaves
+    /// it and when its window is asked to close; nothing else is its.
+    fn panel_event(&mut self, event: iced::Event) -> Task<Message> {
+        match event {
+            iced::Event::Window(window::Event::Unfocused) => {
+                self.shell.panel_closed = Some(Instant::now());
+                self.close_panel()
+            }
+            iced::Event::Window(window::Event::CloseRequested) => self.close_panel(),
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                ..
+            }) => self.close_panel(),
+            _ => Task::none(),
+        }
     }
 
     /// The tags whose notice stopped being true, forgotten as noticed: a
@@ -7660,11 +7788,15 @@ mod tests {
             assert!(app.shell.hidden, "closed to the menu bar, not quit");
             assert!(!app.shell.closing);
             assert_eq!(app.shell.status_item, Some(Some(0)), "the item stays");
+            // The item's click opens the panel; the panel's way to the
+            // window brings the hidden window back.
             let _ = app.update(Message::StatusItemClicked);
-            assert!(!app.shell.hidden, "the item's click brings the window back");
-            // Clicked while the window is open: raised, nothing else.
-            let _ = app.update(Message::StatusItemClicked);
-            assert!(!app.shell.hidden && !app.shell.closing);
+            assert!(app.shell.panel.is_some(), "the click opens the panel");
+            assert!(app.shell.hidden, "the window stays hidden behind the panel");
+            let _ = app.update(Message::OpenWindow);
+            assert!(app.shell.panel.is_none(), "the panel goes");
+            assert!(!app.shell.hidden, "the window comes back");
+            assert!(!app.shell.closing);
         } else {
             assert!(
                 app.shell.closing,
@@ -7694,6 +7826,146 @@ mod tests {
         app.shell.closing = false;
         let _ = app.update(Message::MenuBarItem(true));
         assert_eq!(app.shell.status_item, Some(offered.then_some(0)));
+    }
+
+    /// The menu-bar panel: the item's click opens it and a second click
+    /// closes it; Escape, the focus leaving it and its window asked to
+    /// close all close it, and the click that took the focus reopens
+    /// nothing; a row (a session), Answer (a question) and an in-app
+    /// terminal leave it for the window, which comes to the front, while a
+    /// terminal elsewhere only closes it; turning the item off closes it;
+    /// and its events never reach the main window's handling.
+    #[test]
+    fn the_menu_bar_panel_opens_closes_and_leaves_for_the_window() {
+        let (mut app, _, _) = app();
+        let main = window::Id::unique();
+        app.shell.window = Some(main);
+        let press_escape = |panel| {
+            Message::WindowEvent(
+                panel,
+                iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                    key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                    modified_key: keyboard::Key::Named(keyboard::key::Named::Escape),
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                    text: None,
+                    repeat: false,
+                }),
+            )
+        };
+        let open = |app: &mut App| {
+            let _ = app.update(Message::StatusItemClicked);
+            app.shell.panel.expect("the click opens the panel")
+        };
+
+        // Open, and the same click again closes.
+        let panel = open(&mut app);
+        assert_ne!(panel, main);
+        let _ = app.update(Message::StatusItemClicked);
+        assert!(app.shell.panel.is_none(), "the item's click closes it");
+
+        // Escape closes it; the main window's Escape does not.
+        let panel = open(&mut app);
+        let _ = app.update(press_escape(main));
+        assert_eq!(app.shell.panel, Some(panel), "the window's keys are its own");
+        let _ = app.update(press_escape(panel));
+        assert!(app.shell.panel.is_none(), "Escape closes the panel");
+
+        // The focus leaving it closes it, and the click that took the
+        // focus reopens nothing; a later click does.
+        let panel = open(&mut app);
+        let _ = app.update(Message::WindowEvent(
+            panel,
+            iced::Event::Window(window::Event::Unfocused),
+        ));
+        assert!(app.shell.panel.is_none(), "losing the focus closes it");
+        assert!(!app.shell.unfocused, "the panel's focus is not the window's");
+        let _ = app.update(Message::StatusItemClicked);
+        assert!(
+            app.shell.panel.is_none(),
+            "the click that took the focus does not reopen it"
+        );
+        let _ = app.update(Message::StatusItemClicked);
+        assert!(app.shell.panel.is_some(), "the next click opens it again");
+        app.shell.panel_closed = Some(Instant::now() - PANEL_REOPEN_GUARD * 2);
+        let _ = app.update(Message::StatusItemClicked);
+        assert!(app.shell.panel.is_none());
+        let _ = app.update(Message::StatusItemClicked);
+        assert!(app.shell.panel.is_some(), "a guard long past is no guard");
+
+        // Its window asked to close, closed; the main window's close
+        // request is still the app's own.
+        let panel = app.shell.panel.unwrap();
+        let _ = app.update(Message::WindowEvent(
+            panel,
+            iced::Event::Window(window::Event::CloseRequested),
+        ));
+        assert!(app.shell.panel.is_none());
+        assert!(!app.shell.closing, "the panel's close is not the app's");
+        // A closed panel's last event belongs to nobody.
+        let _ = app.update(Message::WindowEvent(
+            panel,
+            iced::Event::Window(window::Event::Unfocused),
+        ));
+        assert!(!app.shell.unfocused);
+        let _ = app.update(Message::WindowEvent(
+            main,
+            iced::Event::Window(window::Event::Unfocused),
+        ));
+        assert!(app.shell.unfocused, "the main window's events are handled as before");
+        let _ = app.update(Message::WindowEvent(
+            main,
+            iced::Event::Window(window::Event::Focused),
+        ));
+        assert!(!app.shell.unfocused);
+
+        // A row leaves the panel for the window, hidden or not.
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "badger".into(),
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            Utc::now(),
+        );
+        agent.id = "badger".into();
+        agent.status = agentdocker_core::AgentStatus::Running;
+        agent.project = Some(ProjectRef::directory("/work/orchard"));
+        app.agents.push(agent);
+        app.shell.hidden = true;
+        let _ = open(&mut app);
+        let _ = app.update(Message::OpenSession("badger".into()));
+        assert!(app.shell.panel.is_none(), "a row leaves the panel");
+        assert!(!app.shell.hidden, "for the window");
+        assert_eq!(
+            app.shell.catalog.selected.as_deref(),
+            Some(std::path::Path::new("/work/orchard")),
+            "at that agent's project"
+        );
+        assert_eq!(app.shell.selected.as_deref(), Some("badger"));
+
+        // Answer leaves it for the window too; a terminal elsewhere only
+        // closes it.
+        let _ = open(&mut app);
+        app.shell.hidden = true;
+        let _ = app.update(Message::OpenQuestion(MessageId::from("ask".to_owned())));
+        assert!(app.shell.panel.is_none() && !app.shell.hidden);
+        let _ = open(&mut app);
+        app.shell.hidden = true;
+        let _ = app.update(Message::OpenAgentTerminal("badger".into()));
+        assert!(app.shell.panel.is_none(), "closed for the terminal");
+        assert!(app.shell.hidden, "the window is not brought up over another terminal");
+        app.shell.hidden = false;
+
+        // Turning the item off takes the panel with it.
+        let _ = open(&mut app);
+        let _ = app.update(Message::MenuBarItem(false));
+        assert!(app.shell.panel.is_none());
+        let _ = app.update(Message::MenuBarItem(true));
     }
 
     /// A launched agent's terminal opens as soon as the list shows it
@@ -11344,18 +11616,21 @@ mod tests {
         ));
         use iced::event::Status;
         use iced::mouse::{Button, Event as Mouse};
+        let in_window = window::Id::unique();
         for status in [Status::Ignored, Status::Captured] {
             assert!(matches!(
                 super::super::navigation::listened(
                     iced::Event::Mouse(Mouse::ButtonPressed(Button::Back)),
-                    status
+                    status,
+                    in_window,
                 ),
                 Some(Message::GoBack)
             ));
             assert!(matches!(
                 super::super::navigation::listened(
                     iced::Event::Mouse(Mouse::ButtonPressed(Button::Forward)),
-                    status
+                    status,
+                    in_window,
                 ),
                 Some(Message::GoForward)
             ));
@@ -11363,10 +11638,21 @@ mod tests {
         assert!(
             super::super::navigation::listened(
                 iced::Event::Mouse(Mouse::ButtonPressed(Button::Left)),
-                Status::Ignored
+                Status::Ignored,
+                in_window,
             )
             .is_none()
         );
+        // A window's own events carry the window, so the panel's are told
+        // from the main window's.
+        assert!(matches!(
+            super::super::navigation::listened(
+                iced::Event::Window(window::Event::Unfocused),
+                Status::Ignored,
+                in_window,
+            ),
+            Some(Message::WindowEvent(id, iced::Event::Window(window::Event::Unfocused))) if id == in_window
+        ));
 
         // Over the palette, Back does nothing.
         let (mut app, alpha, _, _kept) = travel();

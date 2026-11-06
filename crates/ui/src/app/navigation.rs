@@ -162,6 +162,9 @@ pub(super) fn moved(message: &Message) -> Moved {
         | Message::NoticeDone
         | Message::WaitGrace
         | Message::StatusItemClicked
+        | Message::OpenWindow
+        | Message::ClosePanel
+        | Message::WindowEvent(..)
         | Message::Window(_)
         | Message::WindowScale(_)
         | Message::NativeAccessibility(_)
@@ -172,17 +175,21 @@ pub(super) fn moved(message: &Message) -> Moved {
     }
 }
 
-/// The window's events the app listens to, as messages: keys no control
+/// A window's events the app listens to, as messages: keys no control
 /// took, the window's own events, and the mouse's Back and Forward
 /// buttons, wherever the pointer is.
-pub(super) fn listened(event: iced::Event, status: iced::event::Status) -> Option<Message> {
+pub(super) fn listened(
+    event: iced::Event,
+    status: iced::event::Status,
+    window: iced::window::Id,
+) -> Option<Message> {
     use iced::mouse::{Button, Event as Mouse};
     match event {
         iced::Event::Keyboard(_) if status == iced::event::Status::Ignored => {
-            Some(Message::Event(event))
+            Some(Message::WindowEvent(window, event))
         }
         iced::Event::Window(iced::window::Event::RedrawRequested(_)) => None,
-        iced::Event::Window(_) => Some(Message::Event(event)),
+        iced::Event::Window(_) => Some(Message::WindowEvent(window, event)),
         iced::Event::Mouse(Mouse::ButtonPressed(Button::Back)) => Some(Message::GoBack),
         iced::Event::Mouse(Mouse::ButtonPressed(Button::Forward)) => Some(Message::GoForward),
         _ => None,

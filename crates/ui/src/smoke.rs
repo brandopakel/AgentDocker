@@ -130,8 +130,11 @@ impl Smoke {
     pub fn captured(&mut self, capture: window::Screenshot) -> Task<Message> {
         let result = (|| -> anyhow::Result<()> {
             anyhow::ensure!(self.ready, "Connection readiness was lost before capture");
+            // The menu-bar panel is a window of its own, narrower than the
+            // main window's floor.
+            let panel = self.scenario.as_ref().is_some_and(|s| s.capture_panel);
             anyhow::ensure!(
-                capture.size.width >= 640 && capture.size.height >= 400,
+                capture.size.width >= if panel { 400 } else { 640 } && capture.size.height >= 400,
                 "Native capture is unexpectedly small"
             );
             let name = self

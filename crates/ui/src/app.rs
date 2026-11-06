@@ -18,6 +18,7 @@ mod messages;
 mod naming;
 mod navigation;
 mod palette;
+mod panel;
 pub(crate) mod panes;
 mod plans;
 mod project_chat;

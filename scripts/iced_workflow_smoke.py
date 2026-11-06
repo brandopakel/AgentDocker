@@ -366,6 +366,11 @@ def smoke(binary_dir, output, *, skip_idle_measurement=False):
                          step("focus", id="installation"), step("wait_focus", id="installation"), step("capture", name="compact-zoom-focus"),
                          step("click", id="installation"), step("capture", name="installation"), step("click", id="projects"),
                          step("wait_control", id=f"project-{pinned}", present=True), step("click", id=f"project-{pinned}"),
+                         # The menu-bar panel is a second window: opened by the item's
+                         # message (a smoke run shows no item), captured as the newest
+                         # window, closed by the same message.
+                         step("menu_bar_panel"), step("pause", millis=600), step("capture", name="menu-bar-panel", panel=True),
+                         step("menu_bar_panel"),
                          step("pause", millis=400)]
                 def launch(name, scenario):
                     nonlocal window

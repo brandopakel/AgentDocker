@@ -1029,11 +1029,34 @@ in every project: the rows Needs you holds. It shows nothing when none are waiti
 A menu-bar item shows the mark and, beside it as text, the same number, nothing at
 zero; its tooltip says it in words (*AgentDocker · 3 waiting on you*). With the item
 on (Settings → Appearance → **Menu bar item**, on by default), closing the window
-keeps the app running with the item as its one presence, and a click on the item
-brings the window back; clicked while the window is open, it brings the window to
-the front. The item has no menu and opens no panel. Quit is the app menu's or the
-Dock's **Quit** as before. With the item off, closing the window quits, as it does
-on Linux and Windows, which have no menu-bar item.
+keeps the app running with the item as its one presence. The item has no menu; a
+click on it opens the panel below. Quit is the app menu's or the Dock's **Quit**
+as before. With the item off, closing the window quits, as it does on Linux and
+Windows, which have no menu-bar item.
+
+**The menu-bar panel** is a fixed-size window (about 448 by 600 points) under the
+item, for a glance at every project without the window. It lists, first, the rows
+Needs you holds across every listed project, each led by its project's name:
+the asker, the ask or the errand's chip (**Wants permission**, **Has a question**,
+**Waiting for you**), the time-left chip and the same inline actions the card
+has — **Answer**, **Allow once** and **Deny**, **Go to Terminal** — sending
+exactly what the card sends. Then, under a line per project (in name order,
+*Other sessions* last), the agents at work, one line each: mark, name, standing
+chip, the title of the card it holds (when it holds one) and how long it has
+been at it (*42m*), the agent longest at work first. With nothing waiting the
+first part is one line, *Nothing waits on you*; with no project listed, one line
+says so and points at the window. The foot is **Open AgentDocker**, the way to
+the window when nothing above is a reason to open it. A row, **Answer** and an
+in-app **Go to Terminal** close the panel and bring the window to the front at
+that agent, question or terminal (back from the menu bar when it was closed
+there); a terminal in another app only closes the panel; **Allow once** and
+**Deny** leave the panel open, and the row goes when the daemon says the
+question is answered. The panel reads the window's own snapshot of the daemon:
+no second subscription, no second connection, and nothing is asked of the daemon
+to open it. It closes on Escape, when the focus leaves it (a click anywhere
+else), when the item is clicked again, and when the item is turned off; the
+click that took the focus from it closes it and does not reopen it. Opening or
+closing it changes nothing in the window.
 
 Text inputs and the terminal support native input methods. Focus indicators,
 and the words every state chip prints and carries as its accessible name,

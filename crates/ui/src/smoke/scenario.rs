@@ -19,7 +19,15 @@ pub enum Step {
     WaitControl { id: String, present: bool },
     Focus { id: String },
     WaitFocus { id: String },
-    Capture { name: String },
+    /// A capture of the main window, or of the menu-bar panel (the newest
+    /// window) when `panel` is set.
+    Capture {
+        name: String,
+        #[serde(default)]
+        panel: bool,
+    },
+    /// The menu-bar item's click: the panel opens, or closes if open.
+    MenuBarPanel,
     Resize { width: u32, height: u32 },
     Pause { millis: u64 },
 }
@@ -30,6 +38,9 @@ pub struct Scenario {
     pub total: usize,
     pub snapshot: Snapshot,
     pub capture: Option<String>,
+    /// The capture on its way is of the menu-bar panel, a window smaller
+    /// than the main one.
+    pub capture_panel: bool,
     after: Instant,
     /// A capture waits one extra beat after the step before it, so the
     /// frame it reads has been drawn from the current widget tree.
@@ -50,7 +61,7 @@ impl Scenario {
         );
         for step in &steps {
             match step {
-                Step::Capture { name } => anyhow::ensure!(
+                Step::Capture { name, .. } => anyhow::ensure!(
                     !name.is_empty()
                         && name.len() <= 80
                         && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'),
@@ -72,6 +83,7 @@ impl Scenario {
             completed: 0,
             snapshot: Snapshot::default(),
             capture: None,
+            capture_panel: false,
             after: Instant::now(),
             settled: false,
         })
@@ -137,7 +149,7 @@ impl Scenario {
                 }
                 Task::none()
             }
-            Step::Capture { name } => {
+            Step::Capture { name, panel } => {
                 // A screenshot renders the last frame's primitives, and text
                 // primitives only draw while the widget state that produced
                 // them is alive. Taking it in the same beat as a change can
@@ -150,10 +162,16 @@ impl Scenario {
                 }
                 self.settled = false;
                 self.capture = Some(name.clone());
-                window::oldest()
-                    .and_then(window::screenshot)
-                    .map(Message::Captured)
+                self.capture_panel = *panel;
+                if *panel {
+                    window::latest()
+                } else {
+                    window::oldest()
+                }
+                .and_then(window::screenshot)
+                .map(Message::Captured)
             }
+            Step::MenuBarPanel => Task::done(Message::StatusItemClicked),
             Step::Resize { width, height } => {
                 let size = iced::Size::new(*width as f32, *height as f32);
                 window::oldest().and_then(move |id| window::resize(id, size))

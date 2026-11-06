@@ -222,25 +222,10 @@ fn main() -> iced::Result {
     rgba.truncate(info.buffer_size());
     let icon = iced::window::icon::from_rgba(rgba, info.width, info.height).expect("RGBA icon");
     let beneath = smoke.is_some();
-    let result = iced::application(
-        move || {
-            let (app, task) = app::App::boot();
-            (app.with_smoke(smoke.clone()), task)
-        },
-        app::App::update,
-        app::App::view,
-    )
-    .title("AgentDocker")
-    .font(include_bytes!("fonts/IBMPlexSans-Regular.ttf").as_slice())
-    .font(include_bytes!("fonts/IBMPlexSans-Medium.ttf").as_slice())
-    .font(include_bytes!("fonts/IBMPlexSans-SemiBold.ttf").as_slice())
-    .default_font(app::style::UI)
-    .theme(app::App::theme)
-    .scale_factor(app::App::scale_factor)
-    .subscription(app::App::subscription)
-    .window(iced::window::Settings {
+    let window = iced::window::Settings {
         size: iced::Size::new(1180.0, 760.0),
         min_size: Some(iced::Size::new(720.0, 540.0)),
+        position: iced::window::Position::Centered,
         visible: false,
         exit_on_close_request: false,
         icon: Some(icon),
@@ -254,8 +239,27 @@ fn main() -> iced::Result {
             iced::window::Level::Normal
         },
         ..Default::default()
-    })
-    .centered()
+    };
+    // A daemon rather than an application: the main window is opened at
+    // boot, and the menu-bar panel is a second window of the same state.
+    // The app decides when it exits (closing the window, or to the menu
+    // bar), as it did before.
+    let result = iced::daemon(
+        move || {
+            let (app, task) = app::App::boot(window.clone());
+            (app.with_smoke(smoke.clone()), task)
+        },
+        app::App::update,
+        app::App::view_in,
+    )
+    .title(app::App::title_in)
+    .font(include_bytes!("fonts/IBMPlexSans-Regular.ttf").as_slice())
+    .font(include_bytes!("fonts/IBMPlexSans-Medium.ttf").as_slice())
+    .font(include_bytes!("fonts/IBMPlexSans-SemiBold.ttf").as_slice())
+    .default_font(app::style::UI)
+    .theme(app::App::theme_in)
+    .scale_factor(app::App::scale_factor_in)
+    .subscription(app::App::subscription)
     .run();
     if outcome.is_some_and(|state| state.load(std::sync::atomic::Ordering::Relaxed) != 1) {
         std::process::exit(1);

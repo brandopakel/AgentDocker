@@ -51,10 +51,12 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
   "NSImage",
   "NSResponder",
   "NSRunningApplication",
+  "NSScreen",
   "NSStatusBar",
   "NSStatusBarButton",
   "NSStatusItem",
   "NSView",
+  "NSWindow",
 ] }
 objc2-foundation = { version = "0.3", features = ["NSArray", "NSBundle", "NSData", "NSGeometry", "NSSet", "NSString"] }
 objc2-user-notifications = { version = "0.3", features = [
