@@ -182,6 +182,7 @@ mod tests {
             browser_dirs: vec![],
             shell: shell.map(str::to_owned),
             versions: false,
+            hook_stamps: None,
         }
     }
 

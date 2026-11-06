@@ -562,7 +562,10 @@ role, controller ancestry, kernel birth and physical working-directory checks
 still decide whether the MCP server belongs to the session. This is required
 because Codex filters the MCP environment; plain inheritance sends tools to the
 wrong daemon. `-c`/`--config`, `--enable`, `--disable` and `--strict-config` are
-preserved; `-m`/`--model` has an exact config equivalent. Other arguments,
+preserved; `-m`/`--model`, `-a`/`--ask-for-approval` and `-s`/`--sandbox` have
+exact config equivalents (`model`, `approval_policy`, `sandbox_mode`), and
+`--yolo` (`--dangerously-bypass-approvals-and-sandbox`) is the two settings it
+stands for, `approval_policy="never"` and `sandbox_mode="danger-full-access"`. Other arguments,
 including initial prompts, are refused rather than dropped. Send the first prompt
 through AgentDocker. Provider restart follows the launch's explicit restart
 policy (`--restart on-failure:2`, for example).

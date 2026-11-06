@@ -315,7 +315,7 @@ impl Daemon {
         }
         let Some(commit) = line(read(&root, &["rev-parse", "HEAD"]).await) else {
             return Response::error(
-                ErrorCode::Internal,
+                ErrorCode::Unconfirmed,
                 "merged, but the new head could not be read",
             );
         };

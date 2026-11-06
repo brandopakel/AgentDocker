@@ -123,7 +123,7 @@ impl Daemon {
                     Some(None) => return Response::Pruned { removed: 0 },
                     None => {
                         return state.write_failure().unwrap_or_else(|| {
-                            Response::error(ErrorCode::Internal, "journal prune failed")
+                            Response::error(ErrorCode::StorageUnavailable, "journal prune failed")
                         });
                     }
                 }
@@ -164,7 +164,10 @@ impl Daemon {
                     after_bytes,
                 }
             }
-            Err(err) => Response::error(ErrorCode::Internal, format!("vacuum failed: {err}")),
+            Err(err) => Response::error(
+                ErrorCode::StorageUnavailable,
+                format!("vacuum failed: {err}"),
+            ),
         }
     }
 

@@ -149,19 +149,36 @@ pub fn codex_arguments(arguments: &[String]) -> io::Result<Vec<String>> {
         let (flag, inline) = argument
             .split_once('=')
             .map_or((argument.as_str(), None), |(k, v)| (k, Some(v)));
+        // A flag that only sets one configuration key becomes that key, which
+        // the app-server takes as the TUI would.
+        let setting = |key: &str, value: &str| {
+            [
+                "-c".to_owned(),
+                format!("{key}={}", serde_json::json!(value)),
+            ]
+        };
         match flag {
-            "-c" | "--config" | "--enable" | "--disable" | "--model" | "-m" => {
+            "-c" | "--config" | "--enable" | "--disable" | "--model" | "-m" | "--sandbox"
+            | "-s" | "--ask-for-approval" | "-a" => {
                 let value = inline
                     .or_else(|| args.next().map(String::as_str))
                     .filter(|v| !v.is_empty())
                     .ok_or_else(|| invalid(format!("{flag} needs a value")))?;
-                if matches!(flag, "--model" | "-m") {
-                    result.extend(["-c".into(), format!("model={}", serde_json::json!(value))]);
-                } else {
-                    result.extend([flag.into(), value.into()]);
+                match flag {
+                    "--model" | "-m" => result.extend(setting("model", value)),
+                    "--sandbox" | "-s" => result.extend(setting("sandbox_mode", value)),
+                    "--ask-for-approval" | "-a" => {
+                        result.extend(setting("approval_policy", value));
+                    }
+                    _ => result.extend([flag.into(), value.into()]),
                 }
             }
             "--strict-config" if inline.is_none() => result.push(argument.clone()),
+            // No approvals and no sandbox: the two settings the flag stands for.
+            "--yolo" | "--dangerously-bypass-approvals-and-sandbox" if inline.is_none() => {
+                result.extend(setting("approval_policy", "never"));
+                result.extend(setting("sandbox_mode", "danger-full-access"));
+            }
             _ => {
                 return Err(invalid(format!(
                     "Codex input does not support launch argument {flag}; use provider configuration and send the first message through AgentDocker"
@@ -302,6 +319,8 @@ mod tests {
             vec!["--profile", "work"],
             vec!["a prompt"],
             vec!["-c"],
+            vec!["--yolo=1"],
+            vec!["--sandbox"],
         ] {
             let mut launch = AgentSpec {
                 runtime: "codex".into(),
@@ -315,6 +334,44 @@ mod tests {
             assert!(enable_codex_input(&mut launch, cli.path()).is_err());
             assert_eq!(serde_json::to_value(&launch).unwrap(), before);
         }
+    }
+
+    /// A flag that only sets approvals or the sandbox becomes the setting
+    /// it stands for: `--yolo` both, `-a`/`-s` one each.
+    #[test]
+    fn codex_input_takes_approval_and_sandbox_flags_as_their_settings() {
+        let arguments = |given: &[&str]| {
+            codex_arguments(&given.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>()).unwrap()
+        };
+        let both = [
+            "-c",
+            "approval_policy=\"never\"",
+            "-c",
+            "sandbox_mode=\"danger-full-access\"",
+        ];
+        assert_eq!(arguments(&["--yolo"]), both);
+        assert_eq!(
+            arguments(&["--dangerously-bypass-approvals-and-sandbox"]),
+            both
+        );
+        assert_eq!(
+            arguments(&["-a", "on-request", "--sandbox=workspace-write"]),
+            [
+                "-c",
+                "approval_policy=\"on-request\"",
+                "-c",
+                "sandbox_mode=\"workspace-write\""
+            ]
+        );
+        assert_eq!(
+            arguments(&["-s", "read-only", "--ask-for-approval=never"]),
+            [
+                "-c",
+                "sandbox_mode=\"read-only\"",
+                "-c",
+                "approval_policy=\"never\""
+            ]
+        );
     }
 
     #[test]
