@@ -49,6 +49,13 @@ pub(super) struct Input {
     /// project's memory, never stored or sent anywhere else.
     #[serde(default)]
     pub prompt: Option<String>,
+    /// Why a `SessionStart` runs (`compact` after a compaction).
+    #[serde(default)]
+    pub source: Option<String>,
+    /// The conversation's own rollout, read after a compaction only for
+    /// what the person last asked; never stored or sent.
+    #[serde(default)]
+    pub transcript_path: Option<PathBuf>,
 }
 
 impl Input {
@@ -785,7 +792,24 @@ async fn session_start<B: Backend>(backend: &B, input: &Input, agent: &AgentReco
     if agent.project.is_none() {
         return Delivery::empty();
     }
-    let (memory, said) = super::memory_profile(backend, agent, super::MEMORY_PROFILE_CHARS).await;
+    let (mut memory, mut said) =
+        super::memory_profile(backend, agent, super::MEMORY_PROFILE_CHARS).await;
+    // After a compaction, what the session was working on as well.
+    let (recalled, also) = super::compact_memory(
+        backend,
+        agent,
+        input.source.as_deref(),
+        input.transcript_path.as_deref(),
+        (&memory, &said),
+    )
+    .await;
+    if !recalled.is_empty() {
+        if !memory.is_empty() {
+            memory.push_str("\n\n");
+        }
+        memory.push_str(&recalled);
+        said.extend(also);
+    }
     let told = Some(super::Telling {
         agent: agent.id.to_string(),
         start: true,
@@ -970,6 +994,8 @@ mod tests {
             agent_id: None,
             agent_type: None,
             prompt: None,
+            source: None,
+            transcript_path: None,
         }
     }
 
@@ -1446,6 +1472,59 @@ mod tests {
         }
     }
 
+    /// After a compaction Codex's session start is told the memories that
+    /// answer what the person last asked in its rollout, after the profile
+    /// and beyond it, and tells both once written.
+    #[tokio::test]
+    async fn a_compacted_codex_session_is_told_what_it_was_working_with() {
+        use agentdocker_core::memory::Memory;
+        let now = Utc::now();
+        let record = codex_in_project(now);
+        let project = record.project.as_ref().unwrap().id();
+        let kept =
+            |text: &str| Memory::new(project.clone(), "user", text, vec![], None, now).unwrap();
+        let (rule, freeze) = (
+            kept("Tests run with nextest"),
+            kept("Deploys freeze on Fridays"),
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let rollout = dir.path().join("rollout.jsonl");
+        std::fs::write(
+            &rollout,
+            format!(
+                "{}\n",
+                json!({"type": "event_msg", "payload": {"type": "user_message", "message": "when does the deploy freeze start"}})
+            ),
+        )
+        .unwrap();
+        let backend = Mock::with(vec![
+            Response::Memories {
+                memories: vec![rule.clone()],
+            },
+            Response::Memories {
+                memories: vec![freeze.clone(), rule.clone()],
+            },
+        ]);
+        let compacted = Input {
+            source: Some("compact".into()),
+            transcript_path: Some(rollout),
+            ..input("SessionStart")
+        };
+        let delivery = session_start(&backend, &compacted, &record).await;
+        let text = delivery.output["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(
+            text.find(rule.id.as_str()).unwrap() < text.find(freeze.id.as_str()).unwrap(),
+            "{text}"
+        );
+        assert_eq!(text.matches(rule.id.as_str()).count(), 1, "{text}");
+        assert_eq!(
+            delivery.told.map(|t| t.memories),
+            Some(vec![rule.id.to_string(), freeze.id.to_string()])
+        );
+    }
+
     #[tokio::test]
     async fn only_a_root_session_start_with_something_kept_is_told_memory() {
         use agentdocker_core::memory::Memory;
@@ -1644,6 +1723,8 @@ mod tests {
                     agent_id: None,
                     agent_type: None,
                     prompt: None,
+                    source: None,
+                    transcript_path: None,
                 },
                 42,
                 now,
@@ -1702,6 +1783,8 @@ mod tests {
             agent_id: None,
             agent_type: None,
             prompt: None,
+            source: None,
+            transcript_path: None,
         };
         let registered = report(&backend, &input, 42, now, now)
             .await
@@ -1996,6 +2079,8 @@ mod tests {
             agent_id: None,
             agent_type: None,
             prompt: None,
+            source: None,
+            transcript_path: None,
         };
         let backend = Mock::with(vec![
             Response::Agent {

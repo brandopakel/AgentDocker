@@ -1533,7 +1533,8 @@ Current behaviour that the sections above do not already state, by area.
   replaced (`--supersedes`) or forgotten. Each prompt you type is also told
   the few memories that answer it: each once a session in Claude Code and
   Codex, and in OpenCode again with each prompt it answers, since OpenCode
-  keeps a prompt's context only for that prompt's turn.
+  keeps a prompt's context only for that prompt's turn. After a session is
+  compacted it is told again the memories that answer what you last asked.
   One kept for some roles only
   (`--role reviewer`, `roles` on `add_memory`) is told to their holders and
   to you, and never copied off the machine. It stays on this machine; anything that
