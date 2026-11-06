@@ -2216,6 +2216,7 @@ impl App {
             | EventKind::ChannelInvited { .. }
             | EventKind::ChannelOpened { .. }
             | EventKind::ChannelJoined { .. }
+            | EventKind::ChannelLeft { .. }
             | EventKind::ChannelClosed { .. } => self.on_conversation_activity(),
             // What the daemon pruned must not live on here: the archives
             // are dropped and the open one read again.
@@ -3319,6 +3320,20 @@ fn failure_message(error: anyhow::Error) -> Msg {
 
 /// One command against the daemon; `Ok(None)` when there is nothing to
 /// show for it.
+/// A search of a project's memory as the app makes it: as the person, who
+/// reads every memory, a role's included.
+fn memory_search(project: &str, query: &str) -> Request {
+    Request::MemorySearch {
+        from: Some(agentdocker_core::HUMAN.into()),
+        project: Some(project.to_owned()),
+        query: query.to_owned(),
+        limit: Some(MEMORY_PAGE),
+        as_of: None,
+        include_superseded: false,
+        min_score: None,
+    }
+}
+
 fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
     Ok(match cmd {
         Cmd::Agents => match client.call(&Request::List {
@@ -3691,12 +3706,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 }
                 // The memory is read on its own: a daemon from before memory,
                 // or a failure, leaves the rest of the workspace to show.
-                workspace.memory = match client.call(&Request::MemorySearch {
-                    from: None,
-                    project: Some(project.clone()),
-                    query: String::new(),
-                    limit: Some(MEMORY_PAGE),
-                }) {
+                // Read as the person, who reads every memory.
+                workspace.memory = match client.call(&memory_search(&project, "")) {
                     Ok(Response::Memories { memories }) => {
                         workspace.memories = memories;
                         MemoryRead::Loaded
@@ -3774,12 +3785,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             Some(Msg::Todo(result))
         }
         Cmd::MemorySearch { project, query } => {
-            let result = match client.call(&Request::MemorySearch {
-                from: None,
-                project: Some(project.clone()),
-                query: query.clone(),
-                limit: Some(MEMORY_PAGE),
-            }) {
+            let result = match client.call(&memory_search(&project, &query)) {
                 Ok(Response::Memories { memories }) => Ok(memories),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
@@ -3796,6 +3802,8 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 supersedes: None,
                 standing: false,
                 forget_after: None,
+                roles: Vec::new(),
+                valid_from: None,
             }) {
                 Ok(Response::Memory { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -5177,6 +5185,25 @@ fn reveal(path: &std::path::Path) -> Result<(), String> {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// The app reads memory as the person, in the workspace and from the
+    /// search box alike, so a memory said only to some roles is shown.
+    #[test]
+    fn the_app_searches_memory_as_the_person() {
+        let agentdocker_core::Request::MemorySearch {
+            from,
+            project,
+            query,
+            ..
+        } = super::memory_search("/work/a", "deploys")
+        else {
+            panic!("a memory search")
+        };
+        assert_eq!(
+            (from.as_deref(), project.as_deref(), query.as_str()),
+            (Some(agentdocker_core::HUMAN), Some("/work/a"), "deploys")
+        );
+    }
+
     /// A link an agent wrote never runs what it points at: a launcher by
     /// its kind, or an executable file, is shown in its folder.
     #[test]
@@ -5370,6 +5397,7 @@ pub(crate) mod tests {
         let serving = agentdocker_host::connector::Serving {
             pid: 1,
             public_url: "https://node.example.ts.net".into(),
+            authorize_url: None,
             bind: "127.0.0.1:1".into(),
             default_project: None,
             pairing_code: "ABCD-EFGH".into(),

@@ -18,6 +18,23 @@ pub const MEMORY_CHARS: usize = 2048;
 pub const MEMORIES_PER_PROJECT: usize = 1000;
 /// Links a memory carries at most.
 pub const MEMORY_LINKS: usize = 8;
+/// Roles a memory names at most.
+pub const MEMORY_ROLES: usize = 8;
+
+/// Who reads a project's memory. The person reads all of it; anybody else
+/// reads the memories that name no role and those that name a role it
+/// holds, so one holding none (a copy of the memory elsewhere, a client
+/// that names nobody) reads only what is for everyone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reader<'a> {
+    Person,
+    Holding(&'a [String]),
+}
+
+impl Reader<'_> {
+    /// A reader holding no role: what is for everyone.
+    pub const EVERYONE: Reader<'static> = Reader::Holding(&[]);
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Memory {
@@ -40,6 +57,23 @@ pub struct Memory {
     /// until somebody forgets it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forget_after: Option<DateTime<Utc>>,
+    /// Said only to the agents holding one of these roles, and to the
+    /// person; to everyone when it names none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roles: Vec<String>,
+    /// When its fact became true, where that is before it was kept: a
+    /// decision taken last week and written down today. Absent, it became
+    /// true when it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<DateTime<Utc>>,
+}
+
+/// What replaced a superseded memory, as a reader sees it: the memory that
+/// supersedes it and when that one became true.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Replaced {
+    pub by: String,
+    pub at: DateTime<Utc>,
 }
 
 impl Memory {
@@ -61,6 +95,8 @@ impl Memory {
             created_at: now,
             standing: false,
             forget_after: None,
+            roles: Vec::new(),
+            valid_from: None,
         };
         memory.check()?;
         Ok(memory)
@@ -81,9 +117,43 @@ impl Memory {
         Ok(self)
     }
 
+    /// Said only to the holders of these roles, and to the person.
+    pub fn roles(mut self, roles: Vec<String>) -> Result<Self, &'static str> {
+        self.roles = roles;
+        self.roles.sort();
+        self.roles.dedup();
+        self.check()?;
+        Ok(self)
+    }
+
+    /// True since `when`, which may come before it is kept, never after.
+    pub fn valid_from(mut self, when: Option<DateTime<Utc>>) -> Result<Self, &'static str> {
+        if when.is_some_and(|when| when > self.created_at) {
+            return Err("a memory's fact became true before it was kept, or when, not after");
+        }
+        self.valid_from = when.filter(|when| *when != self.created_at);
+        Ok(self)
+    }
+
+    /// When its fact became true: its `valid_from`, else when it was kept.
+    pub fn true_since(&self) -> DateTime<Utc> {
+        self.valid_from.unwrap_or(self.created_at)
+    }
+
     /// Whether it is still said at `now`: not past its `forget_after`.
     pub fn said_at(&self, now: DateTime<Utc>) -> bool {
         self.forget_after.is_none_or(|when| now < when)
+    }
+
+    /// Whether `reader` may read it: the person always; anybody else when
+    /// it names no role or one the reader holds.
+    pub fn seen_by(&self, reader: Reader<'_>) -> bool {
+        match reader {
+            Reader::Person => true,
+            Reader::Holding(held) => {
+                self.roles.is_empty() || self.roles.iter().any(|role| held.contains(role))
+            }
+        }
     }
 
     pub fn check(&self) -> Result<(), &'static str> {
@@ -92,6 +162,12 @@ impl Memory {
         }
         if self.links.len() > MEMORY_LINKS {
             return Err("a memory carries at most 8 links");
+        }
+        if self.roles.len() > MEMORY_ROLES {
+            return Err("a memory names at most 8 roles");
+        }
+        for role in &self.roles {
+            crate::agent::check_role(role)?;
         }
         for link in &self.links {
             link.check()?;
@@ -285,19 +361,60 @@ fn high_entropy(word: &str) -> bool {
         && word.chars().filter(|c| c.is_ascii_digit()).count() >= 4
 }
 
-/// The memories still said at `now`: none another memory supersedes, none
-/// past its `forget_after`; newest first.
-pub fn current(memories: &[Memory], now: DateTime<Utc>) -> Vec<&Memory> {
-    let replaced: std::collections::HashSet<&str> = memories
-        .iter()
-        .filter_map(|m| m.supersedes.as_deref())
-        .collect();
-    let mut kept: Vec<&Memory> = memories
-        .iter()
-        .filter(|m| !replaced.contains(m.id.as_str()) && m.said_at(now))
+/// The memories said to `reader` at `at` (now, or a moment asked about):
+/// those it may read and true by then, none superseded by one it may read
+/// that was true by then, none past its `forget_after` by then; newest
+/// first. Supersession is the reader's: a memory replaced by one only
+/// another role's holders read is still said to everybody else.
+pub fn current<'a>(
+    memories: &'a [Memory],
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> Vec<&'a Memory> {
+    let replaced = superseded(memories, reader, at);
+    let mut kept: Vec<&Memory> = known(memories, reader, at)
+        .filter(|m| !replaced.contains_key(m.id.as_str()) && m.said_at(at))
         .collect();
     kept.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
     kept
+}
+
+/// The memories `reader` may read whose facts were true by `at`.
+fn known<'a, 'r>(
+    memories: &'a [Memory],
+    reader: Reader<'r>,
+    at: DateTime<Utc>,
+) -> impl Iterator<Item = &'a Memory> + use<'a, 'r> {
+    memories
+        .iter()
+        .filter(move |m| m.seen_by(reader) && m.true_since() <= at)
+}
+
+/// The memories superseded for `reader` at `at`, each with the one that
+/// replaced it: the latest such, by when it became true.
+pub fn superseded<'a>(
+    memories: &'a [Memory],
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> std::collections::BTreeMap<&'a str, Replaced> {
+    let mut replaced: std::collections::BTreeMap<&str, Replaced> = Default::default();
+    for newer in known(memories, reader, at) {
+        if let Some(old) = newer.supersedes.as_deref() {
+            let by = Replaced {
+                by: newer.id.clone(),
+                at: newer.true_since(),
+            };
+            replaced
+                .entry(old)
+                .and_modify(|kept| {
+                    if (by.at, &by.by) > (kept.at, &kept.by) {
+                        *kept = by.clone();
+                    }
+                })
+                .or_insert(by);
+        }
+    }
+    replaced
 }
 
 /// The words of a text as search reads them: lower case, split at
@@ -310,7 +427,8 @@ fn words(text: &str) -> std::collections::HashSet<String> {
         .collect()
 }
 
-/// The current memories that answer `query`, the best first. A memory
+/// The current memories `reader` may read that answer `query`, the best
+/// first. A memory
 /// answers a word it holds whole (`test` is not in `latest`), and a word
 /// few memories hold counts for more than one most of them hold; a newer
 /// memory wins a tie, and between two kept at the same moment the lower
@@ -320,10 +438,60 @@ pub fn search<'a>(
     memories: &'a [Memory],
     query: &str,
     limit: usize,
-    now: DateTime<Utc>,
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
 ) -> Vec<&'a Memory> {
+    rank(current(memories, reader, at), query, limit, 0.0)
+}
+
+/// [`search`], keeping only the memories whose words score at least
+/// `min_score`: a word few memories hold counts for more than one most of
+/// them hold, so a threshold keeps out a memory that shares only common
+/// words with the query.
+pub fn search_above<'a>(
+    memories: &'a [Memory],
+    query: &str,
+    limit: usize,
+    min_score: f64,
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> Vec<&'a Memory> {
+    rank(current(memories, reader, at), query, limit, min_score)
+}
+
+/// [`search_above`] over the history as well: the superseded memories
+/// that answer too, each with what replaced it, so what was once held true
+/// is read without picking a moment. Those past their `forget_after` stay
+/// out.
+pub fn search_history<'a>(
+    memories: &'a [Memory],
+    query: &str,
+    limit: usize,
+    min_score: f64,
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> (
+    Vec<&'a Memory>,
+    std::collections::BTreeMap<String, Replaced>,
+) {
+    let mut pool: Vec<&Memory> = known(memories, reader, at)
+        .filter(|m| m.said_at(at))
+        .collect();
+    pool.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+    let found = rank(pool, query, limit, min_score);
+    let replaced = superseded(memories, reader, at);
+    let marks = found
+        .iter()
+        .filter_map(|m| Some((m.id.clone(), replaced.get(m.id.as_str())?.clone())))
+        .collect();
+    (found, marks)
+}
+
+/// The memories of `said` that answer `query`, the best first, as
+/// [`search`] ranks them. A query with no words lists them all, unless a
+/// `min_score` asks for matches: then nothing scores.
+fn rank<'a>(said: Vec<&'a Memory>, query: &str, limit: usize, min_score: f64) -> Vec<&'a Memory> {
     let asked = words(query);
-    let said = current(memories, now);
     let held: Vec<std::collections::HashSet<String>> =
         said.iter().map(|m| words(&m.text)).collect();
     let total = said.len() as f64;
@@ -348,7 +516,13 @@ pub fn search<'a>(
             held.sort_by(f64::total_cmp);
             (held.into_iter().sum::<f64>(), memory)
         })
-        .filter(|(score, _)| asked.is_empty() || *score > 0.0)
+        .filter(|(score, _)| {
+            if asked.is_empty() {
+                min_score <= 0.0
+            } else {
+                *score > 0.0 && *score >= min_score
+            }
+        })
         .collect();
     scored.sort_by(|a, b| {
         b.0.total_cmp(&a.0)
@@ -358,11 +532,16 @@ pub fn search<'a>(
     scored.into_iter().take(limit).map(|(_, m)| m).collect()
 }
 
-/// What a project's agents should know first, as many as fit in
-/// `max_chars`: its standing memories, the oldest first, then the others,
-/// newest first.
-pub fn profile(memories: &[Memory], max_chars: usize, now: DateTime<Utc>) -> Vec<&Memory> {
-    let said = current(memories, now);
+/// What `reader` should know first of a project's memory, as many as fit
+/// in `max_chars`: its standing memories, the oldest first, then the
+/// others, newest first.
+pub fn profile<'a>(
+    memories: &'a [Memory],
+    max_chars: usize,
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> Vec<&'a Memory> {
+    let said = current(memories, reader, at);
     let (mut standing, recent): (Vec<&Memory>, Vec<&Memory>) =
         said.into_iter().partition(|m| m.standing);
     // Oldest first; two kept at the same moment by id, as everywhere else.
@@ -385,16 +564,17 @@ pub fn profile(memories: &[Memory], max_chars: usize, now: DateTime<Utc>) -> Vec
 }
 
 /// What a copy of a project's memory elsewhere must do to hold exactly its
-/// current memories, given the ids it holds: the memories to add, and the
-/// ids to take out — forgotten, past their `forget_after`, or superseded
-/// by a newer one. A memory
-/// never changes once kept, so its id says everything.
+/// current memories for everyone, given the ids it holds: the memories to
+/// add, and the ids to take out — forgotten, past their `forget_after`,
+/// superseded by a newer one, or said only to some roles, which never
+/// leave the machine. A memory never changes once kept, so its id says
+/// everything.
 pub fn mirror_plan<'a>(
     memories: &'a [Memory],
     mirrored: &std::collections::BTreeSet<String>,
     now: DateTime<Utc>,
 ) -> (Vec<&'a Memory>, Vec<String>) {
-    let said = current(memories, now);
+    let said = current(memories, Reader::EVERYONE, now);
     let wanted: std::collections::BTreeSet<&str> = said.iter().map(|m| m.id.as_str()).collect();
     let add = said
         .into_iter()
@@ -425,7 +605,170 @@ mod tests {
                 + Duration::minutes(minutes),
             standing: false,
             forget_after: None,
+            roles: vec![],
+            valid_from: None,
         }
+    }
+
+    /// A memory naming roles is said to their holders and to the person,
+    /// one naming none to everyone. Supersession is each reader's own: a
+    /// memory replaced by one only reviewers read is still said to everybody
+    /// else, and a copy elsewhere holds only what is for everyone.
+    #[test]
+    fn a_memory_with_roles_is_said_to_their_holders_and_the_person() {
+        let roles = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        let mut for_reviewers = memory("rev", "review against the full diff", 2, None);
+        for_reviewers.roles = roles(&["reviewer"]);
+        let mut replaced_for_reviewers =
+            memory("new", "the build runs with nextest", 3, Some("old"));
+        replaced_for_reviewers.roles = roles(&["reviewer"]);
+        let all = vec![
+            memory("old", "the build runs with cargo test", 1, None),
+            for_reviewers,
+            replaced_for_reviewers,
+        ];
+        let ids = |reader: Reader<'_>| {
+            let mut ids: Vec<&str> = current(&all, reader, now())
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect();
+            ids.sort();
+            ids
+        };
+        let reviewer = roles(&["reviewer"]);
+        let tester = roles(&["tester"]);
+        assert_eq!(ids(Reader::Holding(&reviewer)), ["new", "rev"]);
+        assert_eq!(
+            ids(Reader::Holding(&tester)),
+            ["old"],
+            "the old one stands for them"
+        );
+        assert_eq!(ids(Reader::EVERYONE), ["old"]);
+        assert_eq!(ids(Reader::Person), ["new", "rev"]);
+        assert!(search(&all, "diff", 10, Reader::Holding(&tester), now()).is_empty());
+        assert_eq!(
+            search(&all, "diff", 10, Reader::Holding(&reviewer), now())[0].id,
+            "rev"
+        );
+        assert_eq!(
+            profile(&all, 4000, Reader::Holding(&tester), now()).len(),
+            1
+        );
+        let (add, _) = mirror_plan(&all, &Default::default(), now());
+        assert_eq!(
+            add.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["old"]
+        );
+
+        let kept = Memory::new(ProjectId::from("p"), "a", "fact", vec![], None, now())
+            .unwrap()
+            .roles(roles(&["tester", "reviewer", "tester"]))
+            .unwrap();
+        assert_eq!(kept.roles, ["reviewer", "tester"], "sorted, once each");
+        assert!(
+            Memory::new(ProjectId::from("p"), "a", "fact", vec![], None, now())
+                .unwrap()
+                .roles(roles(&["not a role!"]))
+                .is_err()
+        );
+    }
+
+    /// Read as of a moment, a fact replaced over time is the one that held
+    /// then: before anything was true nothing is said, then the first fact,
+    /// then its replacement. A backdated memory counts from when it became
+    /// true, and one past its `forget_after` by then is not said. A history
+    /// search lists the replaced one too, with what replaced it and when.
+    #[test]
+    fn memory_reads_as_it_stood_at_a_moment() {
+        let at = |minutes: i64| {
+            DateTime::from_timestamp(1_700_000_000, 0).unwrap() + Duration::minutes(minutes)
+        };
+        let first = memory("first", "releases go out on fridays", 10, None);
+        let mut second = memory("second", "releases go out on mondays", 30, Some("first"));
+        // Decided at 20, written down at 30.
+        second.valid_from = Some(at(20));
+        let mut brief = memory("brief", "the freeze lasts a week", 12, None);
+        brief.forget_after = Some(at(40));
+        let all = vec![first, second, brief];
+        let ids = |moment| {
+            let mut ids: Vec<&str> = current(&all, Reader::Person, moment)
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert!(ids(at(5)).is_empty(), "before anything was true");
+        assert_eq!(ids(at(15)), ["brief", "first"]);
+        assert_eq!(ids(at(25)), ["brief", "second"], "true from 20, kept at 30");
+        assert_eq!(ids(at(50)), ["second"], "the brief one forgotten at 40");
+        assert_eq!(
+            search(&all, "releases", 10, Reader::Person, at(15))[0].id,
+            "first"
+        );
+        let (found, replaced) = search_history(&all, "releases", 10, 0.0, Reader::Person, at(50));
+        let mut found: Vec<&str> = found.iter().map(|m| m.id.as_str()).collect();
+        found.sort();
+        assert_eq!(found, ["first", "second"]);
+        assert_eq!(
+            replaced.get("first"),
+            Some(&Replaced {
+                by: "second".into(),
+                at: at(20)
+            })
+        );
+        assert!(!replaced.contains_key("second"));
+        // A memory is true from when it was kept, or before; never after.
+        let kept = Memory::new(ProjectId::from("p"), "a", "fact", vec![], None, at(30)).unwrap();
+        assert!(kept.clone().valid_from(Some(at(31))).is_err());
+        assert_eq!(
+            kept.clone().valid_from(Some(at(30))).unwrap().valid_from,
+            None
+        );
+        assert_eq!(kept.valid_from(Some(at(1))).unwrap().true_since(), at(1));
+    }
+
+    /// A threshold keeps out a memory that shares only words most memories
+    /// hold, and keeps one that holds a word few do.
+    #[test]
+    fn a_search_above_a_score_keeps_only_strong_matches() {
+        let all: Vec<Memory> = (0..10_i64)
+            .map(|i| {
+                let text = if i == 0 {
+                    "the deploy needs the staging check".to_owned()
+                } else {
+                    format!("the note number {i}")
+                };
+                memory(&format!("m{i}"), &text, i, None)
+            })
+            .collect();
+        let ids = |query: &str, min: f64| {
+            search_above(&all, query, 10, min, Reader::Person, now())
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("staging", 1.0), ["m0"]);
+        assert!(ids("the", 1.0).is_empty(), "a word every memory holds");
+        assert_eq!(ids("the", 0.0).len(), 10);
+        // A query of no words asks for nothing a threshold can match.
+        assert!(ids("????????????", 1.0).is_empty());
+        assert_eq!(
+            ids("????????????", 0.0).len(),
+            10,
+            "unthresholded, it lists"
+        );
+        // The history is held to the same threshold.
+        let history = |query: &str, min: f64| {
+            search_history(&all, query, 10, min, Reader::Person, now())
+                .0
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(history("staging", 1.0), ["m0"]);
+        assert!(history("the", 1.0).is_empty());
+        assert!(history("????????????", 1.0).is_empty());
     }
 
     /// A moment after every memory these tests keep.
@@ -546,7 +889,10 @@ mod tests {
             memory("new", "deploys go out on Mondays", 5, Some("old")),
             memory("other", "the reviewer is Codex", 3, None),
         ];
-        let ids: Vec<&str> = current(&all, now()).iter().map(|m| m.id.as_str()).collect();
+        let ids: Vec<&str> = current(&all, Reader::Person, now())
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
         assert_eq!(ids, ["new", "other"], "newest first, the replaced one gone");
     }
 
@@ -558,7 +904,7 @@ mod tests {
             memory("c", "nothing about it", 9, None),
         ];
         let ids = |q: &str| -> Vec<String> {
-            search(&all, q, 10, now())
+            search(&all, q, 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.clone())
                 .collect()
@@ -567,7 +913,7 @@ mod tests {
         assert_eq!(ids("REVIEWER"), ["b", "a"], "case is not a difference");
         assert_eq!(ids("absent"), Vec::<String>::new());
         assert_eq!(ids(""), ["c", "b", "a"], "no words, the newest");
-        assert_eq!(search(&all, "", 1, now()).len(), 1);
+        assert_eq!(search(&all, "", 1, Reader::Person, now()).len(), 1);
     }
 
     #[test]
@@ -594,15 +940,15 @@ mod tests {
             memory("b", &"b".repeat(10), 1, None),
             memory("c", &"c".repeat(10), 2, None),
         ];
-        let ids: Vec<&str> = profile(&all, 22, now())
+        let ids: Vec<&str> = profile(&all, 22, Reader::Person, now())
             .iter()
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(ids, ["c", "b"]);
-        assert!(profile(&all, 5, now()).is_empty());
+        assert!(profile(&all, 5, Reader::Person, now()).is_empty());
         let mut long = all.clone();
         long.push(memory("big", &"z".repeat(900), 3, None));
-        let ids: Vec<&str> = profile(&long, 22, now())
+        let ids: Vec<&str> = profile(&long, 22, Reader::Person, now())
             .iter()
             .map(|m| m.id.as_str())
             .collect();
@@ -623,7 +969,7 @@ mod tests {
             memory("latest", "the latest build", 4, None),
         ];
         let ids = |q: &str| -> Vec<String> {
-            search(&all, q, 10, now())
+            search(&all, q, 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.clone())
                 .collect()
@@ -653,7 +999,7 @@ mod tests {
         // Whatever order the query's words are held in, the sums match.
         for query in ["a b c d common", "common d c b a", "b common a d c"] {
             for _ in 0..20 {
-                let ids: Vec<&str> = search(&all, query, 10, now())
+                let ids: Vec<&str> = search(&all, query, 10, Reader::Person, now())
                     .iter()
                     .map(|m| m.id.as_str())
                     .collect();
@@ -672,12 +1018,12 @@ mod tests {
         ];
         all[0].standing = true;
         all[2].standing = true;
-        let ids: Vec<&str> = profile(&all, 4000, now())
+        let ids: Vec<&str> = profile(&all, 4000, Reader::Person, now())
             .iter()
             .map(|m| m.id.as_str())
             .collect();
         assert_eq!(ids, ["rule", "later rule", "latest", "news"]);
-        let ids: Vec<&str> = profile(&all, 30, now())
+        let ids: Vec<&str> = profile(&all, 30, Reader::Person, now())
             .iter()
             .map(|m| m.id.as_str())
             .collect();
@@ -693,7 +1039,7 @@ mod tests {
             memory("accent", "L'ÉTÉ est long", 3, None),
         ];
         let ids = |q: &str| -> Vec<String> {
-            search(&all, q, 10, now())
+            search(&all, q, 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.clone())
                 .collect()
@@ -721,12 +1067,12 @@ mod tests {
         let mut backward = forward.clone();
         backward.reverse();
         for all in [&forward, &backward] {
-            let ids: Vec<&str> = search(all, "deploy", 10, now())
+            let ids: Vec<&str> = search(all, "deploy", 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect();
             assert_eq!(ids, ["newer", "a1", "b2", "c3"], "newer, then by id");
-            let ids: Vec<&str> = search(all, "monday deploy", 10, now())
+            let ids: Vec<&str> = search(all, "monday deploy", 10, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect();
@@ -750,7 +1096,7 @@ mod tests {
         let mut backward = all.clone();
         backward.reverse();
         for stored in [&all, &backward] {
-            let ids: Vec<&str> = profile(stored, 4000, now())
+            let ids: Vec<&str> = profile(stored, 4000, Reader::Person, now())
                 .iter()
                 .map(|m| m.id.as_str())
                 .collect();
@@ -765,14 +1111,21 @@ mod tests {
             memory("brief", "the main branch is frozen", 1, None),
         ];
         all[1].forget_after = Some(now() - Duration::minutes(1));
-        let said: Vec<&str> = current(&all, now()).iter().map(|m| m.id.as_str()).collect();
+        let said: Vec<&str> = current(&all, Reader::Person, now())
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
         assert_eq!(said, ["kept"]);
-        assert!(search(&all, "frozen", 10, now()).is_empty());
-        assert_eq!(profile(&all, 4000, now()).len(), 1);
+        assert!(search(&all, "frozen", 10, Reader::Person, now()).is_empty());
+        assert_eq!(profile(&all, 4000, Reader::Person, now()).len(), 1);
         let (_, remove) = mirror_plan(&all, &["kept", "brief"].map(str::to_owned).into(), now());
         assert_eq!(remove, ["brief"], "a mirror lets it go too");
         let before = now() - Duration::minutes(2);
-        assert_eq!(current(&all, before).len(), 2, "said until then");
+        assert_eq!(
+            current(&all, Reader::Person, before).len(),
+            2,
+            "said until then"
+        );
 
         let kept = Memory::new(ProjectId::from("p"), "a", "frozen", vec![], None, now()).unwrap();
         assert!(

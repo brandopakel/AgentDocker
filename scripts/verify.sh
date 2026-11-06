@@ -33,6 +33,7 @@ campaign_socket="${AGENTDOCKER_SOCKET:-}"
 campaign_home="${AGENTDOCKER_HOME:-}"
 campaign_transient=""
 campaign_renew_pid=""
+campaign_ran=""
 unset AGENTDOCKER_AGENT_ID AGENTDOCKER_AGENT_NAME AGENTDOCKER_SOCKET AGENTDOCKER_CLAUDE_CHANNEL_INPUT AGENTDOCKER_HOME
 campaign_cli() {
   if [ -n "$campaign_socket" ]; then
@@ -136,7 +137,15 @@ campaign_start() {
   ) >/dev/null 2>&1 </dev/null &
   campaign_renew_pid=$!
 }
+# What the caches weigh after a run, and which inactive worktrees' caches
+# could go (`build_storage.py --prune` removes them; this never does).
+storage_report() {
+  python3 scripts/build_storage.py --prune --dry-run >&2 \
+    || echo "verify.sh: the cache report is unavailable; python3 scripts/build_storage.py --prune --dry-run says why" >&2
+}
 campaign_end() {
+  [ -n "$campaign_ran" ] && storage_report
+  campaign_ran=""
   if [ -n "$campaign_renew_pid" ]; then
     # After a loss the helper is ending the step's tree: let it finish
     # (bounded) before the lease goes, so nothing of this run outlives
@@ -196,6 +205,7 @@ step() {
     echo "verify.sh: the build slot was lost; not starting: $*" >&2
     return 75
   fi
+  campaign_ran=1
   "$@" &
   local child=$! status=0
   echo "$child" > "$campaign_dir/step"

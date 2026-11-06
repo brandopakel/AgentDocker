@@ -390,7 +390,10 @@ impl State {
         );
         if committed != Persisted::Committed {
             return Err(Box::new(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the commit's author was not recorded")
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "the commit's author was not recorded",
+                )
             })));
         }
         Ok(added)
@@ -729,10 +732,7 @@ impl Daemon {
                 &table,
                 procinfo::start_time,
                 |pid| procinfo::executable_path_of(pid).ok(),
-                |exe| {
-                    person::companion_cli()
-                        .is_some_and(|cli| agentdocker_host::program::same_file(&cli, exe))
-                },
+                person::own_cli,
             ) {
                 tasks::verdicts::Author::Reviewer => {
                     *agent = Some(owner.id.to_string());

@@ -1190,6 +1190,237 @@ async fn a_roles_tools_are_the_persons_to_name_and_lift() {
     );
 }
 
+/// A memory backdated to when its fact became true is read as of a moment
+/// over the request path: not before then, and replaced from when its
+/// successor became true; a history search lists the replaced one with what
+/// replaced it; a moment to come reads as now; a date after it was kept is
+/// refused.
+#[tokio::test]
+async fn a_projects_memory_is_read_as_it_stood_at_a_moment() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let now = Utc::now();
+    let days = |n: i64| now - chrono::Duration::days(n);
+    let add = |text: &str, valid_from, supersedes: Option<String>| Request::MemoryAdd {
+        from: f.agent.id.to_string(),
+        project: None,
+        text: text.into(),
+        links: vec![],
+        supersedes,
+        standing: false,
+        forget_after: None,
+        roles: vec![],
+        valid_from,
+    };
+    let keep = |request: Request| async move {
+        match d.handle(request).await {
+            Response::Memory { memory } => memory,
+            other => panic!("{other:?}"),
+        }
+    };
+    let old = keep(add("Deploys go out on Fridays", Some(days(10)), None)).await;
+    let new = keep(add(
+        "Deploys go out on Mondays",
+        Some(days(3)),
+        Some(old.id.clone()),
+    ))
+    .await;
+    assert!(matches!(
+        d.handle(add(
+            "A fact from tomorrow",
+            Some(now + chrono::Duration::days(1)),
+            None
+        ))
+        .await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+    let search = |as_of, include_superseded| Request::MemorySearch {
+        from: Some(f.agent.id.to_string()),
+        project: None,
+        query: "deploys".into(),
+        limit: None,
+        as_of,
+        include_superseded,
+        min_score: None,
+    };
+    let found = |response: Response| match response {
+        Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    assert!(found(d.handle(search(Some(days(20)), false)).await).is_empty());
+    assert_eq!(
+        found(d.handle(search(Some(days(5)), false)).await),
+        [old.id.as_str()]
+    );
+    assert_eq!(
+        found(d.handle(search(None, false)).await),
+        [new.id.as_str()]
+    );
+    assert_eq!(
+        found(
+            d.handle(search(Some(now + chrono::Duration::days(30)), false))
+                .await
+        ),
+        [new.id.as_str()],
+        "a moment to come reads as now"
+    );
+    match d.handle(search(None, true)).await {
+        Response::MemoryHistory { memories, replaced } => {
+            let mut ids: Vec<&str> = memories.iter().map(|m| m.id.as_str()).collect();
+            ids.sort();
+            let mut both = [old.id.as_str(), new.id.as_str()];
+            both.sort();
+            assert_eq!(ids, both);
+            assert_eq!(replaced[&old.id].by, new.id);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A memory said to a role reaches that role's holders and the person, and
+/// nobody else: not an agent without the role, nor a reader that names
+/// nobody. A role the project lacks is refused. A memory replaced by one
+/// only reviewers read still stands for everybody else.
+#[tokio::test]
+async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    assert!(matches!(
+        d.handle(Request::RoleAssign {
+            from: HUMAN.into(),
+            agent: f.peer.id.to_string(),
+            add: vec!["reviewer".into()],
+            remove: vec![],
+        })
+        .await,
+        Response::Agent { .. }
+    ));
+    let add = |text: &str, roles: &[&str], supersedes: Option<String>| Request::MemoryAdd {
+        from: f.agent.id.to_string(),
+        project: None,
+        text: text.into(),
+        links: vec![],
+        supersedes,
+        standing: false,
+        forget_after: None,
+        roles: roles.iter().map(|r| (*r).to_owned()).collect(),
+        valid_from: None,
+    };
+    let keep = |request: Request| async move {
+        match d.handle(request).await {
+            Response::Memory { memory } => memory,
+            other => panic!("{other:?}"),
+        }
+    };
+    assert!(matches!(
+        d.handle(add("Ask for a second pass", &["qa"], None)).await,
+        Response::Error { code: ErrorCode::Invalid, message, .. } if message.contains("its roles are")
+    ));
+    let old = keep(add("Review against the merge base", &[], None)).await;
+    let new = keep(add(
+        "Review against main's tip",
+        &["reviewer"],
+        Some(old.id.clone()),
+    ))
+    .await;
+    assert_eq!(new.roles, ["reviewer"]);
+    let search = |from: Option<String>| Request::MemorySearch {
+        from,
+        project: Some(f.work.clone()),
+        query: "review".into(),
+        limit: None,
+        as_of: None,
+        include_superseded: false,
+        min_score: None,
+    };
+    let found = |response: Response| match response {
+        Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        found(d.handle(search(Some(f.peer.id.to_string()))).await),
+        [new.id.as_str()]
+    );
+    assert_eq!(
+        found(d.handle(search(Some(HUMAN.into()))).await),
+        [new.id.as_str()]
+    );
+    assert_eq!(
+        found(d.handle(search(Some(f.agent.id.to_string()))).await),
+        [old.id.as_str()],
+        "the replaced one stands for an agent without the role"
+    );
+    assert_eq!(found(d.handle(search(None)).await), [old.id.as_str()]);
+    let profile = |from: &str| Request::MemoryProfile {
+        from: Some(from.to_owned()),
+        project: None,
+        max_chars: None,
+        as_of: None,
+    };
+    assert_eq!(
+        found(d.handle(profile(f.peer.id.as_str())).await),
+        [new.id.as_str()]
+    );
+    assert_eq!(
+        found(d.handle(profile(f.agent.id.as_str())).await),
+        [old.id.as_str()]
+    );
+
+    // Roles are a project's own: a reviewer of another project reads this
+    // one's memory as anybody would, and cannot replace a memory said only
+    // to this project's reviewers.
+    let elsewhere = f._dir.path().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let stranger = register(d, "carol", &elsewhere).await;
+    assert!(matches!(
+        d.handle(Request::RoleAssign {
+            from: HUMAN.into(),
+            agent: stranger.id.to_string(),
+            add: vec!["reviewer".into()],
+            remove: vec![],
+        })
+        .await,
+        Response::Agent { .. }
+    ));
+    assert_eq!(
+        found(d.handle(search(Some(stranger.id.to_string()))).await),
+        [old.id.as_str()]
+    );
+    assert_eq!(
+        found(
+            d.handle(Request::MemoryProfile {
+                from: Some(stranger.id.to_string()),
+                project: Some(f.work.clone()),
+                max_chars: None,
+                as_of: None,
+            })
+            .await
+        ),
+        [old.id.as_str()]
+    );
+    assert!(matches!(
+        d.handle(Request::MemoryAdd {
+            from: stranger.id.to_string(),
+            project: Some(f.work.clone()),
+            text: "Review against a tag".into(),
+            links: vec![],
+            supersedes: Some(new.id.clone()),
+            standing: false,
+            forget_after: None,
+            roles: vec![],
+            valid_from: None,
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+}
+
 /// An agent keeps a memory in its own project; another finds it by its
 /// words and in the profile; a newer one replaces it; only its author or
 /// the person forgets it; a secret is never kept.
@@ -1205,6 +1436,8 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         supersedes,
         standing: false,
         forget_after: None,
+        roles: vec![],
+        valid_from: None,
     };
     let Response::Memory { memory: first } = d
         .handle(add(
@@ -1221,6 +1454,9 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         project: None,
         query: query.into(),
         limit: None,
+        as_of: None,
+        include_superseded: false,
+        min_score: None,
     };
     let Response::Memories { memories } = d.handle(search("deploys friday")).await else {
         panic!()
@@ -1244,6 +1480,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
             from: Some(f.agent.id.to_string()),
             project: None,
             max_chars: None,
+            as_of: None,
         })
         .await
     else {
@@ -1305,6 +1542,8 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
             supersedes: None,
             standing: false,
             forget_after: None,
+            roles: vec![],
+            valid_from: None,
         })
         .await
     else {
