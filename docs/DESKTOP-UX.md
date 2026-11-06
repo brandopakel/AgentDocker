@@ -637,7 +637,17 @@ Project tabs provide:
 - **More → Usage:** the tokens the providers reported for this project's
   sessions over the last 24 hours, 7 or 30 days, one row per agent, model,
   provider or hour (largest first; hours in time order), under four totals —
-  input, cache read, cache write and output — and, on a wide window, a share
+  input, cache read, cache write and output — and, between the totals and
+  the table, a chart of the window: one bar an hour over 24 hours, one a
+  day (UTC days, as the hour rows are) over 7 or 30 days, input, cache
+  read, cache write and output stacked in each and told apart by pattern
+  (solid, diagonal, dotted, lined) and the legend's words, never by hue
+  alone. A bar's tooltip, and its value to a screen reader, is its span,
+  each count with its coverage mark and its samples; an hour or day
+  nothing was reported for is a gap with no bar, said as *Nothing
+  reported*, never a zero; the hour or day the clock is in has a dashed
+  edge and says *Still filling*. The legend ends with the tallest bar's
+  tokens, the chart's scale. On a wide window, a share
   bar per row: input, cache read, cache write, output and reasoning
   tokens, each shown only where samples said (`~` where some did not, `—`
   where none did; the mark's meaning is the count's tooltip and, for a

@@ -1518,6 +1518,13 @@ Current behaviour that the sections above do not already state, by area.
   one line above the list that sums them and opens Usage. Both appear only
   when usage collection is on and there is something to show.
 
+- The desktop's Usage screen charts the window above its table: a bar an
+  hour over the last day, a bar a day over a week or a month, with input,
+  cache read, cache write and output stacked and patterned. An hour or day
+  nothing was reported for is left empty rather than drawn as zero, and the
+  one still in progress is marked. The CLI prints the same rows by hour
+  (`agentdocker usage --by hour`) and draws nothing.
+
 ### Project memory
 
 - **Project memory.** Agents and you can keep short facts for a project —

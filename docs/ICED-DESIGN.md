@@ -381,12 +381,23 @@ control does, its id or its accessible label:
   of kind, branch and short sha, the time at the right. Usage has no
   heading (the More tab names it): it leads with range and grouping as
   segmented controls and the collection chip (its progress and the
-  overhead its detail), then four totals, then one framed table with
+  overhead its detail), then four totals, then the chart, then one framed
+  table with
   sentence-case headers and right-aligned numbers (a share bar from 1180
   points wide); nothing under the table and no legend, since a marked count
   says what its mark means on its tooltip and as its accessible value (a
   `Label` node named by the count, as a chip's detail is), and a total
-  also what the totals do not cover.
+  also what the totals do not cover. The chart (`app/usage/chart.rs`) is
+  one canvas a bucket, each stacking the four series bottom-up with its
+  pattern clipped to its segment (tiny-skia geometry, nothing shipped),
+  `Fill` wide in one row so thirty days fit a narrow window; a bucket is a
+  `Label` node named by its span, its value the words on the pointer. The
+  buckets are `agentdocker_core::usage::chart` folding the report's rows
+  by hour (the table's own when it is read by hour, a second read of the
+  same window otherwise, kept with its window and never drawn for
+  another's): every bucket of the range present, `None` where no row fell
+  in it, the one holding the report's clock marked filling. The legend's
+  swatches are the same canvas at fourteen points.
 - **Messages** (`app/messages.rs`, helpers in `app/messages/look.rs`). The
   conversation list is the project chats — each project's chat on its project
   monogram, named for the project, opening that project's Chat — then, under
@@ -527,7 +538,8 @@ control does, its id or its accessible label:
   starting a direct message `new-conversation` (the + beside the search) and
   `new-direct-<agent>`; a mention offer `mention-<agent>`. On the Board
   Usage under More (`project-tab-Usage`): `usage-since-24h|7d|30d`,
-  `usage-by-Agent|Model|Provider|Hour`. On the Board
+  `usage-by-Agent|Model|Provider|Hour`, the chart's bars `usage-bar-<n>`
+  in time order. On the Board
   tab (`project-tab-Board`): a lane's `lane-add-card-<lane>` opens its
   `quick-add-<lane>` (activating it files), `lane-archive-<lane>`, a card
   `task-<id>` (opens it), its moves `task-back-<id>`/`task-next-<id>`,

@@ -19,6 +19,8 @@ use iced::{
     widget::{Space, column, container, row, text},
 };
 
+mod chart;
+
 /// The window shown until the person picks another.
 pub const DEFAULT_SINCE: &str = "24h";
 /// The windows on offer: what a person asks about a day, a week, a
@@ -400,12 +402,22 @@ impl App {
                     .into()
             });
         } else {
-            page = page.push(kpis(report, compact, c)).push(self.usage_table(
-                report,
-                compact,
-                width >= BARS_FIT,
-                c,
-            ));
+            page = page.push(kpis(report, compact, c));
+            // The chart is the window by hour: the table's own rows when
+            // that is how it is read, else the second read kept for it —
+            // only over the same window, never another's hours.
+            let hours = if report.by == Group::Hour {
+                Some(report)
+            } else {
+                self.usage_hours
+                    .as_ref()
+                    .filter(|(p, s, _)| *p == project && *s == since)
+                    .map(|(_, _, r)| r)
+            };
+            if let Some(chart) = hours.and_then(|hours| chart::chart(hours, c)) {
+                page = page.push(chart);
+            }
+            page = page.push(self.usage_table(report, compact, width >= BARS_FIT, c));
         }
         page.into()
     }
@@ -820,12 +832,27 @@ mod tests {
         let first: Vec<_> = commands.try_iter().collect();
         assert_eq!(
             first.len(),
-            1,
-            "identical refreshes share one outstanding read"
+            2,
+            "identical refreshes share one outstanding read, and the chart's hours are one more"
         );
-        let Cmd::Usage { request: old, .. } = &first[0] else {
+        let Cmd::Usage {
+            request: old,
+            by: Group::Agent,
+            ..
+        } = &first[0]
+        else {
             panic!("usage request")
         };
+        assert!(
+            matches!(
+                &first[1],
+                Cmd::Usage {
+                    by: Group::Hour,
+                    ..
+                }
+            ),
+            "the chart's read by hour"
+        );
         app.shell.usage_since = "7d";
         app.request_usage();
         let Cmd::Usage {
@@ -834,6 +861,7 @@ mod tests {
         else {
             panic!("usage request")
         };
+        assert_eq!(commands.try_iter().count(), 1, "and its hours");
         messages
             .send(Msg::Usage(root.clone(), *old, Err("old error".into())))
             .unwrap();
@@ -892,7 +920,11 @@ mod tests {
         let read: Vec<String> = commands
             .try_iter()
             .filter_map(|cmd| match cmd {
-                Cmd::Usage { project, .. } => Some(project),
+                Cmd::Usage {
+                    project,
+                    by: Group::Agent,
+                    ..
+                } => Some(project),
                 _ => None,
             })
             .collect();
@@ -1254,5 +1286,95 @@ mod tests {
             Some("Partial coverage\nThe current hour is still filling")
         );
         assert_eq!(total_detail("1,234", None), None);
+    }
+
+    /// The chart above the table: one bar an hour over a day's window,
+    /// each a node named by its span whose value is its counts and
+    /// coverage; an hour nothing was reported for says so rather than
+    /// drawing a zero; the hour the clock is in says it is still filling;
+    /// the legend names the series. Read by anything but hour, the chart
+    /// draws the hours kept for the same window, never another's.
+    #[test]
+    fn the_chart_is_the_window_by_hour_with_gaps_kept_and_the_filling_hour_said() {
+        use crate::app::view::testing::seen;
+        let (tx, _commands) = queue::channel();
+        let (_messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.connected = Ok(());
+        let project = agentdocker_core::ProjectRef::directory("/fixture/usage");
+        let root = project.root.display().to_string();
+        app.shell.catalog.remember(project.clone(), true).unwrap();
+        app.shell.catalog.selected = Some(project.root.clone());
+        let c = Colors::new(false);
+        let this_hour = agentdocker_core::usage::hour(chrono::Utc::now());
+        let key = |back: i64| (this_hour - chrono::Duration::hours(back)).to_rfc3339();
+        let counter = |sum: Option<u64>, coverage| CounterReport {
+            sum,
+            known_samples: sum.map_or(0, |_| 1),
+            coverage,
+        };
+        let row = |key: String, input: u64| Row {
+            key: Some(key),
+            samples: 1,
+            counters: CounterReports {
+                input_tokens: counter(Some(input), Coverage::Complete),
+                cache_read_input_tokens: counter(None, Coverage::Unknown),
+                cache_write_input_tokens: counter(None, Coverage::Unknown),
+                output_tokens: counter(Some(0), Coverage::Complete),
+                reasoning_output_tokens: counter(None, Coverage::Unknown),
+            },
+        };
+        let mut hours = report(
+            vec![row(key(2), 500), row(key(0), 40)],
+            CollectionState::CaughtUp,
+            Some(1),
+        );
+        hours.by = Group::Hour;
+        hours.effective_since = this_hour - chrono::Duration::hours(23);
+        hours.effective_until = this_hour + chrono::Duration::hours(1);
+        app.usage = Some((root.clone(), hours.clone()));
+        let view = seen(app.usage_view(c));
+        let bar = |view: &crate::app::view::testing::Seen, index: usize| {
+            let node = view
+                .control(&format!("usage-bar-{index}"))
+                .unwrap_or_else(|| panic!("bar {index}"));
+            (node.1.clone(), node.2.clone().unwrap_or_default())
+        };
+        assert!(view.control("usage-bar-24").is_none(), "twenty-four bars");
+        let (name, words) = bar(&view, 23);
+        assert!(name.ends_with(" UTC"), "{name}");
+        assert!(words.contains("\nStill filling\n"), "{words}");
+        assert!(words.contains("\nInput 40\n"), "{words}");
+        assert!(words.ends_with("\n1 samples"), "{words}");
+        let (_, words) = bar(&view, 21);
+        assert!(words.contains("\nInput 500\n"), "{words}");
+        assert!(words.contains("\nCache read —\n"), "{words}");
+        let (_, words) = bar(&view, 0);
+        assert!(words.ends_with("\nNothing reported"), "a gap: {words}");
+        for name in [
+            "Input",
+            "Cache read",
+            "Cache write",
+            "Output",
+            "Still filling",
+            "Tallest 500 tokens an hour",
+        ] {
+            assert!(view.texts.iter().any(|t| t == name), "{name}");
+        }
+        // The same window read by agent: the chart is the hours kept for
+        // that window, and none for another's.
+        let mut agents = hours.clone();
+        agents.by = Group::Agent;
+        agents.rows = vec![row("agent-a".into(), 540)];
+        app.usage = Some((root.clone(), agents));
+        app.usage_hours = Some((root.clone(), "7d", hours.clone()));
+        let view = seen(app.usage_view(c));
+        assert!(
+            view.control("usage-bar-0").is_none(),
+            "another window's hours"
+        );
+        app.usage_hours = Some((root, "24h", hours));
+        let view = seen(app.usage_view(c));
+        assert!(view.control("usage-bar-0").is_some());
     }
 }

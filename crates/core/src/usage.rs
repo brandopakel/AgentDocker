@@ -6,6 +6,7 @@
 use chrono::{DateTime, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
+pub mod chart;
 pub mod emission;
 pub mod report;
 

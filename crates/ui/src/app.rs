@@ -645,6 +645,15 @@ pub struct App {
         &'static str,
         agentdocker_core::usage::report::Group,
     )>,
+    /// The same window by hour, for the chart, when the table is read by
+    /// something else: which project's and over which window; and the
+    /// read of it on its way.
+    usage_hours: Option<(
+        String,
+        &'static str,
+        agentdocker_core::usage::report::Report,
+    )>,
+    usage_hours_pending: Option<(u64, String, &'static str)>,
     /// Board asks on their way, by number: which project's, and from
     /// what offset. A reply answers one ask; a reply to none — an ask
     /// cancelled by a later refresh, or made for a project no longer on
@@ -822,6 +831,8 @@ impl App {
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
+            usage_hours: None,
+            usage_hours_pending: None,
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -915,6 +926,8 @@ impl App {
             usage_error: None,
             usage_requests: 0,
             usage_pending: None,
+            usage_hours: None,
+            usage_hours_pending: None,
             task_requests: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
@@ -1042,6 +1055,16 @@ impl App {
                     if self.usage_pending.as_ref().is_some_and(|p| p.0 == request) {
                         self.usage_pending = None;
                         self.usage_error = Some(reason.into());
+                    }
+                    if self
+                        .usage_hours_pending
+                        .as_ref()
+                        .is_some_and(|p| p.0 == request)
+                    {
+                        self.usage_hours_pending = None;
+                        if self.usage_error.is_none() {
+                            self.usage_error = Some(reason.into());
+                        }
                     }
                     return;
                 }
@@ -1339,6 +1362,27 @@ impl App {
                     self.fill_card_draft();
                 }
                 Msg::Usage(project, request, result) => {
+                    // The chart's read by hour answers its own ask: kept
+                    // with its window, so a chart never draws another
+                    // window's hours; a failed one is said once.
+                    if self
+                        .usage_hours_pending
+                        .as_ref()
+                        .is_some_and(|p| p.0 == request && p.1 == project)
+                    {
+                        let (_, _, since) = self.usage_hours_pending.take().unwrap();
+                        if self.selected_project_root().as_deref() == Some(project.as_str()) {
+                            match result {
+                                Ok(report) => self.usage_hours = Some((project, since, report)),
+                                Err(error) => {
+                                    if self.usage_error.is_none() {
+                                        self.usage_error = Some(error);
+                                    }
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     // A later range/group selection supersedes the old read,
                     // even when both asks concern the same project.
                     if self
@@ -1738,6 +1782,7 @@ impl App {
                     // request is not deduplicated against it.
                     self.cancel_reveal();
                     self.usage_pending = None;
+                    self.usage_hours_pending = None;
                 }
                 Msg::Status(text) => self.say(text),
                 Msg::Desktop(result) => self.desktop.receive(result),
@@ -2536,27 +2581,48 @@ impl App {
                 self.shell.usage_since
             };
             let by = self.shell.usage_by;
-            if self
+            let exhausted = |app: &mut Self| {
+                app.usage_error = Some("Usage request counter exhausted; reopen the window".into());
+            };
+            if !self
                 .usage_pending
                 .as_ref()
                 .is_some_and(|p| p.1 == project && p.2 == since && p.3 == by)
             {
-                return;
+                let Some(request) = self.usage_requests.checked_add(1) else {
+                    return exhausted(self);
+                };
+                self.usage_requests = request;
+                self.usage_pending = Some((request, project.clone(), since, by));
+                self.usage_error = None;
+                self.send(Cmd::Usage {
+                    project: project.clone(),
+                    request,
+                    since,
+                    by,
+                });
             }
-            let Some(request) = self.usage_requests.checked_add(1) else {
-                self.usage_error =
-                    Some("Usage request counter exhausted; reopen the window".into());
-                return;
-            };
-            self.usage_requests = request;
-            self.usage_pending = Some((request, project.clone(), since, by));
-            self.usage_error = None;
-            self.send(Cmd::Usage {
-                project,
-                request,
-                since,
-                by,
-            });
+            // The chart draws the window by hour: the table's own rows
+            // when that is how it is read, otherwise a second read.
+            let hour = agentdocker_core::usage::report::Group::Hour;
+            if by != hour
+                && !self
+                    .usage_hours_pending
+                    .as_ref()
+                    .is_some_and(|p| p.1 == project && p.2 == since)
+            {
+                let Some(request) = self.usage_requests.checked_add(1) else {
+                    return exhausted(self);
+                };
+                self.usage_requests = request;
+                self.usage_hours_pending = Some((request, project.clone(), since));
+                self.send(Cmd::Usage {
+                    project,
+                    request,
+                    since,
+                    by: hour,
+                });
+            }
         }
     }
 
