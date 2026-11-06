@@ -20,6 +20,7 @@ mod notification_route;
 mod notify;
 mod pull_request;
 mod smoke;
+mod status_item;
 mod terminal;
 mod theme;
 mod wake;

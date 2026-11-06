@@ -275,6 +275,12 @@ pub(super) struct State {
     launch_codex_trust_generation: u64,
     /// The count last shown on the dock icon, so it is set only on a change.
     pub dock_badge: Option<usize>,
+    /// What the menu-bar item last showed (`Some(None)` is taken down), so
+    /// it is touched only on a change.
+    pub status_item: Option<Option<usize>>,
+    /// The window was closed to the menu bar: it exists, hidden, until
+    /// the item is clicked or the app is activated again.
+    pub hidden: bool,
     pub launching: bool,
     /// The session whose resume is on its way to the daemon, so its
     /// button alone says "Reconnecting…" (a launch from the Launch form
@@ -1277,6 +1283,10 @@ pub enum Message {
     Palette(String),
     Roomy(bool),
     NotifyFinished(bool),
+    MenuBarItem(bool),
+    /// The menu-bar item was clicked: the window comes back, or comes to
+    /// the front. A panel on the item would hang off this message.
+    StatusItemClicked,
     /// Mark a session as something to come back to, and leave it.
     MarkUnread(String),
     /// A notice the window posted itself was taken or refused; either way
@@ -1685,6 +1695,9 @@ impl App {
                 for activation in crate::notification_route::take() {
                     tasks.push(self.update(Message::Notification(activation)));
                 }
+                if crate::status_item::take_click() {
+                    tasks.push(self.update(Message::StatusItemClicked));
+                }
                 for action in crate::accessibility::take_actions() {
                     tasks.push(self.update(action));
                 }
@@ -1738,10 +1751,7 @@ impl App {
                 }
             }
             Message::Notification(activation) => {
-                if let Some(id) = self.shell.window {
-                    crate::notification_route::unhide_application();
-                    tasks.push(window::minimize(id, false).chain(window::gain_focus(id)));
-                }
+                tasks.push(self.raise_window());
                 match activation {
                     crate::notification_route::Activation::Open(action)
                         if action.home == self.home
@@ -4129,6 +4139,12 @@ impl App {
                 self.shell.catalog.appearance = Some(self.settings.clone());
                 self.shell.changed();
             }
+            Message::MenuBarItem(on) => {
+                self.settings.menu_bar_item = on;
+                self.shell.catalog.appearance = Some(self.settings.clone());
+                self.shell.changed();
+            }
+            Message::StatusItemClicked => tasks.push(self.raise_window()),
             Message::DismissError => {
                 self.shell.error = None;
                 self.status.clear();
@@ -4408,7 +4424,17 @@ impl App {
             && (!self.shell.save_enabled
                 || (!self.shell.saving && self.shell.generation == self.shell.saved_generation))
         {
-            return iced::exit();
+            if !self.menu_bar_item_wanted() {
+                return iced::exit();
+            }
+            // Closed to the menu bar: the window keeps its state out of
+            // sight and the item stays, the app's one presence until the
+            // item is clicked.
+            self.shell.closing = false;
+            self.shell.hidden = true;
+            if let Some(id) = self.shell.window {
+                tasks.push(window::set_mode(id, window::Mode::Hidden));
+            }
         }
         if self.shell.save_enabled
             && !self.shell.saving
@@ -4614,6 +4640,13 @@ impl App {
             self.shell.dock_badge = Some(waiting);
             crate::dock::badge(waiting);
         }
+        // The menu-bar item says the same number, and is taken down when
+        // the setting is off (the window then closes as it always has).
+        let shown = self.menu_bar_item_wanted().then_some(waiting);
+        if self.shell.status_item != Some(shown) {
+            self.shell.status_item = Some(shown);
+            crate::status_item::sync(shown);
+        }
         tasks.push(match self.shell.window {
             Some(id) if self.smoke.is_none() => crate::accessibility::collect_and_update(
                 id,
@@ -4622,6 +4655,30 @@ impl App {
             _ => crate::accessibility::collect(),
         });
         Task::batch(tasks)
+    }
+
+    /// Whether the menu-bar item is on: the platform draws one, the person
+    /// has not turned it off, and this is not a smoke run (whose window
+    /// stays beneath theirs and must not put anything in their menu bar).
+    pub(super) fn menu_bar_item_wanted(&self) -> bool {
+        crate::status_item::offered() && self.settings.menu_bar_item && self.smoke.is_none()
+    }
+
+    /// Bring the window to the front: back from hidden (closed to the menu
+    /// bar), out of the Dock, and above other windows. A click on the
+    /// menu-bar item, a notification and a second launch all land here.
+    pub(super) fn raise_window(&mut self) -> Task<Message> {
+        let Some(id) = self.shell.window else {
+            return Task::none();
+        };
+        crate::notification_route::unhide_application();
+        let mut task = Task::none();
+        if self.shell.hidden {
+            self.shell.hidden = false;
+            task = window::set_mode(id, window::Mode::Windowed);
+        }
+        task.chain(window::minimize(id, false))
+            .chain(window::gain_focus(id))
     }
 
     /// The tags whose notice stopped being true, forgotten as noticed: a
@@ -7576,6 +7633,67 @@ mod tests {
         let _ = app.update(Message::Event(iced::Event::Window(window::Event::Focused)));
         assert_eq!(app.waiting_on_you(), 2);
         assert_eq!(app.shell.dock_badge, Some(2));
+    }
+
+    /// The menu-bar item says the dock's number while the setting is on
+    /// and is taken down when it is off; with it on, closing the window
+    /// hides it instead of quitting, and a click on the item brings it
+    /// back. Only macOS draws the item; elsewhere the window closes as it
+    /// always has and nothing is shown.
+    #[test]
+    fn closing_goes_to_the_menu_bar_only_while_the_item_is_on() {
+        let (mut app, _, _) = app();
+        app.shell.window = Some(window::Id::unique());
+        let _ = app.update(Message::Tick);
+        let offered = crate::status_item::offered();
+        assert_eq!(
+            app.shell.status_item,
+            Some(offered.then_some(0)),
+            "the item is shown with nothing beside the mark, where there is a menu bar"
+        );
+        assert_eq!(app.menu_bar_item_wanted(), offered);
+
+        let _ = app.update(Message::Event(iced::Event::Window(
+            window::Event::CloseRequested,
+        )));
+        if offered {
+            assert!(app.shell.hidden, "closed to the menu bar, not quit");
+            assert!(!app.shell.closing);
+            assert_eq!(app.shell.status_item, Some(Some(0)), "the item stays");
+            let _ = app.update(Message::StatusItemClicked);
+            assert!(!app.shell.hidden, "the item's click brings the window back");
+            // Clicked while the window is open: raised, nothing else.
+            let _ = app.update(Message::StatusItemClicked);
+            assert!(!app.shell.hidden && !app.shell.closing);
+        } else {
+            assert!(
+                app.shell.closing,
+                "closing quits where there is no menu bar"
+            );
+            assert!(!app.shell.hidden);
+            app.shell.closing = false;
+        }
+
+        let _ = app.update(Message::MenuBarItem(false));
+        assert!(!app.settings.menu_bar_item);
+        assert_eq!(
+            app.shell
+                .catalog
+                .appearance
+                .as_ref()
+                .map(|s| s.menu_bar_item),
+            Some(false),
+            "the setting is kept with the other appearance settings"
+        );
+        assert_eq!(app.shell.status_item, Some(None), "taken down");
+        let _ = app.update(Message::Event(iced::Event::Window(
+            window::Event::CloseRequested,
+        )));
+        assert!(app.shell.closing, "with the item off, closing quits");
+        assert!(!app.shell.hidden);
+        app.shell.closing = false;
+        let _ = app.update(Message::MenuBarItem(true));
+        assert_eq!(app.shell.status_item, Some(offered.then_some(0)));
     }
 
     /// A launched agent's terminal opens as soon as the list shows it

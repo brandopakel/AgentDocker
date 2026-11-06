@@ -1347,7 +1347,25 @@ impl App {
                             c,
                         ),
                     ),
-                ],
+                ]
+                .into_iter()
+                .chain(crate::status_item::offered().then(|| {
+                    setting(
+                        "Menu bar item",
+                        switch(
+                            "menu-bar-item",
+                            if s.menu_bar_item {
+                                "Remove the menu bar item"
+                            } else {
+                                "Show the menu bar item"
+                            },
+                            s.menu_bar_item,
+                            Some(Message::MenuBarItem(!s.menu_bar_item)),
+                            c,
+                        ),
+                    )
+                }))
+                .collect(),
                 c,
             ),
             c,
