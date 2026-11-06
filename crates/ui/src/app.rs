@@ -3327,6 +3327,8 @@ fn memory_search(project: &str, query: &str) -> Request {
         project: Some(project.to_owned()),
         query: query.to_owned(),
         limit: Some(MEMORY_PAGE),
+        as_of: None,
+        include_superseded: false,
     }
 }
 
@@ -3799,6 +3801,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 standing: false,
                 forget_after: None,
                 roles: Vec::new(),
+                valid_from: None,
             }) {
                 Ok(Response::Memory { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),

@@ -1073,6 +1073,10 @@ enum MemoryAction {
         /// repeat for several. To everyone when none is named.
         #[arg(long = "role", value_name = "ROLE")]
         roles: Vec<String>,
+        /// When its fact became true, if before now: an RFC 3339 time, a
+        /// date, or a span ago such as 3d.
+        #[arg(long, value_name = "WHEN", value_parser = parse_past)]
+        valid_from: Option<chrono::DateTime<chrono::Utc>>,
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1083,6 +1087,14 @@ enum MemoryAction {
         query: Vec<String>,
         #[arg(long)]
         limit: Option<usize>,
+        /// Read them as they stood then: an RFC 3339 time, a date, or a
+        /// span ago such as 3d.
+        #[arg(long, value_name = "WHEN", value_parser = parse_past)]
+        as_of: Option<chrono::DateTime<chrono::Utc>>,
+        /// The superseded memories that answer too, each with what
+        /// replaced it.
+        #[arg(long)]
+        history: bool,
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1090,6 +1102,9 @@ enum MemoryAction {
     },
     /// What the project's agents are told first.
     Profile {
+        /// As they stood then: an RFC 3339 time, a date, or a span ago.
+        #[arg(long, value_name = "WHEN", value_parser = parse_past)]
+        as_of: Option<chrono::DateTime<chrono::Utc>>,
         #[arg(long, value_name = "ID|PATH")]
         project: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -1904,6 +1919,21 @@ fn parse_when(text: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
     chrono::Utc::now()
         .checked_add_signed(span)
         .ok_or_else(|| format!("{text:?} is too far away"))
+}
+
+/// A moment past: an RFC 3339 time, a date (its midnight, UTC), or a span
+/// ago such as 90m, 12h, 3d or 2w.
+fn parse_past(text: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    if let Ok(when) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Ok(when.with_timezone(&chrono::Utc));
+    }
+    if let Ok(day) = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d") {
+        return Ok(day.and_time(chrono::NaiveTime::MIN).and_utc());
+    }
+    let ahead = parse_when(text)
+        .map_err(|_| format!("{text:?} is neither an RFC 3339 time, a date nor a span like 3d"))?;
+    let now = chrono::Utc::now();
+    Ok(now - (ahead - now))
 }
 
 #[derive(Args)]
@@ -2887,16 +2917,31 @@ async fn run() -> Result<()> {
         },
         Command::Memory(args) => {
             let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
-            let list = |memories: &[agentdocker_core::memory::Memory]| {
+            let list = |memories: &[agentdocker_core::memory::Memory],
+                        replaced: &std::collections::BTreeMap<
+                String,
+                agentdocker_core::memory::Replaced,
+            >| {
                 for memory in memories {
+                    // When its fact became true, where that is before it
+                    // was kept; and what replaced it, in a history.
+                    let since = memory
+                        .valid_from
+                        .map(|at| format!("  true since {}", at.format("%Y-%m-%d")))
+                        .unwrap_or_default();
+                    let gone = replaced
+                        .get(&memory.id)
+                        .map(|r| format!("  superseded by {} on {}", r.by, r.at.format("%Y-%m-%d")))
+                        .unwrap_or_default();
                     println!(
-                        "{}  {}  {}",
+                        "{}  {}  {}{since}{gone}",
                         memory.id,
                         format::ago(memory.created_at),
                         memory.text.replace('\n', " ")
                     );
                 }
             };
+            let none = std::collections::BTreeMap::new();
             match args.action {
                 MemoryAction::Add {
                     text,
@@ -2904,6 +2949,7 @@ async fn run() -> Result<()> {
                     standing,
                     forget_after,
                     roles,
+                    valid_from,
                     project,
                     from,
                 } => {
@@ -2918,6 +2964,7 @@ async fn run() -> Result<()> {
                         standing,
                         forget_after,
                         roles,
+                        valid_from,
                     };
                     if let Response::Memory { memory } = client.call(&request).await? {
                         println!("{}", memory.id);
@@ -2926,6 +2973,8 @@ async fn run() -> Result<()> {
                 MemoryAction::Search {
                     query,
                     limit,
+                    as_of,
+                    history,
                     project,
                     from,
                 } => {
@@ -2940,12 +2989,22 @@ async fn run() -> Result<()> {
                         project: Some(project.map_or_else(here, Ok)?),
                         query: query.join(" "),
                         limit,
+                        as_of,
+                        include_superseded: history,
                     };
-                    if let Response::Memories { memories } = client.call(&request).await? {
-                        list(&memories);
+                    match client.call(&request).await? {
+                        Response::Memories { memories } => list(&memories, &none),
+                        Response::MemoryHistory { memories, replaced } => {
+                            list(&memories, &replaced)
+                        }
+                        _ => {}
                     }
                 }
-                MemoryAction::Profile { project, from } => {
+                MemoryAction::Profile {
+                    as_of,
+                    project,
+                    from,
+                } => {
                     let request = Request::MemoryProfile {
                         from: Some(
                             sender::resolve(&client, from)
@@ -2954,9 +3013,10 @@ async fn run() -> Result<()> {
                         ),
                         project: Some(project.map_or_else(here, Ok)?),
                         max_chars: None,
+                        as_of,
                     };
                     if let Response::Memories { memories } = client.call(&request).await? {
-                        list(&memories);
+                        list(&memories, &none);
                     }
                 }
                 MemoryAction::Forget { memory, from } => {
@@ -6348,6 +6408,27 @@ mod tests {
                 .contains("no MCP tool is called no_such_tool")
         );
         assert!(super::role_tools(Some(vec![String::new()]), false).is_err());
+    }
+
+    #[test]
+    fn a_moment_past_is_a_time_a_date_or_a_span_ago() {
+        let now = chrono::Utc::now();
+        let ago = parse_past("3d").unwrap();
+        assert!(
+            ago < now - chrono::Duration::days(2)
+                && ago >= now - chrono::Duration::days(3) - chrono::Duration::seconds(5)
+        );
+        assert_eq!(
+            parse_past("2026-03-04").unwrap(),
+            "2026-03-04T00:00:00Z"
+                .parse::<chrono::DateTime<chrono::Utc>>()
+                .unwrap()
+        );
+        assert_eq!(
+            parse_past("2026-03-04T05:06:07Z").unwrap().to_rfc3339(),
+            "2026-03-04T05:06:07+00:00"
+        );
+        assert!(parse_past("soon").is_err());
     }
 
     #[test]

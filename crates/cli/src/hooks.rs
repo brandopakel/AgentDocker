@@ -1907,6 +1907,7 @@ async fn memory_profile<B: Backend>(backend: &B, me: &AgentRecord, max_chars: us
         from: Some(me.id.to_string()),
         project: None,
         max_chars: Some(max_chars),
+        as_of: None,
     };
     match backend.call(request).await {
         Ok(Response::Memories { memories }) => {
@@ -3167,6 +3168,7 @@ mod tests {
             standing: false,
             forget_after: None,
             roles: vec![],
+            valid_from: None,
         };
         let line = memory_line(&memory);
         assert!(

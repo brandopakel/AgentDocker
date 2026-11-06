@@ -2619,6 +2619,7 @@ impl Daemon {
                 standing,
                 forget_after,
                 roles,
+                valid_from,
             } => {
                 self.memory_add(
                     &from,
@@ -2629,6 +2630,7 @@ impl Daemon {
                     standing,
                     forget_after,
                     roles,
+                    valid_from,
                 )
                 .await
             }
@@ -2637,12 +2639,18 @@ impl Daemon {
                 project,
                 query,
                 limit,
-            } => self.memory_search(from, project, &query, limit).await,
+                as_of,
+                include_superseded,
+            } => {
+                self.memory_search(from, project, &query, limit, as_of, include_superseded)
+                    .await
+            }
             Request::MemoryProfile {
                 from,
                 project,
                 max_chars,
-            } => self.memory_profile(from, project, max_chars).await,
+                as_of,
+            } => self.memory_profile(from, project, max_chars, as_of).await,
             Request::MemoryForget { from, memory } => self.memory_forget(&from, &memory),
             Request::Files { project, task } => self.files(project, task).await,
             Request::FilePut {

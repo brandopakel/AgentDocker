@@ -61,6 +61,19 @@ pub struct Memory {
     /// person; to everyone when it names none.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<String>,
+    /// When its fact became true, where that is before it was kept: a
+    /// decision taken last week and written down today. Absent, it became
+    /// true when it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<DateTime<Utc>>,
+}
+
+/// What replaced a superseded memory, as a reader sees it: the memory that
+/// supersedes it and when that one became true.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Replaced {
+    pub by: String,
+    pub at: DateTime<Utc>,
 }
 
 impl Memory {
@@ -83,6 +96,7 @@ impl Memory {
             standing: false,
             forget_after: None,
             roles: Vec::new(),
+            valid_from: None,
         };
         memory.check()?;
         Ok(memory)
@@ -110,6 +124,20 @@ impl Memory {
         self.roles.dedup();
         self.check()?;
         Ok(self)
+    }
+
+    /// True since `when`, which may come before it is kept, never after.
+    pub fn valid_from(mut self, when: Option<DateTime<Utc>>) -> Result<Self, &'static str> {
+        if when.is_some_and(|when| when > self.created_at) {
+            return Err("a memory's fact became true before it was kept, or when, not after");
+        }
+        self.valid_from = when.filter(|when| *when != self.created_at);
+        Ok(self)
+    }
+
+    /// When its fact became true: its `valid_from`, else when it was kept.
+    pub fn true_since(&self) -> DateTime<Utc> {
+        self.valid_from.unwrap_or(self.created_at)
     }
 
     /// Whether it is still said at `now`: not past its `forget_after`.
@@ -214,26 +242,60 @@ fn high_entropy(word: &str) -> bool {
         && word.chars().filter(|c| c.is_ascii_digit()).count() >= 4
 }
 
-/// The memories still said to `reader` at `now`: those it may read, none
-/// another it may read supersedes, none past its `forget_after`; newest
+/// The memories said to `reader` at `at` (now, or a moment asked about):
+/// those it may read and true by then, none superseded by one it may read
+/// that was true by then, none past its `forget_after` by then; newest
 /// first. Supersession is the reader's: a memory replaced by one only
 /// another role's holders read is still said to everybody else.
 pub fn current<'a>(
     memories: &'a [Memory],
     reader: Reader<'_>,
-    now: DateTime<Utc>,
+    at: DateTime<Utc>,
 ) -> Vec<&'a Memory> {
-    let read: Vec<&Memory> = memories.iter().filter(|m| m.seen_by(reader)).collect();
-    let replaced: std::collections::HashSet<&str> = read
-        .iter()
-        .filter_map(|m| m.supersedes.as_deref())
-        .collect();
-    let mut kept: Vec<&Memory> = read
-        .into_iter()
-        .filter(|m| !replaced.contains(m.id.as_str()) && m.said_at(now))
+    let replaced = superseded(memories, reader, at);
+    let mut kept: Vec<&Memory> = known(memories, reader, at)
+        .filter(|m| !replaced.contains_key(m.id.as_str()) && m.said_at(at))
         .collect();
     kept.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
     kept
+}
+
+/// The memories `reader` may read whose facts were true by `at`.
+fn known<'a, 'r>(
+    memories: &'a [Memory],
+    reader: Reader<'r>,
+    at: DateTime<Utc>,
+) -> impl Iterator<Item = &'a Memory> + use<'a, 'r> {
+    memories
+        .iter()
+        .filter(move |m| m.seen_by(reader) && m.true_since() <= at)
+}
+
+/// The memories superseded for `reader` at `at`, each with the one that
+/// replaced it: the latest such, by when it became true.
+pub fn superseded<'a>(
+    memories: &'a [Memory],
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> std::collections::BTreeMap<&'a str, Replaced> {
+    let mut replaced: std::collections::BTreeMap<&str, Replaced> = Default::default();
+    for newer in known(memories, reader, at) {
+        if let Some(old) = newer.supersedes.as_deref() {
+            let by = Replaced {
+                by: newer.id.clone(),
+                at: newer.true_since(),
+            };
+            replaced
+                .entry(old)
+                .and_modify(|kept| {
+                    if (by.at, &by.by) > (kept.at, &kept.by) {
+                        *kept = by.clone();
+                    }
+                })
+                .or_insert(by);
+        }
+    }
+    replaced
 }
 
 /// The words of a text as search reads them: lower case, split at
@@ -258,10 +320,42 @@ pub fn search<'a>(
     query: &str,
     limit: usize,
     reader: Reader<'_>,
-    now: DateTime<Utc>,
+    at: DateTime<Utc>,
 ) -> Vec<&'a Memory> {
+    rank(current(memories, reader, at), query, limit)
+}
+
+/// [`search`] over the history as well: the superseded memories that
+/// answer too, each with what replaced it, so what was once held true is
+/// read without picking a moment. Those past their `forget_after` stay
+/// out.
+pub fn search_history<'a>(
+    memories: &'a [Memory],
+    query: &str,
+    limit: usize,
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> (
+    Vec<&'a Memory>,
+    std::collections::BTreeMap<String, Replaced>,
+) {
+    let mut pool: Vec<&Memory> = known(memories, reader, at)
+        .filter(|m| m.said_at(at))
+        .collect();
+    pool.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
+    let found = rank(pool, query, limit);
+    let replaced = superseded(memories, reader, at);
+    let marks = found
+        .iter()
+        .filter_map(|m| Some((m.id.clone(), replaced.get(m.id.as_str())?.clone())))
+        .collect();
+    (found, marks)
+}
+
+/// The memories of `said` that answer `query`, the best first, as
+/// [`search`] ranks them.
+fn rank<'a>(said: Vec<&'a Memory>, query: &str, limit: usize) -> Vec<&'a Memory> {
     let asked = words(query);
-    let said = current(memories, reader, now);
     let held: Vec<std::collections::HashSet<String>> =
         said.iter().map(|m| words(&m.text)).collect();
     let total = said.len() as f64;
@@ -303,9 +397,9 @@ pub fn profile<'a>(
     memories: &'a [Memory],
     max_chars: usize,
     reader: Reader<'_>,
-    now: DateTime<Utc>,
+    at: DateTime<Utc>,
 ) -> Vec<&'a Memory> {
-    let said = current(memories, reader, now);
+    let said = current(memories, reader, at);
     let (mut standing, recent): (Vec<&Memory>, Vec<&Memory>) =
         said.into_iter().partition(|m| m.standing);
     // Oldest first; two kept at the same moment by id, as everywhere else.
@@ -370,6 +464,7 @@ mod tests {
             standing: false,
             forget_after: None,
             roles: vec![],
+            valid_from: None,
         }
     }
 
@@ -434,6 +529,61 @@ mod tests {
                 .roles(roles(&["not a role!"]))
                 .is_err()
         );
+    }
+
+    /// Read as of a moment, a fact replaced over time is the one that held
+    /// then: before anything was true nothing is said, then the first fact,
+    /// then its replacement. A backdated memory counts from when it became
+    /// true, and one past its `forget_after` by then is not said. A history
+    /// search lists the replaced one too, with what replaced it and when.
+    #[test]
+    fn memory_reads_as_it_stood_at_a_moment() {
+        let at = |minutes: i64| {
+            DateTime::from_timestamp(1_700_000_000, 0).unwrap() + Duration::minutes(minutes)
+        };
+        let first = memory("first", "releases go out on fridays", 10, None);
+        let mut second = memory("second", "releases go out on mondays", 30, Some("first"));
+        // Decided at 20, written down at 30.
+        second.valid_from = Some(at(20));
+        let mut brief = memory("brief", "the freeze lasts a week", 12, None);
+        brief.forget_after = Some(at(40));
+        let all = vec![first, second, brief];
+        let ids = |moment| {
+            let mut ids: Vec<&str> = current(&all, Reader::Person, moment)
+                .iter()
+                .map(|m| m.id.as_str())
+                .collect();
+            ids.sort();
+            ids
+        };
+        assert!(ids(at(5)).is_empty(), "before anything was true");
+        assert_eq!(ids(at(15)), ["brief", "first"]);
+        assert_eq!(ids(at(25)), ["brief", "second"], "true from 20, kept at 30");
+        assert_eq!(ids(at(50)), ["second"], "the brief one forgotten at 40");
+        assert_eq!(
+            search(&all, "releases", 10, Reader::Person, at(15))[0].id,
+            "first"
+        );
+        let (found, replaced) = search_history(&all, "releases", 10, Reader::Person, at(50));
+        let mut found: Vec<&str> = found.iter().map(|m| m.id.as_str()).collect();
+        found.sort();
+        assert_eq!(found, ["first", "second"]);
+        assert_eq!(
+            replaced.get("first"),
+            Some(&Replaced {
+                by: "second".into(),
+                at: at(20)
+            })
+        );
+        assert!(!replaced.contains_key("second"));
+        // A memory is true from when it was kept, or before; never after.
+        let kept = Memory::new(ProjectId::from("p"), "a", "fact", vec![], None, at(30)).unwrap();
+        assert!(kept.clone().valid_from(Some(at(31))).is_err());
+        assert_eq!(
+            kept.clone().valid_from(Some(at(30))).unwrap().valid_from,
+            None
+        );
+        assert_eq!(kept.valid_from(Some(at(1))).unwrap().true_since(), at(1));
     }
 
     /// A moment after every memory these tests keep.
