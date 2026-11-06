@@ -62,9 +62,9 @@ are honoured): a marked block, in POSIX `sh`, that pipes the staged paths to
 and gains the block first, right after its `#!` line, so a hook that ends in
 `exec` or `exit` still runs it; it gains the execute bit too if it lacked one
 (the plan says so: lines git was skipping will run from then on). A hook in
-another language is left alone, with a note saying what to add to it; no hook
-becomes a new executable script; a block an earlier executable planned is replaced in
-place. When `core.hooksPath` puts the hooks outside the repository's git
+another language is left alone, with a note saying what to add to it; when
+there is no hook, the plan creates a new executable `sh` script; a block an
+earlier executable planned is replaced in place. When `core.hooksPath` puts the hooks outside the repository's git
 directory — a directory shared by every repository, or one in the working tree
 that is committed — the plan says that too. Like `--shell`, `--git-hook` saves
 the plan and prints `agentdocker setup --apply PLAN_ID`; `setup --undo

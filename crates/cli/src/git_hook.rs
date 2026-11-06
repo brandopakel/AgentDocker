@@ -26,7 +26,8 @@ use crate::client::Backend;
 /// the shell block's, which uses the same markers in a different file.
 const PURPOSE: &str = "refuse a commit over paths other agents hold (agentdocker setup --git-hook)";
 
-/// How long the hook waits for the daemon before letting the commit go.
+/// How long the hook waits for the daemon, all its questions together,
+/// before letting the commit go.
 const DAEMON_WAIT: Duration = Duration::from_secs(3);
 
 /// Where this repository's hooks live: what `git rev-parse --git-path
@@ -242,13 +243,14 @@ pub async fn check<B: Backend>(
     root: &Path,
     staged: &[PathBuf],
     me: Option<&str>,
+    deadline: tokio::time::Instant,
 ) -> Verdict {
     if staged.is_empty() {
         return Verdict::Clear;
     }
     let root = crate::hooks::normalize(root);
-    let leases = match tokio::time::timeout(
-        DAEMON_WAIT,
+    let leases = match tokio::time::timeout_at(
+        deadline,
         backend.call(Request::Leases {
             agent: None,
             resource: Some(format!("path:{}", root.display())),
@@ -276,8 +278,8 @@ pub async fn check<B: Backend>(
     if leases.is_empty() {
         return Verdict::Clear;
     }
-    let agents = match tokio::time::timeout(
-        DAEMON_WAIT,
+    let agents = match tokio::time::timeout_at(
+        deadline,
         backend.call(Request::List {
             all: false,
             project: None,
@@ -406,9 +408,12 @@ pub async fn run(client: crate::client::Client) -> Result<i32> {
         .context("cannot read the staged paths from stdin")?;
     let staged = staged_paths(&bytes);
     let root = std::env::current_dir().context("cannot read the working directory")?;
+    // One deadline for everything the hook asks: the committer, the
+    // leases, the agents.
+    let deadline = tokio::time::Instant::now() + DAEMON_WAIT;
     let me = match std::env::var("AGENTDOCKER_AGENT_ID") {
         Ok(id) if !id.is_empty() => Some(id),
-        _ => match tokio::time::timeout(DAEMON_WAIT, crate::sender::resolve(&client, None)).await {
+        _ => match tokio::time::timeout_at(deadline, crate::sender::resolve(&client, None)).await {
             Ok(Ok(found)) => found,
             // No session to speak of, or one that could not be named:
             // the committer's own leases then do not pass, which is the
@@ -416,7 +421,7 @@ pub async fn run(client: crate::client::Client) -> Result<i32> {
             Ok(Err(_)) | Err(_) => None,
         },
     };
-    let verdict = check(&client, &root, &staged, me.as_deref()).await;
+    let verdict = check(&client, &root, &staged, me.as_deref(), deadline).await;
     let (text, status) = report(&verdict, &root);
     eprint!("{text}");
     Ok(status)
@@ -428,6 +433,10 @@ mod tests {
     use crate::client::mock::Mock;
     use agentdocker_core::{AgentSpec, AgentStatus, LeaseId};
     use chrono::Utc;
+
+    fn later() -> tokio::time::Instant {
+        tokio::time::Instant::now() + DAEMON_WAIT
+    }
 
     fn agent(name: &str) -> AgentRecord {
         let mut record = AgentRecord::new(
@@ -508,7 +517,14 @@ mod tests {
                 aliases: Default::default(),
             },
         ]);
-        let verdict = check(&backend, &root, &staged, Some(&me.id.as_str()[..8])).await;
+        let verdict = check(
+            &backend,
+            &root,
+            &staged,
+            Some(&me.id.as_str()[..8]),
+            later(),
+        )
+        .await;
         let Verdict::Refused(refused) = &verdict else {
             panic!("{verdict:?}");
         };
@@ -548,7 +564,7 @@ mod tests {
                 aliases: Default::default(),
             },
         ]);
-        let Verdict::Refused(refused) = check(&backend, &root, &staged, None).await else {
+        let Verdict::Refused(refused) = check(&backend, &root, &staged, None, later()).await else {
             panic!("refused");
         };
         assert!(refused.iter().any(|r| r.path == Path::new("mine.rs")));
@@ -608,12 +624,15 @@ mod tests {
         let root = tmp.path().to_path_buf();
         let backend = Mock::with(vec![Response::Leases { leases: vec![] }]);
         assert_eq!(
-            check(&backend, &root, &[PathBuf::from("a.rs")], None).await,
+            check(&backend, &root, &[PathBuf::from("a.rs")], None, later()).await,
             Verdict::Clear
         );
         assert_eq!(backend.requests().len(), 1, "no agent list for nothing");
         let backend = Mock::default();
-        assert_eq!(check(&backend, &root, &[], None).await, Verdict::Clear);
+        assert_eq!(
+            check(&backend, &root, &[], None, later()).await,
+            Verdict::Clear
+        );
         assert!(backend.requests().is_empty());
 
         struct Down;
@@ -622,7 +641,7 @@ mod tests {
                 Err(anyhow::anyhow!("connection refused"))
             }
         }
-        let verdict = check(&Down, &root, &[PathBuf::from("a.rs")], None).await;
+        let verdict = check(&Down, &root, &[PathBuf::from("a.rs")], None, later()).await;
         assert!(matches!(&verdict, Verdict::Skipped(why) if why.contains("connection refused")));
         let (text, status) = report(&verdict, &root);
         assert_eq!(status, 0);

@@ -995,7 +995,7 @@ pub fn event_line(event: &Event) -> String {
             )
         }
         EventKind::ReleaseRequestExpired { request } => format!(
-            "release unasked  {} of {} by {} ({}): no answer in a day",
+            "release expired  {} of {} by {} ({}): no answer in a day",
             resource(&request.resource),
             request.holder.short(),
             request.requester.short(),

@@ -5129,7 +5129,13 @@ async fn run() -> Result<()> {
             if let Response::ReleaseRequest { request } = client.call(&request).await? {
                 let answer = request.answer.as_ref();
                 let released = answer.map_or(0, |a| a.released.len());
-                if answer.is_some_and(|a| a.accepted) {
+                if answer.is_some_and(|a| a.accepted) && released == 0 {
+                    eprintln!(
+                        "nothing to release on {} for {}: the leases were already gone",
+                        format::resource(&request.resource),
+                        request.requester.short()
+                    );
+                } else if answer.is_some_and(|a| a.accepted) {
                     eprintln!(
                         "released {} ({} lease{}) for {}",
                         format::resource(&request.resource),

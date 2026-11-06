@@ -645,6 +645,35 @@ mod tests {
         ResourceKey::new(s)
     }
 
+    /// A request expires only unanswered, and at its deadline, not before.
+    #[test]
+    fn a_release_request_expires_only_unanswered_and_at_its_deadline() {
+        let now = Utc::now();
+        let mut request = ReleaseRequest {
+            message: MessageId::from("m1".to_owned()),
+            requester: agent("a"),
+            holder: agent("b"),
+            resource: key("branch:main"),
+            leases: Vec::new(),
+            reason: None,
+            at: now - Duration::hours(1),
+            expires_at: now + Duration::seconds(1),
+            answer: None,
+        };
+        assert!(!request.expired(now), "not yet due");
+        request.expires_at = now;
+        assert!(request.expired(now), "due at its deadline");
+        request.expires_at = now - Duration::seconds(1);
+        assert!(request.expired(now), "past due");
+        request.answer = Some(ReleaseAnswer {
+            accepted: false,
+            text: None,
+            at: now,
+            released: Vec::new(),
+        });
+        assert!(!request.expired(now), "answered: nothing to drop");
+    }
+
     #[test]
     fn selected_transfer_keeps_unoffered_and_expired_leases_for_their_own_transitions() {
         let now = Utc::now();
