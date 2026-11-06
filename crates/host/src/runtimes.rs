@@ -274,7 +274,9 @@ fn app_version(bundle: &Path) -> Option<String> {
 /// Resolve configuration from injectable Codex and Claude profile roots.
 pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
     match spec.mcp {
-        McpWiring::None => None,
+        // Docker Agent's servers live in each agent's YAML, which the
+        // person names at setup; the inventory has no file to read.
+        McpWiring::None | McpWiring::AgentConfig => None,
         McpWiring::JsonServers { file }
         | McpWiring::TomlServers { file }
         | McpWiring::OpencodeJson { file } => {
@@ -385,7 +387,7 @@ pub fn servers_key(spec: &RuntimeSpec) -> &'static str {
     match spec.mcp {
         McpWiring::TomlServers { .. } => "mcp_servers",
         McpWiring::OpencodeJson { .. } => "mcp",
-        McpWiring::JsonServers { .. } | McpWiring::None => "mcpServers",
+        McpWiring::JsonServers { .. } | McpWiring::AgentConfig | McpWiring::None => "mcpServers",
     }
 }
 
