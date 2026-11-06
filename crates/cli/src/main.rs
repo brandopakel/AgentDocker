@@ -31,7 +31,7 @@ mod teams;
 mod top;
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use agentdocker_core::contest::Direction;
 use agentdocker_core::multiplexer::Session;
@@ -542,6 +542,9 @@ enum Command {
         /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
         #[arg(long, conflicts_with_all = ["dry_run", "apply", "undo", "health", "list", "show", "shell"])]
         remove: bool,
+        /// Docker Agent only: the agent YAML file to add AgentDocker's MCP toolset to (its default agent, the one `docker agent run` runs: `root`, else the first), or to take it out of with `--remove`. Docker Agent reads MCP servers from each agent's file, so `setup docker-agent` needs one.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["apply", "undo", "health", "list", "show", "shell"])]
+        agent: Option<PathBuf>,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -4105,6 +4108,7 @@ async fn run() -> Result<()> {
             json,
             shell,
             remove,
+            agent,
         } => {
             if remove
                 || preview
@@ -4136,9 +4140,10 @@ async fn run() -> Result<()> {
                 } else {
                     Action::Install
                 };
-                setup::guided::run(socket, &runtimes, action, json, shell).await?;
+                setup::guided::run(socket, &runtimes, action, json, shell, agent.as_deref())
+                    .await?;
             } else {
-                setup::run(&client, &runtimes, dry_run).await?;
+                setup::run(&client, &runtimes, dry_run, agent.as_deref()).await?;
             }
         }
         Command::Run(args) => {
@@ -5318,21 +5323,6 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
     Ok(())
 }
 
-/// Absolute, with as much of it canonical as exists.
-fn absolute_path(raw: &str) -> String {
-    let path = PathBuf::from(raw);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    };
-    agentdocker_host::project::canonical(&absolute)
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// Ledger rows, with agent ids turned into names.
 async fn print_changes(client: &Client, changes: &[Change]) -> Result<()> {
     let names: BTreeMap<String, String> = match client
@@ -6194,15 +6184,15 @@ pub(crate) fn resource_key(raw: &str) -> String {
         Some(_) => return raw.to_owned(),
         None => raw,
     };
-    let path = PathBuf::from(value);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    };
-    format!("path:{}", hooks::normalize(&absolute).display())
+    format!("path:{}", absolute_path(value))
+}
+
+/// Absolute, with as much of it canonical as exists: the host resolves a
+/// relative path against the working directory itself.
+fn absolute_path(raw: &str) -> String {
+    agentdocker_host::project::canonical(Path::new(raw))
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {

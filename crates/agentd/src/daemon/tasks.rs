@@ -76,14 +76,6 @@ fn comment_doc(comment: &Comment) -> Doc {
     doc(COMMENT, comment.id.to_string(), comment)
 }
 
-fn invalid(message: impl Into<String>) -> Box<Response> {
-    Box::new(Response::error(ErrorCode::Invalid, message))
-}
-
-fn not_found(message: impl Into<String>) -> Box<Response> {
-    Box::new(Response::error(ErrorCode::NotFound, message))
-}
-
 fn board_error(error: board::BoardError) -> Box<Response> {
     let details = match &error {
         board::BoardError::NoLane { lanes, .. } => Some(serde_json::json!({ "lanes": lanes })),
@@ -125,7 +117,7 @@ impl State {
     fn resolve_task(&mut self, reference: &str) -> Result<Task, Box<Response>> {
         let reference = reference.trim();
         if reference.is_empty() {
-            return Err(invalid("name a card by its key or id"));
+            return Err(Box::new(Response::invalid("name a card by its key or id")));
         }
         if let Some((prefix, number)) = reference.split_once('-')
             && !prefix.is_empty()
@@ -145,7 +137,7 @@ impl State {
             let mut found = found.into_iter();
             return match (found.next(), found.next()) {
                 (Some(task), None) => Ok(task),
-                (None, _) => Err(not_found(format!("no card is {key}"))),
+                (None, _) => Err(Box::new(Response::not_found(format!("no card is {key}")))),
                 (Some(_), Some(_)) => Err(Box::new(Response::error(
                     ErrorCode::Ambiguous,
                     format!("more than one project has a card {key}; give its id"),
@@ -153,7 +145,9 @@ impl State {
             };
         }
         if !reference.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return Err(not_found(format!("no card matches {reference}")));
+            return Err(Box::new(Response::not_found(format!(
+                "no card matches {reference}"
+            ))));
         }
         // Two is enough to tell one match from several, and no more of
         // the board is read for a lookup.
@@ -167,7 +161,9 @@ impl State {
         let mut matching = matching.into_iter();
         match (matching.next(), matching.next()) {
             (Some(task), None) => Ok(task),
-            (None, _) => Err(not_found(format!("no card matches {reference}"))),
+            (None, _) => Err(Box::new(Response::not_found(format!(
+                "no card matches {reference}"
+            )))),
             (Some(_), Some(_)) => Err(Box::new(Response::error(
                 ErrorCode::Ambiguous,
                 format!("more than one card matches {reference}; give more of the id"),
@@ -561,9 +557,9 @@ impl State {
                 .collect();
             match matches.as_slice() {
                 [one] => Ok(one.id.clone()),
-                [] => Err(not_found(format!(
+                [] => Err(Box::new(Response::not_found(format!(
                     "no card of this project matches {words}"
-                ))),
+                )))),
                 _ => Err(Box::new(Response::error(
                     ErrorCode::Ambiguous,
                     format!("more than one card matches {words}; give more of the id"),

@@ -198,7 +198,7 @@ def process_table():
     """
     try:
         listing = subprocess.check_output(["ps", "-e", "-ww", "-o", "pid=,uid=,stat=,command="],
-                                          text=True, stderr=subprocess.PIPE)
+                                          text=True, stderr=subprocess.PIPE, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return None
     processes = []
@@ -383,31 +383,41 @@ class Branches:
 
     def __init__(self, root=ROOT):
         self.root = root
-        self.main_tip = self.rev_parse("origin/main")
+        try:
+            self.main_tip = self.rev_parse("origin/main")
+        except subprocess.TimeoutExpired:
+            self.main_tip = None
 
     def rev_parse(self, ref):
+        """The commit `ref` names, or None when there is none. A git that
+        does not answer raises: it says nothing about the ref."""
         try:
             return subprocess.check_output(["git", "rev-parse", "--verify", "--quiet", ref + "^{commit}"],
-                                           cwd=self.root, text=True, stderr=subprocess.DEVNULL).strip() or None
+                                           cwd=self.root, text=True, stderr=subprocess.DEVNULL, timeout=60).strip() or None
         except subprocess.CalledProcessError:
             return None
 
     def state(self, record):
-        """merged, current (at origin/main's tip), unmerged, absent or unknown."""
+        """merged, current (at origin/main's tip), unmerged, absent or
+        unknown; unknown too when git does not answer, so a hung git never
+        reads as a branch that is gone."""
         if self.main_tip is None:
             return "unknown"
-        if record["branch"] is not None:
-            tip = self.rev_parse("refs/heads/" + record["branch"])
+        try:
+            if record["branch"] is not None:
+                tip = self.rev_parse("refs/heads/" + record["branch"])
+                if tip is None:
+                    return "absent"
+            else:
+                tip = record["head"]
             if tip is None:
-                return "absent"
-        else:
-            tip = record["head"]
-        if tip is None:
+                return "unknown"
+            if tip == self.main_tip:
+                return "current"
+            result = subprocess.run(["git", "merge-base", "--is-ancestor", tip, self.main_tip],
+                                    cwd=self.root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        except subprocess.TimeoutExpired:
             return "unknown"
-        if tip == self.main_tip:
-            return "current"
-        result = subprocess.run(["git", "merge-base", "--is-ancestor", tip, self.main_tip],
-                                cwd=self.root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return "merged" if result.returncode == 0 else "unmerged"
 
 
