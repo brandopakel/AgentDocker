@@ -2976,10 +2976,9 @@ async fn run() -> Result<()> {
                         // The id alone goes to stdout, for a script to read.
                         for likely in may_supersede {
                             eprintln!(
-                                "may replace {} ({:.0}%): --supersedes {} on a new memory says so, forget drops the old one",
+                                "may replace {} ({:.0}%)",
                                 likely.memory,
-                                likely.probability * 100.0,
-                                likely.memory
+                                likely.probability * 100.0
                             );
                         }
                     }
