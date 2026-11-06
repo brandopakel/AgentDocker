@@ -114,15 +114,20 @@ pub struct Row {
 }
 
 impl Row {
-    /// The cache-read share this row's counters give: cache reads over
-    /// total input (both totals include their cache components), clamped
-    /// to 100 against a source that reports otherwise. None when either
-    /// sum is unknown, when the two sums do not cover the same samples (a
-    /// record that reports its cache read without its cache write has no
-    /// total input but a known read, so the read would be counted over an
-    /// input that leaves it out), or no input was reported at all.
-    pub fn cache_read_share(counters: &CounterReports) -> Option<u8> {
-        if counters.input_tokens.known_samples != counters.cache_read_input_tokens.known_samples {
+    /// The cache-read share this row's `counters` give over its `samples`:
+    /// cache reads over total input (both totals include their cache
+    /// components), clamped to 100 against a source that reports
+    /// otherwise. Given only when every sample of the row reported both,
+    /// so the two sums cover the same responses: a record that reports
+    /// its cache read without its cache write has a known read and no
+    /// total input, a Codex record may lack either, and two such records
+    /// would otherwise give one counter's sum over the other's samples.
+    /// None otherwise, and when no input was reported at all.
+    pub fn cache_read_share(samples: u64, counters: &CounterReports) -> Option<u8> {
+        if samples == 0
+            || counters.input_tokens.known_samples != samples
+            || counters.cache_read_input_tokens.known_samples != samples
+        {
             return None;
         }
         let input = counters.input_tokens.sum?;
@@ -318,8 +323,8 @@ mod tests {
     }
 
     /// The cache share is cache reads over input, whole percent, only when
-    /// both are known over the same samples, never over a hundred, and
-    /// absent for no input.
+    /// every sample reported both, never over a hundred, and absent for
+    /// no input.
     #[test]
     fn cache_read_share_needs_both_sums_and_stays_within_a_hundred() {
         let counter = |sum: Option<u64>| CounterReport {
@@ -335,36 +340,50 @@ mod tests {
             reasoning_output_tokens: counter(None),
         };
         assert_eq!(
-            Row::cache_read_share(&counters(Some(400), Some(300))),
+            Row::cache_read_share(1, &counters(Some(400), Some(300))),
             Some(75)
         );
-        assert_eq!(Row::cache_read_share(&counters(Some(3), Some(1))), Some(33));
-        // A read known on a sample whose total input is not: the sums
-        // cover different samples and give no share.
+        assert_eq!(
+            Row::cache_read_share(1, &counters(Some(3), Some(1))),
+            Some(33)
+        );
+        // Two samples that each reported one counter: both counts are one,
+        // yet no sample reported both, and no share is made of them.
+        assert_eq!(
+            Row::cache_read_share(2, &counters(Some(100), Some(50))),
+            None
+        );
+        // A read known on a sample whose total input is not, beside one
+        // that reported both: no share either.
         let mut uneven = counters(Some(400), Some(300));
         uneven.cache_read_input_tokens.known_samples = 2;
         uneven.cache_read_input_tokens.sum = Some(500);
-        assert_eq!(Row::cache_read_share(&uneven), None);
+        assert_eq!(Row::cache_read_share(2, &uneven), None);
+        // Both known on every sample: the share.
+        let mut paired = counters(Some(400), Some(300));
+        paired.input_tokens.known_samples = 2;
+        paired.cache_read_input_tokens.known_samples = 2;
+        assert_eq!(Row::cache_read_share(2, &paired), Some(75));
         assert_eq!(
-            Row::cache_read_share(&counters(Some(10), Some(20))),
+            Row::cache_read_share(1, &counters(Some(10), Some(20))),
             Some(100)
         );
-        assert_eq!(Row::cache_read_share(&counters(Some(0), Some(0))), None);
+        assert_eq!(Row::cache_read_share(1, &counters(Some(0), Some(0))), None);
         // Counts whose hundredfold overflows a u64 keep their share.
         assert_eq!(
-            Row::cache_read_share(&counters(Some(10_u64.pow(19)), Some(10_u64.pow(18)))),
+            Row::cache_read_share(1, &counters(Some(10_u64.pow(19)), Some(10_u64.pow(18)))),
             Some(10)
         );
         assert_eq!(
-            Row::cache_read_share(&counters(Some(u64::MAX), Some(u64::MAX / 2))),
+            Row::cache_read_share(1, &counters(Some(u64::MAX), Some(u64::MAX / 2))),
             Some(49)
         );
         assert_eq!(
-            Row::cache_read_share(&counters(Some(u64::MAX), Some(u64::MAX))),
+            Row::cache_read_share(1, &counters(Some(u64::MAX), Some(u64::MAX))),
             Some(100)
         );
-        assert_eq!(Row::cache_read_share(&counters(None, Some(5))), None);
-        assert_eq!(Row::cache_read_share(&counters(Some(5), None)), None);
+        assert_eq!(Row::cache_read_share(1, &counters(None, Some(5))), None);
+        assert_eq!(Row::cache_read_share(1, &counters(Some(5), None)), None);
         let older: Row = serde_json::from_value(serde_json::json!({
             "key": null, "samples": 1,
             "counters": serde_json::to_value(counters(Some(5), None)).unwrap()

@@ -53,7 +53,7 @@ const ALIAS: &str = "alias:";
 /// `usage_holdings` kinds: a card held (`task:` lease on a board card)
 /// and the roles held, each over the interval it was held.
 const HELD_CARD: &str = "card";
-const HELD_ROLE: &str = "role";
+pub(super) const HELD_ROLE: &str = "role";
 
 /// What ingesting samples did, for the events that say so.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -109,7 +109,7 @@ fn fingerprint<T: Serialize>(value: &T) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 
-fn text(at: DateTime<Utc>) -> String {
+pub(super) fn text(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
 }
 
@@ -120,7 +120,7 @@ fn row(key: Option<String>, value: &Aggregate, complete: bool) -> Row {
     Row {
         key,
         samples: value.samples(),
-        cache_read_share_percent: Row::cache_read_share(&counters),
+        cache_read_share_percent: Row::cache_read_share(value.samples(), &counters),
         counters,
         cost_usd_micros: value.cost(complete),
     }

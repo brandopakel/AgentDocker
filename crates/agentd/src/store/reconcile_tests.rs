@@ -132,16 +132,31 @@ fn repaired_hook_and_mcp_duplicates_preserve_both_provenance_records() {
     retired.spec.labels.insert("via".into(), "mcp".into());
     store.upsert_agent(&kept).unwrap();
     store.upsert_agent(&retired).unwrap();
-    // The roles the retired record held follow the repair too.
+    // The role the retired record still holds (`tester`, an open interval)
+    // follows the repair, bounded to that record's life: the kept record,
+    // registered as `reviewer` an hour ago and never changed since, has no
+    // history of its own, and gets its own interval so neither the old
+    // role nor the earliest-roles fallback names `tester` for its work.
     let held_at = now() - Duration::hours(2);
+    kept.created_at = now() - Duration::hours(1);
+    kept.spec.labels.insert(
+        agentdocker_core::agent::ROLE_LABEL.into(),
+        "reviewer".into(),
+    );
+    store.upsert_agent(&kept).unwrap();
+    // The label change the upsert just kept is not the scenario: a record
+    // registered with this role has no role history.
+    store
+        .conn
+        .execute("DELETE FROM usage_holdings WHERE agent=?1", [a.as_str()])
+        .unwrap();
     store
         .conn
         .execute(
-            "INSERT INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,'role',?2,?3,'tester')",
+            "INSERT INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,'role',?2,NULL,'tester')",
             params![
                 b.as_str(),
                 (held_at - Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-                (held_at + Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
             ],
         )
         .unwrap();
@@ -154,11 +169,23 @@ fn repaired_hook_and_mcp_duplicates_preserve_both_provenance_records() {
     let remaining = store.load_agents().unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].spec.labels["via"], "hook");
+    let role_at = |at: DateTime<Utc>| store.usage_role_held(a.as_str(), at).unwrap();
     assert_eq!(
-        store.usage_role_held(a.as_str(), held_at).unwrap(),
+        role_at(held_at),
         Some(Some("tester".to_owned())),
-        "the retired record's role interval is the canonical record's"
+        "a delayed response from the retired record's life keeps its role"
     );
+    assert_eq!(
+        role_at(now() - Duration::minutes(30)),
+        Some(Some("reviewer".to_owned())),
+        "the kept record's own life, before the repair, is under its own role"
+    );
+    assert_eq!(
+        role_at(now() + Duration::hours(1)),
+        Some(Some("reviewer".to_owned())),
+        "and so is what it does after the repair"
+    );
+    assert_eq!(store.usage_role_held(b.as_str(), held_at).unwrap(), None);
     let archive = store
         .document::<Value>("identity_reconciliation", b.as_str())
         .unwrap()
@@ -855,18 +882,29 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
     canonical.pid = Some(456);
     canonical.status = AgentStatus::Running;
     canonical.finished_at = None;
-    // A card the `earlier` life held: it follows the fold, so a response
-    // from that life read after it is still charged to the card.
+    // A card the `earlier` life held, and the role it still holds: both
+    // follow the fold, so a response from that life read after it is
+    // still charged to the card and the role, while the role interval is
+    // closed at the fold and not left to name `tester` for what the
+    // resumed life (which has no role) does afterwards.
     let held_at = now() - Duration::hours(2);
+    let stamp = |at: DateTime<Utc>| at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true);
     store
         .conn
         .execute(
             "INSERT INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,'card',?2,?3,'card-1')",
             params![
                 earlier.id.as_str(),
-                (held_at - Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
-                (held_at + Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                stamp(held_at - Duration::minutes(1)),
+                stamp(held_at + Duration::minutes(1)),
             ],
+        )
+        .unwrap();
+    store
+        .conn
+        .execute(
+            "INSERT INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,'role',?2,NULL,'tester')",
+            params![earlier.id.as_str(), stamp(held_at - Duration::minutes(1))],
         )
         .unwrap();
     let retired = vec![fresh.id.clone(), earlier.id.clone()];
@@ -913,6 +951,18 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
     assert_eq!(
         store.usage_card_held(earlier.id.as_str(), held_at).unwrap(),
         None
+    );
+    assert_eq!(
+        store.usage_role_held(last.id.as_str(), held_at).unwrap(),
+        Some(Some("tester".to_owned())),
+        "a delayed response from the earlier life keeps its role"
+    );
+    assert_eq!(
+        store
+            .usage_role_held(last.id.as_str(), now() + Duration::hours(1))
+            .unwrap(),
+        Some(None),
+        "what the resumed life does after the fold is under its own roles: none"
     );
     let queue: Vec<String> = store.load_inboxes().unwrap()[&last.id]
         .iter()
