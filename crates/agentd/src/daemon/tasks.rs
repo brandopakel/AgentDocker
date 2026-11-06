@@ -2579,6 +2579,7 @@ mod tests {
                         agentdocker_core::LinkKind::Task,
                         "zz"
                     )],
+                    idempotency_key: None,
                 })
                 .await,
             Response::Error {
@@ -2596,6 +2597,7 @@ mod tests {
                     payload: serde_json::json!({"text": "this one is yours"}),
                     reply_to: None,
                     links: vec![card_link.clone()],
+                    idempotency_key: None,
                 })
                 .await,
             Response::Sent { .. }

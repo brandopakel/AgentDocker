@@ -1882,6 +1882,11 @@ struct SendArgs {
     /// most 16): path, commit, pr, url, task, message or memory.
     #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
     links: Vec<agentdocker_core::Link>,
+    /// Your own token for this one send (a UUID, say): repeating the
+    /// command with the same key after a lost answer queues nothing and
+    /// prints the first message id again.
+    #[arg(long, value_name = "KEY")]
+    idempotency_key: Option<String>,
 }
 
 /// Its own struct, like `SendArgs`: the top-level command enum is parsed
@@ -4680,6 +4685,7 @@ async fn run() -> Result<()> {
                 payload,
                 reply_to: args.reply_to.map(MessageId::from),
                 links: args.links,
+                idempotency_key: args.idempotency_key,
             };
             match client.call(&request).await? {
                 Response::Sent {
