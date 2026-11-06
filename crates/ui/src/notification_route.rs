@@ -4,7 +4,7 @@ use std::sync::{Mutex, OnceLock};
 
 #[cfg(any(target_os = "macos", test))]
 use agentdocker_core::{Request, Response};
-use agentdocker_host::notify::Action;
+use agentdocker_host::notify::{Action, Button};
 use serde::{Deserialize, Serialize};
 pub mod instance;
 
@@ -30,6 +30,13 @@ pub enum Activation {
         text: String,
         reason: String,
         certain: bool,
+    },
+    /// **Go to Terminal** on a notification: the window of the workspace
+    /// at `home` brings forward the terminal `agent` stopped in.
+    Terminal {
+        home: std::path::PathBuf,
+        socket: std::path::PathBuf,
+        agent: String,
     },
 }
 
@@ -66,6 +73,19 @@ pub fn receive(action: Option<Action>) -> Result<(), String> {
 pub fn enqueue(activation: Activation) -> Result<(), String> {
     if let Activation::Open(action) | Activation::ReplyFailed { action, .. } = &activation {
         Action::parse(&serde_json::to_string(action).map_err(|e| e.to_string())?)?;
+    }
+    if let Activation::Terminal {
+        home,
+        socket,
+        agent,
+    } = &activation
+    {
+        let button = Button::GoToTerminal {
+            home: home.clone(),
+            socket: socket.clone(),
+            agent: agent.clone(),
+        };
+        Button::parse(&serde_json::to_string(&button).map_err(|e| e.to_string())?)?;
     }
     if let Activation::ReplyFailed { text, reason, .. } = &activation
         && (text.chars().count() > RECOVERY_CHARS || reason.chars().count() > RECOVERY_REASON_CHARS)
@@ -261,6 +281,89 @@ pub fn reply(action: Action, text: String) -> Result<(), String> {
     Ok(())
 }
 
+/// **Allow once** on a command prompt's notification: the question is
+/// answered `Allow` through the daemon it came from, as the Needs-you
+/// strip answers it, and only the daemon's `sent` counts. A question
+/// that was answered or expired meanwhile is refused by the daemon, and
+/// the refusal says so.
+#[cfg(any(target_os = "macos", test))]
+pub fn allow_once(client: &crate::client::Client, action: &Action) -> Result<(), Failure> {
+    match client.call(&Request::Answer {
+        from: None,
+        message: action.target.message.clone(),
+        text: "Allow".to_owned(),
+    }) {
+        Ok(Response::Sent { .. }) => Ok(()),
+        Ok(_) => Err(Failure::unknown(
+            "the daemon answered with something other than sent",
+        )),
+        Err(error) if error.downcast_ref::<crate::client::RemoteError>().is_some() => {
+            Err(Failure::certain(error.to_string()))
+        }
+        Err(error) => Err(Failure::unknown(error.to_string())),
+    }
+}
+
+/// **Allow once** pressed: answered off the thread the notification
+/// centre called on, without opening the window. An answer that did not
+/// go is said where the person is looking, and the question stays in
+/// the app to answer there.
+#[cfg(target_os = "macos")]
+pub fn allow(action: Action) -> Result<(), String> {
+    std::thread::Builder::new()
+        .name("notification-allow".into())
+        .spawn(move || {
+            let client = crate::client::Client::at(action.home.clone(), action.socket.clone());
+            if let Err(failure) = allow_once(&client, &action) {
+                eprintln!("allow from notification not sent: {}", failure.reason);
+                let (title, then) = if failure.certain {
+                    ("Not allowed", "Open the app to answer.")
+                } else {
+                    (
+                        "Allow may not have been sent",
+                        "Check the question in the app before answering again.",
+                    )
+                };
+                let _ = crate::notify::post(title, &format!("{}. {then}", excerpt(&failure.reason)));
+            }
+        })
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+/// **Go to Terminal** pressed: the window of the notification's
+/// workspace brings the agent's terminal forward — this one's queue
+/// when the workspace is ours, else a running window of that workspace.
+/// A workspace with no window running is said to need one.
+#[cfg(target_os = "macos")]
+pub fn go_to_terminal(button: Button) -> Result<(), String> {
+    let Button::GoToTerminal {
+        home,
+        socket,
+        agent,
+    } = button
+    else {
+        return Err("this notification has no terminal to go to".into());
+    };
+    let ours = home == agentdocker_host::dirs::home()
+        && socket == agentdocker_host::dirs::socket_path(&home);
+    let activation = Activation::Terminal {
+        home: home.clone(),
+        socket: socket.clone(),
+        agent,
+    };
+    if ours {
+        return enqueue(activation);
+    }
+    instance::forward(&home, &socket, &activation).map_err(|error| {
+        let _ = crate::notify::post(
+            "Terminal not opened",
+            "Open AgentDocker for that workspace, then go to the agent's terminal from it.",
+        );
+        error.to_string()
+    })
+}
+
 #[cfg(any(target_os = "macos", test))]
 fn start_reply(
     action: Action,
@@ -342,7 +445,8 @@ fn report_failure(action: Action, text: String, failure: Failure) {
     let _ = crate::notify::post(title, &body);
 }
 
-/// The start of what was typed, for a notification's body.
+/// The start of what was typed, or of a reason, for a notification's
+/// body.
 #[cfg(target_os = "macos")]
 fn excerpt(text: &str) -> String {
     let mut short: String = text.chars().take(200).collect();
@@ -400,13 +504,40 @@ mod native {
             ) {
                 // SAFETY: This is an immutable framework constant. Dismissal
                 // and unfamiliar actions must not activate a window.
+                let action = response.actionIdentifier().to_string();
                 if *response.actionIdentifier() == *unsafe { UNNotificationDefaultActionIdentifier }
+                    || action == crate::notify::ANSWER_ACTION
                 {
+                    // A click, or **Answer**: the window opens at it.
                     let content = response.notification().request().content();
                     if let Err(reason) = receive_content(&content) {
                         eprintln!("{reason}");
                     }
-                } else if response.actionIdentifier().to_string() == crate::notify::REPLY_ACTION
+                } else if action == crate::notify::ALLOW_ACTION {
+                    let content = response.notification().request().content();
+                    let outcome = match decode_content(&content) {
+                        Ok(Some(action)) => super::allow(action),
+                        Ok(None) => Err("this notification has no question to allow".into()),
+                        Err(reason) => Err(reason),
+                    };
+                    if let Err(reason) = outcome {
+                        eprintln!("allow from notification: {reason}");
+                        let _ = crate::notify::post(
+                            "Not allowed",
+                            &format!("{reason}. Open the app to answer."),
+                        );
+                    }
+                } else if action == crate::notify::TERMINAL_ACTION {
+                    let content = response.notification().request().content();
+                    let outcome = match decode_button(&content) {
+                        Ok(Some(button)) => super::go_to_terminal(button),
+                        Ok(None) => Err("this notification has no terminal to go to".into()),
+                        Err(reason) => Err(reason),
+                    };
+                    if let Err(reason) = outcome {
+                        eprintln!("go to terminal from notification: {reason}");
+                    }
+                } else if action == crate::notify::REPLY_ACTION
                     && let Some(typed) = response.downcast_ref::<UNTextInputNotificationResponse>()
                 {
                     // A reply typed into the notification: sent, not opened.
@@ -464,6 +595,23 @@ mod native {
             None => None,
         };
         Ok(action)
+    }
+
+    /// The button a notification carries, bounded the way its action is.
+    pub(super) fn decode_button(
+        content: &objc2_user_notifications::UNNotificationContent,
+    ) -> Result<Option<agentdocker_host::notify::Button>, String> {
+        let info = content.userInfo();
+        let button = match info.objectForKey(ns_string!("agentdocker.button")) {
+            Some(value) => {
+                let text = value
+                    .downcast_ref::<NSString>()
+                    .ok_or_else(|| "invalid notification button".to_owned())?;
+                Some(agentdocker_host::notify::Button::parse(&text.to_string())?)
+            }
+            None => None,
+        };
+        Ok(button)
     }
 
     /// Hold the delegate until the application run loop exits. The OS keeps a
@@ -786,13 +934,56 @@ mod tests {
             body: "quotes \" and emoji 💬".into(),
             action: Some(action.clone()),
             tag: None,
+            button: None,
         };
         let content = crate::notify::notification_content(&notice).unwrap();
         assert_eq!(content.title().to_string(), notice.title);
         assert_eq!(content.body().to_string(), notice.body);
         assert_eq!(native::decode_content(&content).unwrap(), Some(action));
+        assert_eq!(native::decode_button(&content).unwrap(), None);
+        assert_eq!(
+            content.categoryIdentifier().to_string(),
+            crate::notify::REPLY_CATEGORY
+        );
         notice.action = None;
         let legacy = crate::notify::notification_content(&notice).unwrap();
         assert_eq!(native::decode_content(&legacy).unwrap(), None);
+        assert!(legacy.categoryIdentifier().to_string().is_empty());
+    }
+
+    /// Each button is its own category, and comes back out of the
+    /// content as it went in, beside the action it acts on.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn native_content_carries_the_one_button_under_its_category() {
+        let Activation::Open(action) = activation(7) else {
+            unreachable!()
+        };
+        let terminal = Button::GoToTerminal {
+            home: std::path::PathBuf::from("/tmp/state"),
+            socket: std::path::PathBuf::from("/tmp/state/agentd.sock"),
+            agent: "agent".into(),
+        };
+        for (button, action, category) in [
+            (Button::Answer, Some(&action), crate::notify::QUESTION_CATEGORY),
+            (
+                Button::AllowOnce,
+                Some(&action),
+                crate::notify::COMMAND_CATEGORY,
+            ),
+            (terminal, None, crate::notify::TERMINAL_CATEGORY),
+        ] {
+            let notice = agentdocker_host::notify::Notification {
+                title: "An agent".into(),
+                body: "says".into(),
+                action: action.cloned(),
+                tag: None,
+                button: Some(button.clone()),
+            };
+            let content = crate::notify::notification_content(&notice).unwrap();
+            assert_eq!(content.categoryIdentifier().to_string(), category);
+            assert_eq!(native::decode_button(&content).unwrap(), Some(button));
+            assert_eq!(native::decode_content(&content).unwrap(), action.cloned());
+        }
     }
 }

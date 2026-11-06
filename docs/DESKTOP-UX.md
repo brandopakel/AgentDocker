@@ -777,7 +777,29 @@ waiting in its terminal.*) once the stop has lasted two seconds, so a prompt you
 answer at once, at the terminal, never notifies. Returning to the app or turning
 these notifications off during that delay cancels the pending notice. If an agent
 is already waiting when you leave the app, its two-second delay starts when the
-window loses focus. Repeated focus events do not reset or duplicate the notice. A notice is
+window loses focus. Repeated focus events do not reset or duplicate the notice.
+One state is told once: the same stop reported again posts nothing, a changed
+ask (another reason, another command) is news and replaces the last, and a stop
+the daemon asks about as a question — a Codex approval — has the question's
+notification only, never a second one from the window. A notification carries
+one button where exactly one action exists, beside the **Reply** field a
+message has (macOS): **Answer** on a question opens the window at it;
+**Allow once** on a command a Codex session asks to run answers it `Allow`
+through the daemon without opening the window, as the Needs-you strip does
+(an answer the daemon refused, or whose outcome is unknown, is said as a
+notification — *Not allowed*, *Allow may not have been sent* — and the
+question stays in the app to answer there); **Go to Terminal** on a stop in
+an agent's own terminal brings that terminal forward, as clicking the agent's
+row does, through the window of the notification's workspace (a workspace
+with no window running is told to open one). A finish has no button:
+clicking it opens the app. On Linux a notification has neither the field nor
+a button, since `notify-send` cannot hand a choice back to a process that has
+exited; Windows posts no desktop notifications. Whether a notice would say
+what is already in front of you is one question the poster asks of every
+surface the app has, never a check of its own: the focused window today, which
+shows a message's agent when its session or terminal is open and a message's
+project when its chat is open, and every stopped or finished agent on any
+screen, in its Needs-you strip and badges. A notice is
 taken back from Notification Center
 once it is no longer true: the question was answered, the agent moved on from
 its prompt, or you looked at what it finished. Each question's notice is its own,

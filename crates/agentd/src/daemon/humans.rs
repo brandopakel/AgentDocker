@@ -45,6 +45,9 @@ pub struct Notice {
     pub kind: String,
     pub text: String,
     pub target: agentdocker_core::NotificationTarget,
+    /// The one button the notification carries: a question's, where one
+    /// action exists.
+    pub button: Option<notify::Button>,
 }
 
 impl State {
@@ -112,6 +115,10 @@ impl State {
             from: self.display_name(&envelope.from),
             kind: envelope.kind.clone(),
             text: message_text(&envelope.payload),
+            button: self
+                .questions
+                .get(&envelope.id)
+                .map(|question| question_button(question.presentation.as_ref())),
             target: agentdocker_core::NotificationTarget {
                 message: envelope.id.clone(),
                 agent: AgentId::from(envelope.from.as_str()),
@@ -213,6 +220,18 @@ fn message_text(payload: &Value) -> String {
     match payload.get("text").and_then(Value::as_str) {
         Some(text) => text.to_owned(),
         None => payload.to_string(),
+    }
+}
+
+/// The one button a question's notification carries. A command a Codex
+/// session asks to run is allowed from the notification, as it is from
+/// the Needs-you strip, since the command is in the text; anything else
+/// — file changes to look at first, a form, a choice, words — is
+/// answered in the window, which **Answer** opens at the question.
+fn question_button(presentation: Option<&QuestionPresentation>) -> notify::Button {
+    match presentation {
+        Some(QuestionPresentation::CodexCommand { .. }) => notify::Button::AllowOnce,
+        _ => notify::Button::Answer,
     }
 }
 
@@ -353,6 +372,7 @@ fn notification(notice: Notice, home: &Path, socket: &Path) -> Notification {
             socket: socket.to_path_buf(),
             target: notice.target,
         }),
+        button: notice.button,
     }
 }
 
@@ -737,6 +757,7 @@ mod tests {
                 project: None,
                 channel: None,
             },
+            button: None,
         };
         let home = Path::new("/fixture/home");
         let socket = Path::new("/fixture/home/agentd.sock");
@@ -747,6 +768,43 @@ mod tests {
             Some("question.0123456789abcdef")
         );
         assert_eq!(notification(notice("message"), home, socket).tag, None);
+    }
+
+    /// A question's notification carries the one button its kind has: a
+    /// command to allow is allowed from it, anything else opens at the
+    /// question. A message has no button, only its Reply field.
+    #[test]
+    fn a_question_notification_carries_its_one_button() {
+        let command = QuestionPresentation::CodexCommand {
+            command: "cargo test".into(),
+            cwd: "/fixture/app".into(),
+            reason: String::new(),
+            for_session: false,
+        };
+        assert_eq!(question_button(Some(&command)), notify::Button::AllowOnce);
+        let choices = QuestionPresentation::Choices {
+            question: "Which?".into(),
+            options: Vec::new(),
+        };
+        assert_eq!(question_button(Some(&choices)), notify::Button::Answer);
+        assert_eq!(question_button(None), notify::Button::Answer);
+        let notice = Notice {
+            from: "asker".into(),
+            kind: "question".into(),
+            text: "Run cargo test?".into(),
+            target: agentdocker_core::NotificationTarget {
+                message: MessageId::from("0123456789abcdef".to_owned()),
+                agent: AgentId::from("asker"),
+                project: None,
+                channel: None,
+            },
+            button: Some(notify::Button::AllowOnce),
+        };
+        let home = Path::new("/fixture/home");
+        let socket = Path::new("/fixture/home/agentd.sock");
+        let posted = notification(notice, home, socket);
+        assert_eq!(posted.button, Some(notify::Button::AllowOnce));
+        assert!(posted.action.is_some(), "the button acts on the question");
     }
 
     fn question(seconds: i64) -> Question {

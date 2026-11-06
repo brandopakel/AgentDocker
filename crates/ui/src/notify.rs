@@ -27,11 +27,45 @@ const ACCEPT_WITHIN: std::time::Duration = std::time::Duration::from_secs(1);
 /// opens — so the field is there whichever came first.
 #[cfg(target_os = "macos")]
 pub(crate) const REPLY_CATEGORY: &str = "dev.agentdocker.message";
+/// A question's: **Answer** opens the window at it, beside **Reply**.
+#[cfg(target_os = "macos")]
+pub(crate) const QUESTION_CATEGORY: &str = "dev.agentdocker.question";
+/// A command prompt's: **Allow once** answers it, beside **Reply**.
+#[cfg(target_os = "macos")]
+pub(crate) const COMMAND_CATEGORY: &str = "dev.agentdocker.command";
+/// A stop in an agent's own terminal: **Go to Terminal** brings it
+/// forward. There is no message to reply to.
+#[cfg(target_os = "macos")]
+pub(crate) const TERMINAL_CATEGORY: &str = "dev.agentdocker.terminal";
 /// The action the typed reply comes back under.
 #[cfg(target_os = "macos")]
 pub(crate) const REPLY_ACTION: &str = "dev.agentdocker.reply";
+/// The actions the buttons come back under.
+#[cfg(target_os = "macos")]
+pub(crate) const ANSWER_ACTION: &str = "dev.agentdocker.answer";
+#[cfg(target_os = "macos")]
+pub(crate) const ALLOW_ACTION: &str = "dev.agentdocker.allow";
+#[cfg(target_os = "macos")]
+pub(crate) const TERMINAL_ACTION: &str = "dev.agentdocker.terminal";
 
-/// Register the message category with its **Reply** field.
+/// The category a notification is posted under, by what it carries: a
+/// message has the **Reply** field; a question, a command prompt and a
+/// stop in a terminal each have their one button as well, as
+/// [`agentdocker_host::notify::Button`] says. A notice with neither
+/// (the window's word that an agent finished) is only clicked.
+#[cfg(target_os = "macos")]
+pub(crate) fn category(notice: &agentdocker_host::notify::Notification) -> Option<&'static str> {
+    use agentdocker_host::notify::Button;
+    match (&notice.action, &notice.button) {
+        (_, Some(Button::Answer)) => Some(QUESTION_CATEGORY),
+        (_, Some(Button::AllowOnce)) => Some(COMMAND_CATEGORY),
+        (_, Some(Button::GoToTerminal { .. })) => Some(TERMINAL_CATEGORY),
+        (Some(_), None) => Some(REPLY_CATEGORY),
+        (None, None) => None,
+    }
+}
+
+/// Register every category with its field and button.
 #[cfg(target_os = "macos")]
 pub(crate) fn register_categories() {
     use objc2_foundation::{NSArray, NSSet, NSString};
@@ -39,22 +73,56 @@ pub(crate) fn register_categories() {
         UNNotificationAction, UNNotificationActionOptions, UNNotificationCategory,
         UNNotificationCategoryOptions, UNTextInputNotificationAction, UNUserNotificationCenter,
     };
-    let reply = UNTextInputNotificationAction::actionWithIdentifier_title_options_textInputButtonTitle_textInputPlaceholder(
-        &NSString::from_str(REPLY_ACTION),
-        &NSString::from_str("Reply"),
-        UNNotificationActionOptions::empty(),
-        &NSString::from_str("Send"),
-        &NSString::from_str("Reply…"),
-    );
-    let reply: objc2::rc::Retained<UNNotificationAction> = reply.into_super();
-    let actions = NSArray::from_retained_slice(&[reply]);
-    let category = UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
-        &NSString::from_str(REPLY_CATEGORY),
-        &actions,
-        &NSArray::<NSString>::new(),
-        UNNotificationCategoryOptions::empty(),
-    );
-    let categories = NSSet::from_retained_slice(&[category]);
+    let reply = || -> objc2::rc::Retained<UNNotificationAction> {
+        UNTextInputNotificationAction::actionWithIdentifier_title_options_textInputButtonTitle_textInputPlaceholder(
+            &NSString::from_str(REPLY_ACTION),
+            &NSString::from_str("Reply"),
+            UNNotificationActionOptions::empty(),
+            &NSString::from_str("Send"),
+            &NSString::from_str("Reply…"),
+        )
+        .into_super()
+    };
+    // A button that opens the window brings the app forward; one that
+    // acts without it (Allow once) leaves the person where they are.
+    let button = |id: &str, title: &str, options: UNNotificationActionOptions| {
+        UNNotificationAction::actionWithIdentifier_title_options(
+            &NSString::from_str(id),
+            &NSString::from_str(title),
+            options,
+        )
+    };
+    let category = |id: &str, actions: &[objc2::rc::Retained<UNNotificationAction>]| {
+        UNNotificationCategory::categoryWithIdentifier_actions_intentIdentifiers_options(
+            &NSString::from_str(id),
+            &NSArray::from_retained_slice(actions),
+            &NSArray::<NSString>::new(),
+            UNNotificationCategoryOptions::empty(),
+        )
+    };
+    let foreground = UNNotificationActionOptions::Foreground;
+    let categories = NSSet::from_retained_slice(&[
+        category(REPLY_CATEGORY, &[reply()]),
+        category(
+            QUESTION_CATEGORY,
+            &[button(ANSWER_ACTION, "Answer", foreground), reply()],
+        ),
+        category(
+            COMMAND_CATEGORY,
+            &[
+                button(
+                    ALLOW_ACTION,
+                    "Allow once",
+                    UNNotificationActionOptions::empty(),
+                ),
+                reply(),
+            ],
+        ),
+        category(
+            TERMINAL_CATEGORY,
+            &[button(TERMINAL_ACTION, "Go to Terminal", foreground)],
+        ),
+    ]);
     UNUserNotificationCenter::currentNotificationCenter().setNotificationCategories(&categories);
 }
 
@@ -190,6 +258,7 @@ pub fn post(title: &str, body: &str) -> Result<(), String> {
         body: body.into(),
         action: None,
         tag: None,
+        button: None,
     })
 }
 
@@ -207,10 +276,10 @@ pub fn post_notification(notice: &agentdocker_host::notify::Notification) -> Res
     if !in_a_bundle() {
         return Err("not running inside an application bundle".to_owned());
     }
-    // The window already shows it: nothing to tell the person.
-    if let Some(action) = &notice.action
-        && agentdocker_host::notify::Viewing::read(&action.home)
-            .is_some_and(|viewing| viewing.shows(&action.target, chrono::Utc::now()))
+    // A surface of its workspace already shows it: nothing to tell the
+    // person. The surfaces are the host's to list; this asks them all.
+    if let (Some(home), Some(subject)) = (notice.home(), notice.subject())
+        && agentdocker_host::notify::shown(home, &subject, chrono::Utc::now())
     {
         return Ok(());
     }
@@ -306,19 +375,34 @@ pub(crate) fn notification_content(
     let content = objc2_user_notifications::UNMutableNotificationContent::new();
     content.setTitle(&NSString::from_str(&notice.title));
     content.setBody(&NSString::from_str(&notice.body));
+    // What the response handler needs, as validated JSON under its own
+    // keys: the action a click or a reply goes to, and the button.
+    let mut keys = Vec::new();
+    let mut values = Vec::new();
     if let Some(action) = &notice.action {
         let encoded = serde_json::to_string(action).map_err(|e| e.to_string())?;
         agentdocker_host::notify::Action::parse(&encoded)?;
-        let key = NSString::from_str("agentdocker.action");
-        let value = NSString::from_str(&encoded);
-        let info = objc2_foundation::NSDictionary::from_slices(&[&*key], &[&*value]);
+        keys.push(NSString::from_str("agentdocker.action"));
+        values.push(NSString::from_str(&encoded));
+    }
+    if let Some(button) = &notice.button {
+        let encoded = serde_json::to_string(button).map_err(|e| e.to_string())?;
+        agentdocker_host::notify::Button::parse(&encoded)?;
+        keys.push(NSString::from_str("agentdocker.button"));
+        values.push(NSString::from_str(&encoded));
+    }
+    if !keys.is_empty() {
+        let keys: Vec<&NSString> = keys.iter().map(|k| &**k).collect();
+        let values: Vec<&NSString> = values.iter().map(|v| &**v).collect();
+        let info = objc2_foundation::NSDictionary::from_slices(&keys, &values);
         // SAFETY: Erase only the dictionary's static generic parameters.
         // The retained Objective-C object and its immutable strings are unchanged.
         let info =
             unsafe { objc2::rc::Retained::cast_unchecked::<objc2_foundation::NSDictionary>(info) };
         unsafe { content.setUserInfo(&info) };
-        // A message can be answered from the notification itself.
-        content.setCategoryIdentifier(&NSString::from_str(REPLY_CATEGORY));
+    }
+    if let Some(category) = category(notice) {
+        content.setCategoryIdentifier(&NSString::from_str(category));
     }
     Ok(content)
 }
@@ -403,6 +487,7 @@ mod tests {
             body: "test".into(),
             action: None,
             tag: None,
+            button: None,
         })
         .unwrap_err();
         assert!(!refused.is_empty(), "a refusal says why");

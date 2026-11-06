@@ -2255,11 +2255,19 @@ impl App {
     /// A session that stops for the person in its own terminal while the
     /// window is not in front is told as well.
     fn note_completions(&mut self, fresh: &BTreeMap<String, Activity>) {
-        let telling = self.shell.unfocused && self.settings.notify_finished && self.smoke.is_none();
+        let telling = self.settings.notify_finished && self.smoke.is_none();
         for (id, now) in fresh {
+            // A stop that begins, or whose ask changes (another reason,
+            // another command), is told; the same stop reported again is
+            // not, and one already pending keeps its grace.
+            let was = self.activity.get(id);
+            let stopped = matches!(now, Activity::Waiting { .. })
+                && (!matches!(was, Some(Activity::Waiting { .. }))
+                    || shell::notice_state(Some(now)) != shell::notice_state(was));
             if telling
-                && matches!(now, Activity::Waiting { .. })
-                && !matches!(self.activity.get(id), Some(Activity::Waiting { .. }))
+                && stopped
+                && !self.in_front(id)
+                && !self.shell.wait_notices.iter().any(|(pending, _)| pending == id)
                 && self
                     .agents
                     .iter()
@@ -2293,7 +2301,7 @@ impl App {
                 // a message from them already waits for it: it goes on to
                 // that next, and "finished" would be stale on arrival.
                 let has_next = self.queued_inputs.get(id).is_some_and(|queued| *queued > 0);
-                if telling && !has_next {
+                if telling && !has_next && !self.in_front(id) {
                     self.shell.finish_notices.push(id.clone());
                 }
             }
@@ -8059,6 +8067,192 @@ pub(crate) mod tests {
         let _ = app.update(Message::NoticeDone);
         assert!(!app.shell.notice_busy);
         assert!(app.shell.notice_queue.is_empty());
+    }
+
+    /// One state is told once: a stop reported again, or a focus event
+    /// repeated, posts nothing; a changed ask is news and replaces the
+    /// last; taken back once the agent moves on, the same stop is told
+    /// again when it comes. The notice about a stop carries **Go to
+    /// Terminal** for this window's workspace.
+    #[test]
+    fn a_stop_is_told_once_and_a_changed_ask_again() {
+        fn step(app: &mut App, id: &str, activity: Activity) {
+            let fresh = BTreeMap::from([(id.to_owned(), activity)]);
+            app.note_completions(&fresh);
+            app.activity = fresh;
+        }
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let mut worker = record("worker", "claude-code", Some(4242));
+        worker.project = Some(ProjectRef::directory("/fixture/alpha"));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        app.shell.unfocused = true;
+        let now = Utc::now();
+        let permission = |since| Activity::Waiting {
+            since,
+            reason: Some(agentdocker_core::WaitReason::Permission),
+            judged: None,
+            detail: Some("cargo test".into()),
+        };
+        let question = || Activity::Waiting {
+            since: now,
+            reason: Some(agentdocker_core::WaitReason::Question),
+            judged: None,
+            detail: None,
+        };
+        let post = format!("post window.{id}");
+        let withdraw = format!("withdraw window.{id}");
+
+        step(&mut app, &id, Activity::Working { since: now });
+        step(&mut app, &id, permission(now));
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        // Hold the centre, so the post waits in the queue to be read.
+        app.shell.notice_busy = true;
+        let _ = app.update(Message::WaitGrace);
+        let Some(shell::NoticeOp::Post(notice)) = app.shell.notice_queue.front() else {
+            panic!("the stop is posted");
+        };
+        assert!(notice.title.ends_with("wants permission"), "{}", notice.title);
+        assert_eq!(
+            notice.button,
+            Some(agentdocker_host::notify::Button::GoToTerminal {
+                home: app.home.clone(),
+                socket: agentdocker_host::dirs::socket_path(&app.home),
+                agent: id.clone(),
+            })
+        );
+        let _ = app.update(Message::NoticeDone);
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, std::slice::from_ref(&post));
+
+        // The same stop again — a fresh report, a repeated focus event, a
+        // pending entry that comes due — is not news.
+        step(&mut app, &id, permission(now + chrono::Duration::seconds(5)));
+        assert!(app.shell.wait_notices.is_empty(), "the same ask is not pending again");
+        let _ = app.update(Message::Event(iced::Event::Window(
+            iced::window::Event::Unfocused,
+        )));
+        app.shell
+            .wait_notices
+            .push((id.clone(), Instant::now() - shell::WAIT_GRACE));
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(app.shell.notice_log, std::slice::from_ref(&post));
+        assert!(app.shell.notice_queue.is_empty());
+
+        // A changed ask is news, and replaces the last under the same tag.
+        step(&mut app, &id, question());
+        assert_eq!(app.shell.wait_notices.len(), 1, "a changed ask is pending");
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [post.clone(), post.clone()]);
+
+        // Moved on, the notice is taken back and forgotten: the same stop
+        // coming again is told again.
+        step(&mut app, &id, Activity::Working { since: now });
+        let _ = app.update(Message::Tick);
+        let _ = app.update(Message::NoticeDone);
+        assert_eq!(app.shell.notice_log, [post.clone(), post.clone(), withdraw]);
+        step(&mut app, &id, question());
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert_eq!(app.shell.notice_log.len(), 4);
+        assert_eq!(app.shell.notice_log[3], post);
+    }
+
+    /// A stop the daemon asks about — a question from the agent, which the
+    /// daemon's notice carries with its Answer or Allow once — is not
+    /// also told by the window: one state, one notification.
+    #[test]
+    fn a_stop_the_daemon_asks_about_has_only_the_questions_notice() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let worker = record("worker", "codex", Some(4242));
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        app.shell.unfocused = true;
+        app.questions = vec![Question {
+            id: MessageId::from("ask-1".to_owned()),
+            from: id.clone(),
+            to: agentdocker_core::Destination::Agent("user".into()),
+            text: "Run cargo test?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+        }];
+        let fresh = BTreeMap::from([(
+            id.clone(),
+            Activity::Waiting {
+                since: Utc::now(),
+                reason: Some(agentdocker_core::WaitReason::Permission),
+                judged: None,
+                detail: None,
+            },
+        )]);
+        app.note_completions(&fresh);
+        app.activity = fresh;
+        app.shell.wait_notices[0].1 -= shell::WAIT_GRACE;
+        let _ = app.update(Message::WaitGrace);
+        assert!(
+            app.shell
+                .notice_log
+                .iter()
+                .all(|op| !op.starts_with("post")),
+            "{:?}",
+            app.shell.notice_log
+        );
+        assert!(!app.shell.noticed.contains(&shell::window_tag(&id)));
+    }
+
+    /// **Go to Terminal** on a notice brings the agent's own terminal
+    /// forward, for this window's workspace only; an ended agent's is not
+    /// opened, and another workspace's notice is said to be its own.
+    #[test]
+    fn go_to_terminal_from_a_notification_opens_the_agents_terminal() {
+        let (commands, _requests) = queue::channel();
+        let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let home = tempfile::tempdir().unwrap();
+        let socket = home.path().join("agentd.sock");
+        app.home = home.path().to_owned();
+        app.client = Some(std::sync::Arc::new(crate::client::Client::isolated(
+            socket.clone(),
+        )));
+        let mut worker = record("worker", "claude-code", Some(4242));
+        worker.process_started_at = Some(Utc::now());
+        let id = worker.id.to_string();
+        app.agents.push(worker);
+        let terminal = |home: &std::path::Path, socket: &std::path::Path| {
+            Message::Notification(crate::notification_route::Activation::Terminal {
+                home: home.to_owned(),
+                socket: socket.to_owned(),
+                agent: id.clone(),
+            })
+        };
+        let _ = app.update(terminal(home.path(), &socket));
+        assert!(app.shell.terminal_opening, "its terminal is being opened");
+        assert_eq!(app.status, "Opening terminal…");
+
+        app.shell.terminal_opening = false;
+        app.status.clear();
+        let elsewhere = std::path::Path::new("/fixture/elsewhere");
+        let _ = app.update(terminal(elsewhere, &elsewhere.join("agentd.sock")));
+        assert!(!app.shell.terminal_opening);
+        assert_eq!(
+            app.status,
+            "This notification belongs to another local workspace."
+        );
+
+        app.agents[0].status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        let _ = app.update(terminal(home.path(), &socket));
+        assert!(!app.shell.terminal_opening);
+        assert_eq!(
+            app.status,
+            "This agent has ended. Its terminal was not opened."
+        );
     }
 
     /// The daemon posts question notices outside the window's queue, each

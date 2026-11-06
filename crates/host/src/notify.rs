@@ -41,6 +41,107 @@ impl Action {
     }
 }
 
+/// The one button a notification carries, where exactly one action
+/// exists, beside the **Reply** field a message has: a question is
+/// answered, a command prompt allowed, a stopped agent's terminal brought
+/// forward. A notification with no button is opened by clicking it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Button {
+    /// **Answer**: opens the window at the question the action names.
+    Answer,
+    /// **Allow once**: answers the command prompt the action names with
+    /// `Allow`, through its daemon, without opening the window.
+    AllowOnce,
+    /// **Go to Terminal**: brings forward the terminal `agent` stopped
+    /// in, through the window of the workspace at `home`.
+    GoToTerminal {
+        home: PathBuf,
+        socket: PathBuf,
+        agent: String,
+    },
+}
+
+impl Button {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        if text.len() > ACTION_BYTES {
+            return Err("notification button is too large".into());
+        }
+        let button: Self =
+            serde_json::from_str(text).map_err(|_| "invalid notification button".to_owned())?;
+        if !button.is_valid() {
+            return Err("invalid notification button".into());
+        }
+        Ok(button)
+    }
+
+    fn is_valid(&self) -> bool {
+        match self {
+            Self::Answer | Self::AllowOnce => true,
+            Self::GoToTerminal {
+                home,
+                socket,
+                agent,
+            } => {
+                home.is_absolute()
+                    && socket.is_absolute()
+                    && agentdocker_core::notification::valid_id(agent)
+            }
+        }
+    }
+}
+
+/// What a notice is about, for asking whether it is already in front of
+/// the person.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Subject {
+    /// A message or question from `agent`: in `project`'s chat, or in a
+    /// `channel`.
+    Message {
+        agent: String,
+        project: Option<String>,
+        channel: Option<String>,
+    },
+    /// `agent` itself: it stopped for the person, or finished.
+    Agent { agent: String },
+}
+
+impl From<&agentdocker_core::NotificationTarget> for Subject {
+    fn from(target: &agentdocker_core::NotificationTarget) -> Self {
+        Self::Message {
+            agent: target.agent.to_string(),
+            project: target.project.as_ref().map(|p| p.as_str().to_owned()),
+            channel: target.channel.as_ref().map(|c| c.as_str().to_owned()),
+        }
+    }
+}
+
+/// Something the app has in front of the person that may already show
+/// what a notice is about. The focused window is one; a surface a later
+/// build adds (an open panel) is another implementation, consulted the
+/// same way by [`shown`], never a further check inside a poster.
+pub trait Surface {
+    fn shows(&self, subject: &Subject, now: chrono::DateTime<chrono::Utc>) -> bool;
+}
+
+/// The surfaces of the workspace at `home`, as their records say: the
+/// window's `viewing.json` today. A later surface's record is read here.
+pub fn surfaces(home: &Path) -> Vec<Box<dyn Surface>> {
+    Viewing::read(home)
+        .into_iter()
+        .map(|viewing| Box::new(viewing) as Box<dyn Surface>)
+        .collect()
+}
+
+/// Whether a surface of the workspace at `home` has `subject` in front
+/// of the person, so a notice about it would say what they see: the one
+/// check a poster makes.
+pub fn shown(home: &Path, subject: &Subject, now: chrono::DateTime<chrono::Utc>) -> bool {
+    surfaces(home)
+        .iter()
+        .any(|surface| surface.shows(subject, now))
+}
+
 /// What the desktop window shows, so a notice about it is not also
 /// posted: every agent app studied stays silent about the session on
 /// screen. The window writes it as it changes (`viewing.json` in the
@@ -73,20 +174,35 @@ impl Viewing {
         serde_json::from_str(&text).ok()
     }
 
-    /// Whether a notice about `target` would tell the person what is
-    /// already in front of them.
-    pub fn shows(
-        &self,
-        target: &agentdocker_core::NotificationTarget,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> bool {
+    /// Whether a notice about `subject` would tell the person what is
+    /// already in front of them: a message from the agent whose session
+    /// is open, or in the chat that is open; and, while the window is in
+    /// front at all, any agent that stopped or finished, since its
+    /// Needs-you strip and badges say so on every screen.
+    pub fn shows(&self, subject: &Subject, now: chrono::DateTime<chrono::Utc>) -> bool {
         let fresh = now >= self.at && now - self.at < VIEWING_FRESH;
-        fresh
-            && self.focused
-            && (self.agent.as_deref() == Some(target.agent.as_str())
-                || (target.channel.is_none()
-                    && self.chat.is_some()
-                    && self.chat.as_deref() == target.project.as_ref().map(|p| p.as_str())))
+        if !fresh || !self.focused {
+            return false;
+        }
+        match subject {
+            Subject::Message {
+                agent,
+                project,
+                channel,
+            } => {
+                self.agent.as_deref() == Some(agent.as_str())
+                    || (channel.is_none()
+                        && self.chat.is_some()
+                        && self.chat.as_deref() == project.as_deref())
+            }
+            Subject::Agent { .. } => true,
+        }
+    }
+}
+
+impl Surface for Viewing {
+    fn shows(&self, subject: &Subject, now: chrono::DateTime<chrono::Utc>) -> bool {
+        Viewing::shows(self, subject, now)
     }
 }
 
@@ -109,10 +225,13 @@ pub struct Notification {
     /// subject keeps one notification rather than a backlog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag: Option<String>,
+    /// The one button it carries, where one action exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub button: Option<Button>,
 }
 impl Notification {
     pub fn parse(text: &str) -> Result<Self, String> {
-        if text.len() > ACTION_BYTES + 4096 {
+        if text.len() > 2 * ACTION_BYTES + 4096 {
             return Err("notification is too large".into());
         }
         let notice: Self =
@@ -123,7 +242,31 @@ impl Notification {
         if let Some(action) = &notice.action {
             Action::parse(&serde_json::to_string(action).map_err(|e| e.to_string())?)?;
         }
+        if let Some(button) = &notice.button {
+            Button::parse(&serde_json::to_string(button).map_err(|e| e.to_string())?)?;
+        }
         Ok(notice)
+    }
+
+    /// What it is about, for the surfaces: the message its action names,
+    /// or the agent whose terminal its button goes to.
+    pub fn subject(&self) -> Option<Subject> {
+        match (&self.action, &self.button) {
+            (Some(action), _) => Some(Subject::from(&action.target)),
+            (None, Some(Button::GoToTerminal { agent, .. })) => Some(Subject::Agent {
+                agent: agent.clone(),
+            }),
+            (None, _) => None,
+        }
+    }
+
+    /// The workspace it belongs to, from its action or its button.
+    pub fn home(&self) -> Option<&Path> {
+        match (&self.action, &self.button) {
+            (Some(action), _) => Some(&action.home),
+            (None, Some(Button::GoToTerminal { home, .. })) => Some(home),
+            (None, _) => None,
+        }
     }
 }
 
@@ -248,6 +391,7 @@ mod tests {
             body: "quotes \" and $(data)".into(),
             action: None,
             tag: None,
+            button: None,
         };
         let encoded = serde_json::to_string(&notification).unwrap();
         assert_eq!(Notification::parse(&encoded).unwrap(), notification);
@@ -286,6 +430,7 @@ mod tests {
                 },
             }),
             tag: None,
+            button: None,
         };
         assert_eq!(
             post(&notice).unwrap_err(),
@@ -297,12 +442,12 @@ mod tests {
     fn a_notice_about_what_is_on_screen_is_not_posted() {
         let now = chrono::Utc::now();
         let target = |agent: &str, project: Option<&str>, channel: bool| {
-            agentdocker_core::NotificationTarget {
+            Subject::from(&agentdocker_core::NotificationTarget {
                 message: "0123456789abcdef".to_owned().into(),
                 agent: agent.into(),
                 project: project.map(Into::into),
                 channel: channel.then(|| "0123456789abcdef".to_owned().into()),
-            }
+            })
         };
         let viewing = Viewing {
             focused: true,
@@ -329,6 +474,67 @@ mod tests {
             !viewing.shows(&target("worker", None, false), now + VIEWING_FRESH),
             "a stale record claims nothing"
         );
+        // An agent that stopped or finished is said by the window itself,
+        // whichever screen is up, so a window in front shows every one.
+        let stopped = Subject::Agent {
+            agent: "other".into(),
+        };
+        assert!(viewing.shows(&stopped, now));
+        assert!(
+            !Viewing {
+                focused: false,
+                ..viewing.clone()
+            }
+            .shows(&stopped, now)
+        );
+        let surfaces: Vec<Box<dyn Surface>> = vec![Box::new(viewing)];
+        assert!(surfaces.iter().any(|s| s.shows(&stopped, now)));
+    }
+
+    /// A notice's subject follows its action, else its terminal button;
+    /// a button carries only what the receiver can trust.
+    #[test]
+    fn buttons_are_bounded_and_name_their_subject() {
+        let terminal = Button::GoToTerminal {
+            home: PathBuf::from("/fixture/home"),
+            socket: PathBuf::from("/fixture/home/agentd.sock"),
+            agent: "agent-1".into(),
+        };
+        let encoded = serde_json::to_string(&terminal).unwrap();
+        assert_eq!(Button::parse(&encoded).unwrap(), terminal);
+        for text in [
+            r#"{"kind":"go_to_terminal","home":"relative","socket":"/s","agent":"a"}"#,
+            r#"{"kind":"go_to_terminal","home":"/h","socket":"/s","agent":"../x"}"#,
+            r#"{"kind":"open_anything"}"#,
+            &"x".repeat(ACTION_BYTES + 1),
+        ] {
+            assert!(Button::parse(text).is_err(), "{text}");
+        }
+        assert_eq!(Button::parse(r#"{"kind":"answer"}"#).unwrap(), Button::Answer);
+        assert_eq!(
+            Button::parse(r#"{"kind":"allow_once"}"#).unwrap(),
+            Button::AllowOnce
+        );
+        let notice = Notification {
+            title: "Agent wants permission".into(),
+            body: "It is waiting in its terminal.".into(),
+            action: None,
+            tag: Some("window.agent-1".into()),
+            button: Some(terminal),
+        };
+        assert_eq!(
+            Notification::parse(&serde_json::to_string(&notice).unwrap()).unwrap(),
+            notice
+        );
+        assert_eq!(
+            notice.subject(),
+            Some(Subject::Agent {
+                agent: "agent-1".into()
+            })
+        );
+        assert_eq!(notice.home(), Some(Path::new("/fixture/home")));
+        let bad = r#"{"title":"t","body":"b","button":{"kind":"go_to_terminal","home":"h","socket":"/s","agent":"a"}}"#;
+        assert!(Notification::parse(bad).is_err());
     }
 
     #[test]

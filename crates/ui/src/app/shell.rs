@@ -404,6 +404,10 @@ pub(super) struct State {
     /// open questions the daemon posted (`question_tag`). Each is taken
     /// back once it stops being true.
     pub noticed: BTreeSet<String>,
+    /// What each of this window's notices said, by tag, so one state is
+    /// told once: a stop with its reason and detail, a finish. Forgotten
+    /// when the notice is taken back.
+    pub told: agentdocker_core::notification::Told,
     /// What this window last said it shows (`viewing.json`), and when.
     pub viewing: Option<(agentdocker_host::notify::Viewing, Instant)>,
     /// Cards this window has moved on by their holder's pull request, and
@@ -453,6 +457,26 @@ impl State {
 /// agent, a newer replacing its last, never shared with the daemon's.
 pub fn window_tag(agent: &str) -> String {
     format!("window.{agent}")
+}
+
+/// What this window's notice about an agent says of it, for telling it
+/// once: the stop with its reason and what it is about, or the finish. A
+/// changed ask — another reason, another command — is a new state and is
+/// said again, replacing the last; the same one reported again is not.
+pub fn notice_state(activity: Option<&Activity>) -> String {
+    match activity {
+        Some(Activity::Waiting {
+            reason,
+            judged,
+            detail,
+            ..
+        }) => format!(
+            "waiting:{}:{}",
+            super::view::waiting_errand(*reason, judged.is_some()),
+            detail.as_deref().unwrap_or_default()
+        ),
+        _ => "finished".to_owned(),
+    }
 }
 
 /// One request of the notification centre: post an agent's notice, or
@@ -1804,6 +1828,31 @@ impl App {
                         self.say(format!(
                             "A reply to another workspace's notification was not sent: {reason}"
                         ));
+                    }
+                    // Go to Terminal on a notice about a stop: the agent's
+                    // own terminal comes forward, as clicking its row does.
+                    crate::notification_route::Activation::Terminal {
+                        home,
+                        socket,
+                        agent,
+                    } if home == self.home
+                        && self
+                            .client
+                            .as_ref()
+                            .is_some_and(|c| c.socket() == socket) =>
+                    {
+                        if self
+                            .agents
+                            .iter()
+                            .any(|a| a.id.as_str() == agent && a.status.is_live())
+                        {
+                            tasks.push(self.update(Message::OpenAgentTerminal(agent)));
+                        } else {
+                            self.say("This agent has ended. Its terminal was not opened.");
+                        }
+                    }
+                    crate::notification_route::Activation::Terminal { .. } => {
+                        self.say("This notification belongs to another local workspace.")
                     }
                     crate::notification_route::Activation::Focus => {}
                     crate::notification_route::Activation::Inbox => {
@@ -4509,7 +4558,7 @@ impl App {
         // it comes due, since an unfocused window sweeps only twice a
         // minute.
         let now = Instant::now();
-        let telling = self.shell.unfocused && self.settings.notify_finished && self.smoke.is_none();
+        let telling = self.settings.notify_finished && self.smoke.is_none();
         let mut due = Vec::new();
         let mut young = Vec::new();
         for (id, since) in std::mem::take(&mut self.shell.wait_notices) {
@@ -4517,7 +4566,7 @@ impl App {
                 .agents
                 .iter()
                 .any(|a| a.id.as_str() == id && self.waits_for_person(a));
-            if !telling || !still {
+            if !telling || !still || self.in_front(&id) {
                 continue;
             }
             if now.duration_since(since) >= WAIT_GRACE {
@@ -4542,6 +4591,23 @@ impl App {
             let Some(agent) = self.agents.iter().find(|a| a.id.as_str() == id) else {
                 continue;
             };
+            // A stop the daemon asks about — a question from this agent —
+            // has the question's own notice, with its button; a second
+            // one here would say the same thing twice.
+            if waits && self.needs_input(&id) {
+                continue;
+            }
+            // One state is told once: the same stop reported again is
+            // quiet, a changed ask or a finish after a stop replaces it.
+            let tag = window_tag(&id);
+            let state = if waits {
+                notice_state(self.activity.get(id.as_str()))
+            } else {
+                notice_state(None)
+            };
+            if !self.shell.told.news(&tag, &state) {
+                continue;
+            }
             let name = self.display_name(agent);
             let (title, then) = if waits {
                 match self.activity.get(id.as_str()) {
@@ -4571,6 +4637,17 @@ impl App {
                     "Click to see what it did.".to_owned(),
                 )
             };
+            // A stop in its own terminal has one thing to do: go there.
+            // A finish is looked at by clicking the notice.
+            let button = waits.then(|| agentdocker_host::notify::Button::GoToTerminal {
+                home: self.home.clone(),
+                socket: self
+                    .client
+                    .as_ref()
+                    .map(|c| c.socket().to_owned())
+                    .unwrap_or_else(|| agentdocker_host::dirs::socket_path(&self.home)),
+                agent: id.clone(),
+            });
             let notice = agentdocker_host::notify::Notification {
                 title,
                 body: match agent.project.as_ref() {
@@ -4578,9 +4655,10 @@ impl App {
                     None => then,
                 },
                 action: None,
-                tag: Some(window_tag(&id)),
+                tag: Some(tag.clone()),
+                button,
             };
-            self.shell.noticed.insert(window_tag(&id));
+            self.shell.noticed.insert(tag);
             self.shell
                 .notice_queue
                 .push_back(NoticeOp::Post(Box::new(notice)));
@@ -4656,8 +4734,26 @@ impl App {
             .collect();
         for tag in &stale {
             self.shell.noticed.remove(tag);
+            self.shell.told.forget(tag);
         }
         stale
+    }
+
+    /// Whether a notice that `agent` stopped or finished would say what
+    /// is in front of the person already. The surfaces are asked, as the
+    /// poster asks them (`agentdocker_host::notify::Surface`): the window
+    /// is the one surface today, and in front it shows every such agent
+    /// in its Needs-you strip and badges.
+    pub(super) fn in_front(&self, agent: &str) -> bool {
+        use agentdocker_host::notify::{Subject, Surface};
+        let subject = Subject::Agent {
+            agent: agent.to_owned(),
+        };
+        let window = self.viewing_now();
+        let surfaces: [&dyn Surface; 1] = [&window];
+        surfaces
+            .iter()
+            .any(|surface| surface.shows(&subject, Utc::now()))
     }
 
     /// Denial notes that did not go, or may not have, go into their
