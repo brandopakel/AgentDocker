@@ -141,6 +141,7 @@ impl Daemon {
         standing: bool,
         forget_after: Option<chrono::DateTime<Utc>>,
         roles: Vec<String>,
+        valid_from: Option<chrono::DateTime<Utc>>,
     ) -> Response {
         let project = match self.memory_project(Some(from), project).await {
             Ok(project) => project,
@@ -220,6 +221,7 @@ impl Daemon {
         )
         .and_then(|memory| memory.standing(standing).forget_after(forget_after))
         .and_then(|memory| memory.roles(roles))
+        .and_then(|memory| memory.valid_from(valid_from))
         {
             Ok(memory) => memory,
             Err(reason) => return Response::error(ErrorCode::Invalid, reason),
@@ -235,12 +237,16 @@ impl Daemon {
         Response::Memory { memory }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn memory_search(
         self: &Arc<Self>,
         from: Option<String>,
         project: Option<String>,
         query: &str,
         limit: Option<usize>,
+        as_of: Option<chrono::DateTime<Utc>>,
+        include_superseded: bool,
+        min_score: Option<f64>,
     ) -> Response {
         let project = match self.memory_project(from.as_deref(), project).await {
             Ok(project) => project,
@@ -257,13 +263,32 @@ impl Daemon {
                 Err(response) => return *response,
             }
         };
-        Response::Memories {
-            memories: memory::search(
+        // Read as they stood then, or now; a moment to come is now.
+        let now = Utc::now();
+        let at = as_of.map_or(now, |at| at.min(now));
+        let limit = limit.unwrap_or(20).clamp(1, 100);
+        if include_superseded {
+            let (found, replaced) = memory::search_history(
                 &memories,
                 query,
-                limit.unwrap_or(20).clamp(1, 100),
+                limit,
+                min_score.unwrap_or(0.0),
                 reading.reader(),
-                Utc::now(),
+                at,
+            );
+            return Response::MemoryHistory {
+                memories: found.into_iter().cloned().collect(),
+                replaced,
+            };
+        }
+        Response::Memories {
+            memories: memory::search_above(
+                &memories,
+                query,
+                limit,
+                min_score.unwrap_or(0.0),
+                reading.reader(),
+                at,
             )
             .into_iter()
             .cloned()
@@ -276,6 +301,7 @@ impl Daemon {
         from: Option<String>,
         project: Option<String>,
         max_chars: Option<usize>,
+        as_of: Option<chrono::DateTime<Utc>>,
     ) -> Response {
         let project = match self.memory_project(from.as_deref(), project).await {
             Ok(project) => project,
@@ -297,7 +323,7 @@ impl Daemon {
                 &memories,
                 max_chars.unwrap_or(4000).clamp(1, 64_000),
                 reading.reader(),
-                Utc::now(),
+                as_of.map_or_else(Utc::now, |at| at.min(Utc::now())),
             )
             .into_iter()
             .cloned()

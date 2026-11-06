@@ -33,6 +33,130 @@ pub struct Policy {
     /// not already loose.
     #[serde(default)]
     pub quota: BTreeMap<String, u64>,
+    /// What the project does with what remote senders say to it.
+    #[serde(default)]
+    pub inbound: Inbound,
+}
+
+/// How a project treats a message from a class of sender before anyone
+/// in it reads it.
+///
+/// Ordered from the most to the least trusting, so that the stricter of
+/// two files is the greater: a project may hold or refuse what the host
+/// accepts, and never accept what the host holds or refuses.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Trust {
+    /// Delivered as any agent's message is.
+    #[default]
+    Accept,
+    /// Kept for the person, who sees it among the questions put to them
+    /// and releases it or drops it. Nothing reaches its recipients until
+    /// they release it.
+    Hold,
+    /// Refused at the send, `forbidden`, naming the setting that refused.
+    Refuse,
+}
+
+impl Trust {
+    /// The word the policy file uses.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Accept => "accept",
+            Self::Hold => "hold",
+            Self::Refuse => "refuse",
+        }
+    }
+}
+
+/// Inbound trust: what the project does with what a remote sender says.
+///
+/// Only senders that join through the remote connector are classed here:
+/// a browser or hosted session of a Claude or ChatGPT account, which has no
+/// process on this machine and whose word is attributed input the person
+/// may want to see first. A session running here is not a remote sender
+/// and is never held or refused by this section; the `[[rule]]` section
+/// governs its `send:*` actions.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Inbound {
+    /// The class every connector sender gets, unless a `sender` entry
+    /// names it. Left out, a connector sender's word is accepted.
+    #[serde(default)]
+    pub connector: Option<Trust>,
+    /// Classes for particular connector senders; the first entry that
+    /// matches decides, before `connector`.
+    #[serde(default, rename = "sender")]
+    pub senders: Vec<InboundSender>,
+}
+
+/// One connector sender, or a set of them, and how to treat its word.
+/// Every field left out matches every connector sender.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InboundSender {
+    /// A name for the entry, so a refusal can say which one refused.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Glob over the sender's agent name (`claude-connector-*`).
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The sender's runtime: the vendor account it came through
+    /// (`claude-browser`, `chatgpt-browser`).
+    #[serde(default)]
+    pub runtime: Option<String>,
+    pub trust: Trust,
+}
+
+impl InboundSender {
+    fn covers(&self, sender: &AgentRecord) -> bool {
+        if let Some(runtime) = &self.runtime
+            && *runtime != sender.spec.runtime
+        {
+            return false;
+        }
+        if let Some(pattern) = &self.agent
+            && !matches(pattern, &sender.spec.name)
+        {
+            return false;
+        }
+        true
+    }
+
+    fn label(&self) -> String {
+        self.name.clone().unwrap_or_else(|| {
+            let mut parts = Vec::new();
+            if let Some(runtime) = &self.runtime {
+                parts.push(format!("runtime={runtime}"));
+            }
+            if let Some(agent) = &self.agent {
+                parts.push(format!("agent={agent}"));
+            }
+            if parts.is_empty() {
+                "the entry for every connector sender".to_owned()
+            } else {
+                parts.join(" ")
+            }
+        })
+    }
+}
+
+/// What inbound trust said of one sender, and which setting said it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InboundRuling {
+    pub trust: Trust,
+    /// The setting that decided (`host: inbound.connector`,
+    /// `project: <entry name>`), or that nothing was written.
+    pub rule: String,
+}
+
+impl InboundRuling {
+    fn accepted() -> Self {
+        Self {
+            trust: Trust::Accept,
+            rule: "nothing written".to_owned(),
+        }
+    }
 }
 
 /// One rule: who it is about, and what they may or may not do.
@@ -181,6 +305,53 @@ impl Policy {
     /// The capacity of a named quota, if this policy sets one.
     pub fn capacity(&self, quota: &str) -> Option<u64> {
         self.quota.get(quota).copied()
+    }
+
+    /// What this policy, on its own, says of a sender's word: `None` for
+    /// a sender it does not class (every sender that is not a connector's,
+    /// and a connector sender when the section is empty).
+    pub fn inbound(&self, sender: &AgentRecord) -> Option<InboundRuling> {
+        if !sender.via_connector() {
+            return None;
+        }
+        if let Some(entry) = self.inbound.senders.iter().find(|e| e.covers(sender)) {
+            return Some(InboundRuling {
+                trust: entry.trust,
+                rule: format!("inbound.sender {}", entry.label()),
+            });
+        }
+        self.inbound.connector.map(|trust| InboundRuling {
+            trust,
+            rule: "inbound.connector".to_owned(),
+        })
+    }
+}
+
+/// Inbound trust for a sender, host and project together: the stricter
+/// of the two. A project may hold or refuse what the host accepts, and
+/// may not accept what the host holds or refuses — the same asymmetry as
+/// [`check`], for the same reason.
+pub fn inbound(host: &Policy, project: Option<&Policy>, sender: &AgentRecord) -> InboundRuling {
+    let host = host.inbound(sender).map(|ruling| InboundRuling {
+        rule: format!("host: {}", ruling.rule),
+        ..ruling
+    });
+    let project = project
+        .and_then(|p| p.inbound(sender))
+        .map(|ruling| InboundRuling {
+            rule: format!("project: {}", ruling.rule),
+            ..ruling
+        });
+    match (host, project) {
+        (Some(host), Some(project)) => {
+            if project.trust > host.trust {
+                project
+            } else {
+                host
+            }
+        }
+        (Some(only), None) | (None, Some(only)) => only,
+        (None, None) => InboundRuling::accepted(),
     }
 }
 
@@ -545,6 +716,114 @@ deny = ["claim:branch:release"]
         assert!(matches("**", "anything:at:all"));
         assert!(matches("*:*:*", "a:b:c"));
         assert!(!matches("**x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaay"));
+    }
+
+    /// A connector sender: no process here, labelled by the connector.
+    fn connector(name: &str, runtime: &str) -> AgentRecord {
+        let mut record = agent(name, runtime);
+        record.managed = false;
+        record.pid = None;
+        record
+            .spec
+            .labels
+            .insert(crate::agent::CONNECTOR_LABEL.to_owned(), "true".to_owned());
+        record
+    }
+
+    #[test]
+    fn inbound_trust_classes_only_connector_senders() {
+        let policy = rule("[inbound]\nconnector = \"refuse\"\n");
+        // A session running here is not a remote sender, whatever the
+        // section says.
+        assert_eq!(policy.inbound(&agent("local", "claude-code")), None);
+        let remote = connector("claude-connector-1a2b", "claude-browser");
+        let ruling = policy
+            .inbound(&remote)
+            .expect("a connector sender is classed");
+        assert_eq!(ruling.trust, Trust::Refuse);
+        assert_eq!(ruling.rule, "inbound.connector");
+        // And with nothing written, a connector sender is not classed.
+        assert_eq!(Policy::default().inbound(&remote), None);
+        assert_eq!(
+            inbound(&Policy::default(), None, &remote).trust,
+            Trust::Accept
+        );
+    }
+
+    #[test]
+    fn a_sender_entry_decides_before_the_class_and_the_first_match_wins() {
+        let policy = rule(
+            r#"
+[inbound]
+connector = "hold"
+[[inbound.sender]]
+name = "my own account"
+agent = "claude-connector-*"
+trust = "accept"
+[[inbound.sender]]
+runtime = "chatgpt-browser"
+trust = "refuse"
+[[inbound.sender]]
+agent = "claude-connector-*"
+trust = "refuse"
+"#,
+        );
+        let mine = policy
+            .inbound(&connector("claude-connector-7f3a", "claude-browser"))
+            .unwrap();
+        assert_eq!(
+            (mine.trust, mine.rule.as_str()),
+            (Trust::Accept, "inbound.sender my own account")
+        );
+        let chatgpt = policy
+            .inbound(&connector("chatgpt-connector-9c", "chatgpt-browser"))
+            .unwrap();
+        assert_eq!(
+            (chatgpt.trust, chatgpt.rule.as_str()),
+            (Trust::Refuse, "inbound.sender runtime=chatgpt-browser")
+        );
+        // Nothing names this one: the class decides.
+        let other = policy
+            .inbound(&connector("helper", "claude-browser"))
+            .unwrap();
+        assert_eq!(
+            (other.trust, other.rule.as_str()),
+            (Trust::Hold, "inbound.connector")
+        );
+    }
+
+    #[test]
+    fn a_project_may_hold_or_refuse_what_the_host_accepts_and_never_the_reverse() {
+        let remote = connector("claude-connector-7f3a", "claude-browser");
+        let accept = rule("[inbound]\nconnector = \"accept\"\n");
+        let hold = rule("[inbound]\nconnector = \"hold\"\n");
+        let refuse = rule("[inbound]\nconnector = \"refuse\"\n");
+        // The project narrows.
+        let ruling = inbound(&accept, Some(&hold), &remote);
+        assert_eq!(ruling.trust, Trust::Hold);
+        assert!(ruling.rule.starts_with("project:"), "{ruling:?}");
+        // The project cannot widen: a repository does not vote itself in.
+        let ruling = inbound(&refuse, Some(&accept), &remote);
+        assert_eq!(ruling.trust, Trust::Refuse);
+        assert!(ruling.rule.starts_with("host:"), "{ruling:?}");
+        // Equal classes are the host's word.
+        let ruling = inbound(&hold, Some(&hold), &remote);
+        assert_eq!(ruling.trust, Trust::Hold);
+        assert!(ruling.rule.starts_with("host:"), "{ruling:?}");
+        // A project alone sets what the host did not.
+        let ruling = inbound(&Policy::default(), Some(&refuse), &remote);
+        assert_eq!(ruling.trust, Trust::Refuse);
+        assert!(ruling.rule.starts_with("project:"), "{ruling:?}");
+        assert!(Trust::Accept < Trust::Hold && Trust::Hold < Trust::Refuse);
+    }
+
+    #[test]
+    fn an_inbound_entry_with_a_typo_is_refused_rather_than_ignored() {
+        let bad: Result<Policy, _> =
+            toml::from_str("[[inbound.sender]]\nagnet = \"x\"\ntrust = \"hold\"\n");
+        assert!(bad.is_err());
+        let bad: Result<Policy, _> = toml::from_str("[inbound]\nconnector = \"maybe\"\n");
+        assert!(bad.is_err(), "an unknown class is an error, not accept");
     }
 
     #[test]

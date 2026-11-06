@@ -56,6 +56,13 @@ function ids(entries) {
   return entries.flatMap((entry) => entry.messages ?? [])
 }
 
+// What an answer told of the project's memory: `{agent, start, memories}`
+// entries, handed back with `Delivered` once a turn carried them.
+function tellings(answer) {
+  const told = answer?.agentdocker?.told
+  return Array.isArray(told) ? told : []
+}
+
 export const AgentDocker = async ({ directory, client }) => {
   // What each session is told on every call (who it is, who else is here,
   // the journal, the project's memory: all the session start says before
@@ -65,6 +72,15 @@ export const AgentDocker = async ({ directory, client }) => {
   const orientation = new Map()
   const pending = new Map()
   const inflight = new Map()
+  // What the current turn has been told, repeated in each of its requests
+  // (OpenCode builds the system prompt again for every model call, a tool
+  // call's included) and dropped when the turn ends.
+  const turn = new Map()
+  // What of memory the session start told, until a turn completes with its
+  // orientation, which every request carries. A prompt's recall leaves the
+  // context with its turn, so it is never reported told and a later prompt
+  // may be told it again.
+  const starts = new Map()
   const agents = new Map()
   const watches = new Map()
   // Sessions idle since their last turn, a wake-up being submitted, and the
@@ -99,9 +115,11 @@ export const AgentDocker = async ({ directory, client }) => {
   }
 
   const deliver = (session) => {
-    const done = inflight.get(session)
+    const done = inflight.get(session) ?? []
+    const told = starts.get(session) ?? []
     inflight.delete(session)
-    if (done?.length) hook({ ...base(session, "Delivered"), delivered: done })
+    starts.delete(session)
+    if (done.length || told.length) hook({ ...base(session, "Delivered"), delivered: done, told })
   }
 
   const stopWatch = (session) => {
@@ -211,12 +229,19 @@ export const AgentDocker = async ({ directory, client }) => {
     },
 
     // Every message the person sends starts a turn: messages that arrived
-    // since the last one go with it.
-    "chat.message": async (input) => {
+    // since the last one go with it, and so do the project's memories that
+    // bear on what the person wrote (its own text, not text OpenCode added).
+    "chat.message": async (input, output) => {
       const session = input.sessionID
       if (!session) return
       busy(session)
-      queue(session, hook(base(session, "UserPromptSubmit")))
+      turn.delete(session)
+      const prompt = (output?.parts ?? [])
+        .filter((part) => part?.type === "text" && !part.synthetic && !part.ignored)
+        .map((part) => part.text)
+        .filter((text) => typeof text === "string" && text.trim())
+        .join("\n")
+      queue(session, hook({ ...base(session, "UserPromptSubmit"), ...(prompt ? { prompt } : {}) }))
     },
 
     "experimental.chat.system.transform": async (input, output) => {
@@ -225,6 +250,7 @@ export const AgentDocker = async ({ directory, client }) => {
       if (!orientation.has(session)) {
         const answer = hook(base(session, "SessionStart"))
         learn(session, answer)
+        starts.set(session, tellings(answer))
         // Orientation is repeated on every request; the messages waiting at
         // the start are told once, like any other delivery.
         const start = context(answer) ?? ""
@@ -237,17 +263,20 @@ export const AgentDocker = async ({ directory, client }) => {
       }
       const told = orientation.get(session)
       if (told) output.system.push(told)
+      const carried = turn.get(session) ?? []
       const waiting = pending.get(session)
       if (waiting?.length) {
         const text = waiting
           .map((w) => w.text)
           .filter(Boolean)
           .join("\n\n")
-        if (text) output.system.push(text)
+        if (text) carried.push(text)
+        turn.set(session, carried)
         pending.delete(session)
         // In a request now; acknowledged once its turn completes.
         inflight.set(session, [...(inflight.get(session) ?? []), ...waiting.flatMap((w) => w.entries)])
       }
+      for (const text of carried) output.system.push(text)
     },
 
     event: async ({ event }) => {
@@ -258,19 +287,23 @@ export const AgentDocker = async ({ directory, client }) => {
         // turn's end gives automatic leases back, and waiting messages wake
         // the session at once or, when none are waiting, when one arrives.
         deliver(session)
+        turn.delete(session)
         idle.add(session)
         if (!(await wake(session))) watch(session)
       } else if (event.type === "session.error") {
         // The turn did not complete: nothing it carried is acknowledged,
         // so AgentDocker offers those messages again, and a wake-up still
-        // waiting for OpenCode's answer is void.
+        // waiting for OpenCode's answer is void. The start's orientation is
+        // in every request, so it is reported with the next turn that
+        // completes.
         inflight.delete(session)
+        turn.delete(session)
         generation.set(session, (generation.get(session) ?? 0) + 1)
       } else if (event.type === "session.deleted") {
         busy(session)
         hook(base(session, "SessionEnd"))
         generation.set(session, (generation.get(session) ?? 0) + 1)
-        for (const map of [orientation, pending, inflight, agents]) map.delete(session)
+        for (const map of [orientation, pending, inflight, agents, starts, turn]) map.delete(session)
       }
     },
   }
