@@ -1861,6 +1861,137 @@ mod tests {
         assert!(stored.legacy_offers.is_empty());
     }
 
+    /// A release request asked by a fresh record that `resume_input` then
+    /// retires into its predecessor is answered to the predecessor: the
+    /// answer goes where the requester lives on, never into a queue under
+    /// the retired id that nobody reads.
+    #[tokio::test]
+    async fn a_release_answer_reaches_a_requester_retired_by_resume_input() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let old_provider = Other::spawn();
+        let register = async |name: &str, pid: Option<u32>, thread: bool| {
+            let mut spec = AgentSpec {
+                name: name.into(),
+                runtime: "custom".into(),
+                workdir: Some(dir.path().to_path_buf()),
+                ..Default::default()
+            };
+            if thread {
+                spec.labels.insert("session_id".into(), "thread-9".into());
+            }
+            match daemon
+                .handle(Request::Register {
+                    spec,
+                    pid,
+                    session: None,
+                })
+                .await
+            {
+                Response::Agent { agent } => agent,
+                other => panic!("{other:?}"),
+            }
+        };
+        let prior = register("codex-old", Some(old_provider.0.id()), true).await;
+        let holder = register("holder", None, false).await;
+        let controller = Other::spawn();
+        let profile = dir.path().join("profile").display().to_string();
+        assert!(matches!(
+            daemon
+                .handle(Request::BindInput {
+                    agent: prior.id.to_string(),
+                    provider: ProviderGeneration {
+                        process: old_provider.identity(),
+                        session: "thread-9".into(),
+                        profile: profile.clone(),
+                    },
+                    controller: controller.identity(),
+                    token: TOKEN.into(),
+                    launch: Some(ControllerLaunch {
+                        args: vec!["-c".into(), "exit 1".into()],
+                        ..descriptor(&dir)
+                    }),
+                })
+                .await,
+            Response::InputBound { .. }
+        ));
+        drop(old_provider);
+        drop(controller);
+        let fresh = register("codex-new", Some(std::process::id()), true).await;
+        // The holder has something the fresh record asks for.
+        let Response::Lease { lease } = daemon
+            .handle(Request::Claim {
+                agent: holder.id.to_string(),
+                resource: "branch:main".into(),
+                mode: agentdocker_core::LeaseMode::Exclusive,
+                amount: None,
+                ttl_secs: 600,
+                note: None,
+                wait_secs: 0,
+                priority: 0,
+                automatic: false,
+            })
+            .await
+        else {
+            panic!("claim")
+        };
+        let Response::ReleaseRequests { requests } = daemon
+            .handle(Request::RequestRelease {
+                from: fresh.id.to_string(),
+                resource: "branch:main".into(),
+                reason: None,
+            })
+            .await
+        else {
+            panic!("request")
+        };
+        assert_eq!(requests[0].requester, fresh.id);
+        // The thread resumes: the fresh record is retired into the prior.
+        assert!(matches!(
+            daemon
+                .handle(Request::ResumeInput {
+                    agent: fresh.id.to_string(),
+                    predecessor: prior.id.to_string(),
+                    provider: ProviderGeneration {
+                        process: me(),
+                        session: "thread-9".into(),
+                        profile: profile.clone(),
+                    },
+                    launch: descriptor(&dir),
+                })
+                .await,
+            Response::InputResumed { agent, retired, .. } if agent == prior.id && retired == fresh.id
+        ));
+        let Response::ReleaseRequest { request } = daemon
+            .handle(Request::RespondRelease {
+                from: holder.id.to_string(),
+                request: requests[0].message.clone(),
+                accept: true,
+                text: None,
+            })
+            .await
+        else {
+            panic!("accept")
+        };
+        assert_eq!(
+            request.requester, prior.id,
+            "answered as the record that lives on"
+        );
+        assert_eq!(request.answer.unwrap().released, vec![lease.id]);
+        let state = lock(&daemon.state);
+        assert!(
+            state.inboxes[&prior.id].iter().any(|message| {
+                message.kind == agentdocker_core::RELEASE_RESPONSE_KIND
+                    && message.reply_to.as_ref() == Some(&requests[0].message)
+            }),
+            "the answer is in the record that lives on"
+        );
+        assert!(
+            !state.inboxes.contains_key(&fresh.id),
+            "and nothing is queued under the retired id"
+        );
+    }
+
     /// A provider that came back as a new process registered as a new
     /// record; resuming joins it to the prior record of its thread: one
     /// identity, one queue, the binding on the new generation, everything

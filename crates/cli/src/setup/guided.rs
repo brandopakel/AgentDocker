@@ -33,6 +33,15 @@ struct Change {
     /// A change that takes AgentDocker's wiring out, rather than adding it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     removal: bool,
+    /// A file that must be executable once written (a git hook): the
+    /// owner's execute bit is set after the write, since a hook git
+    /// cannot run is one it silently skips.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    executable: bool,
+    /// The permission bits the file had before the plan, for a change
+    /// that sets them: what undo puts back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mode: Option<u32>,
 }
 
 /// A registration only the provider's own tool can safely make.
@@ -605,6 +614,8 @@ fn json_removal(
             before: Some(before),
             after: Some(format!("{}\n", serde_json::to_string_pretty(&value)?)),
             removal: true,
+            executable: false,
+            mode: None,
         });
     }
     Ok(())
@@ -637,6 +648,8 @@ fn file_removal(
         before: Some(before),
         after: None,
         removal: true,
+        executable: false,
+        mode: None,
     });
     Ok(())
 }
@@ -648,12 +661,18 @@ fn file_removal(
 /// like any setup plan, without needing the receipt that wired them.
 #[cfg(test)]
 fn prepare_remove(roots: &Roots, names: &[String]) -> Result<Plan> {
-    prepare_remove_for(roots, names, None)
+    prepare_remove_for(roots, names, None, None)
 }
 
-/// `prepare_remove`, with the Docker Agent YAML file `--agent` named: the
-/// one place its toolset can be taken out of.
-fn prepare_remove_for(roots: &Roots, names: &[String], agent: Option<&Path>) -> Result<Plan> {
+/// `prepare_remove`, with the Docker Agent YAML file `--agent` named (the
+/// one place its toolset can be taken out of) and the checkout whose
+/// `pre-commit` hook `--remove --git-hook` names.
+fn prepare_remove_for(
+    roots: &Roots,
+    names: &[String],
+    agent: Option<&Path>,
+    git_hook: Option<&Path>,
+) -> Result<Plan> {
     if agent.is_some() {
         super::ensure_agent_names_docker_agent(names)?;
     }
@@ -673,10 +692,16 @@ fn prepare_remove_for(roots: &Roots, names: &[String], agent: Option<&Path>) -> 
             "unknown runtime `{name}`"
         );
     }
-    for runtime in inventory
-        .iter()
-        .filter(|runtime| names.is_empty() || names.contains(&runtime.name))
-    {
+    // `--remove --git-hook` is about one repository's hook, not the tools.
+    let tools: Vec<&RuntimeInfo> = if git_hook.is_some() {
+        Vec::new()
+    } else {
+        inventory
+            .iter()
+            .filter(|runtime| names.is_empty() || names.contains(&runtime.name))
+            .collect()
+    };
+    for runtime in tools {
         let Some(spec) = RUNTIMES.iter().find(|spec| spec.name == runtime.name) else {
             continue;
         };
@@ -726,6 +751,8 @@ fn prepare_remove_for(roots: &Roots, names: &[String], agent: Option<&Path>) -> 
                             before: Some(before),
                             after: Some(after),
                             removal: true,
+                            executable: false,
+                            mode: None,
                         }),
                         Ok(None) => {}
                         Err(error) => plan.notes.push(format!("codex: {error:#}")),
@@ -758,7 +785,8 @@ fn prepare_remove_for(roots: &Roots, names: &[String], agent: Option<&Path>) -> 
             )?;
         }
     }
-    if (names.is_empty() || names.iter().any(|name| name == "claude-code"))
+    if git_hook.is_none()
+        && (names.is_empty() || names.iter().any(|name| name == "claude-code"))
         && let Some(shell) = runtimes::shell::shell(roots)
         && let Some(before) = read_config(&shell.rc)?
         && let Some(after) = runtimes::shell::without_block(&before)
@@ -771,7 +799,37 @@ fn prepare_remove_for(roots: &Roots, names: &[String], agent: Option<&Path>) -> 
             before: Some(before),
             after: Some(after),
             removal: true,
+            executable: false,
+            mode: None,
         });
+    }
+    if let Some(repo) = git_hook
+        && let Some(path) = crate::git_hook::hook_path(repo)
+        && let Some(before) = read_config(&path)?
+    {
+        if crate::git_hook::has_block(&before) {
+            let after = crate::git_hook::without(&before).flatten();
+            let target = project::try_canonical(&path)?;
+            // What undo puts back runs as it ran: the mode goes in the
+            // receipt with the bytes.
+            let mode = file_mode(&target)?;
+            plan.changes.push(Change {
+                runtime: "git".into(),
+                channel: "pre-commit hook".into(),
+                target,
+                path,
+                before: Some(before),
+                after,
+                removal: true,
+                executable: true,
+                mode,
+            });
+        } else {
+            plan.notes.push(format!(
+                "git hook: {} carries no agentdocker block; left unchanged",
+                path.display()
+            ));
+        }
     }
     plan.notes.push("Removal takes out only entries that run AgentDocker and files still as it installed them; everything else in those files stays. `agentdocker setup --undo <id>` puts back what it removed, while the files are unchanged since.".into());
     Ok(plan)
@@ -813,6 +871,8 @@ fn prepare_shell(plan: &mut Plan, roots: &Roots) -> Result<()> {
         before,
         after: Some(after),
         removal: false,
+        executable: false,
+        mode: None,
     });
     plan.notes.push(
         "shell: a `claude` function that runs the real claude with the channel flag; takes effect in new terminals, and `agentdocker setup --undo` takes it back"
@@ -821,24 +881,121 @@ fn prepare_shell(plan: &mut Plan, roots: &Roots) -> Result<()> {
     Ok(())
 }
 
+/// What `--git-hook` asks for: the repository's `pre-commit` hook refusing
+/// a commit over paths other agents hold, through a marked block that
+/// pipes the staged paths to `agentdocker hook pre-commit`. A hook the
+/// person already has keeps its lines and gains the block; a block an
+/// earlier executable planned is replaced in place.
+fn prepare_git_hook(plan: &mut Plan, repo: &Path, executable: &Path) -> Result<()> {
+    let Some(path) = crate::git_hook::hook_path(repo) else {
+        plan.notes.push(format!(
+            "git hook: {} is not inside a git repository; run `agentdocker setup --git-hook` from the checkout to protect",
+            repo.display()
+        ));
+        return Ok(());
+    };
+    let wiring = crate::git_hook::wiring(&path, executable);
+    if wiring == Wiring::Wired {
+        plan.notes.push(format!(
+            "git hook: {} already refuses commits over held paths",
+            path.display()
+        ));
+        return Ok(());
+    }
+    let before = read_config(&path)?;
+    let after = match crate::git_hook::with_block(before.as_deref(), executable) {
+        Ok(after) => after,
+        Err(interpreter) => {
+            plan.notes.push(format!(
+                "git hook: {} is not a shell script (`{interpreter}`), so the block cannot go into it; have it run `git diff --cached --name-only -z --no-renames | agentdocker hook pre-commit` and fail when that does",
+                path.display()
+            ));
+            return Ok(());
+        }
+    };
+    // Our block, but not this one: an earlier executable's. The same bytes
+    // in a hook git cannot run need only the execute bit, said below.
+    if wiring == Wiring::Unverified && before.as_deref() != Some(after.as_str()) {
+        plan.notes.push(format!(
+            "git hook: {} holds an older agentdocker block; this plan replaces it",
+            path.display()
+        ));
+    }
+    let target = project::try_canonical(&path)?;
+    let mode = file_mode(&target)?;
+    if mode.is_some_and(|mode| mode & 0o111 == 0) {
+        plan.notes.push(format!(
+            "git hook: {} is not executable, so git has been skipping it; applying makes it executable, and the lines already in it will run with every commit too",
+            path.display()
+        ));
+    }
+    // `core.hooksPath` can send a repository's hooks anywhere: a shared
+    // directory every repository uses, or one in the working tree that is
+    // committed with it.
+    if let Some((_, common)) = agentdocker_host::vcs::git_dirs(repo)
+        && let Some(dir) = target.parent()
+        && !dir.starts_with(project::canonical(&common))
+    {
+        plan.notes.push(format!(
+            "git hook: core.hooksPath puts this repository's hooks in {}, outside its git directory: the block applies wherever that directory is used, and a hooks directory inside the working tree is a file you may commit",
+            dir.display()
+        ));
+    }
+    plan.changes.push(Change {
+        runtime: "git".into(),
+        channel: "pre-commit hook".into(),
+        path,
+        target,
+        before,
+        after: Some(after),
+        removal: false,
+        executable: true,
+        mode,
+    });
+    plan.notes.push(
+        "git hook: a commit touching a path another live agent holds exclusively is refused with the holder's name and note; your own leases pass. A daemon that cannot be reached lets the commit through and says so: the backstop never blocks you when the daemon is down. `git commit --no-verify` skips it; `agentdocker setup --undo` takes it back."
+            .into(),
+    );
+    Ok(())
+}
+
+/// A note, when the repository at `repo` has a `pre-commit` hook without
+/// the backstop (or none), that `--git-hook` offers it.
+fn offer_git_hook(plan: &mut Plan, repo: &Path) {
+    let Some(path) = crate::git_hook::hook_path(repo) else {
+        return;
+    };
+    if read_config(&path)
+        .ok()
+        .flatten()
+        .is_some_and(|text| crate::git_hook::has_block(&text))
+    {
+        return;
+    }
+    plan.notes.push("git hook: commits in this repository are not checked against leases; `agentdocker setup --git-hook` here plans a pre-commit hook that refuses a commit over a path another agent holds, for agents and people with no hooks adapter".into());
+}
+
 /// Plan edits from injectable provider roots, without changing their files.
 #[cfg(test)]
 fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> Result<Plan> {
-    prepare_for(roots, names, executable, shell, None)
+    prepare_for(roots, names, executable, shell, None, None)
 }
 
-/// `prepare`, with the Docker Agent YAML file `--agent` named, when it did.
+/// `prepare`, with the Docker Agent YAML file `--agent` named, when it
+/// did, and `git_hook` naming the checkout whose `pre-commit` hook
+/// `--git-hook` plans, instead of any tool's wiring.
 fn prepare_for(
     roots: &Roots,
     names: &[String],
     executable: &Path,
     shell: bool,
     agent: Option<&Path>,
+    git_hook: Option<&Path>,
 ) -> Result<Plan> {
     if agent.is_some() {
         super::ensure_agent_names_docker_agent(names)?;
     }
-    if shell {
+    if shell || git_hook.is_some() {
         let mut plan = Plan {
             format: 1,
             id: uuid::Uuid::new_v4().to_string(),
@@ -848,7 +1005,12 @@ fn prepare_for(
             delegated: Vec::new(),
             notes: Vec::new(),
         };
-        prepare_shell(&mut plan, roots)?;
+        if shell {
+            prepare_shell(&mut plan, roots)?;
+        }
+        if let Some(repo) = git_hook {
+            prepare_git_hook(&mut plan, repo, executable)?;
+        }
         return Ok(plan);
     }
     let inventory = selected_inventory(roots, names)?;
@@ -951,6 +1113,8 @@ fn prepare_for(
                 before,
                 after: Some(after),
                 removal: false,
+                executable: false,
+                mode: None,
             });
         } else {
             plan.notes.push(format!(
@@ -998,6 +1162,8 @@ fn prepare_for(
             before,
             after: Some(after),
             removal: false,
+            executable: false,
+            mode: None,
         });
     }
     // OpenCode's hooks are a plugin module in its global plugin directory,
@@ -1034,6 +1200,8 @@ fn prepare_for(
             before,
             after: Some(after),
             removal: false,
+            executable: false,
+            mode: None,
         });
     }
     for step in &plan.delegated {
@@ -1096,6 +1264,8 @@ fn docker_agent_change(
             before: Some(before),
             after: Some(after),
             removal: false,
+            executable: false,
+            mode: None,
         }),
         None => plan.notes.push(format!(
             "{}: agent `{}` in {} already lists the toolset; connection is not yet verified",
@@ -1124,6 +1294,8 @@ fn docker_agent_removal(plan: &mut Plan, path: &Path) -> Result<()> {
             before: Some(before),
             after: Some(after),
             removal: true,
+            executable: false,
+            mode: None,
         }),
         None => plan.notes.push(format!(
             "Docker Agent: the default agent in {} lists no AgentDocker toolset; there is nothing to take out",
@@ -1163,7 +1335,7 @@ fn prepare_install_for(
             "Claude Code CLI is needed to register MCP; nothing changed. Install Claude Code first, or use `agentdocker setup claude-code --preview` to review the available hooks-only changes"
         );
     }
-    prepare_for(roots, names, executable, false, agent)
+    prepare_for(roots, names, executable, false, agent, None)
 }
 
 fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> Result<()> {
@@ -1198,6 +1370,8 @@ fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> 
             before,
             after: Some(format!("{}\n", serde_json::to_string_pretty(&value)?)),
             removal: false,
+            executable: false,
+            mode: None,
         });
     }
     plan.notes.push("Codex: SessionStart starts the native input receiver when supported. Other hooks report activity and deliver queued messages after prompts/tools, with one Stop continuation. They require lifecycle-hook support and review/trust in /hooks. MCP supplies explicit inbox reads and coordination tools. Setup does not grant hook trust or prove model receipt.".into());
@@ -1305,6 +1479,46 @@ fn check(change: &Change) -> Result<Option<String>> {
     Ok(current)
 }
 
+/// A file's permission bits, or none where it does not exist or the
+/// platform has none to keep.
+fn file_mode(path: &Path) -> Result<Option<u32>> {
+    #[cfg(unix)]
+    {
+        match std::fs::metadata(path) {
+            Ok(metadata) => Ok(Some(metadata.permissions().mode() & 0o7777)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
+/// The mode a change that must run leaves its file with: on apply, a new
+/// file `0755` (it arrives private) and an existing one its own mode plus
+/// the execute bits it lacked, while a removal keeps the mode it finds; on
+/// undo, the mode it had before the plan — so a hook a removal deleted
+/// comes back runnable, not as a private file git skips.
+#[cfg(unix)]
+fn settle_mode(change: &Change, undo: bool) -> Result<()> {
+    let mode = std::fs::metadata(&change.target)?.permissions().mode() & 0o7777;
+    let wanted = match (undo, change.mode) {
+        (true, Some(before)) => before & 0o7777,
+        (true, None) => return Ok(()),
+        // Taking the block out keeps whatever mode the hook has.
+        (false, _) if change.removal => return Ok(()),
+        (false, _) if change.before.is_none() => 0o755,
+        (false, _) => mode | 0o111,
+    };
+    if mode != wanted {
+        std::fs::set_permissions(&change.target, std::fs::Permissions::from_mode(wanted))?;
+    }
+    Ok(())
+}
+
 /// Apply or undo a saved plan, allowing mixed states only during recovery.
 fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     let mutation = super::mutation::Guard::acquire(
@@ -1375,20 +1589,25 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
         } else {
             change.after.as_deref()
         };
-        if current.as_deref() == desired {
-            continue;
+        if current.as_deref() != desired {
+            if let Some(contents) = desired {
+                super::write_config(&change.path, current.as_deref(), contents)?;
+            } else {
+                // Remove only the file this receipt created, or the one a removal
+                // takes out; never its directory.
+                check(change)?;
+                std::fs::remove_file(&change.target)?;
+            }
+            #[cfg(unix)]
+            if let Some(parent) = change.target.parent() {
+                std::fs::File::open(parent)?.sync_all()?;
+            }
         }
-        if let Some(contents) = desired {
-            super::write_config(&change.path, current.as_deref(), contents)?;
-        } else {
-            // Remove only the file this receipt created, or the one a removal
-            // takes out; never its directory.
-            check(change)?;
-            std::fs::remove_file(&change.target)?;
-        }
+        // Settled even when the bytes already were, so an apply or undo
+        // resumed after an interruption ends with the mode it should.
         #[cfg(unix)]
-        if let Some(parent) = change.target.parent() {
-            std::fs::File::open(parent)?.sync_all()?;
+        if change.executable && desired.is_some() {
+            settle_mode(change, undo)?;
         }
     }
     // After the file changes, so a plan that cannot pass its own
@@ -1507,7 +1726,14 @@ pub async fn run(
     json_output: bool,
     shell: bool,
     agent: Option<&Path>,
+    git_hook: bool,
 ) -> Result<()> {
+    // The repository `--git-hook` protects: the one the command runs in.
+    let repo = if git_hook {
+        Some(std::env::current_dir().context("cannot read the working directory")?)
+    } else {
+        None
+    };
     let remove = matches!(action, Action::Remove | Action::RemovePreview);
     let install = matches!(action, Action::Install | Action::Remove);
     let apply_id = if let Action::Apply(id) = action {
@@ -1578,7 +1804,7 @@ pub async fn run(
         let mut plan = if let Some(id) = apply_id.or(undo_id) {
             load(&directory, id)?
         } else if remove {
-            prepare_remove_for(&roots, names, agent)?
+            prepare_remove_for(&roots, names, agent, repo.as_deref())?
         } else if install {
             prepare_install_for(&roots, names, &crate::desktop::setup_executable()?, agent)?
         } else {
@@ -1588,8 +1814,20 @@ pub async fn run(
                 &crate::desktop::setup_executable()?,
                 shell,
                 agent,
+                repo.as_deref(),
             )?
         };
+        // Wiring the tools from inside a repository, setup says the commit
+        // backstop is there to have; it never plans it unasked.
+        if !remove
+            && !shell
+            && !git_hook
+            && apply_id.is_none()
+            && undo_id.is_none()
+            && let Ok(cwd) = std::env::current_dir()
+        {
+            offer_git_hook(&mut plan, &cwd);
+        }
         if install {
             // Keep an addressable receipt even when apply's preflight refuses.
             // apply also persists its recovery state before any provider write.
@@ -1617,6 +1855,11 @@ pub async fn run(
             eprintln!("Remove with: agentdocker setup --apply {id}");
         } else if install {
             eprintln!("Undo this setup: agentdocker setup --undo {id}");
+        } else if apply_id.is_none()
+            && undo_id.is_none()
+            && value["changes"].as_array().is_some_and(|c| !c.is_empty())
+        {
+            eprintln!("Apply with: agentdocker setup --apply {id}");
         }
         println!("{id}");
     } else {
@@ -1628,6 +1871,206 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `--git-hook` is one reviewable change to the repository's `pre-commit`
+    /// hook: a hook the person has keeps its lines and gains the block and
+    /// the execute bit it lacked, undone to the byte; no hook becomes an
+    /// executable `sh` script, which `--remove --git-hook` deletes again;
+    /// outside a repository it is a note, not a change.
+    #[test]
+    fn the_git_hook_is_planned_applied_undone_and_removed_like_any_other_change() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join(".git/hooks")).unwrap();
+        std::fs::write(repo.join(".git/HEAD"), "ref: refs/heads/main\n").unwrap();
+        let hook = repo.join(".git/hooks/pre-commit");
+        let theirs = "#!/bin/sh\nnpm test\n";
+        std::fs::write(&hook, theirs).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let executable = tmp.path().join("bin/agentdocker");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let directory = directory(&tmp.path().join("state")).unwrap();
+
+        let mut plan = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].channel, "pre-commit hook");
+        assert_eq!(plan.changes[0].runtime, "git");
+        assert!(plan.changes[0].executable);
+        assert_eq!(
+            plan.changes[0].path.canonicalize().unwrap(),
+            hook.canonicalize().unwrap()
+        );
+        let after = plan.changes[0].after.clone().unwrap();
+        assert!(
+            after.starts_with("#!/bin/sh\n# >>> agentdocker >>>"),
+            "{after}"
+        );
+        assert!(
+            after.ends_with("# <<< agentdocker <<<\nnpm test\n"),
+            "{after}"
+        );
+        assert!(after.contains("hook pre-commit || exit $?"));
+        assert!(plan.delegated.is_empty());
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("never blocks you when the daemon is down")),
+            "{:?}",
+            plan.notes
+        );
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("is not executable, so git has been skipping it")),
+            "{:?}",
+            plan.notes
+        );
+        assert!(
+            !plan.notes.iter().any(|n| n.contains("core.hooksPath")),
+            "the hooks are in the git directory"
+        );
+        let view = plan.view().to_string();
+        assert!(!view.contains("npm test"), "snapshots stay private");
+        assert!(view.contains("pre-commit hook"));
+
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), after);
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "their hook gained the execute bits"
+        );
+        assert_eq!(crate::git_hook::wiring(&hook, &executable), Wiring::Wired);
+        let again = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
+        assert!(again.changes.is_empty());
+        assert!(
+            again
+                .notes
+                .iter()
+                .any(|n| n.contains("already refuses commits"))
+        );
+
+        apply(&directory, &mut plan, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), theirs);
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o644,
+            "undo puts the mode back too: their hook is inert again"
+        );
+        assert_eq!(crate::git_hook::wiring(&hook, &executable), Wiring::Missing);
+
+        // The block is removed from their hook, leaving their lines.
+        let mut plan = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        let mut removal = prepare_remove_for(&roots, &[], None, Some(&repo)).unwrap();
+        assert_eq!(removal.changes.len(), 1, "only the hook, not the tools");
+        assert!(removal.changes[0].removal);
+        assert_eq!(removal.changes[0].after.as_deref(), Some(theirs));
+        save(&directory, &removal).unwrap();
+        apply(&directory, &mut removal, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&hook).unwrap(), theirs);
+        let nothing = prepare_remove_for(&roots, &[], None, Some(&repo)).unwrap();
+        assert!(nothing.changes.is_empty());
+        assert!(
+            nothing
+                .notes
+                .iter()
+                .any(|n| n.contains("no agentdocker block"))
+        );
+
+        // No hook at all: a new executable script, deleted by the removal.
+        std::fs::remove_file(&hook).unwrap();
+        let mut plan = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
+        assert!(plan.changes[0].before.is_none());
+        assert!(
+            plan.changes[0]
+                .after
+                .as_deref()
+                .unwrap()
+                .starts_with("#!/bin/sh\n# >>> agentdocker >>>")
+        );
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        let mut removal = prepare_remove_for(&roots, &[], None, Some(&repo)).unwrap();
+        assert_eq!(removal.changes[0].after, None, "the file was ours");
+        save(&directory, &removal).unwrap();
+        apply(&directory, &mut removal, false).unwrap();
+        assert!(!hook.exists());
+        apply(&directory, &mut removal, true).unwrap();
+        assert!(hook.exists(), "undoing the removal puts it back");
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "runnable, as it was, not a private file git skips"
+        );
+        assert_eq!(crate::git_hook::wiring(&hook, &executable), Wiring::Wired);
+
+        // The current block in a hook git cannot run is not wired: the plan
+        // gives it the execute bit, and says why, with the bytes unchanged.
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            crate::git_hook::wiring(&hook, &executable),
+            Wiring::Unverified
+        );
+        let mut plan = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].before, plan.changes[0].after);
+        assert_eq!(plan.changes[0].mode, Some(0o600));
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("is not executable, so git has been skipping it")),
+            "{:?}",
+            plan.notes
+        );
+        assert!(
+            !plan
+                .notes
+                .iter()
+                .any(|n| n.contains("older agentdocker block"))
+        );
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o711,
+            "its own mode plus the execute bits"
+        );
+        apply(&directory, &mut plan, true).unwrap();
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        // A hook in another language is a note, not a change.
+        std::fs::write(&hook, "#!/usr/bin/env python3\nprint('lint')\n").unwrap();
+        let other = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
+        assert!(other.changes.is_empty());
+        assert!(
+            other
+                .notes
+                .iter()
+                .any(|n| n.contains("is not a shell script")),
+            "{:?}",
+            other.notes
+        );
+
+        let outside = tmp.path().join("plain");
+        std::fs::create_dir_all(&outside).unwrap();
+        let note = prepare_for(&roots, &[], &executable, false, None, Some(&outside)).unwrap();
+        assert!(note.changes.is_empty());
+        assert!(note.notes[0].contains("not inside a git repository"));
+    }
 
     /// `--shell` is one reviewable change to the shell's startup file:
     /// previewed with the person's other lines untouched, applied with
@@ -1735,10 +2178,20 @@ mod tests {
             "{:?}",
             without.notes
         );
-        assert!(prepare_for(&roots, &[], &executable, false, Some(&yaml)).is_err());
-        assert!(prepare_for(&roots, &["codex".into()], &executable, false, Some(&yaml)).is_err());
+        assert!(prepare_for(&roots, &[], &executable, false, Some(&yaml), None).is_err());
+        assert!(
+            prepare_for(
+                &roots,
+                &["codex".into()],
+                &executable,
+                false,
+                Some(&yaml),
+                None
+            )
+            .is_err()
+        );
 
-        let mut plan = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        let mut plan = prepare_for(&roots, &names, &executable, false, Some(&yaml), None).unwrap();
         assert_eq!(plan.changes.len(), 1);
         assert_eq!(plan.changes[0].channel, "mcp");
         assert_eq!(plan.changes[0].runtime, "docker-agent");
@@ -1759,7 +2212,7 @@ mod tests {
         save(&directory, &plan).unwrap();
         apply(&directory, &mut plan, false).unwrap();
         assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
-        let again = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        let again = prepare_for(&roots, &names, &executable, false, Some(&yaml), None).unwrap();
         assert!(again.changes.is_empty());
         assert!(
             again
@@ -1771,11 +2224,11 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&yaml).unwrap(), before);
 
         // A removal of its own takes out exactly what setup added.
-        let mut fresh = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        let mut fresh = prepare_for(&roots, &names, &executable, false, Some(&yaml), None).unwrap();
         save(&directory, &fresh).unwrap();
         apply(&directory, &mut fresh, false).unwrap();
         assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
-        let mut removal = prepare_remove_for(&roots, &names, Some(&yaml)).unwrap();
+        let mut removal = prepare_remove_for(&roots, &names, Some(&yaml), None).unwrap();
         assert_eq!(removal.changes.len(), 1);
         assert!(removal.changes[0].removal);
         assert_eq!(removal.changes[0].after.as_deref(), Some(before));
@@ -1796,12 +2249,12 @@ mod tests {
         // A missing file is refused before anything is planned, for a
         // removal too, and one that lists nothing of ours says so.
         let missing = tmp.path().join("none.yaml");
-        assert!(prepare_for(&roots, &names, &executable, false, Some(&missing)).is_err());
-        let error = prepare_remove_for(&roots, &names, Some(&missing)).unwrap_err();
+        assert!(prepare_for(&roots, &names, &executable, false, Some(&missing), None).is_err());
+        let error = prepare_remove_for(&roots, &names, Some(&missing), None).unwrap_err();
         assert!(format!("{error:#}").contains("no agent file"), "{error:#}");
         let plain = tmp.path().join("plain.yaml");
         std::fs::write(&plain, before).unwrap();
-        let untouched = prepare_remove_for(&roots, &names, Some(&plain)).unwrap();
+        let untouched = prepare_remove_for(&roots, &names, Some(&plain), None).unwrap();
         assert!(untouched.changes.is_empty());
         assert!(
             untouched

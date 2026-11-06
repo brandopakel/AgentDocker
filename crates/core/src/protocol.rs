@@ -1359,6 +1359,32 @@ pub enum Request {
         #[serde(default)]
         only_automatic: bool,
     },
+    /// Ask whoever holds leases overlapping `resource` to let go of them:
+    /// each holder gets a `release_request` message naming the resource,
+    /// the leases and the reason, and the request is kept until it is
+    /// answered or a day passes. A pending request from the same agent to
+    /// the same holder for the same resource is answered again rather
+    /// than sent twice. Answers `release_requests`, one per holder;
+    /// `not_found` when nobody else holds it.
+    RequestRelease {
+        from: String,
+        resource: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// The holder answers a release request by its message id. `accept`
+    /// releases the request's leases the holder still has, on its behalf,
+    /// journaled with `text` as the summary; a decline sends `text` as the
+    /// reason. Either way the requester gets a `release_response` message
+    /// in reply to its request. Answers `release_request`, with the
+    /// answer filled in; `forbidden` for anyone but the holder.
+    RespondRelease {
+        from: String,
+        request: MessageId,
+        accept: bool,
+        #[serde(default)]
+        text: Option<String>,
+    },
     /// Append a free-text note to the journal of the agent's project.
     JournalAdd {
         agent: String,
@@ -2237,6 +2263,14 @@ pub enum Response {
     Leases {
         leases: Vec<Lease>,
     },
+    /// The requests `request_release` made, one per holder.
+    ReleaseRequests {
+        requests: Vec<crate::ReleaseRequest>,
+    },
+    /// One release request, answered.
+    ReleaseRequest {
+        request: crate::ReleaseRequest,
+    },
     WebhookDeliveries {
         webhook: String,
         attempts: Vec<crate::WebhookAttempt>,
@@ -2493,6 +2527,46 @@ mod tests {
             Request::Claim {
                 wait_secs: 30,
                 priority: -4,
+                ..
+            }
+        ));
+    }
+
+    /// The two sides of a release negotiation on the wire: a request with
+    /// its optional reason, an answer by message id with its optional text.
+    #[test]
+    fn release_negotiation_round_trips() {
+        let ask: Request = serde_json::from_str(
+            r#"{"op":"request_release","from":"asker","resource":"path:/repo/src/lib.rs"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ask,
+            Request::RequestRelease {
+                from: "asker".into(),
+                resource: "path:/repo/src/lib.rs".into(),
+                reason: None,
+            }
+        );
+        let answer = Request::RespondRelease {
+            from: "holder".into(),
+            request: MessageId::from("m1".to_owned()),
+            accept: true,
+            text: Some("renamed the module".into()),
+        };
+        let json = serde_json::to_value(&answer).unwrap();
+        assert_eq!(json["op"], "respond_release");
+        assert_eq!(json["accept"], true);
+        assert_eq!(serde_json::from_value::<Request>(json).unwrap(), answer);
+        let declined: Request = serde_json::from_str(
+            r#"{"op":"respond_release","from":"holder","request":"m1","accept":false}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            declined,
+            Request::RespondRelease {
+                accept: false,
+                text: None,
                 ..
             }
         ));

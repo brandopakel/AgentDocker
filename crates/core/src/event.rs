@@ -819,6 +819,20 @@ pub enum EventKind {
         requester: AgentId,
         held_by: Vec<AgentId>,
     },
+    /// An agent asked a holder to let go of a resource; the holder has
+    /// the `release_request` message.
+    ReleaseRequested {
+        request: crate::ReleaseRequest,
+    },
+    /// The holder answered: `request.answer` says whether it accepted,
+    /// what it said, and which leases the daemon released for it.
+    ReleaseAnswered {
+        request: crate::ReleaseRequest,
+    },
+    /// A release request waited a day without an answer and was dropped.
+    ReleaseRequestExpired {
+        request: crate::ReleaseRequest,
+    },
     /// A repository was seen for the first time on this host.
     ProjectDiscovered {
         project: ProjectRef,
