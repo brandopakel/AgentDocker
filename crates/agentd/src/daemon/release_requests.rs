@@ -1176,4 +1176,152 @@ mod tests {
             "and is durable"
         );
     }
+
+    /// An accepted release request lets go of a board card the way the
+    /// holder's own release does: the hold's interval is kept before the
+    /// lease goes, so a delayed response made while the card was held is
+    /// charged to it, and one made after it to no card.
+    #[tokio::test]
+    async fn an_accepted_request_keeps_the_card_hold_for_delayed_usage() {
+        use agentdocker_core::usage::{Counters, report::Group};
+        use agentdocker_host::usage::{Sample, Semantics};
+        use std::collections::BTreeMap;
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let project = dir.path().join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let mut spec = AgentSpec {
+            name: "holder".into(),
+            runtime: "claude-code".into(),
+            workdir: Some(project.clone()),
+            ..AgentSpec::default()
+        };
+        spec.labels
+            .insert("session_id".into(), "held-session".into());
+        let Response::Agent { agent: holder } = daemon
+            .handle(Request::Register {
+                spec,
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("registration")
+        };
+        register(&daemon, "asker", &project).await;
+        let Response::Task { task: card } = daemon
+            .handle(Request::TaskCreate {
+                from: holder.id.to_string(),
+                project: Some(project.display().to_string()),
+                title: "Price the work".to_owned(),
+                acceptance: "its cost is known".to_owned(),
+                column: Some(agentdocker_core::Column::Ready),
+                links: Vec::new(),
+                board: None,
+                lane: None,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
+                plan: None,
+            })
+            .await
+        else {
+            panic!("a card is filed")
+        };
+        let Response::TaskDetail {
+            lease: Some(pulled),
+            ..
+        } = daemon
+            .handle(Request::TaskPull {
+                agent: holder.id.to_string(),
+                task: Some(card.id.to_string()),
+                take_over_from: None,
+                project: None,
+                board: None,
+            })
+            .await
+        else {
+            panic!("the card is pulled")
+        };
+        let while_held = Utc::now();
+
+        let Response::ReleaseRequests { requests } = daemon
+            .handle(Request::RequestRelease {
+                from: "asker".into(),
+                resource: format!("task:{}", card.id),
+                reason: None,
+            })
+            .await
+        else {
+            panic!("request")
+        };
+        assert_eq!(requests[0].leases, vec![pulled.id.clone()]);
+        let answered = daemon
+            .handle(Request::RespondRelease {
+                from: "holder".into(),
+                request: requests[0].message.clone(),
+                accept: true,
+                text: None,
+            })
+            .await;
+        assert!(
+            matches!(answered, Response::ReleaseRequest { .. }),
+            "{answered:?}"
+        );
+        assert!(
+            lock(&daemon.state).leases.get(&pulled.id).is_none(),
+            "the card is let go of"
+        );
+        let after = Utc::now();
+
+        let sample = |id: &str, at: DateTime<Utc>| Sample {
+            source_id: format!("released-{id}"),
+            runtime: "claude-code".into(),
+            format: "fixture".into(),
+            session_id: "held-session".into(),
+            at,
+            provider: None,
+            model: Some("fixture-model".into()),
+            counters: Counters {
+                input_tokens: Some(10),
+                output_tokens: Some(1),
+                ..Counters::default()
+            },
+            semantics: Semantics::Response,
+            proves_zero_baseline: false,
+            cost_usd_micros: Some(100),
+            aliases: Vec::new(),
+        };
+        assert_eq!(
+            daemon.record_telemetry(&[sample("held", while_held), sample("after", after)], &[]),
+            crate::daemon::usage::Received::Recorded { accepted: 2 }
+        );
+        let by_card: BTreeMap<_, _> = match daemon
+            .handle(Request::Usage {
+                project: None,
+                agent: None,
+                since: Some("24h".into()),
+                until: None,
+                by: Group::Card,
+            })
+            .await
+        {
+            Response::Usage { report } => report
+                .rows
+                .into_iter()
+                .map(|row| (row.key, row.samples))
+                .collect(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            by_card,
+            BTreeMap::from([(None, 1), (Some(card.id.to_string()), 1)]),
+            "the response made while the card was held is charged to it"
+        );
+    }
 }

@@ -348,6 +348,15 @@ impl Daemon {
                 let now = Utc::now();
                 // Ownership moves with acceptance, in the same transaction:
                 // a bundle that asked for it hands its leases over here.
+                // What they were before, to put back exactly if the write
+                // fails: the holder and when it took each.
+                let before: std::collections::HashMap<LeaseId, Lease> = bundle
+                    .iter()
+                    .filter(|b| b.transfer_leases)
+                    .flat_map(|b| b.leases.iter())
+                    .filter_map(|lease| state.leases.get(&lease.id).cloned())
+                    .map(|lease| (lease.id.clone(), lease))
+                    .collect();
                 let transferred = match &bundle {
                     Some(b) if b.transfer_leases => state.leases.transfer_selected(
                         &b.from,
@@ -425,8 +434,11 @@ impl Daemon {
                     // them back so memory matches what was (not) written.
                     if let Some(b) = &bundle {
                         for lease in &transferred {
-                            let mut back = lease.clone();
-                            back.holder = b.from.clone();
+                            let back = before.get(&lease.id).cloned().unwrap_or_else(|| {
+                                let mut back = lease.clone();
+                                back.holder = b.from.clone();
+                                back
+                            });
                             state.leases.restore(back);
                         }
                     }

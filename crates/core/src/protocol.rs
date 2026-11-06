@@ -2191,6 +2191,12 @@ pub enum Response {
         /// The project's files linked to it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<crate::ProjectFile>,
+        /// What the card has cost to date: the retained usage recorded
+        /// while an agent held it, as one usage row keyed by the card
+        /// (tokens with coverage, the provider-reported estimated cost where it said one).
+        /// Absent when no retained sample was made under the card.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<crate::usage::report::Row>,
     },
     /// A pull with no card named found none to take: what is in the pull
     /// source, how many are held by others and how many wait on

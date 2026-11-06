@@ -662,6 +662,71 @@ impl Store {
         })
     }
 
+    /// The cards and roles a retired life held, onto the canonical record
+    /// it is folded into: a sample from that life is attributed to the
+    /// canonical id through the alias, so its holdings must be found there
+    /// too, however late the sample is read. The moved history stays that
+    /// life's: a role interval the retired life still held is closed at
+    /// the fold, never left open under the canonical id to name the old
+    /// role for responses made after it; and a canonical record with no
+    /// role history of its own gets its own open interval from its
+    /// registration, so that for its own life the moved intervals neither
+    /// cover it nor stand as the earliest roles kept. That interval holds
+    /// the roles the canonical record is on record with, not what the plan
+    /// merges into it: a role inherited from the retired record is a change
+    /// the upsert that follows keeps as a transition at the fold, so the
+    /// canonical record's life before it stays under the roles it had. A
+    /// record not yet on record registers with the plan's. A holding the
+    /// canonical record already has under the same key is replaced by the
+    /// moved one.
+    fn move_usage_holdings(
+        &self,
+        canonical: &AgentRecord,
+        retired: &AgentId,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        use super::usage::{HELD_ROLE, text};
+        let kept = canonical.id.as_str();
+        let own_history: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM usage_holdings WHERE agent=?1 AND kind=?2)",
+            params![kept, HELD_ROLE],
+            |r| r.get(0),
+        )?;
+        self.conn.execute(
+            "UPDATE usage_holdings SET until=max(since,?3) WHERE agent=?1 AND kind=?2 AND until IS NULL",
+            params![retired.as_str(), HELD_ROLE, text(now)],
+        )?;
+        self.conn.execute(
+            "UPDATE OR REPLACE usage_holdings SET agent=?1 WHERE agent=?2",
+            params![kept, retired.as_str()],
+        )?;
+        if !own_history {
+            use rusqlite::OptionalExtension;
+            let persisted: Option<Option<String>> = self
+                .conn
+                .query_row(
+                    "SELECT json_extract(json,'$.spec.labels.role') FROM agents WHERE id=?1",
+                    [kept],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let role = match persisted {
+                Some(role) => role.unwrap_or_default(),
+                None => canonical
+                    .spec
+                    .labels
+                    .get(agentdocker_core::agent::ROLE_LABEL)
+                    .cloned()
+                    .unwrap_or_default(),
+            };
+            self.conn.execute(
+                "INSERT OR REPLACE INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,?2,?3,NULL,?4)",
+                params![kept, HELD_ROLE, text(canonical.created_at), role],
+            )?;
+        }
+        Ok(())
+    }
+
     /// The plan, written whole: one transaction with the event, so a
     /// failure anywhere leaves the session as it was.
     pub(crate) fn write_resume(&self, plan: &ResumePlan, event: &Event) -> Result<()> {
@@ -676,6 +741,7 @@ impl Store {
                 "UPDATE inbox SET agent=?1 WHERE agent=?2",
                 params![kept.as_str(), old.as_str()],
             )?;
+            self.move_usage_holdings(&plan.canonical, old, now)?;
             self.conn
                 .execute("DELETE FROM journal_cursors WHERE agent=?1", [old.as_str()])?;
             self.merge_topic_cursors(kept, old)?;
@@ -721,6 +787,7 @@ impl Store {
             "UPDATE inbox SET agent=?1 WHERE agent=?2",
             params![kept.as_str(), retired.as_str()],
         )?;
+        self.move_usage_holdings(&plan.canonical, retired, now)?;
         for doc in &plan.documents {
             self.put_document(&doc.kind, &doc.id, &doc.value)?;
         }

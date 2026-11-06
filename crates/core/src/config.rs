@@ -162,6 +162,12 @@ pub struct UsageConfig {
     pub claude_roots: Vec<std::path::PathBuf>,
     #[serde(default = "usage_retention_days")]
     pub retention_days: u32,
+    /// Where to take Claude Code's OpenTelemetry events over OTLP/HTTP
+    /// (JSON), as `127.0.0.1:4318`: a loopback address and port, nothing
+    /// else. Absent — the default — runs no receiver. Independent of
+    /// `enabled`, which governs the transcript collector.
+    #[serde(default)]
+    pub otlp_listen: Option<String>,
 }
 
 fn usage_retention_days() -> u32 {
@@ -175,6 +181,7 @@ impl Default for UsageConfig {
             codex_roots: Vec::new(),
             claude_roots: Vec::new(),
             retention_days: 30,
+            otlp_listen: None,
         }
     }
 }
@@ -184,6 +191,7 @@ impl UsageConfig {
         if !(1..=3650).contains(&self.retention_days) {
             return Err("usage.retention_days must be 1–3650".into());
         }
+        self.otlp_listen()?;
         if self.codex_roots.len() + self.claude_roots.len() > 16
             || self
                 .codex_roots
@@ -197,6 +205,34 @@ impl UsageConfig {
             );
         }
         Ok(())
+    }
+}
+
+impl UsageConfig {
+    /// The receiver's address when one is configured: a literal loopback
+    /// IP (`127.0.0.0/8` or `::1`) with a nonzero port. Anything a peer on
+    /// the network could reach is refused rather than bound, since the
+    /// receiver takes unauthenticated events as the provider's word.
+    pub fn otlp_listen(&self) -> Result<Option<std::net::SocketAddr>, String> {
+        let Some(text) = self.otlp_listen.as_deref() else {
+            return Ok(None);
+        };
+        let address: std::net::SocketAddr = text.trim().parse().map_err(|_| {
+            format!(
+                "usage.otlp_listen must be a loopback address and port such as 127.0.0.1:4318, not `{text}`"
+            )
+        })?;
+        if !address.ip().is_loopback() {
+            return Err(format!(
+                "usage.otlp_listen must be loopback (127.0.0.1 or [::1]); `{text}` would take events from the network"
+            ));
+        }
+        if address.port() == 0 {
+            return Err(
+                "usage.otlp_listen needs a port; Claude Code's exporter expects a fixed one".into(),
+            );
+        }
+        Ok(Some(address))
     }
 }
 
@@ -1140,6 +1176,45 @@ secret_file = {secret:?}
         assert!(with(&|j| j.threshold_percent = 100).is_err());
         assert!(with(&|j| j.threshold_percent = 95).is_ok());
         assert!(toml::from_str::<DaemonConfig>("[judge]\nkey = \"x\"\n").is_err());
+    }
+
+    /// The telemetry receiver is off until an address is written, binds
+    /// only to this machine, and refuses what a peer could reach.
+    #[test]
+    fn the_otlp_receiver_is_off_by_default_and_loopback_only() {
+        let parse = |text: &str| toml::from_str::<DaemonConfig>(text).unwrap().usage;
+        assert_eq!(parse("").otlp_listen(), Ok(None));
+        assert_eq!(
+            parse("[usage]\notlp_listen = \"127.0.0.1:4318\"\n")
+                .otlp_listen()
+                .unwrap()
+                .map(|a| a.to_string()),
+            Some("127.0.0.1:4318".to_owned())
+        );
+        assert!(
+            parse("[usage]\notlp_listen = \"[::1]:4318\"\n")
+                .check()
+                .is_ok()
+        );
+        assert!(
+            parse("[usage]\notlp_listen = \"127.1.2.3:9\"\n")
+                .check()
+                .is_ok()
+        );
+        for bad in [
+            "0.0.0.0:4318",
+            "192.168.1.10:4318",
+            "[::]:4318",
+            "localhost:4318",
+            "127.0.0.1",
+            "127.0.0.1:0",
+            "http://127.0.0.1:4318",
+        ] {
+            let error = parse(&format!("[usage]\notlp_listen = {bad:?}\n"))
+                .check()
+                .unwrap_err();
+            assert!(error.starts_with("usage.otlp_listen"), "{bad}: {error}");
+        }
     }
 
     #[test]

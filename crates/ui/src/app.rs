@@ -2163,6 +2163,7 @@ impl App {
             // while it is on view.
             EventKind::UsageRecorded { .. }
             | EventKind::UsageReconciled { .. }
+            | EventKind::UsageJoined { .. }
             | EventKind::UsageEmissionRecorded { .. } => {
                 if self.screen == Screen::Usage {
                     self.request_usage();

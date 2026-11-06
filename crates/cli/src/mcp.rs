@@ -3173,7 +3173,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "usage",
-            "description": "Tokens the providers reported for this project's sessions, one row per agent (or model, provider, project, hour), each count with its coverage: a sum only where samples said, marked partial otherwise. The report says what it covers — the range answered, retention, gaps in the sources, whether collection is on and where it stands — and the overhead AgentDocker injected, which is 'not measured' until it is. Collection is off until agentd.toml enables it.",
+            "description": "Tokens the providers reported for this project's sessions, one row per agent (or model, provider, project, hour, card — the board card the agent held — or role), each count with its coverage: a sum only where samples said, marked partial otherwise; each row's cost_usd_micros is the provider-reported estimated cost where its telemetry said one (Claude Code's OTLP events, which it documents as an estimate; transcripts carry none) and cache_read_share_percent its share of input read from cache. The report says what it covers — the range answered, retention, gaps in the sources, whether collection is on and where it stands — and the overhead AgentDocker injected, which is 'not measured' until it is. Collection is off until agentd.toml enables it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3181,7 +3181,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "agent": { "type": "string", "description": "Only this agent: id, name or unique prefix." },
                     "since": { "type": "string", "description": "From when: a duration back from now (30m, 24h, 7d) or an RFC 3339 time." },
                     "until": { "type": "string", "format": "date-time", "description": "Until when, RFC 3339; now when absent." },
-                    "by": { "type": "string", "enum": ["agent", "model", "provider", "project", "hour"], "description": "One row per what; agent by default." }
+                    "by": { "type": "string", "enum": ["agent", "model", "provider", "project", "hour", "card", "role"], "description": "One row per what; agent by default. card groups by the board card (task:<id> lease) held when each sample was recorded, role by the agent's roles then." }
                 },
                 "additionalProperties": false
             }
