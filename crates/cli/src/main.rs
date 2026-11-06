@@ -3045,8 +3045,21 @@ async fn run() -> Result<()> {
                         roles,
                         valid_from,
                     };
-                    if let Response::Memory { memory } = client.call(&request).await? {
+                    if let Response::Memory {
+                        memory,
+                        may_supersede,
+                        ..
+                    } = client.call(&request).await?
+                    {
                         println!("{}", memory.id);
+                        // The id alone goes to stdout, for a script to read.
+                        for likely in may_supersede {
+                            eprintln!(
+                                "may replace {} ({:.0}%)",
+                                likely.memory,
+                                likely.probability * 100.0
+                            );
+                        }
                     }
                 }
                 MemoryAction::Search {

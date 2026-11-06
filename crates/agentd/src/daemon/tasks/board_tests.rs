@@ -1214,7 +1214,7 @@ async fn a_projects_memory_is_read_as_it_stood_at_a_moment() {
     };
     let keep = |request: Request| async move {
         match d.handle(request).await {
-            Response::Memory { memory } => memory,
+            Response::Memory { memory, .. } => memory,
             other => panic!("{other:?}"),
         }
     };
@@ -1311,7 +1311,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
     };
     let keep = |request: Request| async move {
         match d.handle(request).await {
-            Response::Memory { memory } => memory,
+            Response::Memory { memory, .. } => memory,
             other => panic!("{other:?}"),
         }
     };
@@ -1439,7 +1439,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         roles: vec![],
         valid_from: None,
     };
-    let Response::Memory { memory: first } = d
+    let Response::Memory { memory: first, .. } = d
         .handle(add(
             f.agent.id.to_string(),
             "Deploys go out on Fridays",
@@ -1464,7 +1464,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
     assert_eq!(memories.len(), 1, "a peer of the project finds it");
     assert_eq!(memories[0].id, first.id);
 
-    let Response::Memory { memory: second } = d
+    let Response::Memory { memory: second, .. } = d
         .handle(add(
             f.peer.id.to_string(),
             "Deploys go out on Mondays now",
@@ -1533,7 +1533,9 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
     // by full id or by prefix.
     let other = std::path::Path::new(&f.work).join("other-project");
     std::fs::create_dir_all(&other).unwrap();
-    let Response::Memory { memory: elsewhere } = d
+    let Response::Memory {
+        memory: elsewhere, ..
+    } = d
         .handle(Request::MemoryAdd {
             from: f.agent.id.to_string(),
             project: Some(other.display().to_string()),

@@ -702,7 +702,7 @@ mod tests {
             })
             .await
         {
-            Response::Memory { memory } => memory.id,
+            Response::Memory { memory, .. } => memory.id,
             other => panic!("{other:?}"),
         }
     }

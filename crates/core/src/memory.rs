@@ -368,6 +368,50 @@ pub fn search_history<'a>(
     (found, marks)
 }
 
+/// What came of asking which memories a new one may replace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Suggestion {
+    /// Asked, or nothing was alike enough to ask about.
+    Made,
+    /// The `memories` judgment is off.
+    Off,
+    /// The judge could not be asked or did not answer.
+    Unavailable,
+    /// The judge's calls for this minute are spent.
+    OverBudget,
+}
+
+/// A memory a new one may replace, and how likely the judge thinks that is.
+/// Only a suggestion: the author supersedes on purpose.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MaySupersede {
+    pub memory: String,
+    pub probability: f64,
+}
+
+/// The current memories `new` may be compared with, the most alike first,
+/// at most `limit`: those sharing a word with it that its author (`reader`)
+/// may read and every reader of `new` may too, so an answer shows nobody a
+/// memory they could not read. One `new` already replaces is left out.
+pub fn comparable<'a>(
+    memories: &'a [Memory],
+    new: &Memory,
+    limit: usize,
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> Vec<&'a Memory> {
+    let pool = current(memories, reader, at)
+        .into_iter()
+        .filter(|m| m.id != new.id && new.supersedes.as_deref() != Some(m.id.as_str()))
+        .filter(|m| {
+            m.roles.is_empty()
+                || (!new.roles.is_empty() && new.roles.iter().all(|r| m.roles.contains(r)))
+        })
+        .collect();
+    rank(pool, &new.text, limit, 0.0)
+}
+
 /// The memories of `said` that answer `query`, the best first, as
 /// [`search`] ranks them. A query with no words lists them all, unless a
 /// `min_score` asks for matches: then nothing scores.
@@ -650,6 +694,58 @@ mod tests {
         assert_eq!(history("staging", 1.0), ["m0"]);
         assert!(history("the", 1.0).is_empty());
         assert!(history("????????????", 1.0).is_empty());
+    }
+
+    /// A new memory is compared with the current ones sharing a word with
+    /// it, the most alike first, within the limit; never with itself, one it
+    /// already replaces, one its author cannot read, or one some reader of
+    /// it cannot read.
+    #[test]
+    fn a_new_memory_is_compared_only_with_what_all_its_readers_can_read() {
+        let role = |id: &str, text: &str, roles: &[&str]| Memory {
+            roles: roles.iter().map(|r| (*r).to_owned()).collect(),
+            ..memory(id, text, 1, None)
+        };
+        let all = vec![
+            role("open", "deploys go out on Mondays", &[]),
+            role("reviewers", "deploys need a reviewer", &["reviewer"]),
+            role("both", "deploys need both roles", &["reviewer", "lead"]),
+            role("elsewhere", "the cache lives in target", &[]),
+        ];
+        let ids = |new: &Memory, reader: Reader<'_>, limit: usize| {
+            let mut found: Vec<String> = comparable(&all, new, limit, reader, now())
+                .iter()
+                .map(|m| m.id.clone())
+                .collect();
+            found.sort();
+            found
+        };
+        // For everyone: only what everyone can read.
+        let new = memory("new", "deploys go out on Fridays now", 2, None);
+        assert_eq!(ids(&new, Reader::Person, 8), ["open"]);
+        // For reviewers: also what every reviewer can read.
+        let held = ["reviewer".to_owned()];
+        let new = role("new", "deploys go out on Fridays now", &["reviewer"]);
+        assert_eq!(
+            ids(&new, Reader::Holding(&held), 8),
+            ["both", "open", "reviewers"]
+        );
+        // The author reads less than the memory's readers do: it decides.
+        assert_eq!(ids(&new, Reader::EVERYONE, 8), ["open"]);
+        // For two roles: what holders of either can read, not of just one.
+        let new = role(
+            "new",
+            "deploys go out on Fridays now",
+            &["reviewer", "lead"],
+        );
+        assert_eq!(ids(&new, Reader::Person, 8), ["both", "open"]);
+        assert_eq!(ids(&new, Reader::Person, 1).len(), 1);
+        // Itself, and what it already replaces, are out.
+        let mut new = memory("open", "deploys go out on Fridays now", 2, None);
+        assert!(ids(&new, Reader::Person, 8).is_empty());
+        new.id = "new".into();
+        new.supersedes = Some("open".into());
+        assert!(ids(&new, Reader::Person, 8).is_empty());
     }
 
     /// A moment after every memory these tests keep.
