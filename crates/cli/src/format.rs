@@ -714,6 +714,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::ChannelJoined { channel, agent } => {
             format!("channel joined   {channel} by {}", agent.short())
         }
+        EventKind::ChannelLeft { channel, agent } => {
+            format!("channel left     {channel} by {}", agent.short())
+        }
         EventKind::ConversationRead {
             reader,
             conversation,
@@ -882,8 +885,34 @@ pub fn event_line(event: &Event) -> String {
         ),
         EventKind::QuestionClosed { question, answer } => match answer {
             Some(answer) => format!("question answered {question} by message {answer}"),
-            None => format!("question expired {question}"),
+            None => format!("question closed  {question} (expired, or settled without an answer)"),
         },
+        EventKind::MessageHeld {
+            message,
+            question,
+            from,
+            to,
+            rule,
+        } => format!(
+            "message held     {message} {} → {to} for you as question {question} ({rule})",
+            short(from)
+        ),
+        EventKind::HeldMessageReleased {
+            message,
+            question,
+            by,
+        } => format!(
+            "message released {message} from question {question} by {}",
+            short(by)
+        ),
+        EventKind::HeldMessageDropped {
+            message,
+            question,
+            by,
+        } => format!(
+            "message dropped  {message} from question {question} by {}",
+            short(by)
+        ),
         EventKind::MessageSent {
             message,
             from,
@@ -1484,7 +1513,7 @@ mod tests {
             webhook: "team".into(),
             delivery: "0123456789abcdef0123456789abcdef".into(),
             seq: 41,
-            event: "question_asked".into(),
+            event: "question_opened".into(),
             attempt: 2,
             at,
             duration_ms: 87,
@@ -1499,7 +1528,7 @@ mod tests {
             row[1..],
             [
                 "41",
-                "question_asked",
+                "question_opened",
                 "2",
                 "retrying",
                 "503",
