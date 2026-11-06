@@ -549,7 +549,9 @@ control does, its id or its accessible label:
   starting a direct message `new-conversation` (the + beside the search) and
   `new-direct-<agent>`; a mention offer `mention-<agent>`. On the Board
   Usage under More (`project-tab-Usage`): `usage-since-24h|7d|30d`,
-  `usage-by-Agent|Model|Provider|Hour`. On the Board
+  `usage-by-Agent|Model|Provider|Hour`; a marked count or total
+  `usage-count-<row>-<counter>` / `usage-total-<counter>`, and an
+  estimate `usage-count-<row>-estimate`. On the Board
   tab (`project-tab-Board`): a lane's `lane-add-card-<lane>` opens its
   `quick-add-<lane>` (activating it files), `lane-archive-<lane>`, a card
   `task-<id>` (opens it), its moves `task-back-<id>`/`task-next-<id>`,

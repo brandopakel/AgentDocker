@@ -256,9 +256,18 @@ impl Daemon {
                 Some((a.id.to_string(), a.spec.runtime.clone(), session.clone()))
             })
             .collect();
+        let prices = match config.price_table() {
+            Ok(prices) => prices,
+            Err(error) => return Response::error(ErrorCode::Invalid, error),
+        };
         match state.store_read("usage query", |store| {
-            let mut report =
-                store.usage_report(range, query.by, project.as_deref(), agent.as_deref())?;
+            let mut report = store.usage_report(
+                range,
+                query.by,
+                project.as_deref(),
+                agent.as_deref(),
+                &prices,
+            )?;
             if let Some(report) = &mut report
                 && config.enabled
             {
@@ -279,18 +288,7 @@ impl Daemon {
                     report.coverage.collection = Collection::default();
                     report.context.clear();
                     for row in &mut report.rows {
-                        for counter in [
-                            &mut row.counters.input_tokens,
-                            &mut row.counters.cache_read_input_tokens,
-                            &mut row.counters.cache_write_input_tokens,
-                            &mut row.counters.output_tokens,
-                            &mut row.counters.reasoning_output_tokens,
-                            &mut row.cost_usd_micros,
-                        ] {
-                            if counter.coverage == usage::Coverage::Complete {
-                                counter.coverage = usage::Coverage::Partial;
-                            }
-                        }
+                        row.demote_complete();
                     }
                 }
                 report.coverage.collection.enabled = Some(config.enabled);

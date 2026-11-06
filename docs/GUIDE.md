@@ -363,7 +363,13 @@ cost, summed only over the responses that carried one: Claude Code's telemetry
 events do (below), and Claude Code calls its figure an estimate; transcripts do
 not, so a row fed from transcripts alone shows `—`, and one fed from both shows
 its sum marked `~`. These are token totals and the provider's estimates, not a
-bill. The report shows
+bill. With a price table of your own in `agentd.toml` (below), an **EST. COST**
+column (**Est. cost** in the app) appears after COST, only when a price matched
+some row: your prices applied to the tokens reported, `~` where some of the
+row's usage had no price or some samples did not say, `—` on a row no price
+matched. It is your estimate, kept apart from what the provider reported and
+never added to it; the line under the table, and the app's tooltip, say so.
+The report shows
 the available time range, gaps and whether collection has caught up. The CLI
 names each agent, project or card row (`codex-<pid>`, `<project>`, `AD-12`) while
 AgentDocker still knows it, and shows its ID once it is gone; `(unattributed)` is
@@ -459,6 +465,45 @@ Code logs, and the report's gaps count it for that hour, so its totals say they
 are partial. No prompt, tool argument or other event content is kept. It takes the JSON
 encoding only (`http/json`); protobuf or compressed exports are refused with a
 message that says what to set.
+
+#### Your own estimate from a price table
+
+No prices are shipped. To see an estimate beside the reported cost, add your own
+prices, in US dollars per million tokens, to the same section:
+
+```toml
+[usage]
+enabled = true
+
+[[usage.price]]
+provider = "acme"
+model = "fable-*"
+input = 3.0
+cache_read = 0.3
+cache_write = 3.75
+output = 15.0
+
+[[usage.price]]
+model = "gizmo-7-mini"
+input = 0.4
+cache_read = 0.1
+cache_write = 0.0
+output = 1.6
+```
+
+`model` is a name or a pattern over one (`*` any run of characters, `?` one),
+compared without case; `provider`, when given, must be the provider the usage
+reported, and left out the entry prices any provider — some tools' transcripts
+name none, so leave it out for those. All four numbers are required, each zero
+or more; the first entry that matches a row's provider and model prices it.
+A missing or negative number, an empty model, an unknown field or more than 256
+entries is an error in the table alone: `agentdocker usage` answers with it,
+naming the entry, until the file is fixed, while collection and the telemetry
+receiver go on. The estimate prices the uncached share of the input total,
+cache reads, cache writes and output. It knows nothing of a provider's actual
+rates, plans, cache discounts or subscriptions, so it can be wrong even when
+your prices are right: it appears as EST. COST, never in the COST column and
+never added to it, and nothing is fetched from any network.
 
 ### Accounting storage
 
@@ -601,7 +646,7 @@ each one by pid.
 | `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); a TEAM column when a Claude Code agent team is running (`lead of <team>`, or `<name>, teammate of team-lead in <team>`); a THREAD column, where any agent's provider says something of its own conversation, with the role a spawned Codex thread was given and whose thread spawned it (`reviewer of <agent>`, `child of thread <id>`); `--input-details` adds the one fix for each session that cannot take messages now |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is up to, in three words — STATE (working, blocked, done, failed, stopped), STATUS this moment (busy, waiting, idle) and WAITING FOR from you (permission, input, sandbox, question) — with a block's resource and holder, and *(weak evidence)* where the word is inferred rather than reported; `ps` prints the three as one cell, `working · waiting · permission` |
-| `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour\|card\|role`: card is the board card held when each response was recorded, role the agent's roles then), each count with its coverage (`~` where some samples did not say, `—` where none did), the share of input read from cache, the provider-reported estimated cost where its telemetry said one, a FIGURES column saying whether the row's counts are `exact` (the provider's own count for each response) or `estimated` (differences between its running totals are in it; `—` where older totals cannot say), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on and where the telemetry receiver listens, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
+| `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour\|card\|role`: card is the board card held when each response was recorded, role the agent's roles then), each count with its coverage (`~` where some samples did not say, `—` where none did), the share of input read from cache, the provider-reported estimated cost where its telemetry said one, an EST. COST column only when a `[[usage.price]]` entry of yours matched some row (your prices on the reported tokens: an estimate beside the reported cost, never added to it, not a bill), a FIGURES column saying whether the row's counts are `exact` (the provider's own count for each response) or `estimated` (differences between its running totals are in it; `—` where older totals cannot say), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on and where the telemetry receiver listens, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output, at most 16 MiB kept per agent (the newest 8 MiB and the 8 MiB before them); `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
