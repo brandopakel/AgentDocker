@@ -83,7 +83,8 @@ pub enum EventKind {
         question: MessageId,
         expires_at: DateTime<Utc>,
     },
-    /// No answer means the question expired. The original inbox message remains.
+    /// No answer means the question expired, or was settled without one: a
+    /// held message released or dropped. The original inbox message remains.
     QuestionClosed {
         question: MessageId,
         answer: Option<MessageId>,
@@ -101,6 +102,32 @@ pub enum EventKind {
     QuestionCancelled {
         question: MessageId,
         agent: AgentId,
+    },
+    /// A remote sender's message the project's inbound trust holds for
+    /// the person: kept whole and delivered to nobody until they release
+    /// it from `question`, the card put to them. `rule` is the setting
+    /// that held it. Durable, with the question and the held copy.
+    MessageHeld {
+        message: MessageId,
+        question: MessageId,
+        from: String,
+        to: Destination,
+        rule: String,
+    },
+    /// The person released a held message: it goes out as sent, and its
+    /// `message_sent` follows in the same commit. `by` is who released it.
+    HeldMessageReleased {
+        message: MessageId,
+        question: MessageId,
+        by: String,
+    },
+    /// A held message was discarded, reaching nobody: by the person, by
+    /// its sender's cancellation of the question (`by` is their id), or
+    /// unanswered past its week (`by` is `expiry`).
+    HeldMessageDropped {
+        message: MessageId,
+        question: MessageId,
+        by: String,
     },
     AgentActivityReported {
         agent: AgentId,
