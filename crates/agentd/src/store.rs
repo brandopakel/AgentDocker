@@ -393,7 +393,9 @@ pub struct Publication<'a> {
     pub capacity: usize,
     pub sender: Option<&'a AgentRecord>,
     pub question: Option<&'a agentdocker_core::Question>,
-    pub closed: Option<&'a agentdocker_core::MessageId>,
+    /// Every question this message closes: the one it answers, and
+    /// the card a released message rode on. Both go, or neither.
+    pub closed: &'a [agentdocker_core::MessageId],
     pub events: &'a [Event],
     pub channel: Option<(&'a Channel, Option<&'a JournalEntry>)>,
     pub document: Option<(&'a str, &'a str, Option<&'a serde_json::Value>)>,
@@ -1501,7 +1503,7 @@ impl Store {
             capacity: 1000,
             sender: None,
             question: None,
-            closed: None,
+            closed: &[],
             events,
             channel: None,
             document: None,
@@ -1563,7 +1565,7 @@ impl Store {
         if let Some(question) = question {
             self.put_document("question", question.id.as_str(), question)?;
         }
-        if let Some(closed) = closed {
+        for closed in closed {
             self.delete_document("question", closed.as_str())?;
         }
         if let Some((channel, journal)) = channel {

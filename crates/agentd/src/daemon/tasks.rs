@@ -199,7 +199,7 @@ impl State {
 
     /// What a project is called, for its display keys: the name an agent
     /// in it has for it, else its id.
-    fn project_name(&self, project: &ProjectId) -> String {
+    pub(super) fn project_name(&self, project: &ProjectId) -> String {
         self.registry
             .all()
             .filter_map(|a| a.project.as_ref())
@@ -454,7 +454,7 @@ impl State {
         );
         if committed != Persisted::Committed {
             return Some(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the card was not recorded")
+                Response::error(ErrorCode::StorageUnavailable, "the card was not recorded")
             }));
         }
         None
@@ -481,7 +481,7 @@ impl State {
         );
         if committed != Persisted::Committed {
             return Some(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the change was not recorded")
+                Response::error(ErrorCode::StorageUnavailable, "the change was not recorded")
             }));
         }
         None
@@ -509,7 +509,7 @@ impl State {
         );
         if committed != Persisted::Committed {
             return Some(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the change was not recorded")
+                Response::error(ErrorCode::StorageUnavailable, "the change was not recorded")
             }));
         }
         None

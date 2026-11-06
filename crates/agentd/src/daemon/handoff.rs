@@ -1,7 +1,6 @@
 //! Handoff bundles: a checkpoint addressed to someone, with everything the
 //! daemon already knows about the sender bundled around it. Acceptance is
 //! `resume` (in `recovery`), which is where ownership moves.
-use super::recovery::internal;
 use super::*;
 use agentdocker_core::handoff::{BUNDLE_ROWS, HANDOFF_SCHEMA};
 use agentdocker_core::{Checkpoint, HandoffBundle};
@@ -167,10 +166,12 @@ impl Daemon {
         // Two retries with one key may both have passed the probe above
         // while nobody held the lock; the first to get here wins and the
         // other returns what it wrote.
-        match state.store.document::<HandoffBundle>("handoff", &id) {
+        match state.read_store("handoff", |store| {
+            store.document::<HandoffBundle>("handoff", &id)
+        }) {
             Ok(Some(bundle)) => return Response::Handoff { bundle },
             Ok(None) => {}
-            Err(e) => return internal(e),
+            Err(e) => return *e,
         }
         let project = record.project.as_ref().map(ProjectRef::id);
         let changes = match &project {
@@ -285,9 +286,9 @@ impl Daemon {
             Ok(a) => a,
             Err(e) => return *e,
         };
-        match state.store.handoffs(agent.as_ref()) {
+        match state.read_store("handoffs", |store| store.handoffs(agent.as_ref())) {
             Ok(bundles) => Response::Handoffs { bundles },
-            Err(e) => internal(e),
+            Err(e) => *e,
         }
     }
 
@@ -379,7 +380,9 @@ impl Daemon {
             Err(e) => return *e,
         };
         let mut state = lock(&self.state);
-        match state.store.document::<Checkpoint>("checkpoint", &bundle.id) {
+        match state.read_store("checkpoint", |store| {
+            store.document::<Checkpoint>("checkpoint", &bundle.id)
+        }) {
             Ok(Some(_)) => {
                 return Response::error(
                     ErrorCode::Conflict,
@@ -387,7 +390,7 @@ impl Daemon {
                 );
             }
             Ok(None) => {}
-            Err(e) => return internal(e),
+            Err(e) => return *e,
         }
         let now = Utc::now();
         let project = state
