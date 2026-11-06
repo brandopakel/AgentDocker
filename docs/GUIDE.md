@@ -994,6 +994,24 @@ be anything the agent printed, so turn it on only for work you are content to
 show TypeSafe. TypeSafe's own terms and costs apply; at most
 `calls_per_minute` requests go each minute (6 unless you set it, 1–60).
 
+**Suggesting which memory a new one replaces.** Add `"memories"` to
+`judgments` (`judgments = ["screens", "memories"]`, or `["memories"]` alone,
+which reads no screen). When a memory is kept, the judge is asked whether it
+restates, contradicts or replaces each of up to 8 current memories most like
+it. `agentdocker memory add` prints the likely ones to stderr, and the
+`add_memory` tool answers them as `may_supersede`, the likeliest first, above
+`threshold_percent`. It is only a suggestion: nothing is replaced until you
+or the agent say so with `--supersedes`. The memory is kept whatever becomes
+of asking, and `suggestion` says what did: `made`, `off`, `over_budget` or
+`unavailable`.
+
+What is sent: the new memory's text and the other memories' texts, with a
+fixed sentence and one yes/no question each. No id, link, author, role or
+project goes. Those texts can include memories said only to some roles,
+compared only with memories all their readers can read, so name this judgment
+only for memories you are content to show TypeSafe. Each new memory that
+shares a word with another costs one of the `calls_per_minute`.
+
 **Whose screens.** The terminals of agents AgentDocker started (from the app
 or with `run --tty`); the tmux pane an agent registered from — at the tmux
 server that pane belongs to, and only while the pane still runs that agent's

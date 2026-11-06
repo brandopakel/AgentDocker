@@ -1,7 +1,10 @@
 //! The opt-in judge, `[judge]` in `agentd.toml`: an agent's quiet screen
 //! read by a TypeSafe System One model (Jev) for whether it waits on the
 //! person. Off unless the person names a judgment and a key; then, and
-//! only then, screens are read and their last lines sent.
+//! only then, screens are read and their last lines sent. The `memories`
+//! judgment asks the same model, within the same budget, which current
+//! memories a new one may replace ([`Daemon::judge_memory`]): it suggests
+//! and changes nothing.
 //!
 //! Every five seconds the file and the key are read — on their own, so a
 //! change is seen even while a pass waits on an answer — and a pass reads
@@ -46,9 +49,10 @@ use super::*;
 use agentdocker_core::Activity;
 use agentdocker_core::config::JudgeConfig;
 use agentdocker_core::judgment::{
-    self, ClearReason, JudgeState, JudgeStatus, Outcome, Review, ScreenJudgment, Thresholds,
-    Unreadable,
+    self, ClearReason, JudgeState, JudgeStatus, Judgment, Outcome, Review, ScreenJudgment,
+    Thresholds, Unreadable,
 };
+use agentdocker_core::memory::{MaySupersede, Suggestion};
 use agentdocker_core::multiplexer::Evidence;
 use sha2::{Digest, Sha256};
 
@@ -171,6 +175,16 @@ pub(in crate::daemon) struct Setup {
     config: JudgeConfig,
     key: String,
     generation: u64,
+}
+
+impl Setup {
+    /// Whether the file names `judgment`.
+    fn judges(&self, judgment: Judgment) -> bool {
+        self.config
+            .judgments
+            .iter()
+            .any(|name| name == judgment.as_str())
+    }
 }
 
 /// The judge's own state, off the state lock.
@@ -641,6 +655,11 @@ impl Daemon {
         if status == JudgeState::On {
             return;
         }
+        Self::clear_screen_judgments(&mut state);
+    }
+
+    /// Take off every standing screen judgment: nothing reads screens now.
+    fn clear_screen_judgments(state: &mut State) {
         let standing: Vec<(AgentId, String)> = state
             .registry
             .all()
@@ -666,8 +685,102 @@ impl Daemon {
         let Some(setup) = self.judge_setup().await else {
             return;
         };
+        // On for memories alone: no screen is read, and none stays judged.
+        if !setup.judges(Judgment::Screens) {
+            {
+                let mut judge = lock(&self.judge);
+                judge.screens.clear();
+                judge.outages.clear();
+            }
+            Self::clear_screen_judgments(&mut lock(&self.state));
+            return;
+        }
         let (mut pass, due) = self.read_screens(&setup).await;
         self.ask_judge(&setup, &mut pass, due).await;
+    }
+
+    /// Ask which of `candidates` (id and text) a new memory may replace,
+    /// within the same budget as the screens: those at or above the
+    /// threshold, the likeliest first, and what came of asking. Only the
+    /// texts go. Nothing here can refuse the memory or change it: a judge
+    /// that is off, spent or failing says so and suggests nothing.
+    pub(in crate::daemon) async fn judge_memory(
+        self: &Arc<Self>,
+        new: &str,
+        candidates: Vec<(String, String)>,
+    ) -> (Suggestion, Vec<MaySupersede>) {
+        let Some(setup) = self.judge_setup().await else {
+            let unusable = matches!(lock(&self.judge).setting, Setting::Unusable(_));
+            let word = if unusable {
+                Suggestion::Unavailable
+            } else {
+                Suggestion::Off
+            };
+            return (word, Vec::new());
+        };
+        if !setup.judges(Judgment::Memories) {
+            return (Suggestion::Off, Vec::new());
+        }
+        if candidates.is_empty() {
+            return (Suggestion::Made, Vec::new());
+        }
+        let config = &setup.config;
+        let deadline = {
+            let mut judge = lock(&self.judge);
+            let now = Instant::now();
+            judge.prune(now);
+            if !judge.current(setup.generation)
+                || judge.backoff_until.is_some_and(|until| now < until)
+            {
+                return (Suggestion::Unavailable, Vec::new());
+            }
+            if judge.calls.len() >= config.calls_per_minute as usize {
+                return (Suggestion::OverBudget, Vec::new());
+            }
+            judge.calls.push_back(now);
+            judge.deadline
+        };
+        let texts: Vec<&str> = candidates.iter().map(|(_, text)| text.as_str()).collect();
+        let body = judgment::memory_request(&config.model, new, &texts);
+        let count = candidates.len();
+        let (url, key) = (config.url.clone(), setup.key.clone());
+        let answered = tokio::task::spawn_blocking(move || call(&url, &key, &body, deadline))
+            .await
+            .unwrap_or(Err(Failure::Unreachable))
+            .and_then(|value| {
+                judgment::read_memory_answers(&value, count).map_err(|_| Failure::Malformed)
+            });
+        // Switched off or changed while it was out: the answer is not one
+        // the setup in force asked for.
+        if !self.judge_current(setup.generation) {
+            return (Suggestion::Unavailable, Vec::new());
+        }
+        match answered {
+            Ok((model, answers)) => {
+                lock(&self.judge).problem = None;
+                debug!(%model, ?answers, "judge answered about a memory");
+                let floor = f64::from(config.threshold_percent) / 100.0;
+                let mut likely: Vec<MaySupersede> = candidates
+                    .into_iter()
+                    .zip(answers)
+                    .filter(|(_, probability)| *probability >= floor)
+                    .map(|((memory, _), probability)| MaySupersede {
+                        memory,
+                        probability,
+                    })
+                    .collect();
+                likely.sort_by(|a, b| b.probability.total_cmp(&a.probability));
+                (Suggestion::Made, likely)
+            }
+            Err(failure) => {
+                warn!(reason = failure.word(), "a judge call failed");
+                let event = lock(&self.judge).fail(failure, Instant::now());
+                if let Some(event) = event {
+                    self.emit(event);
+                }
+                (Suggestion::Unavailable, Vec::new())
+            }
+        }
     }
 
     /// One screen, as it is now: the terminal drawn; the tmux pane
@@ -1228,6 +1341,8 @@ mod tests {
         stall: StdDuration,
         /// Hold every answer until this is set back to false.
         hold: bool,
+        /// The answers about memories, `note_1` on.
+        notes: Vec<f64>,
         /// Each request: its authorization header and body.
         seen: Vec<(String, Value)>,
     }
@@ -1242,6 +1357,7 @@ mod tests {
             nouls,
             stall: StdDuration::ZERO,
             hold: false,
+            notes: Vec::new(),
             seen: Vec::new(),
         }));
         let fake = shared.clone();
@@ -1282,19 +1398,24 @@ mod tests {
                     while fake.lock().unwrap().hold {
                         std::thread::sleep(StdDuration::from_millis(10));
                     }
-                    let (status, nouls) = {
+                    let (status, nouls, notes) = {
                         let fake = fake.lock().unwrap();
-                        (fake.status, fake.nouls)
+                        (fake.status, fake.nouls, fake.notes.clone())
                     };
                     let reply = if status == 200 {
+                        let mut answers = json!({
+                            "approval": {"type": "noul", "noul": nouls[0]},
+                            "question": {"type": "noul", "noul": nouls[1]},
+                            "running": {"type": "noul", "noul": nouls[2]},
+                            "draft": {"type": "noul", "noul": nouls[3]},
+                        });
+                        for (index, noul) in notes.iter().enumerate() {
+                            answers[format!("note_{}", index + 1)] =
+                                json!({"type": "noul", "noul": noul});
+                        }
                         json!({
                             "model": "jev-1.13.0",
-                            "answers": {
-                                "approval": {"type": "noul", "noul": nouls[0]},
-                                "question": {"type": "noul", "noul": nouls[1]},
-                                "running": {"type": "noul", "noul": nouls[2]},
-                                "draft": {"type": "noul", "noul": nouls[3]},
-                            },
+                            "answers": answers,
                             "usage": {"input_tokens": 600, "output_tokens": 20},
                         })
                         .to_string()
@@ -1734,6 +1855,251 @@ mod tests {
             Activity::Waiting { .. }
         ));
         stop(&daemon, &agent).await;
+    }
+
+    /// With `memories` alone no screen is read, and what `screens` left
+    /// standing comes off.
+    #[tokio::test]
+    async fn memories_alone_reads_no_screen_and_keeps_no_screen_judgment() {
+        let dir = TempDir::new().unwrap();
+        let (url, _fake) = server([0.1, 0.92, 0.0, 0.0]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let agent = showing(&daemon, &dir, "asks", "Which branch should I use?\\n> \\n").await;
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_some());
+        configure_memories(&dir, &url, "");
+        let reads = lock(&daemon.judge).reads;
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_none());
+        assert_eq!(lock(&daemon.judge).reads, reads, "no screen was read");
+        stop(&daemon, &agent).await;
+    }
+
+    fn configure_memories(dir: &TempDir, url: &str, extra: &str) {
+        let key = write_key(dir, 0o600);
+        std::fs::write(
+            dir.path().join(agentdocker_core::config::FILE_NAME),
+            format!(
+                "[judge]\njudgments = [\"memories\"]\nkey_file = {:?}\nurl = {url:?}\n{extra}",
+                key.display().to_string()
+            ),
+        )
+        .unwrap();
+    }
+
+    /// An agent to keep memories as, in `dir`'s project.
+    async fn author(daemon: &Arc<Daemon>, dir: &TempDir) {
+        let response = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "author".into(),
+                    workdir: Some(dir.path().to_path_buf()),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        assert!(matches!(response, Response::Agent { .. }), "{response:?}");
+    }
+
+    async fn keep(
+        daemon: &Arc<Daemon>,
+        from: &str,
+        project: Option<&TempDir>,
+        text: &str,
+        roles: &[&str],
+    ) -> (
+        agentdocker_core::memory::Memory,
+        Vec<MaySupersede>,
+        Option<Suggestion>,
+    ) {
+        let response = daemon
+            .handle(Request::MemoryAdd {
+                from: from.into(),
+                project: project.map(|dir| dir.path().display().to_string()),
+                text: text.into(),
+                links: vec![agentdocker_core::Link::new(
+                    agentdocker_core::LinkKind::Url,
+                    "https://example.com/secret-link",
+                )],
+                supersedes: None,
+                standing: false,
+                forget_after: None,
+                roles: roles.iter().map(|r| (*r).to_owned()).collect(),
+                valid_from: None,
+            })
+            .await;
+        let Response::Memory {
+            memory,
+            may_supersede,
+            suggestion,
+        } = response
+        else {
+            panic!("{response:?}");
+        };
+        (memory, may_supersede, suggestion)
+    }
+
+    /// The likeliest first, those under the threshold left out, only the
+    /// texts sent, and nothing superseded by the answer.
+    #[tokio::test]
+    async fn a_new_memory_is_told_which_it_may_replace_and_nothing_is_written() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.0; 4]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        let mut kept = Vec::new();
+        for text in [
+            "deploys go out on Mondays",
+            "deploys need the staging check",
+            "deploys are frozen in December",
+        ] {
+            kept.push(keep(&daemon, "author", None, text, &[]).await.0);
+        }
+        configure_memories(&dir, &url, "");
+        fake.lock().unwrap().notes = vec![0.2, 0.75, 0.9];
+        let (new, may_supersede, suggestion) = keep(
+            &daemon,
+            "author",
+            None,
+            "deploys go out on Fridays now",
+            &[],
+        )
+        .await;
+        assert_eq!(suggestion, Some(Suggestion::Made));
+        let (auth, body) = fake.lock().unwrap().seen[0].clone();
+        assert_eq!(auth, format!("Bearer {KEY}"));
+        let state = body["state"].as_object().unwrap();
+        assert_eq!(state["new"], "deploys go out on Fridays now");
+        assert_eq!(state.len(), 5, "about, new and three notes: {state:?}");
+        let id_of = |field: &str| {
+            kept.iter()
+                .find(|m| state[field] == m.text.as_str())
+                .unwrap()
+                .id
+                .clone()
+        };
+        assert_eq!(
+            may_supersede,
+            [
+                MaySupersede {
+                    memory: id_of("note_3"),
+                    probability: 0.9
+                },
+                MaySupersede {
+                    memory: id_of("note_2"),
+                    probability: 0.75
+                },
+            ]
+        );
+        let sent = body.to_string();
+        for private in [
+            "secret-link",
+            "author",
+            kept[0].id.as_str(),
+            new.id.as_str(),
+        ] {
+            assert!(!sent.contains(private), "{private} went out: {sent}");
+        }
+        assert_eq!(new.supersedes, None);
+        let Response::Memories { memories } = daemon
+            .handle(Request::MemorySearch {
+                from: Some("author".into()),
+                project: None,
+                query: "deploys".into(),
+                limit: None,
+                as_of: None,
+                include_superseded: false,
+                min_score: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        assert_eq!(memories.len(), 4, "every memory stands");
+    }
+
+    /// Off, nothing alike, the budget spent, a server that fails: the memory
+    /// is kept all the same, and the answer says what came of asking.
+    #[tokio::test]
+    async fn a_memory_is_kept_whatever_becomes_of_asking() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.0; 4]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        let text = "deploys go out on Mondays";
+        // Off: no section, and a section that names only screens.
+        let (_, none, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!((none.len(), word), (0, Some(Suggestion::Off)));
+        configure(&dir, &url, "");
+        let (_, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::Off));
+        assert_eq!(calls(&fake), 0, "nothing is sent while off");
+
+        // Nothing shares a word with it: nothing to ask.
+        configure_memories(&dir, &url, "calls_per_minute = 1\n");
+        let (_, _, word) = keep(&daemon, "author", None, "the cache lives in target", &[]).await;
+        assert_eq!(word, Some(Suggestion::Made));
+        assert_eq!(calls(&fake), 0);
+
+        // One call a minute: the second finds the budget spent.
+        fake.lock().unwrap().notes = vec![0.1, 0.1];
+        let (_, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::Made));
+        let (kept, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::OverBudget));
+        assert_eq!(calls(&fake), 1);
+        assert_eq!(kept.text, text);
+
+        // A service that fails says so, and the next add finds it backing off.
+        lock(&daemon.judge).calls.clear();
+        fake.lock().unwrap().status = 500;
+        let (kept, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::Unavailable));
+        assert_eq!(kept.text, text);
+        let JudgeStatus::On { problem, .. } = daemon.judge_status() else {
+            panic!("the judge is on");
+        };
+        assert!(problem.is_some());
+        let sent = calls(&fake);
+        let (_, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::Unavailable));
+        assert_eq!(calls(&fake), sent, "no call while backing off");
+    }
+
+    /// A memory for everyone is compared only with what everyone can read:
+    /// one said to a role goes nowhere.
+    #[tokio::test]
+    async fn a_memory_said_to_a_role_is_not_sent_for_one_everyone_reads() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.0; 4]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        keep(&daemon, "author", None, "deploys go out on Mondays", &[]).await;
+        let person = agentdocker_core::HUMAN;
+        keep(
+            &daemon,
+            person,
+            Some(&dir),
+            "deploys need the private review key",
+            &["reviewer"],
+        )
+        .await;
+        configure_memories(&dir, &url, "");
+        fake.lock().unwrap().notes = vec![0.9];
+        let (_, likely, _) = keep(
+            &daemon,
+            person,
+            Some(&dir),
+            "deploys go out on Fridays",
+            &[],
+        )
+        .await;
+        assert_eq!(likely.len(), 1);
+        let sent = fake.lock().unwrap().seen[0].1.to_string();
+        assert!(!sent.contains("private review key"), "{sent}");
     }
 
     fn promotions(events: &mut tokio::sync::broadcast::Receiver<Event>) -> usize {

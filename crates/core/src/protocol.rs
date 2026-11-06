@@ -2179,6 +2179,14 @@ pub enum Response {
     },
     Memory {
         memory: crate::memory::Memory,
+        /// From `memory_add` when the judge's `memories` judgment is on: the
+        /// current memories this one may replace, the likeliest first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        may_supersede: Vec<crate::memory::MaySupersede>,
+        /// From `memory_add`: what came of asking, so a client can tell a
+        /// suggestion nobody made from one nobody could make.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suggestion: Option<crate::memory::Suggestion>,
     },
     Memories {
         memories: Vec<crate::memory::Memory>,
