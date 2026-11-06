@@ -8,11 +8,10 @@
 use super::icons::{Icon, icon};
 use super::panes::{Grid, Slot};
 use super::style::{Colors, alpha, weight};
-use super::view::{empty, first_line, panel, pill, rule, split_style};
+use super::view::{empty, first_line, pill, rule, split_style};
 use super::*;
 use crate::controls::{Kind, custom, custom_sized, framed_composer, input_enabled, popover};
 use agentdocker_core::conversation::line_of;
-use agentdocker_core::journal::ago;
 use agentdocker_core::{
     AgentId, AgentRecord, ArchivedMessage, ConversationKind, ConversationSummary, MessageId,
 };
@@ -1826,19 +1825,6 @@ impl App {
                 .collect(),
         )
     }
-
-    /// The conversations screen's own panel around the sidebar in a narrow
-    /// window, so it reads as a list rather than loose rows.
-    #[allow(dead_code)]
-    fn boxed<'a>(&self, content: Element<'a, Message>, c: Colors) -> Element<'a, Message> {
-        panel(content, c)
-    }
-
-    /// The time a conversation last moved, for tests and the rail.
-    #[allow(dead_code)]
-    fn last_moved(summary: &ConversationSummary) -> Option<String> {
-        summary.last_at.map(|at| ago(Utc::now(), at))
-    }
 }
 
 /// `text` cut to at most `budget` characters, the last one an ellipsis
@@ -2046,6 +2032,8 @@ mod tests {
                 presentation: None,
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             };
         app.questions = vec![
             question(

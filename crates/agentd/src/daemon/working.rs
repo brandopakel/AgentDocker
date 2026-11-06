@@ -69,11 +69,13 @@ impl Daemon {
             Ok(id) => id,
             Err(e) => return *e,
         };
-        match state.store.document::<Vec<ReadMark>>("reads", id.as_str()) {
-            Ok(reads) => Response::Reads {
+        match state.store_read("reads", |store| {
+            store.document::<Vec<ReadMark>>("reads", id.as_str())
+        }) {
+            Some(reads) => Response::Reads {
                 reads: reads.unwrap_or_default(),
             },
-            Err(e) => Response::error(ErrorCode::Internal, e.to_string()),
+            None => unread(&state),
         }
     }
 
@@ -170,9 +172,11 @@ impl Daemon {
                 "agent stopped or changed checkout during observation",
             );
         }
-        let existing = match state.store.document::<Vec<ReadMark>>("reads", id.as_str()) {
-            Ok(existing) => existing.unwrap_or_default(),
-            Err(e) => return Response::error(ErrorCode::Internal, e.to_string()),
+        let existing = match state.store_read("reads", |store| {
+            store.document::<Vec<ReadMark>>("reads", id.as_str())
+        }) {
+            Some(existing) => existing.unwrap_or_default(),
+            None => return unread(&state),
         };
         let held = existing.len();
         let mut by_path: BTreeMap<PathBuf, ReadMark> =
@@ -200,8 +204,13 @@ impl Daemon {
             };
         }
         let reads: Vec<_> = by_path.into_values().collect();
-        if let Err(e) = state.store.put_document("reads", id.as_str(), &reads) {
-            return Response::error(ErrorCode::Internal, e.to_string());
+        if state.persist("reads", |store| {
+            store.put_document("reads", id.as_str(), &reads)
+        }) != Persisted::Committed
+        {
+            return state.write_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::StorageUnavailable, "the reads were not recorded")
+            });
         }
         for (mark, proof) in accepted {
             if let Some(snapshot) = proof {
@@ -503,13 +512,11 @@ const STALE_LEDGER_SCAN: usize = 500;
 /// bound on the host work of one request, which snapshots every path.
 const OBSERVE_PATHS: usize = 1000;
 
+/// The physical path `raw` names inside the checkout at `root`: an absolute
+/// path as given, a relative one under the root (`join` keeps an absolute
+/// argument whole), and either refused when it leaves the checkout.
 pub(super) fn checkout_path(root: &Path, raw: &str) -> anyhow::Result<PathBuf> {
-    let raw = Path::new(raw);
-    let path = project::canonical(&if raw.is_absolute() {
-        raw.to_path_buf()
-    } else {
-        root.join(raw)
-    });
+    let path = project::canonical(&root.join(raw));
     anyhow::ensure!(
         path.starts_with(root),
         "observation is outside the agent's physical checkout"
@@ -680,6 +687,7 @@ impl State {
             }
         }
         self.flush_contested();
+        self.sweep_channel_ghosts();
     }
 }
 
@@ -1182,4 +1190,12 @@ mod warning_tests {
         assert!(named > 0 && named < 200, "named {named}");
         assert!(serde_json::to_vec(&big[0].payload).unwrap().len() <= NOTICE_BYTES);
     }
+}
+
+/// A read set the store could not give: storage failed, and the failure is
+/// latched like any other.
+fn unread(state: &State) -> Response {
+    state.storage_failure().unwrap_or_else(|| {
+        Response::error(ErrorCode::StorageUnavailable, "the reads could not be read")
+    })
 }

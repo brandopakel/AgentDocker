@@ -168,12 +168,12 @@ pub(super) fn configuration(
 
 fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     let Some(path) = mcp_config_path(spec, roots) else {
-        return vec![Check::new(
-            "mcp",
-            None,
-            Status::Unsupported,
-            "No supported MCP setup adapter",
-        )];
+        let detail = if spec.mcp == McpWiring::AgentConfig {
+            "MCP servers are declared in each agent's YAML file; `agentdocker setup docker-agent --agent <file>` adds the toolset to one"
+        } else {
+            "No supported MCP setup adapter"
+        };
+        return vec![Check::new("mcp", None, Status::Unsupported, detail)];
     };
     let is_toml = matches!(spec.mcp, McpWiring::TomlServers { .. });
     let value = match configuration("mcp", &path, is_toml) {
@@ -310,8 +310,27 @@ fn hooks(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     if spec.name == "codex" {
         checks.push(Check::new("hooks", Some(&path), Status::Unverified,
             "Activity configuration only; Codex version, enabled hooks, exact hook trust and live delivery require a provider trial. Open /hooks in Codex to review definitions."));
+        if let Some(stamps) = &roots.hook_stamps
+            && never_ran(&super::hook_stamp(stamps, spec.name))
+        {
+            checks.push(Check::new(
+                "hooks",
+                Some(&path),
+                Status::Unverified,
+                "Never run: trust them in Codex's /hooks",
+            ));
+        }
     }
     checks
+}
+
+/// Whether Codex has never run one of AgentDocker's hooks: Codex runs a
+/// hook only once the person has trusted it, so none having run says none
+/// is trusted. One stamp serves every hook, so it proves only that some
+/// hook ran, never which: a hook setup changed is said to want trust when
+/// setup changes it, and nothing here clears that.
+fn never_ran(stamp: &Path) -> bool {
+    std::fs::metadata(stamp).is_err()
 }
 
 fn executable(
@@ -384,6 +403,7 @@ mod tests {
             browser_dirs: vec![],
             shell: None,
             versions: false,
+            hook_stamps: None,
         };
         std::fs::create_dir_all(home.join("bin")).unwrap();
         (temporary, roots)
@@ -586,6 +606,17 @@ mod tests {
                 .detail
                 .contains("environment may differ")
         );
+    }
+
+    /// Codex's hooks are said never to have run, and so to want trust,
+    /// until one of them runs; then nothing is said, whichever ran.
+    #[test]
+    fn codex_hooks_that_never_ran_are_said_to_want_trust() {
+        let dir = tempfile::tempdir().unwrap();
+        let stamp = dir.path().join("codex.ran");
+        assert!(never_ran(&stamp));
+        std::fs::write(&stamp, "").unwrap();
+        assert!(!never_ran(&stamp));
     }
 
     #[test]

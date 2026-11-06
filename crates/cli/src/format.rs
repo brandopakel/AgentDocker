@@ -1,6 +1,11 @@
 //! Terminal output helpers.
 
-use agentdocker_core::{Activity, Envelope, Event, EventKind, Question, ResourceKey};
+use agentdocker_core::journal;
+pub use agentdocker_core::short;
+use agentdocker_core::{
+    Activity, Envelope, Event, EventKind, Question, QuestionForm, QuestionKind, QuestionOption,
+    ResourceKey, StaleAction,
+};
 use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
@@ -54,10 +59,10 @@ pub fn table_dimming(headers: &[&str], rows: &[Vec<String>], dim: impl Fn(usize)
     }
 }
 
-/// "5s ago", "3m ago", "2h ago", "4d ago".
+/// "5s ago", "3m ago", "2h ago", "4d ago": core's rendering, against the
+/// clock, which the CLI may read.
 pub fn ago(at: DateTime<Utc>) -> String {
-    let secs = (Utc::now() - at).num_seconds().max(0);
-    format!("{} ago", span(secs))
+    journal::ago(Utc::now(), at)
 }
 
 /// "in 4m", or "expired".
@@ -66,27 +71,12 @@ pub fn until(at: DateTime<Utc>) -> String {
     if secs <= 0 {
         "expired".to_owned()
     } else {
-        format!("in {}", span(secs))
+        format!("in {}", journal::span(secs))
     }
 }
 
 pub fn span_secs(secs: u64) -> String {
-    span(i64::try_from(secs).unwrap_or(i64::MAX))
-}
-
-fn span(secs: i64) -> String {
-    match secs {
-        s if s < 60 => format!("{s}s"),
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 86_400 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86_400),
-    }
-}
-
-/// First 12 characters of an id-like string, without splitting a char.
-pub fn short(s: &str) -> &str {
-    let end = s.char_indices().nth(12).map_or(s.len(), |(i, _)| i);
-    &s[..end]
+    journal::span(i64::try_from(secs).unwrap_or(i64::MAX))
 }
 
 /// `file:` keys carry a full project id; show twelve characters of it.
@@ -176,22 +166,74 @@ pub fn message_line_at(message: &Envelope, seq: Option<u64>) -> String {
 }
 
 /// A question somebody is blocked on. The id comes first because
-/// answering means naming it: `agentdocker answer <id> "..."`.
+/// answering means naming it: `agentdocker answer <id> "..."`. A kind
+/// other than a plain question is named, a stale one says so, and the
+/// options follow the words as the recipient would number them.
 pub fn question_line(question: &Question) -> String {
+    let now = Utc::now();
+    let mut marks = String::new();
+    if question.kind() != QuestionKind::Question {
+        marks.push_str(&format!("  [{}]", question.kind()));
+    }
+    if question.stale(now) {
+        marks.push_str("  [stale]");
+    }
     format!(
-        "{}  {}  {} → {}  ({} left)  {}",
+        "{}  {}  {} → {}  ({} left){marks}  {}",
         clock(question.asked_at),
         question.id,
         short(&question.from),
         question.to,
         span_secs(
-            (question.expires_at - Utc::now())
+            (question.expires_at - now)
                 .num_seconds()
                 .max(0)
                 .unsigned_abs()
         ),
-        single_line(&question.text)
+        single_line(&question.prompt())
     )
+}
+
+/// The typed part of `ask`, from its flags. An option is `Label` or
+/// `Label: what choosing it means`; the kind and the stale action are
+/// their wire spellings.
+pub fn question_form(
+    kind: &str,
+    options: &[String],
+    multi_select: bool,
+    allow_other: bool,
+    stale_after_secs: Option<u64>,
+    stale_action: Option<&str>,
+) -> anyhow::Result<QuestionForm> {
+    let kind = QuestionKind::parse(kind)
+        .ok_or_else(|| anyhow::anyhow!("--kind takes question, permission or access"))?;
+    let options = options
+        .iter()
+        .map(|option| match option.split_once(':') {
+            Some((label, description)) => QuestionOption {
+                label: label.trim().to_owned(),
+                description: description.trim().to_owned(),
+            },
+            None => QuestionOption {
+                label: option.trim().to_owned(),
+                description: String::new(),
+            },
+        })
+        .collect();
+    let stale_action = match stale_action {
+        Some(action) => StaleAction::parse(action).ok_or_else(|| {
+            anyhow::anyhow!("--stale-action takes keep_waiting, withdraw or answer:<label>")
+        })?,
+        None => StaleAction::KeepWaiting,
+    };
+    Ok(QuestionForm {
+        kind,
+        options,
+        multi_select,
+        allow_other,
+        stale_after_secs,
+        stale_action,
+    })
 }
 
 /// One cell for a `ps` row: the word, and for the one state that has a
@@ -217,6 +259,9 @@ pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
         EventKind::SecretReviewChanged { review, agent } => {
             format!("temporary review {review} updated for {}", agent.short())
+        }
+        EventKind::QuestionStale { question, action } => {
+            format!("question {question} went stale: {action}")
         }
         EventKind::QuestionCancelled { question, agent } => {
             format!("{} cancelled question {question}", agent.short())
@@ -727,6 +772,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::ChannelJoined { channel, agent } => {
             format!("channel joined   {channel} by {}", agent.short())
         }
+        EventKind::ChannelLeft { channel, agent } => {
+            format!("channel left     {channel} by {}", agent.short())
+        }
         EventKind::ConversationRead {
             reader,
             conversation,
@@ -778,11 +826,19 @@ pub fn event_line(event: &Event) -> String {
             head,
             by,
             verdict,
+            findings,
+            runtime,
             ..
         } => format!(
-            "verdict          {} {verdict} on {branch} at {}",
+            "verdict          {} {verdict} on {branch} at {} ({}; {})",
             by.short(),
-            head.chars().take(8).collect::<String>()
+            head.chars().take(8).collect::<String>(),
+            if runtime.is_empty() {
+                "unknown"
+            } else {
+                runtime.as_str()
+            },
+            findings.said()
         ),
         EventKind::WatcherStarting => "watcher starting".to_owned(),
         EventKind::WatcherStarted => "watcher started".to_owned(),
@@ -913,8 +969,34 @@ pub fn event_line(event: &Event) -> String {
         ),
         EventKind::QuestionClosed { question, answer } => match answer {
             Some(answer) => format!("question answered {question} by message {answer}"),
-            None => format!("question expired {question}"),
+            None => format!("question closed  {question} (expired, or settled without an answer)"),
         },
+        EventKind::MessageHeld {
+            message,
+            question,
+            from,
+            to,
+            rule,
+        } => format!(
+            "message held     {message} {} → {to} for you as question {question} ({rule})",
+            short(from)
+        ),
+        EventKind::HeldMessageReleased {
+            message,
+            question,
+            by,
+        } => format!(
+            "message released {message} from question {question} by {}",
+            short(by)
+        ),
+        EventKind::HeldMessageDropped {
+            message,
+            question,
+            by,
+        } => format!(
+            "message dropped  {message} from question {question} by {}",
+            short(by)
+        ),
         EventKind::MessageSent {
             message,
             from,
@@ -961,6 +1043,35 @@ pub fn event_line(event: &Event) -> String {
                 holders.join(", ")
             )
         }
+        EventKind::ReleaseRequested { request } => format!(
+            "release asked    {} of {} by {} ({})",
+            resource(&request.resource),
+            request.holder.short(),
+            request.requester.short(),
+            request.message
+        ),
+        EventKind::ReleaseAnswered { request } => {
+            let answer = request.answer.as_ref();
+            format!(
+                "release {:<8} {} by {} for {} ({})",
+                if answer.is_some_and(|a| a.accepted) {
+                    "granted"
+                } else {
+                    "declined"
+                },
+                resource(&request.resource),
+                request.holder.short(),
+                request.requester.short(),
+                request.message
+            )
+        }
+        EventKind::ReleaseRequestExpired { request } => format!(
+            "release expired  {} of {} by {} ({}): no answer in a day",
+            resource(&request.resource),
+            request.holder.short(),
+            request.requester.short(),
+            request.message
+        ),
         EventKind::ProjectDiscovered { project } => format!(
             "project found    {} {} ({})",
             project.id().short(),
@@ -1501,6 +1612,44 @@ pub fn webhook_attempt_row(attempt: &agentdocker_core::WebhookAttempt) -> Vec<St
 
 #[cfg(test)]
 mod tests {
+    /// `ask`'s flags make the question form: an option is a label with an
+    /// optional description after a colon, the kind and the stale action
+    /// are their wire spellings, and a spelling outside them is refused.
+    #[test]
+    fn ask_flags_make_a_question_form() {
+        use agentdocker_core::{QuestionKind, StaleAction};
+        let form = super::question_form(
+            "permission",
+            &["Blue: the current theme".to_owned(), "Green".to_owned()],
+            true,
+            false,
+            Some(60),
+            Some("answer:Green"),
+        )
+        .unwrap();
+        assert_eq!(form.kind, QuestionKind::Permission);
+        assert_eq!(form.options[0].label, "Blue");
+        assert_eq!(form.options[0].description, "the current theme");
+        assert_eq!(form.options[1].label, "Green");
+        assert_eq!(form.options[1].description, "");
+        assert!(form.multi_select);
+        assert!(!form.allow_other);
+        assert_eq!(form.stale_after_secs, Some(60));
+        assert_eq!(
+            form.stale_action,
+            StaleAction::AnswerDefault {
+                label: "Green".into()
+            }
+        );
+        assert!(super::question_form("prompt", &[], false, true, None, None).is_err());
+        assert!(super::question_form("question", &[], false, true, Some(1), Some("drop")).is_err());
+        assert!(
+            super::question_form("question", &[], false, true, None, None)
+                .unwrap()
+                .is_plain()
+        );
+    }
+
     /// Each seed is one line: the directory, what became of it, and why
     /// when there is a reason.
     #[test]
@@ -1531,7 +1680,7 @@ mod tests {
             webhook: "team".into(),
             delivery: "0123456789abcdef0123456789abcdef".into(),
             seq: 41,
-            event: "question_asked".into(),
+            event: "question_opened".into(),
             attempt: 2,
             at,
             duration_ms: 87,
@@ -1546,7 +1695,7 @@ mod tests {
             row[1..],
             [
                 "41",
-                "question_asked",
+                "question_opened",
                 "2",
                 "retrying",
                 "503",

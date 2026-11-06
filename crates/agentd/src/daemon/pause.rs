@@ -68,6 +68,9 @@ impl Daemon {
                 by: pause.by.clone(),
                 reason: pause.reason.clone(),
             },
+            released: Vec::new(),
+            journal: None,
+            closes: None,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
             Response::Sent { .. } => {
@@ -108,6 +111,9 @@ impl Daemon {
                 project: project.clone(),
                 by: from,
             },
+            released: Vec::new(),
+            journal: None,
+            closes: None,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
             Response::Sent { .. } => {

@@ -81,17 +81,26 @@ pub struct TaskTransition<'a> {
 // holders left, and drop `role` rewriting the channel.
 // Schema 28, unreleased, also lets a pending Codex review offer the session
 // (`for_session` on its presentation), a field an older reader refuses.
+// Schema 28, unreleased, also counts a `code_verdict` document's findings
+// `important`/`nit`/`pre_existing`, with the reviewer's `runtime` beside
+// them, where they were `p1`/`p2`/`p3`: a kept `p1`/`p2` are read, and an
+// older daemon reads the new counts as none. The word keeps its wire
+// spelling (`approve`/`changes`/`comment`), so an older reader decodes it.
 // The `authorship` and `witnessed_worktrees` tables need no bump: they are
 // new tables, no stored row changes meaning, and an older daemon leaves them
 // alone (it records no authorship while it runs; nothing it reads is wrong).
 // Nor do `topic_messages` and `topic_cursors`, by the same rule: an older
 // daemon keeps no topic messages and moves no cursor while it runs, so a
 // reader may later be replayed less or again, never anything wrong.
-// v29 is a bump although its one new table (`usage_accounts`) alone would
+// Schema 29 types a pending question: its kind, options, stale window and
+// stale action, and the moment it went stale. An older daemon reloading one
+// would drop them, answer a withdrawn or defaulted question as still open,
+// and never apply the default its asker chose.
+// v30 is a bump although its one new table (`usage_accounts`) alone would
 // not be: each usage bucket now counts its exact samples, a field an older
 // daemon's strict bucket reader refuses, and an older daemon would count
 // both of a Codex session's accounts of the same tokens. It must refuse.
-pub(crate) const SCHEMA_VERSION: i64 = 29;
+pub(crate) const SCHEMA_VERSION: i64 = 30;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS usage_emissions (
@@ -1007,7 +1016,7 @@ impl Store {
         // database rather than open it and quietly not hold anyone. v28's
         // boards, comments and card history are new documents too; a card
         // without a board is on its project's main board, made on demand.
-        // v29's bucket counts and session accounts start empty: a bucket
+        // v30's bucket counts and session accounts start empty: a bucket
         // without one cannot say whether it is exact, and a session with a
         // cumulative baseline is on the account of running totals.
         Ok(())
@@ -1493,14 +1502,28 @@ impl Store {
         closed: Option<&agentdocker_core::MessageId>,
         events: &[Event],
     ) -> Result<()> {
+        let closed: Vec<agentdocker_core::MessageId> = closed.into_iter().cloned().collect();
         self.publish_message_with_channel(
-            message, recipients, capacity, sender, question, closed, events, None, None, false,
+            message,
+            recipients,
+            capacity,
+            sender,
+            question,
+            &closed,
+            events,
+            None,
+            None,
+            &[],
+            None,
+            false,
         )
         .map(drop)
     }
 
     /// A channel close/review and all of its message/journal effects are one
     /// transaction; a refused ancillary write cannot leave an applied action.
+    /// So is an accepted release request: the leases it lets go of, their
+    /// journal entry, the answer and the request's document.
     /// A topic message is kept in the topic log in the same transaction, for
     /// its sender's project ([`agentdocker_core::topic::scope`]), and its
     /// place there is returned.
@@ -1512,13 +1535,21 @@ impl Store {
         capacity: usize,
         sender: Option<&AgentRecord>,
         question: Option<&agentdocker_core::Question>,
-        closed: Option<&agentdocker_core::MessageId>,
+        // Every question this message closes: the one it answers, and
+        // the card a released message rode on. Both go, or neither.
+        closed: &[agentdocker_core::MessageId],
         events: &[Event],
-        channel: Option<(&Channel, Option<&JournalEntry>)>,
+        channel: Option<&Channel>,
+        journal: Option<&JournalEntry>,
+        released: &[LeaseId],
         document: Option<(&str, &str, Option<&serde_json::Value>)>,
         tracked: bool,
     ) -> Result<Option<agentdocker_core::TopicPost>> {
         let tx = write_transaction(&self.conn)?;
+        for id in released {
+            self.conn
+                .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
+        }
         let post = match &message.to {
             agentdocker_core::Destination::Topic(topic) => Some(self.keep_topic_message(
                 message,
@@ -1550,14 +1581,14 @@ impl Store {
         if let Some(question) = question {
             self.put_document("question", question.id.as_str(), question)?;
         }
-        if let Some(closed) = closed {
+        for closed in closed {
             self.delete_document("question", closed.as_str())?;
         }
-        if let Some((channel, journal)) = channel {
+        if let Some(channel) = channel {
             self.put_document("channel", channel.id.as_str(), channel)?;
-            if let Some(entry) = journal {
-                self.insert_journal(entry)?;
-            }
+        }
+        if let Some(entry) = journal {
+            self.insert_journal(entry)?;
         }
         for event in events {
             self.append_event(event)?;
