@@ -117,8 +117,14 @@ impl Row {
     /// The cache-read share this row's counters give: cache reads over
     /// total input (both totals include their cache components), clamped
     /// to 100 against a source that reports otherwise. None when either
-    /// sum is unknown, or no input was reported at all.
+    /// sum is unknown, when the two sums do not cover the same samples (a
+    /// record that reports its cache read without its cache write has no
+    /// total input but a known read, so the read would be counted over an
+    /// input that leaves it out), or no input was reported at all.
     pub fn cache_read_share(counters: &CounterReports) -> Option<u8> {
+        if counters.input_tokens.known_samples != counters.cache_read_input_tokens.known_samples {
+            return None;
+        }
         let input = counters.input_tokens.sum?;
         let read = counters.cache_read_input_tokens.sum?;
         if input == 0 {
@@ -312,7 +318,8 @@ mod tests {
     }
 
     /// The cache share is cache reads over input, whole percent, only when
-    /// both are known, never over a hundred, and absent for no input.
+    /// both are known over the same samples, never over a hundred, and
+    /// absent for no input.
     #[test]
     fn cache_read_share_needs_both_sums_and_stays_within_a_hundred() {
         let counter = |sum: Option<u64>| CounterReport {
@@ -332,6 +339,12 @@ mod tests {
             Some(75)
         );
         assert_eq!(Row::cache_read_share(&counters(Some(3), Some(1))), Some(33));
+        // A read known on a sample whose total input is not: the sums
+        // cover different samples and give no share.
+        let mut uneven = counters(Some(400), Some(300));
+        uneven.cache_read_input_tokens.known_samples = 2;
+        uneven.cache_read_input_tokens.sum = Some(500);
+        assert_eq!(Row::cache_read_share(&uneven), None);
         assert_eq!(
             Row::cache_read_share(&counters(Some(10), Some(20))),
             Some(100)

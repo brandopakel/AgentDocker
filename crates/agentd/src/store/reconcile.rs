@@ -662,6 +662,19 @@ impl Store {
         })
     }
 
+    /// The cards and roles a retired life held, onto the canonical record
+    /// it is folded into: a sample from that life is attributed to the
+    /// canonical id through the alias, so its holdings must be found there
+    /// too, however late the sample is read. A holding the canonical
+    /// record already has under the same key is replaced by the moved one.
+    fn move_usage_holdings(&self, kept: &AgentId, retired: &AgentId) -> Result<()> {
+        self.conn.execute(
+            "UPDATE OR REPLACE usage_holdings SET agent=?1 WHERE agent=?2",
+            params![kept.as_str(), retired.as_str()],
+        )?;
+        Ok(())
+    }
+
     /// The plan, written whole: one transaction with the event, so a
     /// failure anywhere leaves the session as it was.
     pub(crate) fn write_resume(&self, plan: &ResumePlan, event: &Event) -> Result<()> {
@@ -676,6 +689,7 @@ impl Store {
                 "UPDATE inbox SET agent=?1 WHERE agent=?2",
                 params![kept.as_str(), old.as_str()],
             )?;
+            self.move_usage_holdings(kept, old)?;
             self.conn
                 .execute("DELETE FROM journal_cursors WHERE agent=?1", [old.as_str()])?;
             self.merge_topic_cursors(kept, old)?;
@@ -721,6 +735,7 @@ impl Store {
             "UPDATE inbox SET agent=?1 WHERE agent=?2",
             params![kept.as_str(), retired.as_str()],
         )?;
+        self.move_usage_holdings(kept, retired)?;
         for doc in &plan.documents {
             self.put_document(&doc.kind, &doc.id, &doc.value)?;
         }

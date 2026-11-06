@@ -764,7 +764,9 @@ fn prepare_remove(roots: &Roots, names: &[String]) -> Result<Plan> {
 /// none when there is no file or it does not read.
 fn daemon_usage_config() -> Option<agentdocker_core::config::UsageConfig> {
     let path = dirs::home().join(agentdocker_core::config::FILE_NAME);
-    let text = std::fs::read_to_string(path).ok()?;
+    // The same bounded read as every other configuration file here: a
+    // special file in its place does not hold the preview.
+    let text = read_config(&path).ok().flatten()?;
     toml::from_str::<agentdocker_core::config::DaemonConfig>(&text)
         .ok()
         .map(|config| config.usage)

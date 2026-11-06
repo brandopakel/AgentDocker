@@ -132,6 +132,19 @@ fn repaired_hook_and_mcp_duplicates_preserve_both_provenance_records() {
     retired.spec.labels.insert("via".into(), "mcp".into());
     store.upsert_agent(&kept).unwrap();
     store.upsert_agent(&retired).unwrap();
+    // The roles the retired record held follow the repair too.
+    let held_at = now() - Duration::hours(2);
+    store
+        .conn
+        .execute(
+            "INSERT INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,'role',?2,?3,'tester')",
+            params![
+                b.as_str(),
+                (held_at - Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                (held_at + Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+            ],
+        )
+        .unwrap();
     let before = snapshot(&store);
     let plan = preview(&store, &a, &b);
     assert_eq!(snapshot(&store), before);
@@ -141,6 +154,11 @@ fn repaired_hook_and_mcp_duplicates_preserve_both_provenance_records() {
     let remaining = store.load_agents().unwrap();
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].spec.labels["via"], "hook");
+    assert_eq!(
+        store.usage_role_held(a.as_str(), held_at).unwrap(),
+        Some(Some("tester".to_owned())),
+        "the retired record's role interval is the canonical record's"
+    );
     let archive = store
         .document::<Value>("identity_reconciliation", b.as_str())
         .unwrap()
@@ -837,6 +855,20 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
     canonical.pid = Some(456);
     canonical.status = AgentStatus::Running;
     canonical.finished_at = None;
+    // A card the `earlier` life held: it follows the fold, so a response
+    // from that life read after it is still charged to the card.
+    let held_at = now() - Duration::hours(2);
+    store
+        .conn
+        .execute(
+            "INSERT INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,'card',?2,?3,'card-1')",
+            params![
+                earlier.id.as_str(),
+                (held_at - Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+                (held_at + Duration::minutes(1)).to_rfc3339_opts(chrono::SecondsFormat::Nanos, true),
+            ],
+        )
+        .unwrap();
     let retired = vec![fresh.id.clone(), earlier.id.clone()];
     for id in &retired {
         store
@@ -869,6 +901,19 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, last.id);
     assert_eq!(remaining[0].pid, Some(456));
+    assert_eq!(
+        store
+            .usage_card_held(last.id.as_str(), held_at)
+            .unwrap()
+            .map(|(_, card)| card)
+            .as_deref(),
+        Some("card-1"),
+        "the retired life's card hold is the canonical record's"
+    );
+    assert_eq!(
+        store.usage_card_held(earlier.id.as_str(), held_at).unwrap(),
+        None
+    );
     let queue: Vec<String> = store.load_inboxes().unwrap()[&last.id]
         .iter()
         .map(|m| m.id.to_string())
