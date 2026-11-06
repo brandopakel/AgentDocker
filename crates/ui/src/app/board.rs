@@ -12,6 +12,12 @@
 //! to pull*; a red edge is high priority, said in the card's spoken name.
 //! Every control the pointer drags has a button beside it the keyboard and
 //! the workflow driver press.
+//!
+//! Time is words too: a card's face says how long it has been in its
+//! lane, the open card lists its stays lane by lane, and the Stats strip
+//! under the toolbar gives the range on view — the cards shown, after the
+//! search and filters — as labelled numbers: cards done, the median from
+//! pull to Done, the median time in Review, and each holder's own.
 use super::chip::{Chip, Tone};
 use super::icons::{Icon, icon};
 use super::style::{Colors, RADIUS_MD, alpha, identity, mix, weight};
@@ -22,7 +28,8 @@ use crate::controls::{
 };
 use agentdocker_core::board::{self, DueState, Owner};
 use agentdocker_core::task::TaskAction;
-use agentdocker_core::{Column, Lane, Priority, Size, Task, TaskId};
+use agentdocker_core::timing::Stats;
+use agentdocker_core::{CardTimes, Column, Lane, Priority, Size, Task, TaskId};
 use iced::{
     Center, Element, Fill, Top,
     widget::{Space, column, container, mouse_area, row, text},
@@ -175,6 +182,27 @@ fn lane_name(board: &agentdocker_core::Board, slug: &str) -> String {
         .lane(slug)
         .map(|l| l.name.clone())
         .unwrap_or_else(|| slug.to_owned())
+}
+
+/// A span of time in words: `<1m`, `4m`, `2h 10m`, `3d 4h`.
+pub(super) fn span_words(secs: u64) -> String {
+    let (d, h, m) = (secs / 86_400, secs % 86_400 / 3600, secs % 3600 / 60);
+    match (d, h, m) {
+        (0, 0, 0) => "<1m".to_owned(),
+        (0, 0, m) => format!("{m}m"),
+        (0, h, 0) => format!("{h}h"),
+        (0, h, m) => format!("{h}h {m}m"),
+        (d, 0, _) => format!("{d}d"),
+        (d, h, _) => format!("{d}d {h}h"),
+    }
+}
+
+/// How long a card has been in its lane, in seconds at `now`: from its
+/// folded times when the daemon sent them, else from the card itself.
+fn in_lane_secs(task: &Task, times: Option<&CardTimes>, now: chrono::DateTime<chrono::Utc>) -> u64 {
+    times
+        .and_then(|t| t.in_lane(now))
+        .unwrap_or_else(|| u64::try_from((now - task.in_lane_since()).num_seconds()).unwrap_or(0))
 }
 
 impl App {
@@ -435,6 +463,21 @@ impl App {
         let mut page = column![self.board_toolbar(&root, &board, c)]
             .spacing(14)
             .width(Fill);
+        // The range on view is the cards shown, after the search and the
+        // filters, so narrowing the board narrows its numbers.
+        let times: &[CardTimes] = loaded.map_or(&[], |b| &b.times);
+        let by_card: std::collections::BTreeMap<&TaskId, &CardTimes> =
+            times.iter().map(|t| (&t.task, t)).collect();
+        let stats = Stats::of(
+            &board,
+            on_board
+                .iter()
+                .filter(|t| self.shown(t, &board))
+                .filter_map(|t| by_card.get(&t.id).map(|times| (*t, *times))),
+        );
+        if stats.done > 0 || stats.in_review.is_some() {
+            page = page.push(self.stats_strip(&stats, c));
+        }
         if self.shell.tags_menu {
             page = page.push(self.tags_menu(&root, c));
         }
@@ -508,6 +551,50 @@ impl App {
             ));
         }
         page.into()
+    }
+
+    /// Under the toolbar: the board's numbers over the cards on view, each
+    /// a label and a value — cards done, the median from pull to Done, the
+    /// median time in Review, and each holder's done count and median.
+    fn stats_strip(&self, stats: &Stats, c: Colors) -> Element<'_, Message> {
+        let stat = |label: &'static str, value: String| {
+            row![
+                text(label).size(11).color(c.muted),
+                text(value)
+                    .size(12)
+                    .font(weight(iced::font::Weight::Medium)),
+            ]
+            .spacing(4)
+            .align_y(Center)
+        };
+        let mut strip = row![stat("Done", stats.done.to_string())]
+            .spacing(14)
+            .align_y(Center);
+        if let Some(secs) = stats.pull_to_done {
+            strip = strip.push(stat("Pull to done", span_words(secs)));
+        }
+        if let Some(secs) = stats.in_review {
+            strip = strip.push(stat("In Review", span_words(secs)));
+        }
+        for holder in &stats.holders {
+            let name = self.name_of(holder.holder.as_str());
+            let value = match holder.pull_to_done {
+                Some(secs) => format!("{} done · {}", holder.done, span_words(secs)),
+                None => format!("{} done", holder.done),
+            };
+            strip = strip.push(
+                row![
+                    self.agent_mark_for(holder.holder.as_str(), &name, 14.0, c),
+                    text(name).size(11).color(c.muted),
+                    text(value)
+                        .size(12)
+                        .font(weight(iced::font::Weight::Medium)),
+                ]
+                .spacing(4)
+                .align_y(Center),
+            );
+        }
+        strip.wrap().vertical_spacing(4).into()
     }
 
     /// Above the lanes: the boards to choose from, the search, the
@@ -1052,6 +1139,16 @@ impl App {
             foot = foot.push(due_chip(format!("task-due-{id}"), due, today).view(c));
             words.push(format!("{state} {}", due.format("%b %-d")));
         }
+        // How long its lane has had it: words, not a colour.
+        let in_lane = span_words(in_lane_secs(
+            task,
+            self.tasks
+                .as_ref()
+                .and_then(|b| b.times.iter().find(|t| t.task == id)),
+            chrono::Utc::now(),
+        ));
+        foot = foot.push(text(format!("{in_lane} in lane")).size(11).color(c.muted));
+        words.push(format!("{in_lane} in lane"));
         if !task.external_blocker.trim().is_empty() || !task.blocked_by.is_empty() {
             let mut waiting = Chip::new(
                 format!("task-waiting-{id}"),
@@ -1548,6 +1645,46 @@ impl App {
                 );
             }
             body = body.push(thread);
+            // Its time, lane by lane: each stay with when it began and how
+            // long it lasted — the one it is in, so far — then, for a card
+            // that was pulled and is done, the whole from pull to Done.
+            if let Some(times) = &detail.times {
+                let now = chrono::Utc::now();
+                let mut timeline = column![].spacing(3);
+                for stay in &times.stays {
+                    let span = span_words(stay.seconds(now));
+                    let length = if stay.to.is_none() {
+                        format!("{span} so far")
+                    } else {
+                        span
+                    };
+                    timeline = timeline.push(
+                        row![
+                            icon(Icon::Clock, c.faint, 11.0),
+                            text(lane_name(&detail.board, &stay.lane))
+                                .size(11)
+                                .color(c.muted),
+                            text(crate::clock::moment(stay.from))
+                                .size(11)
+                                .color(c.faint),
+                            text(length).size(11),
+                        ]
+                        .spacing(6)
+                        .align_y(Center),
+                    );
+                }
+                if let Some(secs) = times.pull_to_done() {
+                    timeline = timeline.push(
+                        row![
+                            text("Pull to done").size(11).color(c.muted),
+                            text(span_words(secs)).size(11),
+                        ]
+                        .spacing(6)
+                        .align_y(Center),
+                    );
+                }
+                body = body.push(timeline);
+            }
             let mut history = column![].spacing(3);
             for entry in detail.history.iter().rev().take(12) {
                 let (glyph, words) = match &entry.action {
@@ -2371,5 +2508,148 @@ mod tests {
             .expect("the Done button");
         assert_eq!(done.1, format!("Done: {}", card.handle()));
         assert!(row.texts.iter().any(|t| t == "Done"), "the word is shown");
+    }
+
+    /// Time is words: a span reads as minutes, hours or days.
+    #[test]
+    fn spans_are_words() {
+        assert_eq!(span_words(0), "<1m");
+        assert_eq!(span_words(59), "<1m");
+        assert_eq!(span_words(4 * 60), "4m");
+        assert_eq!(span_words(2 * 3600), "2h");
+        assert_eq!(span_words(2 * 3600 + 10 * 60), "2h 10m");
+        assert_eq!(span_words(3 * 86_400), "3d");
+        assert_eq!(span_words(3 * 86_400 + 4 * 3600 + 5), "3d 4h");
+    }
+
+    /// A card's face says how long its lane has had it, from the folded
+    /// times when the daemon sent them and from the card itself before;
+    /// the open card lists its stays lane by lane, the one it is in so
+    /// far, and its pull to Done; the Stats strip is labelled numbers.
+    #[test]
+    fn time_on_a_card_is_said_in_words() {
+        use agentdocker_core::task::TaskEntry;
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let project = agentdocker_core::ProjectRef::directory("/work/orchard");
+        let now = chrono::Utc::now();
+        let hours = |h: i64| now - chrono::Duration::hours(h);
+        let board = agentdocker_core::Board::from_template(
+            project.id(),
+            board::MAIN,
+            "Main",
+            "classic",
+            "ORC",
+            hours(48),
+        )
+        .unwrap();
+        let mut card = Task::new(
+            project.id(),
+            "Ship it",
+            "",
+            Some(Column::Ready),
+            "user",
+            Vec::new(),
+            hours(30),
+        )
+        .unwrap();
+        card.lane = Some("done".into());
+        card.column = Column::Done;
+        card.lane_since = Some(hours(3));
+        card.assignee = Some("agent-1".into());
+        let entry = |h: i64, action: TaskAction| TaskEntry::new(&card, "agent-1", action, hours(h));
+        let history = vec![
+            entry(
+                30,
+                TaskAction::Created {
+                    lane: "ready".into(),
+                },
+            ),
+            entry(
+                20,
+                TaskAction::Pulled {
+                    lane: "in_progress".into(),
+                    from: Some("ready".into()),
+                },
+            ),
+            entry(
+                10,
+                TaskAction::Moved {
+                    from: "in_progress".into(),
+                    to: "review".into(),
+                },
+            ),
+            entry(
+                3,
+                TaskAction::Moved {
+                    from: "review".into(),
+                    to: "done".into(),
+                },
+            ),
+        ];
+        let times = agentdocker_core::timing::card_times(&card, &history, now);
+        let c = Colors::new(false);
+
+        // The face, from the card alone, then from its folded times.
+        let face = seen(app.card(&card, &board, false, c));
+        assert!(face.reads("3h in lane"), "{:?}", face.texts);
+        assert!(
+            face.control(&format!("task-{}", card.id))
+                .is_some_and(|b| b.1.contains("3h in lane")),
+            "the spoken name says it"
+        );
+        app.tasks = Some(crate::app::Board {
+            project: project.root.display().to_string(),
+            cards: vec![card.clone()],
+            times: vec![times.clone()],
+            more: false,
+            pending_more: None,
+        });
+        let face = seen(app.card(&card, &board, false, c));
+        assert!(face.reads("3h in lane"), "{:?}", face.texts);
+
+        // The open card: each stay, and the pull to Done.
+        app.task_open = Some(card.id.clone());
+        app.card = Some(crate::app::CardDetail {
+            task: card.clone(),
+            board: board.clone(),
+            comments: Vec::new(),
+            history: history.clone(),
+            blockers: Vec::new(),
+            children: Vec::new(),
+            plan: None,
+            files: Vec::new(),
+            times: Some(times.clone()),
+        });
+        let open = seen(app.card_detail(&card, &board, c));
+        for words in [
+            "Ready",
+            "In progress",
+            "Review",
+            "10h",
+            "7h",
+            "3h so far",
+            "Pull to done",
+            "17h",
+        ] {
+            assert!(open.reads(words), "{words} is read: {:?}", open.texts);
+        }
+
+        // The strip: labelled numbers, the holder's own too.
+        let stats = Stats::of(&board, [(&card, &times)]);
+        let strip = seen(app.stats_strip(&stats, c));
+        for words in [
+            "Done",
+            "1",
+            "Pull to done",
+            "17h",
+            "In Review",
+            "7h",
+            "1 done · 17h",
+        ] {
+            assert!(strip.reads(words), "{words} is read: {:?}", strip.texts);
+        }
     }
 }

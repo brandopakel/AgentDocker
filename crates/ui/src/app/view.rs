@@ -4853,7 +4853,7 @@ mod tests {
             .send(Msg::Tasks(
                 root,
                 request,
-                Ok((vec![dependent.clone()], true)),
+                Ok((vec![dependent.clone()], true, Vec::new())),
             ))
             .unwrap();
         app.drain();
@@ -4867,6 +4867,7 @@ mod tests {
             children: vec![],
             plan: None,
             files: vec![],
+            times: None,
         };
         messages
             .send(Msg::TaskDetail(

@@ -9,7 +9,7 @@ use agentdocker_core::protocol::{BatchCard, TASKS_LIMIT, TASKS_LIMIT_MAX, TASKS_
 use agentdocker_core::task::{
     Comment, NewTask, Task, TaskAction, TaskEdit, TaskEntry, TaskError, TaskId,
 };
-use agentdocker_core::{Column, HUMAN, LeaseMode, ResourceKey};
+use agentdocker_core::{CardTimes, Column, HUMAN, LeaseMode, ResourceKey};
 use chrono::DateTime;
 
 #[cfg(test)]
@@ -301,6 +301,28 @@ impl State {
         entries.split_off(skip)
     }
 
+    /// A card's whole history, oldest first.
+    fn card_entries(&mut self, task: &TaskId) -> Vec<TaskEntry> {
+        let mut entries = self
+            .store_read("card history", |store| {
+                store.documents_where::<TaskEntry>(ENTRY, "task", task.as_str(), 10_000)
+            })
+            .unwrap_or_default();
+        entries.sort_by(|a, b| a.at.cmp(&b.at).then(a.id.cmp(&b.id)));
+        entries
+    }
+
+    /// Each card's time in its lanes, folded from its whole history.
+    fn card_times(&mut self, cards: &[Task], now: DateTime<Utc>) -> Vec<CardTimes> {
+        cards
+            .iter()
+            .map(|task| {
+                let history = self.card_entries(&task.id);
+                agentdocker_core::timing::card_times(task, &history, now)
+            })
+            .collect()
+    }
+
     /// A card in full, with the lease a pull took.
     fn card_detail(&mut self, task: Task, lease: Option<Lease>) -> Response {
         let board = match self.board_of(&task) {
@@ -326,6 +348,9 @@ impl State {
             .and_then(|id| self.plan_by_id(id).ok())
             .map(|p| p.summary());
         let files = self.card_files(&task.id);
+        let times = self
+            .card_times(std::slice::from_ref(&task), Utc::now())
+            .pop();
         Response::TaskDetail {
             task,
             board,
@@ -336,6 +361,7 @@ impl State {
             lease,
             plan,
             files,
+            times,
         }
     }
 
@@ -2054,7 +2080,10 @@ impl Daemon {
                 )
             });
             return match page {
-                Some((tasks, more)) => Response::Tasks { tasks, more },
+                Some((tasks, more)) => {
+                    let times = state.card_times(&tasks, Utc::now());
+                    Response::Tasks { tasks, more, times }
+                }
                 None => state.storage_failure().unwrap_or_else(|| {
                     Response::error(ErrorCode::StorageUnavailable, "the board could not be read")
                 }),
@@ -2178,7 +2207,12 @@ impl Daemon {
             size += bytes;
             page.push(task);
         }
-        Response::Tasks { tasks: page, more }
+        let times = state.card_times(&page, Utc::now());
+        Response::Tasks {
+            tasks: page,
+            more,
+            times,
+        }
     }
 }
 
@@ -2810,7 +2844,9 @@ mod tests {
                     })
                     .await
                 {
-                    Response::Tasks { tasks, more: false } => tasks,
+                    Response::Tasks {
+                        tasks, more: false, ..
+                    } => tasks,
                     other => panic!("{other:?}"),
                 }
             }
@@ -3822,7 +3858,7 @@ mod tests {
             }
         };
         match list(0, 2, None).await {
-            Response::Tasks { tasks, more } => {
+            Response::Tasks { tasks, more, .. } => {
                 assert!(more, "the board goes on");
                 assert_eq!(
                     tasks.iter().map(|t| t.column).collect::<Vec<_>>(),
@@ -3834,7 +3870,7 @@ mod tests {
         }
         // The next page starts where the last said it went on.
         match list(2, 2, None).await {
-            Response::Tasks { tasks, more } => {
+            Response::Tasks { tasks, more, .. } => {
                 assert_eq!(
                     (tasks.iter().map(|t| t.column).collect::<Vec<_>>(), more),
                     (vec![Column::Done], false)
@@ -3843,7 +3879,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         match list(0, 2, Some(Column::Done)).await {
-            Response::Tasks { tasks, more } => {
+            Response::Tasks { tasks, more, .. } => {
                 assert_eq!((tasks.len(), more), (1, false));
             }
             other => panic!("{other:?}"),

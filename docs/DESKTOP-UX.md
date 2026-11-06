@@ -452,6 +452,15 @@ or over SSH, with no agent's session anywhere above it — as `list_tasks`
 counts `mine`; each card still shows its holder, and it is for showing,
 never permission) — and
 **Tags**, a row of the project's tags to show only cards that carry them all.
+Under the toolbar, once a card on view is done or has left Review, a
+**Stats** strip gives the range on view — the cards shown, after the search
+and the filters, so narrowing the board narrows its numbers — as labelled
+numbers, never a mark to hover: *Done* (cards in a Done lane), *Pull to
+done* (the median from a card's first pull to its arrival in Done, over the
+done cards that were pulled), *In Review* (the median a card spent in Review
+lanes before leaving them, over the cards that have left Review), then each
+holder of a done card with their mark and name, how many they have done and
+their own median from pull to done, most done first.
 **Table** lays every card of the project out as a row (key, its lane as a
 chip, title, then *High priority*, its due day and its tags as chips, and its
 holder; a row opens its card under it), and **Compact** drops a card's chips
@@ -477,7 +486,10 @@ reopening the window (shown in the board's first lane), and only the reply to
 their own filing clears them; a refused filing keeps them and says why under
 the line. A card's face is its key, title and
 chips, wrapping in a narrow lane — its due day (*Due today* amber, *Overdue*
-red, else *Due* and the day), *Waiting* when it waits on something (what, from off
+red, else *Due* and the day), how long its lane has had it in plain words
+beside it (*2h 10m in lane*, *3d 4h in lane*; words, not a colour, from the
+daemon's fold of the card's history, or from the card itself before the
+daemon says), *Waiting* when it waits on something (what, from off
 the board, in its detail), its first four tags by name with each tag's colour
 beside it (*+n* for the rest) — and who holds it, their mark and standing
 chip as every agent row draws them; a high-priority card has a red edge, a
@@ -500,7 +512,10 @@ load) — the plan it carries out
 copy, or unlinked), its links (a URL or a pull request in the browser, a
 path in its app, a card in place, anything else copied; each with copy and
 remove), the cards it waits on and those part of it, its comments with
-replies and a composer, and its history. A card an agent is started on
+replies and a composer, its time lane by lane (each stay in order: the
+lane, when it came in and how long it lasted, the one it is in *so far*;
+then *Pull to done* for a card that was pulled and is done), and its
+history. A card an agent is started on
 moves into the pull target, held by that agent, and the agent is told to
 work on it.
 Start checks the full card details, including prerequisites on later board

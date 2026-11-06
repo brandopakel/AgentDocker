@@ -6704,6 +6704,7 @@ mod tests {
                 Ok((
                     vec![card("aaaaaaaaaaaa", agentdocker_core::Column::Ready)],
                     false,
+                    Vec::new(),
                 )),
             ))
             .unwrap();
@@ -6871,7 +6872,11 @@ mod tests {
 
         // A reply to no ask moves nothing.
         messages
-            .send(Msg::Tasks(root.clone(), 999, Ok((page(0, 3), false))))
+            .send(Msg::Tasks(
+                root.clone(),
+                999,
+                Ok((page(0, 3), false, Vec::new())),
+            ))
             .unwrap();
         app.drain();
         assert!(app.tasks.is_none());
@@ -6879,7 +6884,11 @@ mod tests {
         app.request_tasks();
         let (first, _, _) = board_asks(&requests).pop().expect("asked");
         messages
-            .send(Msg::Tasks(root.clone(), first, Ok((page(0, limit), true))))
+            .send(Msg::Tasks(
+                root.clone(),
+                first,
+                Ok((page(0, limit), true, Vec::new())),
+            ))
             .unwrap();
         app.drain();
         assert_eq!(cards(&app), limit);
@@ -6892,7 +6901,11 @@ mod tests {
         let _ = app.update(Message::TasksMore);
         assert!(board_asks(&requests).is_empty());
         messages
-            .send(Msg::Tasks(root.clone(), first, Ok((page(7, 3), true))))
+            .send(Msg::Tasks(
+                root.clone(),
+                first,
+                Ok((page(7, 3), true, Vec::new())),
+            ))
             .unwrap();
         app.drain();
         assert_eq!(cards(&app), limit);
@@ -6900,7 +6913,7 @@ mod tests {
             .send(Msg::Tasks(
                 root.clone(),
                 more_ask,
-                Ok((page(limit, limit), true)),
+                Ok((page(limit, limit), true, Vec::new())),
             ))
             .unwrap();
         app.drain();
@@ -6923,7 +6936,7 @@ mod tests {
             .send(Msg::Tasks(
                 root.clone(),
                 superseded,
-                Ok((page(2 * limit, limit), true)),
+                Ok((page(2 * limit, limit), true, Vec::new())),
             ))
             .unwrap();
         app.drain();
@@ -6932,7 +6945,7 @@ mod tests {
             .send(Msg::Tasks(
                 root.clone(),
                 refresh,
-                Ok((page(0, 2 * limit), true)),
+                Ok((page(0, 2 * limit), true, Vec::new())),
             ))
             .unwrap();
         app.drain();
@@ -6953,7 +6966,7 @@ mod tests {
             .send(Msg::Tasks(
                 root.clone(),
                 refresh,
-                Ok((page(0, 2 * limit), true)),
+                Ok((page(0, 2 * limit), true, Vec::new())),
             ))
             .unwrap();
         app.drain();
@@ -6963,7 +6976,7 @@ mod tests {
             .send(Msg::Tasks(
                 root.clone(),
                 more_ask,
-                Ok((page(2 * limit, limit), true)),
+                Ok((page(2 * limit, limit), true, Vec::new())),
             ))
             .unwrap();
         app.drain();
@@ -6979,11 +6992,15 @@ mod tests {
             .send(Msg::Tasks(
                 root.clone(),
                 newer,
-                Ok((page(0, 3 * limit), true)),
+                Ok((page(0, 3 * limit), true, Vec::new())),
             ))
             .unwrap();
         messages
-            .send(Msg::Tasks(root.clone(), older, Ok((page(0, limit), true))))
+            .send(Msg::Tasks(
+                root.clone(),
+                older,
+                Ok((page(0, limit), true, Vec::new())),
+            ))
             .unwrap();
         app.drain();
         assert_eq!(cards(&app), 3 * limit, "the older refresh is ignored");
@@ -6999,7 +7016,7 @@ mod tests {
             .send(Msg::Tasks(
                 root.clone(),
                 late,
-                Ok((page(3 * limit, limit), true)),
+                Ok((page(3 * limit, limit), true, Vec::new())),
             ))
             .unwrap();
         app.drain();
@@ -7015,7 +7032,7 @@ mod tests {
             .send(Msg::Tasks(
                 root.clone(),
                 fill,
-                Ok((page(0, BOARD_KEEP), true)),
+                Ok((page(0, BOARD_KEEP), true, Vec::new())),
             ))
             .unwrap();
         app.drain();
@@ -7621,6 +7638,7 @@ mod tests {
         app.tasks = Some(crate::app::Board {
             project: project.id().to_string(),
             cards: vec![card],
+            times: Vec::new(),
             more: false,
             pending_more: None,
         });
@@ -10993,7 +11011,7 @@ mod tests {
             .send(Msg::Tasks(
                 beta.display().to_string(),
                 request,
-                Ok((vec![card.clone()], false)),
+                Ok((vec![card.clone()], false, Vec::new())),
             ))
             .unwrap();
         let _ = app.update(Message::Tick);

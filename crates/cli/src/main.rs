@@ -3292,6 +3292,7 @@ async fn run() -> Result<()> {
                     lease,
                     plan,
                     files,
+                    times,
                 } => {
                     println!("{}", card_line(&task));
                     if let Some(plan) = &plan {
@@ -3305,6 +3306,30 @@ async fn run() -> Result<()> {
                         board.slug,
                         board.lane_of(&task).name
                     );
+                    if let Some(times) = &times {
+                        // Each lane's time of it, in the order it came
+                        // into them; the lane it is in says so.
+                        let lanes: Vec<String> = times
+                            .lanes
+                            .iter()
+                            .map(|l| {
+                                let name = board
+                                    .lane(&l.lane)
+                                    .map_or(l.lane.as_str(), |lane| lane.name.as_str());
+                                let stays = if l.stays > 1 {
+                                    format!(" ×{}", l.stays)
+                                } else {
+                                    String::new()
+                                };
+                                let now = if l.current { " (now)" } else { "" };
+                                format!("{name} {}{stays}{now}", format::span_secs(l.seconds))
+                            })
+                            .collect();
+                        println!("  time  {}", lanes.join(" · "));
+                        if let Some(secs) = times.pull_to_done() {
+                            println!("  pull to done {}", format::span_secs(secs));
+                        }
+                    }
                     if !task.acceptance.is_empty() {
                         println!("  done when: {}", task.acceptance);
                     }
@@ -3913,11 +3938,12 @@ async fn run() -> Result<()> {
                         query,
                         tag,
                     };
-                    if let Response::Tasks { tasks, more } = client.call(&request).await? {
+                    if let Response::Tasks { tasks, more, times } = client.call(&request).await? {
                         if tasks.is_empty() {
                             println!("no cards");
                         } else {
                             let names = agent_names(&client).await;
+                            let now = chrono::Utc::now();
                             let rows: Vec<Vec<String>> = tasks
                                 .iter()
                                 .map(|t| {
@@ -3926,6 +3952,12 @@ async fn run() -> Result<()> {
                                         t.lane
                                             .clone()
                                             .unwrap_or_else(|| t.column.as_str().to_owned()),
+                                        times
+                                            .iter()
+                                            .find(|c| c.task == t.id)
+                                            .and_then(|c| c.in_lane(now))
+                                            .map(format::span_secs)
+                                            .unwrap_or_default(),
                                         t.title.clone(),
                                         t.assignee
                                             .as_ref()
@@ -3944,7 +3976,10 @@ async fn run() -> Result<()> {
                                     ]
                                 })
                                 .collect();
-                            format::table(&["CARD", "LANE", "TITLE", "HOLDER", ""], &rows);
+                            format::table(
+                                &["CARD", "LANE", "IN LANE", "TITLE", "HOLDER", ""],
+                                &rows,
+                            );
                             if more {
                                 println!(
                                     "and more: the board goes on; --offset {} shows the next page",

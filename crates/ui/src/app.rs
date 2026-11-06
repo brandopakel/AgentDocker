@@ -413,7 +413,14 @@ enum Msg {
     Tasks(
         String,
         u64,
-        Result<(Vec<agentdocker_core::Task>, bool), String>,
+        Result<
+            (
+                Vec<agentdocker_core::Task>,
+                bool,
+                Vec<agentdocker_core::CardTimes>,
+            ),
+            String,
+        >,
     ),
     /// A filing's outcome, for the draft that made it.
     TaskCreated(String, u64, Result<(), String>),
@@ -1308,7 +1315,7 @@ impl App {
                         // A first page is the board anew, keeping a later
                         // page still on its way; a later page is appended
                         // only where it was asked for.
-                        Ok((tasks, more)) if offset == 0 => {
+                        Ok((tasks, more, times)) if offset == 0 => {
                             let pending_more = self
                                 .tasks
                                 .as_ref()
@@ -1317,16 +1324,18 @@ impl App {
                             self.tasks = Some(Board {
                                 project,
                                 cards: tasks,
+                                times,
                                 more,
                                 pending_more,
                             });
                         }
-                        Ok((tasks, more)) => {
+                        Ok((tasks, more, times)) => {
                             if let Some(board) =
                                 self.tasks.as_mut().filter(|b| b.project == project)
                                 && board.cards.len() == offset
                             {
                                 board.cards.extend(tasks);
+                                board.times.extend(times);
                                 board.more = more;
                             }
                         }
@@ -3436,7 +3445,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 query: None,
                 tag: None,
             }) {
-                Ok(Response::Tasks { tasks, more }) => Ok((tasks, more)),
+                Ok(Response::Tasks { tasks, more, times }) => Ok((tasks, more, times)),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
@@ -3655,6 +3664,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     children,
                     plan,
                     files,
+                    times,
                     ..
                 }) => Ok(Box::new(CardDetail {
                     task: card,
@@ -3665,6 +3675,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     children,
                     plan,
                     files,
+                    times,
                 })),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
@@ -4787,6 +4798,9 @@ pub(crate) const BOARD_KEEP: usize = 500;
 pub(crate) struct Board {
     pub project: String,
     pub cards: Vec<agentdocker_core::Task>,
+    /// Each card's time in its lanes, as the daemon folded it; a card
+    /// without one came from a daemon from before.
+    pub times: Vec<agentdocker_core::CardTimes>,
     pub more: bool,
     /// The page on its way, by ask; the control says so and asks for no
     /// other until it is answered, refused or superseded.
@@ -4826,6 +4840,8 @@ pub(crate) struct CardDetail {
     pub children: Vec<agentdocker_core::Task>,
     pub plan: Option<agentdocker_core::Plan>,
     pub files: Vec<agentdocker_core::ProjectFile>,
+    /// Its stays and time in each lane, from its whole history.
+    pub times: Option<agentdocker_core::CardTimes>,
 }
 
 /// What reading a project's roles came back with: the roles, a daemon
