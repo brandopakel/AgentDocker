@@ -1711,11 +1711,13 @@ mod tests {
             let seq = store.max_event_seq().unwrap() + 1;
             store
                 .usage_reconcile(
-                    "codex",
-                    session,
-                    Some(&to(agent)),
-                    (None, None),
-                    at(0),
+                    UsageReconcile {
+                        runtime: "codex",
+                        session,
+                        attribution: Some(&to(agent)),
+                        window: (None, None),
+                        retained_since: at(0),
+                    },
                     at(21),
                     seq,
                 )
@@ -1990,11 +1992,13 @@ mod tests {
         let seq = store.max_event_seq().unwrap() + 1;
         store
             .usage_reconcile(
-                "codex",
-                "session",
-                Some(&moved),
-                (None, None),
-                at(0),
+                UsageReconcile {
+                    runtime: "codex",
+                    session: "session",
+                    attribution: Some(&moved),
+                    window: (None, None),
+                    retained_since: at(0),
+                },
                 at(21),
                 seq,
             )
