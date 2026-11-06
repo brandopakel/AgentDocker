@@ -11,6 +11,10 @@ use super::*;
 
 pub struct Preparation {
     pub ready: bool,
+    /// The accepted bytes this pass hashed: what it consumed, so a proof's
+    /// passes add up to its prefix however the deadline cuts them. The
+    /// reader may have taken more from the file into its buffer when the
+    /// deadline ended the pass; the next pass reads those bytes again.
     pub bytes_read: u64,
 }
 
@@ -128,8 +132,9 @@ impl Session {
             .generation
             .check_within(Generation::capture(&file)?)?;
         let start = Instant::now();
-        file.seek(SeekFrom::Start(self.checked))?;
-        let allowance = bytes.min(self.cursor.offset - self.checked);
+        let from = self.checked;
+        file.seek(SeekFrom::Start(from))?;
+        let allowance = bytes.min(self.cursor.offset - from);
         let mut reader = BufReader::with_capacity(8192, file.take(allowance));
         while self.checked < self.cursor.offset && start.elapsed() < elapsed {
             let available = reader.fill_buf()?;
@@ -155,7 +160,10 @@ impl Session {
                 self.line.clear();
             }
         }
-        let bytes_read = allowance - reader.get_ref().limit();
+        // Counted as consumed, not as taken from the file: a pass the
+        // deadline ends mid-buffer leaves up to the buffer's size read but
+        // unhashed, and `checked` is where the next pass starts again.
+        let bytes_read = self.checked - from;
         self.cursor
             .generation
             .check_within(Generation::capture(reader.get_ref().get_ref())?)?;
@@ -586,6 +594,50 @@ mod tests {
         let mut whole = Session::at_snapshot(captured, Some(&restored)).unwrap();
         assert!(whole.proves_whole_prefix());
         assert_eq!(prove(&mut whole, &path).unwrap(), text.len() as u64);
+    }
+
+    /// A proof's passes add up to its prefix however the deadline cuts
+    /// them. A pass its deadline ends stops at a record boundary with up
+    /// to a buffer's worth taken from the file but not hashed; those bytes
+    /// are the next pass's, counted once. A deadline of a fraction of a
+    /// millisecond ends nearly every pass that way, at whatever point in
+    /// a buffer it is reached, which is where a loaded runner ends a 100 ms
+    /// pass over a megabyte.
+    #[test]
+    fn passes_cut_by_their_deadline_count_each_byte_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cut.jsonl");
+        let text: String = (0..400).map(row).collect();
+        std::fs::write(&path, &text).unwrap();
+        let (cursor, _) = collect(&path, None);
+        let captured = Cursor::capture(&path, Runtime::Claude).unwrap();
+        let mut session = Session::at_snapshot(captured, Some(&cursor)).unwrap();
+        let started = Instant::now();
+        let (mut bytes, mut passes) = (0u64, 0u32);
+        loop {
+            let progress = session
+                .prepare_next(&path, MAX_BATCH, Duration::from_micros(100))
+                .unwrap();
+            bytes += progress.bytes_read;
+            passes += 1;
+            assert!(
+                bytes <= text.len() as u64,
+                "pass {passes} counted past the file: {bytes} of {}",
+                text.len()
+            );
+            if progress.ready {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(60),
+                "the proof did not finish in {passes} passes"
+            );
+        }
+        assert_eq!(bytes, text.len() as u64);
+        assert!(
+            passes > 1,
+            "a proof cut by its deadline takes several passes"
+        );
     }
 
     #[test]
