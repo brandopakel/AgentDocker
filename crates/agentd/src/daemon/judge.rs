@@ -1982,6 +1982,38 @@ mod tests {
         path
     }
 
+    /// A process of the test's own, ended and reaped however the test
+    /// ends, so a failed test leaves nothing holding its output open.
+    #[cfg(unix)]
+    struct Owned(std::process::Child);
+
+    #[cfg(unix)]
+    impl Owned {
+        fn sleeping() -> Self {
+            Self(
+                std::process::Command::new("sleep")
+                    .arg("60")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            )
+        }
+
+        fn id(&self) -> u32 {
+            self.0.id()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     /// Let the stand-in `pid` go from `gate`, where it waits to read. A
     /// fifo opens to write without blocking only while a reader has it
     /// open, and closing it then ends the read. With no reader yet the
@@ -3157,7 +3189,11 @@ mod tests {
     /// tmux: a tmux that runs past its deadline clears the judgment only
     /// after [`judgment::OUTAGE_PASSES`] passes in a row; a pane tmux says
     /// is not there, or one that no longer holds the agent's process,
-    /// clears it in the pass that finds it so, one event each.
+    /// clears it in the pass that finds it so, one event each. The
+    /// hanging stand-in blocks on a gate nothing ever opens, so only the
+    /// capture's deadline ends it, and the test checks that it did; the
+    /// agent's process and the stranger's are the test's own, ended with
+    /// it however it ends.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_unreadable_tmux_pane_clears_its_judgment() {
@@ -3167,20 +3203,17 @@ mod tests {
         configure(&dir, &url, "");
         let daemon = open(&dir);
         let mut events = daemon.subscribe_events();
-        let mut guest = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
-        let mut stranger = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
+        let guest = Owned::sleeping();
+        let stranger = Owned::sleeping();
         // How the stand-in answers: `ok`, `hang` (past its deadline),
         // `gone` (tmux says the pane is not there) or `replaced` (the pane
-        // holds a process that is not the agent's).
+        // holds a process that is not the agent's). A hanging stand-in
+        // leaves its pid in `hung` before it blocks.
         let mode = dir.path().join("mode");
         let set = |how: &str| std::fs::write(&mode, how).unwrap();
         set("ok");
+        let gate = fifo(&dir, "gate");
+        let hung = dir.path().join("hung");
         let stand_in = dir.path().join("tmux");
         std::fs::write(
             &stand_in,
@@ -3188,7 +3221,7 @@ mod tests {
                 "#!/bin/sh\n\
                  mode=$(cat '{mode}')\n\
                  case \"$mode\" in\n\
-                 hang) exec sleep 30;;\n\
+                 hang) echo $$ >> '{hung}'; read line < '{gate}'; exit 1;;\n\
                  gone) echo \"can't find pane: %0\" >&2; exit 1;;\n\
                  esac\n\
                  case \"$3\" in\n\
@@ -3196,6 +3229,8 @@ mod tests {
                  capture-pane) printf 'Bash command\\n\\n  rm -rf build\\n\\nDo you want to proceed?\\n> 1. Yes\\n  2. No\\n';;\n\
                  esac\n",
                 mode = mode.display(),
+                hung = hung.display(),
+                gate = gate.display(),
                 stranger = stranger.id(),
                 guest = guest.id(),
             ),
@@ -3236,7 +3271,9 @@ mod tests {
             "judged from the pane"
         );
 
-        // tmux runs past its deadline: its server, not the pane.
+        // tmux runs past its deadline: its server, not the pane. The
+        // stand-in waits at a gate nobody opens, so the deadline is all
+        // that ends it, whatever the machine is doing meanwhile.
         set("hang");
         bound(StdDuration::from_millis(300));
         for _ in 1..judgment::OUTAGE_PASSES {
@@ -3250,6 +3287,17 @@ mod tests {
             clearings(&mut events),
             [(agent.clone(), UNREADABLE.to_owned())]
         );
+        // Every stand-in that reached its gate was ended at the deadline
+        // and reaped before its pass went on.
+        let stand_ins: Vec<u32> = std::fs::read_to_string(&hung)
+            .unwrap_or_default()
+            .lines()
+            .map(|line| line.trim().parse().unwrap())
+            .collect();
+        assert!(!stand_ins.is_empty(), "the hanging stand-in ran");
+        for pid in stand_ins {
+            assert!(!agentdocker_host::procinfo::alive(pid), "{pid} reaped");
+        }
 
         bound(TMUX_BOUND);
         for (how, calls_before) in [("gone", 2), ("replaced", 3)] {
@@ -3269,10 +3317,7 @@ mod tests {
             );
         }
         assert_eq!(calls(&fake), 3, "nothing sent of an unreadable pane");
-        for child in [&mut guest, &mut stranger] {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        drop((guest, stranger));
     }
 
     /// A judged agent whose screen there is no longer any source for — its
