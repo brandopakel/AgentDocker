@@ -684,6 +684,9 @@ mod tests {
                 from: None,
                 message: question.clone(),
                 text: "release".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await;
         assert!(

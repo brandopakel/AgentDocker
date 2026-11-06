@@ -149,6 +149,14 @@ pub struct Lease {
     pub holder: AgentId,
     pub mode: LeaseMode,
     pub acquired_at: DateTime<Utc>,
+    /// When its current holder took it, when that is not `acquired_at`:
+    /// the moment a handoff passed it on, which keeps `acquired_at`, so
+    /// the recipient is never taken to have held it before it accepted.
+    /// Absent from a lease its holder claimed, and from leases written
+    /// before it was kept; [`Lease::held_since`] reads either as
+    /// `acquired_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_since: Option<DateTime<Utc>>,
     /// Last ledger sequence at acquisition; absent for legacy leases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_seq: Option<u64>,
@@ -248,6 +256,12 @@ impl LeaseTable {
 impl Lease {
     pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
         self.expires_at <= now
+    }
+
+    /// When its current holder took it: at the claim, or when it was
+    /// handed over to it.
+    pub fn held_since(&self) -> DateTime<Utc> {
+        self.held_since.unwrap_or(self.acquired_at)
     }
 
     /// Would this lease stop `requester` from taking `mode` on `resource`?
@@ -375,6 +389,7 @@ impl LeaseTable {
             holder,
             mode,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + ttl,
             note,
@@ -439,6 +454,7 @@ impl LeaseTable {
             .filter(|l| l.holder == *from)
             .map(|l| {
                 l.holder = to.clone();
+                l.held_since = Some(now);
                 l.clone()
             })
             .collect();
@@ -467,6 +483,7 @@ impl LeaseTable {
             })
             .map(|lease| {
                 lease.holder = to.clone();
+                lease.held_since = Some(now);
                 lease.clone()
             })
             .collect();
@@ -1006,6 +1023,7 @@ mod tests {
             holder: agent("a"),
             mode: LeaseMode::Exclusive,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + ttl(),
             note: None,
@@ -1103,11 +1121,37 @@ mod tests {
         assert_eq!(
             moved[0].note.as_deref(),
             Some("x"),
-            "everything but the holder survives"
+            "everything but the holder and its start survives"
         );
+        assert_eq!(moved[0].acquired_at, kept.acquired_at);
+        assert_eq!(
+            kept.held_since(),
+            kept.acquired_at,
+            "a claim holds from its acquisition"
+        );
+        assert_eq!(
+            moved[0].held_since(),
+            later,
+            "the recipient holds it from the hand-over"
+        );
+        let selected = t.transfer_selected(
+            &agent("b"),
+            &agent("a"),
+            &[kept.id.clone()].into_iter().collect(),
+            later + Duration::seconds(1),
+        );
+        assert_eq!(selected[0].held_since(), later + Duration::seconds(1));
+        assert_eq!(selected[0].acquired_at, kept.acquired_at);
+        let back = t.transfer(&agent("a"), &agent("b"), later);
+        assert_eq!(back.len(), 1);
         assert!(t.by_holder(&agent("a")).is_empty());
         assert_eq!(t.by_holder(&agent("b")).len(), 1);
         assert_eq!(t.by_holder(&agent("c")).len(), 1);
+        // Absent from the stored form until a hand-over sets it.
+        let stored = serde_json::to_value(&kept).unwrap();
+        assert!(stored.get("held_since").is_none());
+        let read: Lease = serde_json::from_value(stored).unwrap();
+        assert_eq!(read.held_since(), kept.acquired_at);
         assert!(
             t.release(&kept.id, &agent("a")).is_err(),
             "the old holder no longer may"

@@ -66,6 +66,7 @@ mod journal;
 mod judge;
 mod launch;
 mod leases;
+pub(crate) mod otlp;
 mod panes;
 mod pause;
 mod person;
@@ -504,6 +505,9 @@ struct State {
     /// The last `agentd.toml` problem reported, so a broken file is logged
     /// once when it breaks and once when it is fixed, not every minute.
     config_notice: Option<String>,
+    /// What the telemetry receiver is doing: off, listening on an address,
+    /// or why it is not; the usage report says it.
+    otlp_status: otlp::Status,
     /// The agent-retention notice, kept apart from `config_notice`: the
     /// journal-retention tick clears that one, and would otherwise re-warn
     /// here every minute for a problem that has not changed.
@@ -1718,6 +1722,7 @@ impl Daemon {
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
                 config_notice: None,
+                otlp_status: otlp::Status::default(),
                 agent_config_notice: None,
                 read_set_notice: None,
                 topic_config_notice: None,
