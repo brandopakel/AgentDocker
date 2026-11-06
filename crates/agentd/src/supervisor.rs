@@ -270,6 +270,27 @@ fn launch_for(daemon: &Daemon, record: &AgentRecord) -> Launch {
 
 /// Start an owner for the agent's command and learn the prepared child's
 /// identity. The command does not run until [`Spawned::activate`].
+/// Why a prepared command never ran: it was stopped before it was let go,
+/// or it ended before the owner reported it running (its program could
+/// not be executed). Any other activation failure may come after the
+/// command started.
+#[derive(Debug)]
+pub enum NotActivated {
+    Stopped,
+    Exited(String),
+}
+
+impl std::fmt::Display for NotActivated {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopped => f.write_str("launch was stopped before activation"),
+            Self::Exited(status) => write!(f, "command exited before it was activated: {status}"),
+        }
+    }
+}
+
+impl std::error::Error for NotActivated {}
+
 pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spawned> {
     anyhow::ensure!(!record.spec.command.is_empty(), "empty command");
     daemon.validate_native_launch(record)?;
@@ -588,10 +609,9 @@ impl Spawned {
     }
 
     async fn activate_inner(&mut self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            self.stop.borrow().is_none(),
-            "launch was stopped before activation"
-        );
+        if self.stop.borrow().is_some() {
+            return Err(NotActivated::Stopped.into());
+        }
         self.controller.send(&OwnerCommand::Activate).await?;
         // Nothing but activation, or an early exit, can arrive here: output
         // begins only once the command runs.
@@ -599,10 +619,7 @@ impl Spawned {
             match self.controller.next().await? {
                 Some(OwnerReport::Activated) => break,
                 Some(OwnerReport::Exited { status }) => {
-                    anyhow::bail!(
-                        "command exited before it was activated: {}",
-                        describe_exit(&status)
-                    )
+                    return Err(NotActivated::Exited(describe_exit(&status)).into());
                 }
                 Some(_) => continue,
                 None => anyhow::bail!("session owner closed during activation"),

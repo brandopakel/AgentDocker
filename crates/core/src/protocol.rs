@@ -1804,6 +1804,15 @@ pub enum ErrorCode {
     /// `details` then carries the `pid`, and the `agent` and `name` holding
     /// it when one does.
     IdentityMismatch,
+    /// The command could not be started: its program is missing or not
+    /// executable, or tmux itself could not be started to run it. Nothing
+    /// runs; a record made for it is ended with the reason.
+    LaunchFailed,
+    /// The change may have been made but could not be confirmed (a merge
+    /// whose new head could not be read; a launch whose command may have
+    /// started before its session failed): look before retrying, as a retry
+    /// could do it twice.
+    Unconfirmed,
 }
 
 // A response is built once and serialised at once, so the size gap between
