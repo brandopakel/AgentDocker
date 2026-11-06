@@ -1605,9 +1605,11 @@ impl Store {
         tracked: bool,
     ) -> Result<Option<agentdocker_core::TopicPost>> {
         let tx = write_transaction(&self.conn)?;
+        // Let go of as the holder's own release does: a card hold's
+        // interval is kept before the lease goes, so delayed usage from
+        // while it was held is still charged to the card.
         for id in released {
-            self.conn
-                .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
+            self.delete_lease(id)?;
         }
         let post = match &message.to {
             agentdocker_core::Destination::Topic(topic) => Some(self.keep_topic_message(
