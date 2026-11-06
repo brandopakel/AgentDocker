@@ -9,7 +9,10 @@
 //!
 //! The parsers are tolerant on purpose: they read backticked names in the
 //! sections named here and nothing else, so prose around the lists can
-//! change freely. Commands are compared at the first level only — a row
+//! change freely. The guide's tools are its name lists, the paragraphs
+//! made only of backticked names and middle dots; a paragraph of prose
+//! between them may name a tool's arguments or result fields without
+//! being read as a list. Commands are compared at the first level only — a row
 //! `channel prune --before <seconds>` documents `channel`, and a later
 //! alternative in the same row (`connector serve` / `status` / …) is
 //! accepted when it is a subcommand of the row's command or a command of
@@ -77,6 +80,25 @@ fn identifiers(text: &str) -> BTreeSet<String> {
     found
 }
 
+/// Whether a paragraph is a list of names: backticked identifiers
+/// separated by middle dots and nothing else.
+fn is_name_list(paragraph: &str) -> bool {
+    let mut names = 0;
+    for word in paragraph.split_whitespace() {
+        if word == "·" {
+            continue;
+        }
+        let Some(name) = word.strip_prefix('`').and_then(|w| w.strip_suffix('`')) else {
+            return false;
+        };
+        if identifiers(&format!("`{name}`")).is_empty() {
+            return false;
+        }
+        names += 1;
+    }
+    names > 0
+}
+
 /// Blank-line delimited paragraphs of a section.
 fn paragraphs(text: &str) -> Vec<String> {
     text.split("\n\n")
@@ -122,12 +144,17 @@ fn assert_same(what: &str, documented: &BTreeSet<String>, in_code: &BTreeSet<Str
     );
 }
 
-/// The guide's `## MCP tools` section names every tool the MCP server
-/// defines, and nothing else.
+/// The guide's `## MCP tools` section lists every tool the MCP server
+/// defines, and nothing else: its name lists are read, the prose between
+/// them (which names arguments and result fields) is not.
 #[test]
 fn the_guide_names_every_mcp_tool_and_no_other() {
     let guide = guide();
-    let documented = identifiers(section(&guide, "## MCP tools"));
+    let documented: BTreeSet<String> = paragraphs(section(&guide, "## MCP tools"))
+        .iter()
+        .filter(|p| is_name_list(p))
+        .flat_map(|p| identifiers(p))
+        .collect();
     let in_code: BTreeSet<String> = tool_names().into_iter().collect();
     assert_same("docs/GUIDE.md `## MCP tools`", &documented, &in_code);
 }
@@ -166,14 +193,18 @@ fn the_guide_connector_paragraph_names_only_remote_tools() {
 }
 
 /// The connector document's `## Tools` section lists `REMOTE_TOOLS`
-/// exactly before "Everything else", and after it names only real tools the
-/// connector refuses.
+/// exactly before "Everything else", and between that and "is refused"
+/// names only real tools the connector refuses; the prose after the
+/// refusal sentence is not read.
 #[test]
 fn the_connector_document_lists_the_remote_tools_exactly() {
     let connector = remote_connector();
     let paragraphs = paragraphs(section(&connector, "## Tools"));
     let paragraph = paragraph_with(&paragraphs, "Everything else");
-    let (served, refused) = paragraph.split_once("Everything else").unwrap();
+    let (served, rest) = paragraph.split_once("Everything else").unwrap();
+    let refused = rest
+        .split_once("is refused")
+        .map_or(rest, |(refused, _)| refused);
     assert_same(
         "docs/REMOTE-CONNECTOR.md `## Tools`",
         &identifiers(served),
