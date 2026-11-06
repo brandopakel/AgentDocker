@@ -630,8 +630,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one; `channel prune --before <seconds>` forgets channels closed longer ago than that (two weeks by default) |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
-| `verdict <branch> --head <commit> --approve\|--changes\|--comment [--from <commit>] [--findings P1,P2,P3] [note]` | Give your verdict on a branch at the commit you read; it counts for the roles you hold, and only for that commit |
-| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: approved at its head as it is now (exit 0), else changes asked, stale (commits since the approval) or unreviewed (exit 1). `--publish` sets the `agentdocker/review` commit status on GitHub |
+| `verdict <branch> --head <commit> --pass\|--changes\|--none [--from <commit>] [--findings important,nit,pre-existing] [note]` | Give your verdict on a branch at the commit you read, with what you found counted by severity (`0,1,0`; all zero when left out); it counts for the roles you hold, and only for that commit. Prints the verdict's id, then its parseable line (`verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`) on stderr. Refused on a branch you hold, are checked out on, or committed to |
+| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: passed at its head as it is now (exit 0), else changes asked, stale (commits since the pass) or unreviewed (exit 1). Prints what it said, then a line a job can gate on: `gate=approved branch=… head=… verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`. `--publish` sets the `agentdocker/review` commit status on GitHub, whose text carries the word, the reviewer, its runtime and the counts |
 | `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first; `contest close <id> [--winner <agent>]` declares the answer, by the ranking when the metric separated the entries |
 
 ### Containers
@@ -646,7 +646,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | Command | What it does |
 |---|---|
 | `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
-| `setup` | Wire us in: MCP registration, and hooks for Claude Code |
+| `setup` | Wire us in: MCP registration, and hooks for Claude Code. Docker Agent keeps its MCP servers in each agent's YAML, so `setup docker-agent --agent <file>` adds the toolset to that file's default agent (`root`, else the first) and `setup --remove docker-agent --agent <file>` takes it out |
 | `skill` | Print the portable coordination SKILL.md, without connecting to a daemon |
 | `provider` | Report a provider's availability (a limit, a sign-in), or resume delivery after checking one |
 | `ui` | Open the desktop app |
@@ -722,8 +722,13 @@ choices the desktop draws as buttons. See
 
 `claim` · `renew` · `release` · `list_leases`
 
-`read_journal` · `journal_note` · `observe_paths` · `check_stale` ·
-`read_set` · `overlap`
+`read_journal` · `mark_journal_read` · `journal_note` · `observe_paths` ·
+`check_stale` · `read_set` · `overlap`
+
+`read_journal` shows what changed since the agent's cursor and leaves the
+cursor where it is; `mark_journal_read` moves it past what `read_journal`
+shows, so the next read starts after it; `since` reads from a sequence
+number instead.
 
 `create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
 `validate` · `validation_results`
@@ -1071,17 +1076,51 @@ Current behaviour that the sections above do not already state, by area.
 - **A review counts for the commit it read.** A reviewer gives its verdict
   on a branch at the exact commit it read (`agentdocker verdict`, or the
   `review_verdict` tool), and `agentdocker gate <PR|branch>` says whether
-  the branch may land now: approved only at that commit. Any later commit,
-  a merge of main included, makes the approval stale until the reviewer
+  the branch may land now: passed only at that commit. Any later commit,
+  a merge of main included, makes the pass stale until the reviewer
   reads what came after. Whose word counts is a role you give
   (`reviewer` by default); `--publish` also sets it as a GitHub commit
   status that branch protection can require. An agent's verdict is
-  refused on the branch its checkout is on, and on any branch it
-  committed to through `agentdocker commit` or with git in a worktree
-  AgentDocker made for it, wherever its checkout is now and however
-  much of the journal is gone. Checking a branch out to read it is not
-  committing to it. Commits made with git in a checkout you made by hand
-  are not seen this way, so keep authors and reviewers separate agents.
+  refused on the branch its checkout is on, on a branch it holds (a
+  `branch:` lease), and on any branch it committed to through
+  `agentdocker commit`, with git in a worktree AgentDocker made for it,
+  or as the journal attributes a commit to it, wherever its checkout is
+  now and however much of the journal is gone. Checking a branch out to
+  read it is not committing to it. Commits made with git in a checkout
+  you made by hand are not seen this way, so keep authors and reviewers
+  separate agents.
+
+- **Verdicts have a fixed vocabulary.** A verdict is `pass`, `changes` or
+  `none` — `none` means the reviewer read the commit and gives no verdict,
+  which is not a pass with nothing found — and what it found is counted
+  as `important` (must be fixed before it lands; a pass cannot carry
+  one), `nit` (worth fixing, not blocking) and `pre-existing` (found
+  while reading, not caused by this change). Counts left out are zero.
+  Each verdict records the reviewer's runtime, so a Codex review of a
+  Claude branch is visible as such wherever the verdict appears: the
+  journal line in the app, the `gate` output and the GitHub status. A
+  review on a pull request and the check that gates on it:
+
+  ```sh
+  agentdocker verdict <branch> --head <commit> --changes --findings 1,2,0 \
+    "the lease check runs after the checkout read; nit: the test names"
+  # <verdict id>   (then, on stderr:)
+  # <branch> verdict=changes head=<commit> important=1 nit=2 pre_existing=0 runtime=codex by=reviewer-1
+
+  agentdocker gate <PR> --publish
+  # changes asked: <branch> by reviewer-1 (codex; important 1, nit 2, pre-existing 0) at <commit>
+  # gate=changes branch=<branch> head=<commit> verdict=changes head=<commit> important=1 nit=2 pre_existing=0 runtime=codex by=reviewer-1
+  ```
+
+  A job reads the second line (`gate=approved` is the only pass; every
+  field before `by=` is one `key=value` token, the runtime
+  percent-encoded if it has a space in it) or `--json`; the commit
+  status `agentdocker/review` says `changes by reviewer-1 (codex;
+  important 1, nit 2, pre-existing 0)`. `--approve` and `--comment` are
+  still accepted for `--pass` and `--none`, and in JSON (`--json`, the
+  tools' replies, `events`) the word is written `approve`, `changes` or
+  `comment`, the spelling older clients read: `pass` is `approve` and
+  `none` is `comment`.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
@@ -1249,6 +1288,38 @@ Current behaviour that the sections above do not already state, by area.
   one, even when that conversation is already open.
 
 ### Agents, roles and setup
+
+- **Docker Agent joins per agent file.** Docker Agent (`docker agent`, or
+  `docker-agent` and its earlier name `cagent` on their own) runs the model
+  loop itself from a YAML file per agent and reads that agent's MCP servers
+  from the file's `toolsets`, so there is no file of its own for setup to
+  register in. `agentdocker runtimes` finds it on `PATH`, in the standard
+  directories and in the Docker CLI plugin directories, and counts its `run`
+  and `new` processes as sessions nobody registered (a bare `docker agent`
+  is a run of the project's agent file; one with `--help` or `--version` is
+  not); its `serve` and `board` processes are helpers `adopt` refuses.
+  `agentdocker setup docker-agent --agent <path/to/agent.yaml>` adds
+  AgentDocker's toolset to the agent `docker agent run` runs unless
+  `--agent` names another — the one named `root`, else the first — after
+  its last toolset, or under a new `toolsets:` key, with every other line
+  of the file as it was; the plan is saved like any other setup change,
+  `setup --undo <id>` puts the file back to the byte, and `setup --remove
+  docker-agent --agent <file>` takes exactly that entry out. A multi-line
+  `instruction: |` is kept whole, comments and all. The edit refuses,
+  saying what and on which line, a file that uses an anchor, an alias, a
+  merge key (`<<`), a tag or an explicit `? ` key anywhere; a quoted key
+  among the agents or in an agent's own keys; and, in the agent it edits, a
+  quoted value or inline list that runs over several lines, an inline
+  `toolsets: [...]`, or tabs. It also reads the file and its edit back as
+  YAML before writing anything, and refuses an edit it cannot confirm
+  changes nothing but that one entry in the default agent. `setup
+  docker-agent --dry-run` then prints the entry to paste by hand. Every run of an agent
+  whose file lists it appears as a `docker-agent` agent with the
+  coordination tools: it can claim, release, message and ask like any
+  other, and reads its messages at its next tool call; nothing wakes it
+  while it is idle. An agent with `harness:` set runs an external coding
+  CLI, whose toolsets Docker Agent ignores: that CLI's own session joins
+  through its own adapter (Claude Code's hooks, Codex's), and setup says so.
 
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   has its own record, by its thread: its AgentDocker tools work as it, and
@@ -1584,8 +1655,10 @@ Current behaviour that the sections above do not already state, by area.
   compacted it is told again the memories that answer what you last asked.
   One kept for some roles only
   (`--role reviewer`, `roles` on `add_memory`) is told to their holders and
-  to you, and never copied off the machine. It stays on this machine; anything that
-  looks like a secret is refused. To keep a copy in Supermemory as well,
+  to you, and never copied to Supermemory. Memories are kept on this
+  machine; one told to a session reaches that session's provider as
+  context, as the rest of the conversation does. Anything that looks like
+  a secret is refused. To keep a copy in Supermemory as well,
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is
   Supermemory's, on its terms). `base_url` names a server of your own

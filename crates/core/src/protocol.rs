@@ -1557,9 +1557,11 @@ pub enum Request {
         #[serde(default)]
         note: Option<String>,
     },
-    /// A reviewer's word on a branch at the commit it read: `approve`,
-    /// `changes` or `comment`, with how many findings of each priority it
-    /// raised. Given by an agent holding a role in the project, or by the
+    /// A reviewer's word on a branch at the commit it read: `pass`,
+    /// `changes` or `none` (the older `approve` and `comment` are still
+    /// read), with how many findings of each severity it raised
+    /// (`important`, `nit`, `pre_existing`; none given means zero of
+    /// each). Given by an agent holding a role in the project, or by the
     /// person. Answers `code_verdict`.
     CodeVerdict {
         agent: String,
@@ -2365,6 +2367,26 @@ impl Response {
             message: message.into(),
             details: None,
         }
+    }
+
+    /// An [`ErrorCode::Invalid`] refusal: the request itself is wrong.
+    pub fn invalid(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::Invalid, message.to_string())
+    }
+
+    /// An [`ErrorCode::NotFound`] refusal: nothing is what the request names.
+    pub fn not_found(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::NotFound, message.to_string())
+    }
+
+    /// An [`ErrorCode::Internal`] failure: the daemon's own side went wrong.
+    pub fn internal(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::Internal, message.to_string())
+    }
+
+    /// An [`ErrorCode::Unavailable`] refusal: not now, for the reason given.
+    pub fn unavailable(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::Unavailable, message.to_string())
     }
 }
 
