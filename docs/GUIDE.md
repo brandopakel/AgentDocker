@@ -1626,8 +1626,8 @@ Current behaviour that the sections above do not already state, by area.
   adapter or an administrator runs (`heartbeat`, `report-activity`,
   `report-adapter`, `report-input`, `report-commit`, `identity-repair`,
   `secret-review`, `usage-storage`, `usage-scan`, the `codex-*` controllers)
-  are hidden from the list and still work by name; `--help` on each describes
-  it, and the guide's reference still names them.
+  are hidden from the list and still work by name; each one's own help
+  describes it, and the guide's reference still names them.
 
 - The ledger entries for one batch of file changes are written in one
   transaction, so a branch switch does not stall claims and releases.
