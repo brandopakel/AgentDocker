@@ -1097,10 +1097,15 @@ pub enum Request {
         forget_after: Option<chrono::DateTime<chrono::Utc>>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         roles: Vec<String>,
+        /// When its fact became true, if before now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        valid_from: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// A project's current memories that answer `query`, the best first;
-    /// `from` names the project when `project` does not. Answers
-    /// `memories`.
+    /// `from` names the project when `project` does not; `as_of` reads
+    /// them as they stood then. Answers `memories`, or with
+    /// `include_superseded` `memory_history`, the superseded ones that
+    /// answer too, each with what replaced it.
     MemorySearch {
         #[serde(default)]
         from: Option<String>,
@@ -1110,10 +1115,18 @@ pub enum Request {
         query: String,
         #[serde(default)]
         limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<chrono::DateTime<chrono::Utc>>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_superseded: bool,
+        /// Only memories whose words score at least this (the sum of their
+        /// inverse document frequencies); none below it is answered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_score: Option<f64>,
     },
     /// What a project's agents should know first, within `max_chars`: its
-    /// standing memories, the oldest first, then the others, newest first.
-    /// Answers `memories`.
+    /// standing memories, the oldest first, then the others, newest first;
+    /// `as_of` as they stood then. Answers `memories`.
     MemoryProfile {
         #[serde(default)]
         from: Option<String>,
@@ -1121,6 +1134,8 @@ pub enum Request {
         project: Option<String>,
         #[serde(default)]
         max_chars: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// Forget a memory for good: its author's or the person's to do.
     /// Answers `ok`.
@@ -1985,6 +2000,17 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recipient_readiness: Option<crate::SendReadiness>,
     },
+    /// A `send`, `ask` or `post_question` the recipients' project holds for
+    /// the person (inbound trust `hold`): `message` is the sender's
+    /// message, kept whole and delivered to nobody yet; `question` is the
+    /// card put to the person, whose answer `Release` delivers it as sent
+    /// and `Drop` discards it. No answer comes back to an `ask` held this
+    /// way: its question reaches its recipient as an ordinary message if
+    /// released.
+    Held {
+        message: MessageId,
+        question: MessageId,
+    },
     Message {
         message: Envelope,
         /// A topic message's sequence in the topic log, for a later
@@ -2156,6 +2182,12 @@ pub enum Response {
     },
     Memories {
         memories: Vec<crate::memory::Memory>,
+    },
+    /// Memories with their history: `replaced` names, for each superseded
+    /// one, what replaced it.
+    MemoryHistory {
+        memories: Vec<crate::memory::Memory>,
+        replaced: std::collections::BTreeMap<String, crate::memory::Replaced>,
     },
     /// A plan in full, and the cards that carry it out.
     Plan {

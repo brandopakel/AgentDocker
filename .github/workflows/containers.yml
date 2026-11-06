@@ -3,6 +3,13 @@ on:
   pull_request:
   push:
     branches: [main]
+# A push to a pull request makes its earlier runs moot: they are cancelled.
+# Any other run is a group of its own, so nothing on main or a batch waits
+# for or replaces another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 jobs:

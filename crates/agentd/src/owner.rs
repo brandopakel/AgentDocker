@@ -26,6 +26,8 @@ use std::process::Command;
 #[cfg(unix)]
 use std::process::Stdio;
 use std::sync::Arc;
+
+use crate::sync::lock;
 use std::time::Duration;
 
 use agentdocker_core::AgentId;
@@ -45,7 +47,7 @@ use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
-use tokio::sync::{Mutex, broadcast, mpsc, watch};
+use tokio::sync::{broadcast, mpsc, watch};
 
 /// What the daemon hands an owner on its stdin: everything needed to
 /// prepare the command, and nothing about coordination.
@@ -197,7 +199,9 @@ struct Shared {
     launch: Launch,
     /// This owner's own identity, as the record and the exit report carry it.
     owner: agentdocker_core::session::SessionOwner,
-    hello: Mutex<OwnerHello>,
+    /// What a controller is told on connecting. Read and written in one
+    /// statement each time, never under another lock.
+    hello: std::sync::Mutex<OwnerHello>,
     output: Arc<std::sync::Mutex<Output>>,
     /// Live output: the offset of the chunk and the chunk.
     live: broadcast::Sender<(u64, Vec<u8>)>,
@@ -218,7 +222,11 @@ struct Shared {
     /// Takeover and command acceptance are one line: a takeover bumps the
     /// epoch under this lock, and a command is checked and applied under
     /// it, so no stale command lands after a newer controller arrived.
-    dispatch: Mutex<()>,
+    ///
+    /// A `std` mutex, like every lock here: nothing under it awaits and no
+    /// other lock is taken while it is held. Every holder runs on a
+    /// spawned task, so a guard kept across an `.await` would not compile.
+    dispatch: std::sync::Mutex<()>,
 }
 
 /// Longest command line accepted from a controller: a 64 KiB keystroke
@@ -227,12 +235,6 @@ struct Shared {
 const MAX_COMMAND_BYTES: usize = 512 * 1024;
 /// How long one write to a controller may block before it counts as gone.
 const WRITE_WITHIN: Duration = Duration::from_secs(5);
-
-fn lock<T>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
 
 /// Run an owner to completion. Returns the process exit code.
 pub fn main(launch: Launch) -> anyhow::Result<i32> {
@@ -444,7 +446,7 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
             pid: std::process::id(),
             started_at: owner_started_at,
         },
-        hello: Mutex::new(OwnerHello {
+        hello: std::sync::Mutex::new(OwnerHello {
             format: FORMAT,
             agent: launch.agent.clone(),
             owner_pid: std::process::id(),
@@ -467,7 +469,7 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
         acknowledged,
         exit: std::sync::Mutex::new(None),
         epoch: std::sync::atomic::AtomicU64::new(0),
-        dispatch: Mutex::new(()),
+        dispatch: std::sync::Mutex::new(()),
     });
 
     // Controllers come and go; the child does not notice.
@@ -490,7 +492,7 @@ pub(crate) async fn serve(launch: Launch) -> anyhow::Result<i32> {
                                 continue;
                             }
                             let epoch = {
-                                let _takeover = shared.dispatch.lock().await;
+                                let _takeover = lock(&shared.dispatch);
                                 shared
                                     .epoch
                                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
@@ -594,10 +596,7 @@ async fn supervise(
             return finish_failed(&shared, &child, error.to_string(), &mut acknowledgement).await;
         }
     };
-    {
-        let mut hello = shared.hello.lock().await;
-        hello.activated = true;
-    }
+    lock(&shared.hello).activated = true;
     let _ = shared.live.send((MARK_ACTIVATED, Vec::new()));
 
     let (lines, sink) = mpsc::channel::<String>(256);
@@ -924,7 +923,7 @@ async fn controller(stream: Stream, shared: Arc<Shared>, epoch: u64) -> anyhow::
     // between the snapshot and the first receive is still heard.
     let mut live = shared.live.subscribe();
     let hello = {
-        let mut hello = shared.hello.lock().await.clone();
+        let mut hello = lock(&shared.hello).clone();
         hello.output_offset = lock(&shared.output).next;
         hello
     };
@@ -959,16 +958,21 @@ async fn controller(stream: Stream, shared: Arc<Shared>, epoch: u64) -> anyhow::
                     // has given up on it: deny exec rather than run a
                     // command nobody recorded. A superseded controller's
                     // leaving says nothing: the newer one decides.
-                    let _dispatch = shared.dispatch.lock().await;
-                    if current() && !shared.hello.lock().await.activated {
+                    // Activation is read first, on its own: it only ever
+                    // goes one way and is not what the dispatch lock
+                    // orders, so one lock is held at a time.
+                    let activated = lock(&shared.hello).activated;
+                    let _dispatch = lock(&shared.dispatch);
+                    if current() && !activated {
                         let _ = shared.stop.send(Some(true));
                     }
                     return Ok(());
                 };
                 // Checked and applied under the dispatch lock, with nothing
-                // awaited in between, so a takeover cannot interleave.
+                // awaited and no other lock taken in between, so a takeover
+                // cannot interleave.
                 let after_dispatch = {
-                    let _dispatch = shared.dispatch.lock().await;
+                    let _dispatch = lock(&shared.dispatch);
                     if !current() {
                         // Superseded: a newer controller owns this child now.
                         return Ok(());
@@ -992,12 +996,10 @@ async fn controller(stream: Stream, shared: Arc<Shared>, epoch: u64) -> anyhow::
                             }
                             None
                         }
-                        OwnerCommand::Attach { after } => {
-                            let (start, bytes) = lock(&shared.output).since(after);
-                            relayed = start + bytes.len() as u64;
-                            attached = true;
-                            Some(Deferred::Replay { after, start, bytes })
-                        }
+                        // The replay is this connection's own view of the
+                        // scrollback and changes nothing about the child,
+                        // so it is read once the dispatch lock is released.
+                        OwnerCommand::Attach { after } => Some(Deferred::Attach { after }),
                         OwnerCommand::Acknowledge => {
                             let _ = shared.acknowledged.send(true);
                             None
@@ -1007,7 +1009,10 @@ async fn controller(stream: Stream, shared: Arc<Shared>, epoch: u64) -> anyhow::
                 // Replies go out after the lock is released.
                 match after_dispatch {
                     Some(Deferred::InputDropped) => send(&mut writer, &OwnerReport::InputDropped).await?,
-                    Some(Deferred::Replay { after, start, bytes }) => {
+                    Some(Deferred::Attach { after }) => {
+                        let (start, bytes) = lock(&shared.output).since(after);
+                        relayed = start + bytes.len() as u64;
+                        attached = true;
                         if start > after {
                             send(&mut writer, &OwnerReport::Gap { from: after, to: start }).await?;
                         }
@@ -1073,10 +1078,9 @@ async fn controller(stream: Stream, shared: Arc<Shared>, epoch: u64) -> anyhow::
 /// A reply owed after the dispatch lock is released.
 enum Deferred {
     InputDropped,
-    Replay {
+    /// Replay the retained scrollback from `after`, then relay live output.
+    Attach {
         after: u64,
-        start: u64,
-        bytes: Vec<u8>,
     },
 }
 
