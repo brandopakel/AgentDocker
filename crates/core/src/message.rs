@@ -693,6 +693,8 @@ impl HeldMessage {
             presentation: Some(presentation),
             asked_at: now,
             expires_at: now + HELD_FOR,
+            form: QuestionForm::default(),
+            stale_since: None,
         }
     }
 }
