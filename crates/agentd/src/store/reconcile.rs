@@ -669,11 +669,16 @@ impl Store {
     /// life's: a role interval the retired life still held is closed at
     /// the fold, never left open under the canonical id to name the old
     /// role for responses made after it; and a canonical record with no
-    /// role history of its own gets its own open interval, its current
-    /// roles from its registration, so that for its own life the moved
-    /// intervals neither cover it nor stand as the earliest roles kept. A
-    /// holding the canonical record already has under the same key is
-    /// replaced by the moved one.
+    /// role history of its own gets its own open interval from its
+    /// registration, so that for its own life the moved intervals neither
+    /// cover it nor stand as the earliest roles kept. That interval holds
+    /// the roles the canonical record is on record with, not what the plan
+    /// merges into it: a role inherited from the retired record is a change
+    /// the upsert that follows keeps as a transition at the fold, so the
+    /// canonical record's life before it stays under the roles it had. A
+    /// record not yet on record registers with the plan's. A holding the
+    /// canonical record already has under the same key is replaced by the
+    /// moved one.
     fn move_usage_holdings(
         &self,
         canonical: &AgentRecord,
@@ -696,12 +701,24 @@ impl Store {
             params![kept, retired.as_str()],
         )?;
         if !own_history {
-            let role = canonical
-                .spec
-                .labels
-                .get(agentdocker_core::agent::ROLE_LABEL)
-                .cloned()
-                .unwrap_or_default();
+            use rusqlite::OptionalExtension;
+            let persisted: Option<Option<String>> = self
+                .conn
+                .query_row(
+                    "SELECT json_extract(json,'$.spec.labels.role') FROM agents WHERE id=?1",
+                    [kept],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let role = match persisted {
+                Some(role) => role.unwrap_or_default(),
+                None => canonical
+                    .spec
+                    .labels
+                    .get(agentdocker_core::agent::ROLE_LABEL)
+                    .cloned()
+                    .unwrap_or_default(),
+            };
             self.conn.execute(
                 "INSERT OR REPLACE INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,?2,?3,NULL,?4)",
                 params![kept, HELD_ROLE, text(canonical.created_at), role],

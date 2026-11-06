@@ -1545,3 +1545,100 @@ fn resumed_observations_keep_to_the_configured_read_set_capacity() {
     store.set_read_capacity(2_000);
     assert!(store.plan_fold(&last, &retired).is_ok());
 }
+
+/// A role the canonical record inherits from the retired one at the fold
+/// (a retired record that never changed its role and so has no holdings
+/// rows) begins at the fold: the canonical record's life before it stays
+/// under the roles it was on record with, and its work after it is under
+/// the inherited role. The same for a resumed session and a repair.
+#[test]
+fn a_role_inherited_at_the_fold_begins_at_the_fold() {
+    let role_label = agentdocker_core::agent::ROLE_LABEL;
+    let before_fold = now() - Duration::minutes(30);
+    let after_fold = Utc::now() + Duration::hours(1);
+
+    // Repair: the kept record has no role and no history; the retired
+    // record was registered as `reviewer` and never changed it.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let (a, b) = seed(&store);
+    let mut kept = record(a.as_str());
+    kept.created_at = now() - Duration::hours(1);
+    store.upsert_agent(&kept).unwrap();
+    let mut retired = record(b.as_str());
+    retired.spec.labels.remove("session_id");
+    retired
+        .spec
+        .labels
+        .insert(role_label.into(), "reviewer".into());
+    store.upsert_agent(&retired).unwrap();
+    // The upsert kept the label change as history; a record registered
+    // with its role has none.
+    store
+        .conn
+        .execute("DELETE FROM usage_holdings WHERE agent=?1", [b.as_str()])
+        .unwrap();
+    let plan = preview(&store, &a, &b);
+    store
+        .repair(&a, &b, Some(&plan.plan_sha256), now(), |_| Ok(()))
+        .unwrap();
+    assert_eq!(
+        store.load_agents().unwrap()[0].spec.labels.get(role_label),
+        Some(&"reviewer".to_owned()),
+        "the kept record inherits the role"
+    );
+    assert_eq!(
+        store.usage_role_held(a.as_str(), before_fold).unwrap(),
+        Some(None),
+        "delayed usage from before the repair is under no role"
+    );
+    assert_eq!(
+        store.usage_role_held(a.as_str(), after_fold).unwrap(),
+        Some(Some("reviewer".to_owned())),
+        "usage after the repair is under the inherited role"
+    );
+
+    // Resume: the resumed record carries the role the earlier life held.
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(&tmp.path().join("state.db")).unwrap();
+    let mut last = record("last");
+    last.created_at = now() - Duration::hours(1);
+    let mut earlier = record("earlier");
+    earlier
+        .spec
+        .labels
+        .insert(role_label.into(), "reviewer".into());
+    for r in [&last, &earlier] {
+        store.upsert_agent(r).unwrap();
+    }
+    let mut canonical = last.clone();
+    canonical
+        .spec
+        .labels
+        .insert(role_label.into(), "reviewer".into());
+    let retired = vec![earlier.id.clone()];
+    let plan = store.plan_fold(&canonical, &retired).unwrap();
+    let mut event = Event::new(
+        EventKind::SessionResumed {
+            agent: last.id.clone(),
+            retired: retired.clone(),
+            session: "same-session".into(),
+            pid: 456,
+        },
+        now(),
+    );
+    event.seq = 1;
+    store.write_resume(&plan, &event).unwrap();
+    assert_eq!(
+        store
+            .usage_role_held(last.id.as_str(), before_fold)
+            .unwrap(),
+        Some(None),
+        "delayed usage from before the resumption is under no role"
+    );
+    assert_eq!(
+        store.usage_role_held(last.id.as_str(), after_fold).unwrap(),
+        Some(Some("reviewer".to_owned())),
+        "usage after the resumption is under the inherited role"
+    );
+}
