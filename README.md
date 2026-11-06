@@ -448,7 +448,9 @@ Use `make install` to build and install the desktop locally. The
 hand-copied launchers, rollback and switching after active sessions finish.
 
 ```sh
-bash scripts/verify.sh check     # the PR gate: fmt, clippy, nextest, doctests, installer tests, packaging, release build
+bash scripts/verify.sh check     # the full local gate: docs, fmt, clippy, nextest, doctests, installer tests
+bash scripts/verify.sh quick     # the short gate: the same, on the packages a change touches
+bash scripts/verify.sh package   # crate packaging and the release build (CI runs it on every PR)
 cargo test --workspace
 ```
 

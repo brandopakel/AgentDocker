@@ -120,7 +120,9 @@ it for the next launch. See [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).
 | `make build` | Debug build of the workspace |
 | `make test` | Tests (nextest when installed) |
 | `make clippy`, `make fmt` | Strict lint, formatting |
-| `make check` | The standard gate, `scripts/verify.sh check` |
+| `make check` | The full local gate, `scripts/verify.sh check` |
+| `make quick` | The short gate, `scripts/verify.sh quick`: the packages a change touches |
+| `make package` | Crate packaging and the release build, `scripts/verify.sh package` |
 | `make app` | Build and package without installing |
 | `make install-preview` | Build, package and print what install would change |
 | `make run` | Run the desktop app from the checkout against your real daemon |

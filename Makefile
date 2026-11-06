@@ -77,8 +77,14 @@ clippy: ## Strict lint
 fmt: ## Format everything
 	cargo fmt --all
 
-check: ## The standard verification gate used before a PR
+check: ## The full local gate, before a pull request's first push
 	bash scripts/verify.sh check
+
+quick: ## The short gate for a later push: the packages the change touches
+	bash scripts/verify.sh quick
+
+package: ## Crate packaging and the release build (CI runs this on every PR)
+	bash scripts/verify.sh package
 
 app: migrate-artifacts ## Release build + native package for this machine (no signing)
 	$(PREFLIGHT)
