@@ -519,6 +519,7 @@ mod tests {
                 payload: json!({"text": "for the reviewer"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
     }
@@ -773,6 +774,7 @@ mod tests {
                 payload: serde_json::json!({"text": "on it"}),
                 reply_to: Some(message.clone()),
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(matches!(reply, Response::Sent { .. }), "{reply:?}");

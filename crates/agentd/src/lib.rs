@@ -378,6 +378,7 @@ async fn serve(args: Args) -> anyhow::Result<()> {
     daemon.notify_desktop();
     daemon.reload_webhooks().await;
     daemon.collect_usage();
+    daemon::otlp::spawn(daemon.clone());
 
     let maintenance = async {
         // Liveness and lease expiration must not retire restore candidates

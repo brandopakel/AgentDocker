@@ -102,6 +102,7 @@ agentdocker runtimes          # what is installed: Claude Code, Codex, Gemini CL
 agentdocker setup --dry-run   # preview supported MCP, hooks and coordination skills
 agentdocker setup codex --preview  # save a reviewable plan for only the chosen integration
 agentdocker setup --apply PLAN_ID # apply that exact plan; --undo PLAN_ID can undo it
+agentdocker setup --git-hook  # in a repository: plan a pre-commit hook that refuses a commit over a path another agent holds (fails open when the daemon is down); --apply PLAN_ID installs it
 agentdocker discover          # agent processes running right now that nobody registered; `adopt --all` brings them in
 agentdocker ui                # the desktop app: the same, live, in a window
 ```

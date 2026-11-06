@@ -4,6 +4,7 @@
 //! agents may do. `agentd.toml` decides how the daemon keeps house for itself.
 //! Reading the file is host work; what it means is decided here.
 
+use crate::event::EventKind;
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
 
@@ -161,6 +162,12 @@ pub struct UsageConfig {
     pub claude_roots: Vec<std::path::PathBuf>,
     #[serde(default = "usage_retention_days")]
     pub retention_days: u32,
+    /// Where to take Claude Code's OpenTelemetry events over OTLP/HTTP
+    /// (JSON), as `127.0.0.1:4318`: a loopback address and port, nothing
+    /// else. Absent — the default — runs no receiver. Independent of
+    /// `enabled`, which governs the transcript collector.
+    #[serde(default)]
+    pub otlp_listen: Option<String>,
 }
 
 fn usage_retention_days() -> u32 {
@@ -174,6 +181,7 @@ impl Default for UsageConfig {
             codex_roots: Vec::new(),
             claude_roots: Vec::new(),
             retention_days: 30,
+            otlp_listen: None,
         }
     }
 }
@@ -183,6 +191,7 @@ impl UsageConfig {
         if !(1..=3650).contains(&self.retention_days) {
             return Err("usage.retention_days must be 1–3650".into());
         }
+        self.otlp_listen()?;
         if self.codex_roots.len() + self.claude_roots.len() > 16
             || self
                 .codex_roots
@@ -196,6 +205,34 @@ impl UsageConfig {
             );
         }
         Ok(())
+    }
+}
+
+impl UsageConfig {
+    /// The receiver's address when one is configured: a literal loopback
+    /// IP (`127.0.0.0/8` or `::1`) with a nonzero port. Anything a peer on
+    /// the network could reach is refused rather than bound, since the
+    /// receiver takes unauthenticated events as the provider's word.
+    pub fn otlp_listen(&self) -> Result<Option<std::net::SocketAddr>, String> {
+        let Some(text) = self.otlp_listen.as_deref() else {
+            return Ok(None);
+        };
+        let address: std::net::SocketAddr = text.trim().parse().map_err(|_| {
+            format!(
+                "usage.otlp_listen must be a loopback address and port such as 127.0.0.1:4318, not `{text}`"
+            )
+        })?;
+        if !address.ip().is_loopback() {
+            return Err(format!(
+                "usage.otlp_listen must be loopback (127.0.0.1 or [::1]); `{text}` would take events from the network"
+            ));
+        }
+        if address.port() == 0 {
+            return Err(
+                "usage.otlp_listen needs a port; Claude Code's exporter expects a fixed one".into(),
+            );
+        }
+        Ok(Some(address))
     }
 }
 
@@ -218,7 +255,8 @@ pub struct WebhookConfig {
     /// trimmed content is the HMAC secret.
     pub secret_file: std::path::PathBuf,
     /// Event kinds to post, by their wire names (`question_opened`,
-    /// `agent_exited`, `lease_deadlock`…). Empty posts nothing.
+    /// `agent_exited`, `lease_deadlock`…, [`EventKind::WIRE_NAMES`]).
+    /// Empty posts nothing; a name that is no kind is refused.
     #[serde(default)]
     pub events: Vec<String>,
     /// Only events of this project (id, root or unique prefix), when set.
@@ -264,22 +302,71 @@ impl WebhookConfig {
             ));
         }
         for kind in &self.events {
-            if kind.is_empty()
-                || kind.len() > 64
-                || !kind
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b == b'_' || b.is_ascii_digit())
-            {
-                return Err(format!("webhook {name}: `{kind}` is not an event kind"));
-            }
+            // Said back for correction, bounded: a name is at most 64 bytes
+            // when it is a kind, so a longer one is not a kind and is not
+            // echoed whole.
+            let shown: String = kind.chars().take(64).collect();
             if kind.starts_with("webhook_") {
                 return Err(format!(
-                    "webhook {name}: `{kind}` is a webhook's own event and is never posted"
+                    "webhook {name}: `{shown}` is a webhook's own event and is never posted"
+                ));
+            }
+            if !EventKind::is_wire_name(kind) {
+                let near = closest_wire_names(kind);
+                let hint = if near.is_empty() {
+                    "the wire names are the EventKind variants in snake_case; \
+                     see Events in docs/ARCHITECTURE.md"
+                        .to_owned()
+                } else {
+                    let named: Vec<String> = near.iter().map(|n| format!("`{n}`")).collect();
+                    format!("did you mean {}?", named.join(" or "))
+                };
+                return Err(format!(
+                    "webhook {name}: `{shown}` is not an event kind; {hint}"
                 ));
             }
         }
         Ok(())
     }
+}
+
+/// The emitted kinds nearest `name` by edit distance, when any is near
+/// enough to be the one meant — within a third of the name's length,
+/// at least two edits — so a misspelt or renamed name is answered with
+/// the right one and an invented one is not answered with a guess.
+/// Kinds within an edit of the nearest are named too, up to three, since
+/// `question_asked` is as near `question_closed` as `question_opened`.
+fn closest_wire_names(name: &str) -> Vec<&'static str> {
+    let budget = (name.chars().count() / 3).max(2);
+    let mut near: Vec<(usize, &'static str)> = EventKind::WIRE_NAMES
+        .iter()
+        .map(|candidate| (edit_distance(name, candidate), *candidate))
+        .filter(|(distance, _)| *distance <= budget)
+        .collect();
+    near.sort_unstable();
+    let Some(&(best, _)) = near.first() else {
+        return Vec::new();
+    };
+    near.iter()
+        .take_while(|(distance, _)| *distance <= best + 1)
+        .take(3)
+        .map(|(_, candidate)| *candidate)
+        .collect()
+}
+
+/// Levenshtein distance over characters; both inputs are short.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut current = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let substitute = previous[j] + usize::from(ca != *cb);
+            current.push(substitute.min(previous[j + 1] + 1).min(current[j] + 1));
+        }
+        previous = current;
+    }
+    previous[b.len()]
 }
 
 /// The shape of an address the daemon sends to: a host, no credentials
@@ -931,6 +1018,52 @@ mod tests {
         let mut sink = good("https://example.com/hook");
         sink.events = vec!["Question Asked".into()];
         assert!(sink.check().is_err(), "not a kind");
+        // A misspelt or renamed wire name used to pass on its characters
+        // alone and that kind then never posted; it is refused by name,
+        // with the kind meant.
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["question_asked".into()];
+        let error = sink.check().unwrap_err();
+        assert!(
+            error.contains("`question_asked` is not an event kind")
+                && error.contains("did you mean `question_closed` or `question_opened`?"),
+            "{error}"
+        );
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["lease_dedlock".into()];
+        assert!(
+            sink.check()
+                .unwrap_err()
+                .contains("did you mean `lease_deadlock`?")
+        );
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["unknown".into()];
+        assert!(
+            sink.check().is_err(),
+            "the reader's catch-all is never emitted"
+        );
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["zzzzzzzzzzzzzzzzzzzz".into()];
+        let error = sink.check().unwrap_err();
+        assert!(
+            error.contains("is not an event kind") && error.contains("docs/ARCHITECTURE.md"),
+            "no guess for a name near nothing: {error}"
+        );
+        let mut sink = good("https://example.com/hook");
+        sink.events = vec!["x".repeat(400)];
+        let error = sink.check().unwrap_err();
+        assert!(
+            error.len() < 300,
+            "a long name is not echoed whole: {error}"
+        );
+        for name in EventKind::WIRE_NAMES {
+            if name.starts_with("webhook_") {
+                continue;
+            }
+            let mut sink = good("https://example.com/hook");
+            sink.events = vec![(*name).into()];
+            assert!(sink.check().is_ok(), "{name}");
+        }
         let text = format!(
             r#"
 [[webhooks]]
@@ -1043,6 +1176,45 @@ secret_file = {secret:?}
         assert!(with(&|j| j.threshold_percent = 100).is_err());
         assert!(with(&|j| j.threshold_percent = 95).is_ok());
         assert!(toml::from_str::<DaemonConfig>("[judge]\nkey = \"x\"\n").is_err());
+    }
+
+    /// The telemetry receiver is off until an address is written, binds
+    /// only to this machine, and refuses what a peer could reach.
+    #[test]
+    fn the_otlp_receiver_is_off_by_default_and_loopback_only() {
+        let parse = |text: &str| toml::from_str::<DaemonConfig>(text).unwrap().usage;
+        assert_eq!(parse("").otlp_listen(), Ok(None));
+        assert_eq!(
+            parse("[usage]\notlp_listen = \"127.0.0.1:4318\"\n")
+                .otlp_listen()
+                .unwrap()
+                .map(|a| a.to_string()),
+            Some("127.0.0.1:4318".to_owned())
+        );
+        assert!(
+            parse("[usage]\notlp_listen = \"[::1]:4318\"\n")
+                .check()
+                .is_ok()
+        );
+        assert!(
+            parse("[usage]\notlp_listen = \"127.1.2.3:9\"\n")
+                .check()
+                .is_ok()
+        );
+        for bad in [
+            "0.0.0.0:4318",
+            "192.168.1.10:4318",
+            "[::]:4318",
+            "localhost:4318",
+            "127.0.0.1",
+            "127.0.0.1:0",
+            "http://127.0.0.1:4318",
+        ] {
+            let error = parse(&format!("[usage]\notlp_listen = {bad:?}\n"))
+                .check()
+                .unwrap_err();
+            assert!(error.starts_with("usage.otlp_listen"), "{bad}: {error}");
+        }
     }
 
     #[test]
