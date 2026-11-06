@@ -178,7 +178,7 @@ pub fn question_line(question: &Question) -> String {
     if question.stale(now) {
         marks.push_str("  [stale]");
     }
-    format!(
+    let mut line = format!(
         "{}  {}  {} → {}  ({} left){marks}  {}",
         clock(question.asked_at),
         question.id,
@@ -190,8 +190,24 @@ pub fn question_line(question: &Question) -> String {
                 .max(0)
                 .unsigned_abs()
         ),
-        single_line(&question.prompt())
-    )
+        single_line(&question.text)
+    );
+    // The options as their own rows under the words, on separators of
+    // this function's own: a label or description is kept to one row.
+    for (index, option) in question.form.options.iter().enumerate() {
+        line.push_str(&format!(
+            "\n    {}. {}",
+            index + 1,
+            single_line(&option.label)
+        ));
+        if !option.description.trim().is_empty() {
+            line.push_str(&format!(" — {}", single_line(option.description.trim())));
+        }
+    }
+    if !question.form.options.is_empty() && question.form.allow_other {
+        line.push_str("\n    Other: answer in your own words.");
+    }
+    line
 }
 
 /// The typed part of `ask`, from its flags. An option is `Label` or
@@ -1578,6 +1594,49 @@ pub fn webhook_attempt_row(attempt: &agentdocker_core::WebhookAttempt) -> Vec<St
 
 #[cfg(test)]
 mod tests {
+    /// `questions` prints a typed question's options as rows under its
+    /// words, with the Other line, on separators of its own: a control
+    /// character in the words, a label or a description is escaped, never
+    /// a row.
+    #[test]
+    fn a_question_line_lists_its_options_and_escapes_what_they_carry() {
+        use agentdocker_core::{Destination, MessageId, Question, QuestionForm, QuestionOption};
+        use chrono::Utc;
+        let question = Question {
+            id: MessageId::from("q".to_owned()),
+            from: "asker".into(),
+            to: Destination::Agent("human".into()),
+            text: "Which\ntheme?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: QuestionForm {
+                options: vec![
+                    QuestionOption {
+                        label: "Blue\nRed".into(),
+                        description: "the current\ntheme".into(),
+                    },
+                    QuestionOption {
+                        label: "Green".into(),
+                        description: String::new(),
+                    },
+                ],
+                ..QuestionForm::default()
+            },
+            stale_since: None,
+        };
+        let line = super::question_line(&question);
+        let rows: Vec<&str> = line.split('\n').collect();
+        assert_eq!(rows.len(), 4, "{line}");
+        assert!(rows[0].ends_with("Which\\ntheme?"), "{line}");
+        assert_eq!(rows[1], "    1. Blue\\nRed — the current\\ntheme");
+        assert_eq!(rows[2], "    2. Green");
+        assert_eq!(rows[3], "    Other: answer in your own words.");
+        let mut strict = question;
+        strict.form.allow_other = false;
+        assert_eq!(super::question_line(&strict).split('\n').count(), 3);
+    }
+
     /// `ask`'s flags make the question form: an option is a label with an
     /// optional description after a colon, the kind and the stale action
     /// are their wire spellings, and a spelling outside them is refused.

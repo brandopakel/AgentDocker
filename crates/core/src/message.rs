@@ -413,7 +413,7 @@ impl QuestionForm {
             return None;
         }
         let mut text = String::from(if self.multi_select {
-            "Choose any that apply, by number or label:"
+            "Choose any that apply, by number or label (a text answer is one choice; several need a client that sends choices):"
         } else {
             "Choose one, by number or label:"
         });
@@ -540,20 +540,32 @@ impl QuestionAnswer {
         if given.is_empty() && other.is_none() {
             return Err("choose an option, or answer in words".to_owned());
         }
+        // A selector that names no option is the answer's Other, where the
+        // question allows one: never a choice, and one at most.
         let mut resolved: Vec<String> = Vec::new();
+        let mut other = other;
         for value in given {
-            let label = match form.resolve_choice(value) {
-                Some(option) => option.label.clone(),
-                None if form.allow_other && !value.is_empty() => value.to_owned(),
+            match form.resolve_choice(value) {
+                Some(option) => {
+                    if !resolved.contains(&option.label) {
+                        resolved.push(option.label.clone());
+                    }
+                }
                 None if value.is_empty() => return Err("an empty choice".to_owned()),
-                None => {
+                None if !form.allow_other => {
                     return Err(format!(
                         "{value:?} is not one of the options; this question takes no other answer"
                     ));
                 }
-            };
-            if !resolved.contains(&label) {
-                resolved.push(label);
+                None => match &other {
+                    Some(existing) if existing == value => {}
+                    Some(existing) => {
+                        return Err(format!(
+                            "one answer in other words at a time: {existing:?} and {value:?}"
+                        ));
+                    }
+                    None => other = Some(value.to_owned()),
+                },
             }
         }
         // The Other is one choice among them, as written.
@@ -1733,7 +1745,7 @@ mod form_tests {
         });
         assert_eq!(
             strict.form.options_text().unwrap(),
-            "Choose any that apply, by number or label:\n1. Blue — the current theme\n2. Green"
+            "Choose any that apply, by number or label (a text answer is one choice; several need a client that sends choices):\n1. Blue — the current theme\n2. Green"
         );
     }
 
@@ -1799,10 +1811,51 @@ mod form_tests {
         assert_eq!(by_label.note.as_deref(), Some("please"));
         assert_eq!(by_label.text, "Blue — please");
         let other = QuestionAnswer::resolve(&colours, "Red", &[], None, None).unwrap();
+        assert!(other.choices.is_empty(), "not a choice");
         assert_eq!(
-            other.choices,
-            vec!["Red".to_owned()],
-            "Other is allowed by default"
+            other.other.as_deref(),
+            Some("Red"),
+            "Other is allowed by default, and an unmatched selector is it"
+        );
+        assert_eq!(other.text, "Red");
+        let again = QuestionAnswer::resolve(
+            &colours,
+            &other.text,
+            &other.choices,
+            other.other.as_deref(),
+            other.note.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(again, other, "resolves to itself");
+        let several = QuestionForm {
+            multi_select: true,
+            ..colours.clone()
+        };
+        let mixed =
+            QuestionAnswer::resolve(&several, "", &["2".into(), "Red".into()], None, None).unwrap();
+        assert_eq!(mixed.choices, vec!["Green".to_owned()]);
+        assert_eq!(mixed.other.as_deref(), Some("Red"));
+        assert_eq!(mixed.text, "Green, Red");
+        let again = QuestionAnswer::resolve(
+            &several,
+            &mixed.text,
+            &mixed.choices,
+            mixed.other.as_deref(),
+            mixed.note.as_deref(),
+        )
+        .unwrap();
+        assert_eq!(
+            again, mixed,
+            "a multi-select with an Other resolves to itself"
+        );
+        assert!(
+            QuestionAnswer::resolve(&several, "", &["Red".into(), "Pink".into()], None, None)
+                .is_err(),
+            "one Other at most"
+        );
+        assert!(
+            QuestionAnswer::resolve(&several, "", &["Red".into()], Some("Pink"), None).is_err(),
+            "an unmatched selector beside another Other"
         );
         assert!(
             QuestionAnswer::resolve(&colours, "", &["1".into(), "2".into()], None, None).is_err(),

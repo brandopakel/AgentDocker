@@ -2137,7 +2137,7 @@ struct AskArgs {
 /// An option as the tool takes it: a bare label, or a label with what
 /// choosing it means.
 #[derive(Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 enum AskOption {
     Label(String),
     Described {
@@ -4982,6 +4982,16 @@ mod tests {
             )
             .await;
         assert!(matches!(refused, Err((code, _)) if code == INVALID_PARAMS));
+        let misspelt = s
+            .tool(
+                "ask_human",
+                json!({"question":"Which theme?","options":[{"label":"A","desc":"x"}]}),
+            )
+            .await;
+        assert!(
+            matches!(misspelt, Err((code, _)) if code == INVALID_PARAMS),
+            "an option with a field the tool does not know: {misspelt:?}"
+        );
         assert!(
             s.backend.requests().is_empty(),
             "nothing went to the daemon"
