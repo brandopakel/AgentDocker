@@ -3,9 +3,16 @@ name: CLI release archives
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, 'batch/**']
   workflow_dispatch:
   workflow_call:
+
+# A push to a pull request makes its earlier runs moot: they are cancelled.
+# Any other run, a release's call included, is a group of its own, so
+# nothing on main, a batch or a release waits for or replaces another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -17,11 +24,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: macos-15-intel, target: x86_64-apple-darwin }
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
-          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl }
+        # A pull request builds the Linux archives; the macOS ones are built
+        # for main, a batch (`batch/**`), on demand and for a release.
+        include: ${{ fromJSON(github.event_name == 'pull_request' && '[{"os":"ubuntu-latest","target":"x86_64-unknown-linux-musl"},{"os":"ubuntu-latest","target":"aarch64-unknown-linux-musl"}]' || '[{"os":"macos-latest","target":"aarch64-apple-darwin"},{"os":"macos-15-intel","target":"x86_64-apple-darwin"},{"os":"ubuntu-latest","target":"x86_64-unknown-linux-musl"},{"os":"ubuntu-latest","target":"aarch64-unknown-linux-musl"}]') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

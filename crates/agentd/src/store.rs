@@ -1482,13 +1482,14 @@ impl Store {
         closed: Option<&agentdocker_core::MessageId>,
         events: &[Event],
     ) -> Result<()> {
+        let closed: Vec<agentdocker_core::MessageId> = closed.into_iter().cloned().collect();
         self.publish_message_with_channel(
             message,
             recipients,
             capacity,
             sender,
             question,
-            closed,
+            &closed,
             events,
             None,
             None,
@@ -1514,7 +1515,9 @@ impl Store {
         capacity: usize,
         sender: Option<&AgentRecord>,
         question: Option<&agentdocker_core::Question>,
-        closed: Option<&agentdocker_core::MessageId>,
+        // Every question this message closes: the one it answers, and
+        // the card a released message rode on. Both go, or neither.
+        closed: &[agentdocker_core::MessageId],
         events: &[Event],
         channel: Option<&Channel>,
         journal: Option<&JournalEntry>,
@@ -1558,7 +1561,7 @@ impl Store {
         if let Some(question) = question {
             self.put_document("question", question.id.as_str(), question)?;
         }
-        if let Some(closed) = closed {
+        for closed in closed {
             self.delete_document("question", closed.as_str())?;
         }
         if let Some(channel) = channel {

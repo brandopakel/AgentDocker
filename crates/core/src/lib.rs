@@ -66,9 +66,10 @@ pub use lease::{
 };
 pub use link::{Link, LinkKind};
 pub use message::{
-    ALLOW_FOR_SESSION, AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, MessageId,
-    Question, QuestionFileChange, QuestionFileChangeKind, QuestionOption, QuestionPresentation,
-    RELEASE_REQUEST_KIND, RELEASE_RESPONSE_KIND, mcp_url_authority, topic_matches,
+    ALLOW_FOR_SESSION, AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, HeldDecision,
+    HeldMessage, MessageId, Question, QuestionFileChange, QuestionFileChangeKind, QuestionOption,
+    QuestionPresentation, RELEASE_REQUEST_KIND, RELEASE_RESPONSE_KIND, mcp_url_authority,
+    topic_matches,
 };
 pub use notification::NotificationTarget;
 pub use permissions::{
@@ -87,7 +88,7 @@ pub use task::{
 pub use topic::{TopicCursor, TopicPost};
 
 pub mod policy;
-pub use policy::{Policy, Ruling};
+pub use policy::{InboundRuling, Policy, Ruling, Trust};
 
 pub mod editor;
 pub mod multiplexer;
