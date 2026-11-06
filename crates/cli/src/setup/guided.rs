@@ -1049,7 +1049,21 @@ fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> 
         None => json!({}),
     };
     let command = runtimes::hook_command(executable, "codex")?;
+    let trusted = ours(&value, "codex");
     if crate::hooks::merge_hooks(&mut value, &command, "codex")? > 0 {
+        // Codex keys the person's trust on each hook's definition: one of
+        // ours that this plan changes stops running until it is trusted
+        // again. One left as it was keeps its trust.
+        let after = ours(&value, "codex");
+        let changed = trusted.iter().filter(|hook| !after.contains(hook)).count();
+        if changed > 0 {
+            plan.notes.push(format!(
+                "Codex: this plan changes {changed} AgentDocker hook{} you may have trusted; Codex runs {} only once you trust {} again in /hooks",
+                if changed == 1 { "" } else { "s" },
+                if changed == 1 { "it" } else { "them" },
+                if changed == 1 { "it" } else { "them" },
+            ));
+        }
         plan.changes.push(Change {
             runtime: "codex".into(),
             channel: "activity hooks".into(),
@@ -1062,6 +1076,28 @@ fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> 
     }
     plan.notes.push("Codex: SessionStart starts the native input receiver when supported. Other hooks report activity and deliver queued messages after prompts/tools, with one Stop continuation. They require lifecycle-hook support and review/trust in /hooks. MCP supplies explicit inbox reads and coordination tools. Setup does not grant hook trust or prove model receipt.".into());
     Ok(())
+}
+
+/// AgentDocker's own hook definitions in a hooks file, each with its event
+/// and matcher: what Codex keys a person's trust on.
+fn ours(value: &Value, runtime: &str) -> Vec<Value> {
+    let mut found = Vec::new();
+    for (event, entries) in value["hooks"].as_object().into_iter().flatten() {
+        for entry in entries.as_array().into_iter().flatten() {
+            for hook in entry["hooks"].as_array().into_iter().flatten() {
+                let mine = hook["type"] == "command"
+                    && hook["command"].as_str().is_some_and(|command| {
+                        runtimes::hook_command_matches_for(command, "agentdocker", runtime)
+                    });
+                if mine {
+                    found.push(
+                        json!({"event": event, "matcher": entry.get("matcher"), "hook": hook}),
+                    );
+                }
+            }
+        }
+    }
+    found
 }
 
 /// Prepare private receipt storage beneath the selected AgentDocker home.
@@ -1535,6 +1571,7 @@ mod tests {
             browser_dirs: vec![],
             shell: None,
             versions: false,
+            hook_stamps: None,
         }
     }
 
@@ -2478,6 +2515,58 @@ path.write_text(json.dumps(value))
         )
         .unwrap();
         path
+    }
+
+    /// Setup leaves Codex's hooks byte for byte as they are once they are
+    /// current, so the trust the person gave them stands; when it must
+    /// change one of ours it says that hook needs trusting again.
+    #[test]
+    fn codex_hooks_keep_their_trust_unless_setup_must_change_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        // Named as installed, so setup knows the hooks it wrote for its own.
+        let executable = tmp.path().join("agentdocker");
+        let hooks = tmp.path().join(".codex/hooks.json");
+        let mut first = plan(tmp.path(), &["codex"]);
+        first.changes.clear();
+        first.notes.clear();
+        prepare_codex_activity(&mut first, &roots, &executable).unwrap();
+        let written = first
+            .changes
+            .iter()
+            .find(|change| change.channel == "activity hooks")
+            .and_then(|change| change.after.clone())
+            .expect("first setup writes the hooks");
+        std::fs::create_dir_all(hooks.parent().unwrap()).unwrap();
+        std::fs::write(&hooks, &written).unwrap();
+
+        let mut again = plan(tmp.path(), &["codex"]);
+        again.changes.clear();
+        again.notes.clear();
+        prepare_codex_activity(&mut again, &roots, &executable).unwrap();
+        assert!(again.changes.is_empty(), "{:?}", again.changes);
+        assert!(
+            !again
+                .notes
+                .iter()
+                .any(|note| note.contains("trust") && note.contains("again"))
+        );
+        assert_eq!(std::fs::read_to_string(&hooks).unwrap(), written);
+
+        // One of ours that this version must change: its timeout.
+        let mut value: Value = serde_json::from_str(&written).unwrap();
+        value["hooks"]["Interrupt"][0]["hooks"][0]["timeout"] = json!(10);
+        std::fs::write(&hooks, value.to_string()).unwrap();
+        let mut changed = plan(tmp.path(), &["codex"]);
+        changed.changes.clear();
+        changed.notes.clear();
+        prepare_codex_activity(&mut changed, &roots, &executable).unwrap();
+        assert!(
+            changed.notes.iter().any(|note| note
+                == "Codex: this plan changes 1 AgentDocker hook you may have trusted; Codex runs it only once you trust it again in /hooks"),
+            "{:?}",
+            changed.notes
+        );
     }
 
     #[test]

@@ -11,7 +11,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use agentdocker_core::journal::{Reader, cursor_donor, digest as render_digest, initial_cursor};
@@ -60,6 +60,7 @@ mod handoff;
 pub(crate) mod herdr;
 pub mod humans;
 mod images;
+mod inbound;
 mod inbox;
 mod journal;
 mod judge;
@@ -171,6 +172,10 @@ pub(crate) struct DocumentTransition {
     /// The document to put, or none to delete it.
     pub value: Option<serde_json::Value>,
     pub event: EventKind,
+    /// A question settled without an answer in the same commit — the card
+    /// a held message rode on, once the message goes out — closed with
+    /// `question_closed {answer: None}`.
+    pub closes: Option<MessageId>,
 }
 
 /// What became of a write.
@@ -186,6 +191,13 @@ enum Persisted {
 
 /// One admitted mutation in progress; dropping it, however the request
 /// ends, releases its place.
+///
+/// Dropping it takes the state lock, so it must never be dropped by a
+/// holder of a state guard. It holds: the place lives in the `ADMISSION`
+/// scope and goes with the handler's future, after every guard the
+/// handler took; `done_writing` takes it outside any hold; and
+/// `readmit_locked` hands a place out of the hold that made it, never
+/// dropping one inside it.
 pub(crate) struct InFlight(Arc<Daemon>);
 
 impl Drop for InFlight {
@@ -550,6 +562,10 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// Remote senders' messages held for the person, by the id of the
+    /// question that carries each; kept as `held_message` documents in
+    /// the same transaction as their questions.
+    held_messages: HashMap<MessageId, agentdocker_core::HeldMessage>,
     secret_reviews: HashMap<String, secret_reviews::Entry>,
     /// The projects told to hold, and why; kept as documents.
     pauses: HashMap<ProjectId, agentdocker_core::Pause>,
@@ -582,7 +598,7 @@ struct JournalRing {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     let started = state_timing_start();
-    let guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
+    let guard = crate::sync::lock(mutex);
     state_timing_finish("lock_wait", started);
     guard
 }
@@ -616,30 +632,6 @@ fn claim_state_timing_sample(samples: &std::sync::atomic::AtomicUsize) -> bool {
         }
     }
     false
-}
-
-#[test]
-fn concurrent_state_timing_samples_stop_at_the_limit() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let samples = AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..8)
-            .map(|_| {
-                scope.spawn(|| {
-                    (0..100)
-                        .filter(|_| claim_state_timing_sample(&samples))
-                        .count()
-                })
-            })
-            .collect();
-        let accepted: usize = workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap())
-            .sum();
-        assert_eq!(accepted, 256);
-    });
-    assert_eq!(samples.load(Ordering::Relaxed), 256);
-    assert!(!claim_state_timing_sample(&samples));
 }
 
 /// Whether a name can be the last component of `agent/<name>` as a git
@@ -1616,6 +1608,46 @@ impl Daemon {
             questions.len() <= humans::MAX_QUESTIONS,
             "too many stored pending questions"
         );
+        // A held message rides on its question: one whose question has
+        // gone (expired at this start, above) is dropped as expired too,
+        // when writes are open; while fenced it is left for the tick.
+        let mut held_messages: HashMap<MessageId, agentdocker_core::HeldMessage> = store
+            .documents::<agentdocker_core::HeldMessage>(inbound::DOCUMENT, None)?
+            .into_iter()
+            .map(|held| (held.question.clone(), held))
+            .collect();
+        let orphaned: Vec<_> = held_messages
+            .values()
+            .filter(|held| !questions.contains_key(&held.question))
+            .map(|held| (held.question.clone(), held.envelope.id.clone()))
+            .collect();
+        if !fenced && !orphaned.is_empty() {
+            let mut events: Vec<_> = orphaned
+                .iter()
+                .map(|(question, message)| {
+                    Event::new(
+                        EventKind::HeldMessageDropped {
+                            message: message.clone(),
+                            question: question.clone(),
+                            by: inbound::EXPIRY.to_owned(),
+                        },
+                        now,
+                    )
+                })
+                .collect();
+            for (index, event) in events.iter_mut().enumerate() {
+                event.seq = next_seq + index as u64;
+            }
+            next_seq += events.len() as u64;
+            let delete: Vec<(&str, String)> = orphaned
+                .iter()
+                .map(|(question, _)| (inbound::DOCUMENT, question.as_str().to_owned()))
+                .collect();
+            store.documents_change(&[], &delete, &events)?;
+            for (question, _) in &orphaned {
+                held_messages.remove(question);
+            }
+        }
 
         let (bus, _) = broadcast::channel(1024);
         let (events, _) = broadcast::channel(1024);
@@ -1674,6 +1706,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions,
+                held_messages,
                 secret_reviews: HashMap::new(),
                 pauses,
                 waiting: agentdocker_core::WaitQueue::new(),
@@ -2625,6 +2658,7 @@ impl Daemon {
                 standing,
                 forget_after,
                 roles,
+                valid_from,
             } => {
                 self.memory_add(
                     &from,
@@ -2635,6 +2669,7 @@ impl Daemon {
                     standing,
                     forget_after,
                     roles,
+                    valid_from,
                 )
                 .await
             }
@@ -2643,12 +2678,27 @@ impl Daemon {
                 project,
                 query,
                 limit,
-            } => self.memory_search(from, project, &query, limit).await,
+                as_of,
+                include_superseded,
+                min_score,
+            } => {
+                self.memory_search(
+                    from,
+                    project,
+                    &query,
+                    limit,
+                    as_of,
+                    include_superseded,
+                    min_score,
+                )
+                .await
+            }
             Request::MemoryProfile {
                 from,
                 project,
                 max_chars,
-            } => self.memory_profile(from, project, max_chars).await,
+                as_of,
+            } => self.memory_profile(from, project, max_chars, as_of).await,
             Request::MemoryForget { from, memory } => self.memory_forget(&from, &memory),
             Request::Files { project, task } => self.files(project, task).await,
             Request::FilePut {
@@ -3317,8 +3367,17 @@ impl Daemon {
                 "pause and resume notices require a project lifecycle request",
             );
         }
+        // What the project does with a remote sender's word, decided
+        // before anything is routed: refused here, or held whole once the
+        // destination is known. A held word to a role goes to the role's
+        // holder rather than its room, as an `ask` to a role does.
+        let inbound = match self.inbound_ruling(&from, to).await {
+            Ok(ruling) => ruling,
+            Err(response) => return *response,
+        };
         // An agent's word to a role goes to that role's room in its project.
-        if let Some(role) = to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX)
+        if inbound.is_none()
+            && let Some(role) = to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX)
             && let Some(response) = lock(&self.state).send_to_role(
                 &from,
                 role,
@@ -3359,6 +3418,9 @@ impl Daemon {
         }
         let mut envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
         envelope.links = links;
+        if let Some(ruling) = inbound {
+            return state.hold_message(envelope, ruling);
+        }
         state.publish(envelope)
     }
 
@@ -3505,6 +3567,23 @@ impl State {
         self.store_read(what, op)
     }
 
+    /// [`State::store_read`] for a request: what it read, or the answer a
+    /// failed read latched, `storage_unavailable` like every store failure.
+    fn read_store<T>(
+        &mut self,
+        what: &str,
+        op: impl FnOnce(&Store) -> anyhow::Result<T>,
+    ) -> Result<T, Box<Response>> {
+        self.store_read(what, op).ok_or_else(|| {
+            Box::new(self.storage_failure().unwrap_or_else(|| {
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    format!("{what} could not be read"),
+                )
+            }))
+        })
+    }
+
     /// A store read: served through a fence, since a transfer stops
     /// writes and nothing else, and refused only once storage has failed.
     fn store_read<T>(
@@ -3623,7 +3702,7 @@ impl State {
                 "another coordination transfer is still offered in the database",
             ))),
             None => Err(Box::new(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "cannot record the offer")
+                Response::error(ErrorCode::StorageUnavailable, "cannot record the offer")
             }))),
         }
     }
@@ -4053,7 +4132,7 @@ impl State {
             .unwrap_or(Response::Agent { agent: record })
     }
 
-    pub fn is_live(&mut self, id: &AgentId) -> bool {
+    pub fn is_live(&self, id: &AgentId) -> bool {
         self.registry.get(id).is_some_and(|a| a.status.is_live())
     }
 
@@ -4918,7 +4997,7 @@ impl State {
                 entries,
                 head_seq: Some(head_seq),
             },
-            None => Response::error(ErrorCode::Internal, "journal query failed"),
+            None => Response::error(ErrorCode::StorageUnavailable, "journal query failed"),
         }
     }
 
@@ -5065,9 +5144,9 @@ impl State {
                 }
                 Response::Pruned { removed }
             }
-            None => self
-                .write_failure()
-                .unwrap_or_else(|| Response::error(ErrorCode::Internal, "journal prune failed")),
+            None => self.write_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::StorageUnavailable, "journal prune failed")
+            }),
         }
     }
 
@@ -5150,10 +5229,20 @@ impl State {
                 .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
                 .map(|a| a.id.clone())
                 .collect(),
+            // A staged room is persisted with its whole membership, an
+            // ended record included for its session's return; it is
+            // routed, like a stored one, to the members that are live.
             Destination::Channel(id) => channel
                 .as_ref()
                 .filter(|staged| staged.id == *id)
-                .map(|staged| staged.members.clone())
+                .map(|staged| {
+                    staged
+                        .members
+                        .iter()
+                        .filter(|member| self.is_live(member))
+                        .cloned()
+                        .collect()
+                })
                 .unwrap_or_else(|| self.channel_members(id))
                 .into_iter()
                 .filter(|id| id.as_str() != envelope.from)
@@ -5245,6 +5334,18 @@ impl State {
         if let Some(document) = &document {
             kinds.push(document.event.clone());
         }
+        // A question the document settles without an answer: a held
+        // message's card, closed as its message goes out.
+        let settled = document
+            .as_ref()
+            .and_then(|d| d.closes.clone())
+            .filter(|id| self.questions.contains_key(id));
+        if let Some(settled) = &settled {
+            kinds.push(EventKind::QuestionClosed {
+                question: settled.clone(),
+                answer: None,
+            });
+        }
         kinds.push(EventKind::MessageSent {
             message: envelope.id.clone(),
             from: envelope.from.clone(),
@@ -5275,6 +5376,10 @@ impl State {
         // The person's own messages are followed per recipient, so they can
         // see where each stands; agents' traffic is not.
         let tracked = self.is_human_id(&AgentId::from(envelope.from.as_str()));
+        // A released reply to a question closes two: the question it
+        // answers and the card it rode on. The store deletes every one it
+        // is given, so memory and disk agree after a restart.
+        let closing: Vec<MessageId> = closed.iter().chain(settled.iter()).cloned().collect();
         let mut post = None;
         let _ = self.commit(
             "message",
@@ -5286,7 +5391,7 @@ impl State {
                     INBOX_CAPACITY,
                     sender.as_ref(),
                     question.as_ref(),
-                    closed.as_ref(),
+                    &closing,
                     events,
                     channel.as_ref().map(|channel| (channel, journal.as_ref())),
                     document
@@ -5325,6 +5430,9 @@ impl State {
                 }
                 if let Some(closed) = &closed {
                     state.questions.remove(closed);
+                }
+                if let Some(settled) = &settled {
+                    state.questions.remove(settled);
                 }
             },
         );

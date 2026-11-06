@@ -198,6 +198,8 @@ agentdocker daemon reload   # hands over to a new agentd without stopping agents
 #   deny = ["claim:path:/repo/migrations/**"]
 #   [quota]
 #   tokens = 500000
+#   [inbound]                 # what a browser account's agent says, through the
+#   connector = "hold"        # remote connector: accept, hold for you, or refuse
 agentdocker claim --as writer quota:tokens --amount 50000 --shared
 
 # Or hand it to tmux, and keep only the coordination. tmux owns the

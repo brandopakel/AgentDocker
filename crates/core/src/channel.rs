@@ -244,6 +244,14 @@ impl Channel {
         true
     }
 
+    /// Take an agent out of the room. Its messages and reviews stay: they
+    /// were said. Returns whether it was a member.
+    pub fn dismiss(&mut self, agent: &AgentId) -> bool {
+        let before = self.members.len();
+        self.members.retain(|m| m != agent);
+        self.members.len() != before
+    }
+
     /// The paths this channel is about; empty for a task channel.
     pub fn paths(&self) -> &[PathBuf] {
         match &self.subject {

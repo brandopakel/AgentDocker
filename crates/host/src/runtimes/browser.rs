@@ -402,6 +402,7 @@ mod tests {
             ],
             shell: None,
             versions: false,
+            hook_stamps: None,
         };
         (tmp, roots)
     }
