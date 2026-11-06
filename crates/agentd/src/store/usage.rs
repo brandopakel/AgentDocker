@@ -1,6 +1,6 @@
 //! Atomic token accounting. File bytes never enter these tables.
 use super::*;
-use agentdocker_core::usage::context::Context;
+use agentdocker_core::usage::context::Context as SessionContext;
 use agentdocker_core::usage::{self, Aggregate, Baseline, Counters, Range, report::*};
 use agentdocker_host::usage::{Sample, Semantics, reader};
 use serde::{Deserialize, Serialize};
@@ -50,7 +50,7 @@ pub(crate) struct Ingest<'a> {
     pub progress: &'a FileProgress,
     pub samples: &'a [(Sample, Attribution)],
     /// Each session's latest context use among the batch's records.
-    pub contexts: &'a BTreeMap<String, Context>,
+    pub contexts: &'a BTreeMap<String, SessionContext>,
     pub gaps: &'a [reader::Gap],
     pub collection: &'a Collection,
     pub retained_since: DateTime<Utc>,
@@ -483,7 +483,7 @@ impl Store {
     /// Keep a session's latest context use: a record no older than the one
     /// kept replaces it, so a replayed or rescanned file cannot turn the
     /// figure back, and a record that says nothing never reaches here.
-    fn usage_keep_context(&self, session: &str, context: &Context) -> Result<()> {
+    fn usage_keep_context(&self, session: &str, context: &SessionContext) -> Result<()> {
         self.conn.execute(
             "INSERT INTO usage_context VALUES (?1,?2,?3,?4)
              ON CONFLICT(runtime,session) DO UPDATE SET at=excluded.at, json=excluded.json
@@ -503,7 +503,7 @@ impl Store {
     pub(crate) fn usage_contexts(
         &self,
         sessions: &[(String, String, String)],
-    ) -> Result<BTreeMap<String, Context>> {
+    ) -> Result<BTreeMap<String, SessionContext>> {
         let mut statement = self
             .conn
             .prepare("SELECT json FROM usage_context WHERE runtime=?1 AND session=?2")?;

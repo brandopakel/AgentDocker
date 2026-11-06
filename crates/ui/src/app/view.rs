@@ -5417,6 +5417,9 @@ mod tests {
     /// under Details, as a percentage, and nothing where no record says.
     #[test]
     fn a_sessions_context_use_is_on_its_row_and_under_details_only_when_known() {
+        use super::super::view::testing::seen;
+        use super::*;
+        use agentdocker_core::{AgentRecord, AgentSpec};
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
