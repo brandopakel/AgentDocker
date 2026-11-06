@@ -98,7 +98,7 @@ The daemon starts on demand the first time a client needs it, so the last step i
 Then wire in the agents you already have:
 
 ```sh
-agentdocker runtimes          # what is installed: Claude Code, Codex, Gemini CLI, Cursor, ... — CLI, version, app, and whether AgentDocker is wired in
+agentdocker runtimes          # what is installed: Claude Code, Codex, Gemini CLI, Cursor, Docker Agent, ... — CLI, version, app, and whether AgentDocker is wired in
 agentdocker setup --dry-run   # preview supported MCP, hooks and coordination skills
 agentdocker setup codex --preview  # save a reviewable plan for only the chosen integration
 agentdocker setup --apply PLAN_ID # apply that exact plan; --undo PLAN_ID can undo it
@@ -229,7 +229,7 @@ From outside, name the process instead: `agentdocker adopt <pid>`, or `agentdock
 
 ### Give any MCP-capable agent the tools directly
 
-`agentdocker mcp` is an MCP server over stdio. Point a host at it and its model gets `list_agents`, `activity`, `contests` (with `enter_contest` and `submit_entry`), `send_message`, `read_inbox`, `wait_for_messages`, `ask_human` (and `answer_question`, `open_questions`), `claim`, `renew`, `release`, `list_leases`, `inspect_agent`, `whoami`, the working-set tools (`observe_paths`, `check_stale`, `read_set`, `read_journal`, `journal_note`, `overlap`), and the recovery tools (`save_checkpoint`, `resume_checkpoint`, `handoff`, `validate`), plus instructions on when to use them. The server registers the host as an agent when it starts (named `<runtime>-<pid>` unless you pass `--name`) and deregisters when the host closes it; if the host was itself started by `agentdocker run`, the existing identity is reused.
+`agentdocker mcp` is an MCP server over stdio. Point a host at it and its model gets `list_agents`, `activity`, `contests` (with `enter_contest` and `submit_entry`), `send_message`, `read_inbox`, `wait_for_messages`, `ask_human` (and `answer_question`, `open_questions`), `claim`, `renew`, `release`, `list_leases`, `inspect_agent`, `whoami`, the working-set tools (`observe_paths`, `check_stale`, `read_set`, `read_journal`, `mark_journal_read`, `journal_note`, `overlap`), and the recovery tools (`save_checkpoint`, `resume_checkpoint`, `handoff`, `validate`), plus instructions on when to use them. The server registers the host as an agent when it starts (named `<runtime>-<pid>` unless you pass `--name`) and deregisters when the host closes it; if the host was itself started by `agentdocker run`, the existing identity is reused.
 
 ```sh
 # Claude Code
@@ -245,6 +245,14 @@ args = ["mcp", "--runtime", "codex"]
 
 # OpenCode (~/.config/opencode/opencode.json): its own shape
 { "mcp": { "agentdocker": { "type": "local", "command": ["agentdocker", "mcp", "--runtime", "opencode"], "enabled": true } } }
+
+# Docker Agent (docker agent / cagent): in each agent's YAML; `agentdocker setup docker-agent --agent <file>` writes it with the full path
+agents:
+  root:
+    toolsets:
+      - type: mcp
+        command: agentdocker
+        args: ["mcp", "--runtime", "docker-agent"]
 ```
 
 `agentdocker setup opencode` writes that entry (a file with comments is left for you to edit) and installs the AgentDocker plugin at `~/.config/opencode/plugins/agentdocker.js`, OpenCode's counterpart of the Claude Code hooks below: an edit, write or patch to a file another agent holds is refused with the holder and its note, reads are recorded, messages and the journal reach the model, the turn's end gives back automatic leases, and a message that arrives while the session is idle wakes it (through OpenCode's own `session.promptAsync`, no consent flag needed). A message leaves the queue only after the turn that carried it completes, so an interrupted turn loses nothing. An edited plugin is never overwritten; restart OpenCode after setup so it loads the plugin.

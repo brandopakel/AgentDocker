@@ -47,7 +47,7 @@ pub mod seed;
 
 pub use agent::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, SessionContact,
-    SessionKey, VcsState,
+    SessionKey, VcsState, short,
 };
 pub use board::{Board, Lane};
 pub mod plan;
@@ -106,6 +106,7 @@ pub mod working_set;
 pub use working_set::{ReadMark, StalePath};
 
 pub mod delivery;
+pub mod docker_agent;
 pub mod gate;
 pub mod readiness;
 pub mod recovery;

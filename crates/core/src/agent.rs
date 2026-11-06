@@ -26,13 +26,16 @@ impl AgentId {
 
     /// Abbreviated form for tables, like the 12-character IDs in `docker ps`.
     pub fn short(&self) -> &str {
-        let end = self
-            .0
-            .char_indices()
-            .nth(12)
-            .map_or(self.0.len(), |(i, _)| i);
-        &self.0[..end]
+        short(&self.0)
     }
+}
+
+/// The first twelve characters of an id-like string, the abbreviation
+/// `docker ps` shows, without splitting a character: a shorter string is
+/// returned whole.
+pub fn short(s: &str) -> &str {
+    let end = s.char_indices().nth(12).map_or(s.len(), |(i, _)| i);
+    &s[..end]
 }
 
 impl From<String> for AgentId {
@@ -974,6 +977,18 @@ mod tests {
         assert_eq!(id.short().len(), 12);
         assert!(id.as_str().starts_with(id.short()));
         assert_eq!(AgentId::from("abc").short(), "abc");
+    }
+
+    /// Twelve characters, not twelve bytes: a multi-byte id is cut on a
+    /// character boundary, and one shorter than twelve comes back whole.
+    #[test]
+    fn short_counts_characters_not_bytes() {
+        assert_eq!(short("ééééééééééééééé"), "éééééééééééé");
+        assert_eq!(short("ééééééééééééééé").chars().count(), 12);
+        assert_eq!(short("日本語の識別子です長い"), "日本語の識別子です長い");
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(short(""), "");
+        assert_eq!(short("0123456789abcdef"), "0123456789ab");
     }
 
     /// A session known by its key alone: its key is runtime, profile and
