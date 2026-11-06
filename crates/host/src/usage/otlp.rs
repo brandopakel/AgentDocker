@@ -173,6 +173,7 @@ fn sample(record: &Value, attributes: &Attributes<'_>) -> Result<Sample, String>
         proves_zero_baseline: false,
         cost_usd_micros,
         aliases: Vec::new(),
+        parent_session: None,
     })
 }
 
