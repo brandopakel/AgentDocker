@@ -722,7 +722,7 @@ about us:
 
 `read_journal` shows what changed since the agent's cursor and leaves the
 cursor where it is; `mark_journal_read` moves it past what `read_journal`
-shows, so the next read starts after it; `since` reads from a sequence
+shows, so the next read starts after it; the since argument reads from a sequence
 number instead.
 
 `create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
