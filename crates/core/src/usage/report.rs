@@ -101,6 +101,12 @@ pub struct Row {
     pub key: Option<String>,
     pub samples: u64,
     pub counters: CounterReports,
+    /// Whether every figure in the row is the provider's own per-response
+    /// count (`exact`), or at least one is a difference between its
+    /// running totals (`estimated`); absent where buckets written before
+    /// this was kept are in the row ([`super::UsageSource`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_source: Option<super::UsageSource>,
     /// The provider-reported estimated cost of the samples, in micro-dollars (USD ×
     /// 10⁶), with the same coverage terms as a counter: a sum only over the
     /// samples that carried a price (Claude Code's telemetry events do;

@@ -2413,6 +2413,12 @@ fn brief_agent(
         "status": agent.status.to_string(),
         "project": agent.project.as_ref().map(|p| p.name()),
         "branch": agent.vcs.as_ref().and_then(|v| v.branch.clone()),
+        // What its provider says of its own thread: a spawned Codex
+        // thread's role and parent. Left out for a root thread.
+        "thread": agent
+            .thread
+            .as_ref()
+            .filter(|thread| thread.role.is_some() || thread.parent.is_some()),
     }))
 }
 
