@@ -557,37 +557,7 @@ async fn establish_identity(
     let workdir = std::env::current_dir()
         .ok()
         .map(|dir| dir.canonicalize().unwrap_or(dir));
-    let spec = AgentSpec {
-        name,
-        runtime: args.runtime.clone(),
-        provider: args.provider.clone(),
-        model: args.model.clone(),
-        command: Vec::new(),
-        workdir,
-        env: BTreeMap::new(),
-        labels: {
-            let mut labels = BTreeMap::from([
-                ("via".to_owned(), "mcp".to_owned()),
-                ("registrar".to_owned(), registrar.clone()),
-            ]);
-            if args.name.is_none() {
-                labels.insert(
-                    agentdocker_core::agent::NAME_LABEL.to_owned(),
-                    agentdocker_core::agent::GENERATED_NAME.to_owned(),
-                );
-            }
-            if let Some(session) = session {
-                labels.insert("session_id".to_owned(), session);
-            }
-            labels
-        },
-        isolate: false,
-        tty: false,
-        restore: false,
-        in_pane: false,
-        restart: Default::default(),
-        depends_on: Vec::new(),
-    };
+    let spec = registration_spec(args, name, &registrar, session, workdir);
     match client
         .call(&Request::Register {
             spec,
@@ -614,6 +584,52 @@ async fn establish_identity(
             name: agent.spec.name,
         }),
         other => bail!("unexpected reply to register: {other:?}"),
+    }
+}
+
+/// The record an MCP server registers for the host that started it: the
+/// host's runtime as the entry names it (`--runtime`), reached through
+/// MCP, with the nonce that proves the record is this server's. Every
+/// runtime whose entry runs `agentdocker mcp --runtime <name>` joins this
+/// way — one that declares the server per agent file (Docker Agent) as
+/// much as one with a configuration file of its own.
+fn registration_spec(
+    args: &McpArgs,
+    name: String,
+    registrar: &str,
+    session: Option<String>,
+    workdir: Option<std::path::PathBuf>,
+) -> AgentSpec {
+    AgentSpec {
+        name,
+        runtime: args.runtime.clone(),
+        provider: args.provider.clone(),
+        model: args.model.clone(),
+        command: Vec::new(),
+        workdir,
+        env: BTreeMap::new(),
+        labels: {
+            let mut labels = BTreeMap::from([
+                ("via".to_owned(), "mcp".to_owned()),
+                ("registrar".to_owned(), registrar.to_owned()),
+            ]);
+            if args.name.is_none() {
+                labels.insert(
+                    agentdocker_core::agent::NAME_LABEL.to_owned(),
+                    agentdocker_core::agent::GENERATED_NAME.to_owned(),
+                );
+            }
+            if let Some(session) = session {
+                labels.insert("session_id".to_owned(), session);
+            }
+            labels
+        },
+        isolate: false,
+        tty: false,
+        restore: false,
+        in_pane: false,
+        restart: Default::default(),
+        depends_on: Vec::new(),
     }
 }
 
@@ -1757,9 +1773,31 @@ impl<B: Backend> McpServer<B> {
                 })
                 .await
             }
-            "read_journal" => {
+            "request_release" => {
+                let args: RequestReleaseArgs = parse(arguments)?;
+                self.forward(Request::RequestRelease {
+                    from: me,
+                    resource: crate::resource_key(&args.resource),
+                    reason: args.reason,
+                })
+                .await
+            }
+            "respond_release" => {
+                let args: RespondReleaseArgs = parse(arguments)?;
+                self.forward(Request::RespondRelease {
+                    from: me,
+                    request: MessageId::from(args.request),
+                    accept: args.accept,
+                    text: args.text,
+                })
+                .await
+            }
+            "read_journal" | "mark_journal_read" => {
                 let args: ReadJournalArgs = parse(arguments)?;
                 let budget = agentdocker_core::DigestBudget::SESSION_START;
+                // The same digest either way; only the marking tool moves
+                // the reader's cursor past it, which is why it is its own
+                // tool with its own hints.
                 self.forward(Request::Journal {
                     project: String::new(),
                     since_seq: args.since,
@@ -1775,7 +1813,7 @@ impl<B: Backend> McpServer<B> {
                         max_entries: budget.max_entries,
                         max_chars: budget.max_chars,
                         all_branches: args.all_branches,
-                        advance: true,
+                        advance: name == "mark_journal_read",
                     }),
                 })
                 .await
@@ -2148,6 +2186,21 @@ struct ReleaseArgs {
 }
 
 #[derive(Deserialize)]
+struct RequestReleaseArgs {
+    resource: String,
+    #[serde(default)]
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RespondReleaseArgs {
+    request: String,
+    accept: bool,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
 struct JournalNoteArgs {
     summary: String,
 }
@@ -2469,30 +2522,39 @@ fn render_whole(response: Response) -> Value {
 fn annotations(name: &str) -> Value {
     // (read-only, destructive, idempotent, open-world)
     let (read_only, destructive, idempotent, open_world) = match name {
-        // Looking: nothing changes.
+        // Looking: nothing changes (`read_journal` never moves the
+        // reader's cursor; `mark_journal_read` is the tool that does).
         "whoami" | "list_agents" | "inspect_agent" | "list_leases" | "activity" | "overlap"
-        | "open_questions" | "read_journal" | "wait_for_messages" | "check_stale" | "read_set"
-        | "list_checkpoints" | "list_handoffs" | "list_channels" | "contests" | "list_tasks"
-        | "get_task" | "my_tasks" | "worktree_diff" | "validation_results" | "usage"
-        | "search_tasks" | "list_tags" | "list_roles" | "list_plans" | "get_plan"
-        | "list_files" | "get_file" | "search_memory" | "get_profile" => (true, false, true, false),
-        // Saying and recording: additive, repeatable.
-        "report_activity" | "report_provider_status" | "observe_paths" | "renew" => {
-            (false, false, true, false)
-        }
-        // Reading with an option to consume, or acknowledging: never
-        // destructive, and the same call twice changes nothing more.
-        "read_inbox" | "acknowledge_messages" => (false, false, true, false),
+        | "open_questions" | "read_journal" | "check_stale" | "read_set" | "list_checkpoints"
+        | "list_handoffs" | "list_channels" | "contests" | "list_tasks" | "get_task"
+        | "my_tasks" | "worktree_diff" | "validation_results" | "usage" | "search_tasks"
+        | "list_tags" | "list_roles" | "list_plans" | "get_plan" | "list_files" | "get_file"
+        | "search_memory" | "get_profile" => (true, false, true, false),
+        // Saying and recording: additive, repeatable. Marking the journal
+        // read moves the reader's cursor forward, never back.
+        "report_activity"
+        | "report_provider_status"
+        | "observe_paths"
+        | "renew"
+        | "mark_journal_read" => (false, false, true, false),
+        // Reading the queue, which records the offer, waiting on it, or
+        // acknowledging: never destructive, and the same call twice
+        // changes nothing more.
+        "read_inbox" | "wait_for_messages" | "acknowledge_messages" => (false, false, true, false),
         // Additive writes: a message, a note, a lease, a checkpoint, a
         // card, a channel, a review, an entry.
         "send_message" | "ask_human" | "answer_question" | "journal_note" | "claim" | "release"
-        | "save_checkpoint" | "handoff" | "resume_checkpoint" | "commit" | "create_worktree"
-        | "open_channel" | "close_channel" | "request_review" | "review" | "enter_contest"
-        | "submit_entry" | "create_task" | "create_tasks" | "move_task" | "pull_task"
-        | "update_task" | "comment_task" | "archive_task" | "create_tag" | "save_plan"
-        | "put_file" | "link_file" | "add_memory" => (false, false, false, false),
-        // Gone for good.
-        "forget_memory" => (false, true, true, false),
+        | "request_release" | "respond_release" | "save_checkpoint" | "handoff"
+        | "resume_checkpoint" | "commit" | "create_worktree" | "open_channel"
+        | "request_review" | "review" | "enter_contest" | "submit_entry" | "create_task"
+        | "create_tasks" | "move_task" | "pull_task" | "update_task" | "comment_task"
+        | "create_tag" | "save_plan" | "put_file" | "link_file" | "add_memory" => {
+            (false, false, false, false)
+        }
+        // Taking things away: a card off the board (the person can put it
+        // back), a channel closed for good, a memory gone. Doing it again
+        // changes nothing more.
+        "archive_task" | "close_channel" | "forget_memory" => (false, true, true, false),
         // Changes files in a checkout: an uncommitted merge.
         "integrate_worktree" => (false, true, false, false),
         // The gate is a reading; a verdict is one more word on record.
@@ -2613,20 +2675,20 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "review_verdict",
-            "description": "Give your verdict on a branch at the exact commit you read: `approve` (no P1 findings), `changes`, or `comment`. It counts at the review gate for the roles the person gave you, and only for that commit: any later commit, a merge included, needs your word again. Name the earlier commit in `from` when you read only what came after it. Say what you checked in the note.",
+            "description": "Give your verdict on a branch at the exact commit you read: `pass` (no important finding), `changes`, or `none` (you read it and give no verdict). Count what you found as important (must be fixed before it lands), nit (worth fixing, not blocking) and pre_existing (not caused by this change); counts you leave out are zero. It counts at the review gate for the roles the person gave you, and only for that commit: any later commit, a merge included, needs your word again. Refused on a branch you hold, are checked out on, or committed to: the author does not pass its own change. Name the earlier commit in `from` when you read only what came after it. Say what you checked in the note.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "branch": { "type": "string" },
                     "head": { "type": "string", "description": "Full id of the commit you read (40 or 64 hex digits)." },
                     "from": { "type": "string", "description": "Full id of the commit an earlier review read." },
-                    "verdict": { "type": "string", "enum": ["approve", "changes", "comment"] },
+                    "verdict": { "type": "string", "enum": ["pass", "changes", "none"] },
                     "findings": {
                         "type": "object",
                         "properties": {
-                            "p1": { "type": "integer", "minimum": 0 },
-                            "p2": { "type": "integer", "minimum": 0 },
-                            "p3": { "type": "integer", "minimum": 0 }
+                            "important": { "type": "integer", "minimum": 0 },
+                            "nit": { "type": "integer", "minimum": 0 },
+                            "pre_existing": { "type": "integer", "minimum": 0 }
                         },
                         "additionalProperties": false
                     },
@@ -2639,7 +2701,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "review_gate",
-            "description": "Whether a branch may land at a commit: approved at exactly that commit by a holder of `role` (default `reviewer`) or the person, with nobody asking for changes. `stale` means the approval read an earlier commit.",
+            "description": "Whether a branch may land at a commit: `approved` when a holder of `role` (default `reviewer`) or the person passed exactly that commit and nobody asks for changes; `changes`, `stale` (the pass read an earlier commit) or `missing` otherwise. The verdict it stands on carries the reviewer's finding counts and runtime.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2895,6 +2957,33 @@ fn bare_tool_definitions() -> Vec<Value> {
             }
         }),
         json!({
+            "name": "request_release",
+            "description": "Ask whoever holds a resource to let go of it, when claim was refused or a commit over it was. Each holder gets a `release_request` message naming the resource, their leases and your reason; they answer with respond_release, and the answer reaches your inbox as a `release_response` in reply to the request (accepted, with the leases released for you to claim, or declined with a reason). Asking again for the same resource returns the same pending request. `not_found` when nobody else holds it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "resource": { "type": "string", "description": "`path:`, `branch:`, `task:`... as claim takes it; a bare path is a `path:`." },
+                    "reason": { "type": "string", "description": "Why you need it, for the holder to read (at most 400 characters)." }
+                },
+                "required": ["resource"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "respond_release",
+            "description": "Answer a `release_request` message put to you, by its id (the message's `request` field). accept=true has the daemon release the request's leases you still hold, journaled with `text` as the summary of what you changed under them; accept=false keeps them and sends `text` as your reason. Only the holder may answer; an answered request is gone.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "request": { "type": "string", "description": "The release request's message id." },
+                    "accept": { "type": "boolean" },
+                    "text": { "type": "string", "description": "The summary for the journal (accept) or the reason (decline); at most 400 characters." }
+                },
+                "required": ["request", "accept"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
             "name": "journal_note",
             "description": "Append a note to this project's journal — a decision, a finding, or what you are about to do — so agents joining later see it.",
             "inputSchema": {
@@ -2906,12 +2995,23 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "read_journal",
-            "description": "What changed in this project and why since this agent last read it: one line per release, note, commit, or arrival, oldest first, within a budget. Reading marks it seen; `since` re-reads from a sequence number instead.",
+            "description": "What changed in this project and why since this agent last read it: one line per release, note, commit, or arrival, oldest first, within a budget. Reading changes nothing: the same read comes back until something is added or `mark_journal_read` marks it seen; `since` re-reads from a sequence number instead.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "since": { "type": "integer", "minimum": 0, "description": "Sequence number to read from instead of this agent's cursor." },
                     "all_branches": { "type": "boolean", "default": false, "description": "Show entries from every branch instead of counting the other branches." }
+                },
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "mark_journal_read",
+            "description": "Mark what read_journal shows now as seen, so the next read_journal starts after it. Returns that digest.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "all_branches": { "type": "boolean", "default": false, "description": "Count what read_journal shows with all_branches as seen." }
                 },
                 "additionalProperties": false
             }
@@ -3539,6 +3639,80 @@ mod tests {
         )
     }
 
+    /// A Docker Agent run lists `agentdocker mcp --runtime docker-agent`
+    /// in its YAML and starts this server as any MCP host does: the record
+    /// it registers is a `docker-agent` agent named after the host, with
+    /// no adapter but MCP, and its tools then act as that agent — a claim
+    /// goes to the daemon in its name, as for a custom runtime.
+    #[tokio::test]
+    async fn a_docker_agent_host_registers_as_its_runtime_and_claims_through_mcp() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Line {
+            #[command(flatten)]
+            args: McpArgs,
+        }
+        let args = Line::parse_from(["mcp", "--runtime", "docker-agent"]).args;
+        let spec = registration_spec(
+            &args,
+            format!("{}-{}", args.runtime, 4242),
+            "nonce",
+            None,
+            Some(std::path::PathBuf::from("/work/orchard")),
+        );
+        assert_eq!(spec.runtime, "docker-agent");
+        assert_eq!(spec.name, "docker-agent-4242");
+        assert_eq!(spec.labels.get("via").map(String::as_str), Some("mcp"));
+        assert_eq!(
+            spec.labels.get("registrar").map(String::as_str),
+            Some("nonce")
+        );
+        assert!(
+            spec.labels
+                .contains_key(agentdocker_core::agent::NAME_LABEL)
+        );
+        assert!(spec.command.is_empty() && !spec.tty && !spec.isolate);
+        assert!(
+            agentdocker_core::runtime::hook_events(&spec.runtime).is_empty(),
+            "no hooks adapter: MCP is the whole of it"
+        );
+
+        // With that identity, a tool call is the daemon's request in the
+        // agent's name.
+        let registered = agentdocker_core::AgentRecord::new(spec, false, chrono::Utc::now());
+        let id = registered.id.to_string();
+        let server = McpServer::new(
+            Mock::with(vec![Response::Agent {
+                agent: registered.clone(),
+            }]),
+            Identity {
+                id: id.clone(),
+                name: registered.spec.name.clone(),
+                registered_here: true,
+                host_pid: Some(4242),
+                host_started_at: None,
+            },
+        );
+        let reply = server
+            .handle(rpc(
+                1,
+                "tools/call",
+                json!({"name": "claim", "arguments": {"resource": "path:/work/orchard/src/lib.rs", "note": "editing"}}),
+            ))
+            .await
+            .unwrap();
+        assert!(reply["error"].is_null(), "{reply}");
+        let requests = server.backend.requests();
+        assert!(
+            requests.iter().any(|request| matches!(
+                request,
+                Request::Claim { agent, resource, .. }
+                    if agent == &id && resource == "path:/work/orchard/src/lib.rs"
+            )),
+            "{requests:?}"
+        );
+    }
+
     fn rpc(id: u64, method: &str, params: Value) -> Value {
         json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params })
     }
@@ -4093,6 +4267,13 @@ mod tests {
         assert_eq!(by("send_message")["destructiveHint"], false);
         assert_eq!(by("claim")["destructiveHint"], false);
         assert_eq!(by("integrate_worktree")["destructiveHint"], true);
+        for name in ["archive_task", "close_channel", "forget_memory"] {
+            assert_eq!(by(name)["destructiveHint"], true, "{name}");
+            assert_eq!(by(name)["idempotentHint"], true, "{name}");
+        }
+        // The queue records the offer: reading or waiting on it writes.
+        assert_eq!(by("read_inbox")["readOnlyHint"], false);
+        assert_eq!(by("wait_for_messages")["readOnlyHint"], false);
         assert_eq!(by("validate")["openWorldHint"], true);
         // The browser agent's tools: every read is read-only, nothing is
         // destructive, so a host's "low-risk" default lets the reads through.
@@ -4107,6 +4288,172 @@ mod tests {
             "read_journal",
         ] {
             assert_eq!(by(name)["readOnlyHint"], true, "{name}");
+        }
+    }
+
+    /// Arguments that satisfy a tool's own input schema: every required
+    /// property filled with the plainest value of its type, so the call
+    /// gets past parsing and reaches the daemon.
+    fn arguments_from(schema: &Value) -> Value {
+        let mut object = serde_json::Map::new();
+        if let Some(required) = schema["required"].as_array() {
+            for name in required.iter().filter_map(Value::as_str) {
+                object.insert(name.to_owned(), value_for(&schema["properties"][name]));
+            }
+        }
+        Value::Object(object)
+    }
+
+    /// The plainest value a schema property allows.
+    fn value_for(property: &Value) -> Value {
+        if let Some(first) = property["enum"].as_array().and_then(|e| e.first()) {
+            return first.clone();
+        }
+        let kind = match &property["type"] {
+            Value::String(kind) => kind.as_str(),
+            Value::Array(kinds) => kinds.first().and_then(Value::as_str).unwrap_or("object"),
+            _ => "object",
+        };
+        match kind {
+            "string" => json!("x"),
+            "integer" | "number" => json!(property["minimum"].as_i64().unwrap_or(0).max(1)),
+            "boolean" => json!(true),
+            "array" => json!([value_for(&property["items"])]),
+            _ => arguments_from(property),
+        }
+    }
+
+    /// The calls a tool's schema allows, one property at a time: the
+    /// base arguments, then each property the schema names set on top of
+    /// them to every value it can take (both ways for a boolean, every
+    /// member of an enum, one value otherwise). An annotation covers the
+    /// tool's whole input space, so every switch is tried.
+    fn argument_variants(schema: &Value, base: &Value) -> Vec<Value> {
+        let mut variants = vec![base.clone()];
+        if let Some(properties) = schema["properties"].as_object() {
+            for (name, property) in properties {
+                let values: Vec<Value> = if let Some(members) = property["enum"].as_array() {
+                    members.clone()
+                } else if property["type"] == "boolean" {
+                    vec![json!(true), json!(false)]
+                } else {
+                    vec![value_for(property)]
+                };
+                for value in values {
+                    let mut variant = base.as_object().cloned().unwrap_or_default();
+                    variant.insert(name.clone(), value);
+                    variants.push(Value::Object(variant));
+                }
+            }
+        }
+        variants
+    }
+
+    /// The read-only hint is checked against what each tool sends, over
+    /// its whole input space: the arguments from its own schema and every
+    /// switch the schema offers, one at a time. A tool marked read-only
+    /// must send the daemon nothing it admits as a mutation on any of
+    /// them, and a tool marked otherwise must send something it does on
+    /// at least one. The daemon's own classifier is the reference, so a
+    /// hint cannot drift from the protocol: a tool that starts writing,
+    /// on any argument, loses its hint here first.
+    #[tokio::test]
+    async fn read_only_hints_agree_with_the_requests_the_tools_send() {
+        let mut findings = Vec::new();
+        for tool in tool_definitions() {
+            let name = tool["name"].as_str().unwrap();
+            let base = match name {
+                // The queue is read without draining, and the wait returns
+                // on the first answer: the retaining paths, which the
+                // daemon still records as an offer.
+                "read_inbox" => json!({ "drain": false }),
+                "wait_for_messages" => json!({ "timeout_secs": 0 }),
+                // A block names its issue, which the schema leaves to the
+                // state chosen.
+                "report_provider_status" => {
+                    json!({ "state": "blocked", "issue": { "kind": "usage" } })
+                }
+                // Text or a payload: one of two, which `required` cannot say.
+                "send_message" => json!({ "to": "x", "text": "x" }),
+                _ => arguments_from(&tool["inputSchema"]),
+            };
+            let read_only = tool["annotations"]["readOnlyHint"] == true;
+            let mut wrote = false;
+            for (index, arguments) in argument_variants(&tool["inputSchema"], &base)
+                .into_iter()
+                .enumerate()
+            {
+                let mut s = server(vec![]);
+                // A provider report is bound to the process that made it.
+                s.identity.host_started_at = Some(chrono::Utc::now());
+                s.handle(rpc(
+                    1,
+                    "tools/call",
+                    json!({ "name": name, "arguments": arguments }),
+                ))
+                .await
+                .unwrap();
+                // The adapter's first contact is the session's own
+                // bookkeeping, sent on whichever tool comes first, not the
+                // tool's doing.
+                let requests: Vec<Request> = s
+                    .backend
+                    .requests()
+                    .into_iter()
+                    .filter(|request| !matches!(request, Request::ReportAdapter { .. }))
+                    .collect();
+                if requests.is_empty() {
+                    // The base arguments must reach the daemon; a variant
+                    // the tool refuses before any request wrote nothing.
+                    if index == 0 {
+                        findings.push(format!("{name} reached no request with {arguments}"));
+                    }
+                    continue;
+                }
+                let mutating: Vec<&Request> = requests
+                    .iter()
+                    .filter(|request| agentd::daemon::mutates(request))
+                    .collect();
+                if read_only && !mutating.is_empty() {
+                    findings.push(format!(
+                        "{name} is marked read-only but with {arguments} sent {mutating:?}"
+                    ));
+                }
+                wrote |= !mutating.is_empty();
+            }
+            if !read_only && !wrote {
+                findings.push(format!(
+                    "{name} is not marked read-only but never sent a mutation"
+                ));
+            }
+        }
+        assert!(findings.is_empty(), "{}", findings.join("\n"));
+    }
+
+    /// Reading never moves the cursor; marking the journal read is the
+    /// one tool that does, and it is what the daemon admits as a
+    /// mutation, so each carries its own hint.
+    #[tokio::test]
+    async fn reading_the_journal_and_marking_it_read_are_two_tools() {
+        for (tool, advance) in [("read_journal", false), ("mark_journal_read", true)] {
+            let s = server(vec![]);
+            s.handle(rpc(
+                1,
+                "tools/call",
+                json!({ "name": tool, "arguments": {} }),
+            ))
+            .await
+            .unwrap();
+            let requests = s.backend.requests();
+            let journal = requests
+                .iter()
+                .find(|request| matches!(request, Request::Journal { .. }))
+                .expect("a journal request");
+            assert!(
+                matches!(journal, Request::Journal { digest: Some(digest), .. } if digest.advance == advance),
+                "{tool}"
+            );
+            assert_eq!(agentd::daemon::mutates(journal), advance, "{tool}");
         }
     }
 
@@ -4356,8 +4703,11 @@ mod tests {
                 "claim",
                 "renew",
                 "release",
+                "request_release",
+                "respond_release",
                 "journal_note",
                 "read_journal",
+                "mark_journal_read",
                 "list_leases",
                 "list_tasks",
                 "usage",

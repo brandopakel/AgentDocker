@@ -75,6 +75,7 @@ mod provider;
 mod read_content;
 mod recovery;
 mod relay;
+mod release_requests;
 pub mod reload;
 mod restarts;
 mod restore;
@@ -173,6 +174,12 @@ pub(crate) struct DocumentTransition {
     /// The document to put, or none to delete it.
     pub value: Option<serde_json::Value>,
     pub event: EventKind,
+    /// Leases released in the same transaction, each with its
+    /// `lease_released`: an accepted release request lets go of them with
+    /// its answer, or not at all.
+    pub released: Vec<Lease>,
+    /// The journal entry that records them; its sequence is given here.
+    pub journal: Option<JournalEntry>,
     /// A question settled without an answer in the same commit — the card
     /// a held message rode on, once the message goes out — closed with
     /// `question_closed {answer: None}`.
@@ -242,8 +249,10 @@ enum Coordination {
 /// everything else answers `transferring` until a coordinator owns the
 /// database again. `Shutdown` and `Reload` steer the daemon itself
 /// rather than its data: neither is fenced, and neither counts as a
-/// mutation in flight, or a reload would refuse itself.
-fn mutates(request: &Request) -> bool {
+/// mutation in flight, or a reload would refuse itself. A journal digest
+/// writes only when it advances the reader's cursor. Public because the
+/// MCP server's tests check each tool's `readOnlyHint` against it.
+pub fn mutates(request: &Request) -> bool {
     !matches!(
         request,
         Request::Shutdown
@@ -269,6 +278,10 @@ fn mutates(request: &Request) -> bool {
             | Request::Pauses
             | Request::Contests { .. }
             | Request::Journal { digest: None, .. }
+            | Request::Journal {
+                digest: Some(DigestRequest { advance: false, .. }),
+                ..
+            }
             | Request::Channels { .. }
             | Request::Conversations { .. }
             | Request::History { .. }
@@ -567,6 +580,9 @@ struct State {
     secret_reviews: HashMap<String, secret_reviews::Entry>,
     /// The projects told to hold, and why; kept as documents.
     pauses: HashMap<ProjectId, agentdocker_core::Pause>,
+    /// Requests to let go of a resource that wait for the holder's answer,
+    /// by the request message's id; kept as documents.
+    release_requests: HashMap<MessageId, agentdocker_core::ReleaseRequest>,
     /// Claims waiting for a resource, in arrival order. Connection-scoped
     /// and never persisted: a restart drops every waiting client, which
     /// reconnects and takes a new place.
@@ -747,7 +763,7 @@ fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
                 }
             };
             if !wait_until(10, &mut || {
-                !(process_exists(pid) && same_process(pid, Some(started)))
+                !(procinfo::alive(pid) && same_process(pid, Some(started)))
             }) {
                 return;
             }
@@ -765,11 +781,10 @@ fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
         });
 }
 
-/// Is there a process with this pid? `EPERM` means it exists but belongs to
-/// someone else, which still counts as alive. Zero and out-of-range values
-/// would address process groups, so they are never alive.
 /// A pid a signal could address: positive, and within the range the OS
-/// uses. Unix keeps the typed pid; Windows only needs the check.
+/// uses (zero and out-of-range values would address process groups). Unix
+/// keeps the typed pid; Windows only needs the check. Whether such a
+/// process exists is `procinfo::alive`'s question.
 #[cfg(unix)]
 fn signal_pid(pid: u32) -> Option<Pid> {
     let raw = i32::try_from(pid).ok()?;
@@ -901,10 +916,13 @@ fn trim_in_place(path: &Path, what: &str) {
     }
 }
 
-/// Whether a process with this pid exists — ours or not; an access
-/// refusal is a yes. Both platforms answer through the host crate.
-fn process_exists(pid: u32) -> bool {
-    signal_pid(pid).is_some_and(|_| procinfo::alive(pid))
+/// The physical form of a path, resolved off the runtime: as much of it
+/// canonical as exists, the missing tail kept. A path the host cannot
+/// resolve is an error, never a guess.
+async fn physical(path: PathBuf) -> anyhow::Result<PathBuf> {
+    tokio::task::spawn_blocking(move || project::try_canonical(&path))
+        .await?
+        .map_err(Into::into)
 }
 
 /// Does the pid still belong to the process that registered it? Compared by
@@ -1052,7 +1070,9 @@ impl Daemon {
         };
         for candidate in candidates {
             let alive = match candidate.pid {
-                Some(pid) => process_exists(pid) && same_process(pid, candidate.process_started_at),
+                Some(pid) => {
+                    procinfo::alive(pid) && same_process(pid, candidate.process_started_at)
+                }
                 None => !candidate.managed,
             };
             if alive {
@@ -1193,7 +1213,7 @@ impl Daemon {
             return Response::error(ErrorCode::Invalid, "invalid signal target");
         };
         // Host inspection and signaling never hold the global coordination guard.
-        let alive = process_exists(pid);
+        let alive = procinfo::alive(pid);
         let current_started_at = procinfo::start_time(pid);
         let group_alive = record.process_group.is_some_and(supervisor::group_exists);
         if !alive && group_alive {
@@ -1327,6 +1347,7 @@ impl Daemon {
         let mut state = lock(&self.state);
         state.expire_leases();
         state.expire_questions(Utc::now());
+        state.expire_release_requests(Utc::now());
         state.expire_secret_reviews();
     }
     /// Send the stale and contested notices that accumulated since the
@@ -1560,6 +1581,11 @@ impl Daemon {
             .into_iter()
             .map(|pause| (pause.project.clone(), pause))
             .collect();
+        let release_requests: HashMap<MessageId, agentdocker_core::ReleaseRequest> = store
+            .documents::<agentdocker_core::ReleaseRequest>("release_request", None)?
+            .into_iter()
+            .map(|request| (request.message.clone(), request))
+            .collect();
         let mut questions: HashMap<_, _> = store
             .documents::<agentdocker_core::Question>("question", None)?
             .into_iter()
@@ -1708,6 +1734,7 @@ impl Daemon {
                 held_messages,
                 secret_reviews: HashMap::new(),
                 pauses,
+                release_requests,
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
                 host_policy: policies::Loaded::default(),
@@ -2988,6 +3015,17 @@ impl Daemon {
                 self.flush_release_watcher(&agent, None).await;
                 lock(&self.state).release_all(&agent, summary, summary_source, only_automatic)
             }
+            Request::RequestRelease {
+                from,
+                resource,
+                reason,
+            } => self.request_release(from, resource, reason).await,
+            Request::RespondRelease {
+                from,
+                request,
+                accept,
+                text,
+            } => self.respond_release(from, request, accept, text).await,
             Request::JournalAdd { agent, summary } => {
                 lock(&self.state).journal_add(&agent, summary)
             }
@@ -4478,7 +4516,7 @@ impl State {
                 };
                 let mut record = (*latest).clone();
                 if record.pid.is_some_and(|pid| {
-                    process_exists(pid) && same_process(pid, record.process_started_at)
+                    procinfo::alive(pid) && same_process(pid, record.process_started_at)
                 }) {
                     return Some(Response::error(
                         ErrorCode::Conflict,
@@ -5200,6 +5238,23 @@ impl State {
             Some((channel, events, journal)) => (Some(channel), events, journal),
             None => (None, Vec::new(), None),
         };
+        let mut document = document;
+        let released = document
+            .as_mut()
+            .map(|document| std::mem::take(&mut document.released))
+            .unwrap_or_default();
+        if let Some(entry) = document
+            .as_mut()
+            .and_then(|document| document.journal.take())
+        {
+            if journal.is_some() {
+                return Response::error(
+                    ErrorCode::Internal,
+                    "a message carries at most one journal entry",
+                );
+            }
+            journal = Some(entry);
+        }
         if let Some(error) = self.write_failure() {
             return error;
         }
@@ -5330,6 +5385,9 @@ impl State {
             };
         }
         let mut kinds: Vec<_> = transition.into_iter().collect();
+        kinds.extend(released.iter().map(|lease| EventKind::LeaseReleased {
+            lease: lease.clone(),
+        }));
         if let Some(document) = &document {
             kinds.push(document.event.clone());
         }
@@ -5392,7 +5450,12 @@ impl State {
                     question.as_ref(),
                     &closing,
                     events,
-                    channel.as_ref().map(|channel| (channel, journal.as_ref())),
+                    channel.as_ref(),
+                    journal.as_ref(),
+                    &released
+                        .iter()
+                        .map(|lease| lease.id.clone())
+                        .collect::<Vec<_>>(),
                     document
                         .as_ref()
                         .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
@@ -5403,6 +5466,12 @@ impl State {
                 post = kept;
                 if let Some(channel) = &channel {
                     state.channels.insert(channel.id.clone(), channel.clone());
+                }
+                for lease in &released {
+                    state
+                        .leases
+                        .release(&lease.id, &lease.holder)
+                        .expect("release protection retained until commit");
                 }
                 if let Some(entry) = &journal {
                     state
@@ -5987,7 +6056,7 @@ impl State {
         // gone, or this is two lives of one session at once.
         for record in earlier.iter().chain(std::iter::once(prior)) {
             if record.pid.is_some_and(|old| {
-                process_exists(old) && same_process(old, record.process_started_at)
+                procinfo::alive(old) && same_process(old, record.process_started_at)
             }) {
                 return fresh;
             }

@@ -81,6 +81,11 @@ pub struct TaskTransition<'a> {
 // holders left, and drop `role` rewriting the channel.
 // Schema 28, unreleased, also lets a pending Codex review offer the session
 // (`for_session` on its presentation), a field an older reader refuses.
+// Schema 28, unreleased, also counts a `code_verdict` document's findings
+// `important`/`nit`/`pre_existing`, with the reviewer's `runtime` beside
+// them, where they were `p1`/`p2`/`p3`: a kept `p1`/`p2` are read, and an
+// older daemon reads the new counts as none. The word keeps its wire
+// spelling (`approve`/`changes`/`comment`), so an older reader decodes it.
 // The `authorship` and `witnessed_worktrees` tables need no bump: they are
 // new tables, no stored row changes meaning, and an older daemon leaves them
 // alone (it records no authorship while it runs; nothing it reads is wrong).
@@ -1558,13 +1563,26 @@ impl Store {
     ) -> Result<()> {
         let closed: Vec<agentdocker_core::MessageId> = closed.into_iter().cloned().collect();
         self.publish_message_with_channel(
-            message, recipients, capacity, sender, question, &closed, events, None, None, false,
+            message,
+            recipients,
+            capacity,
+            sender,
+            question,
+            &closed,
+            events,
+            None,
+            None,
+            &[],
+            None,
+            false,
         )
         .map(drop)
     }
 
     /// A channel close/review and all of its message/journal effects are one
     /// transaction; a refused ancillary write cannot leave an applied action.
+    /// So is an accepted release request: the leases it lets go of, their
+    /// journal entry, the answer and the request's document.
     /// A topic message is kept in the topic log in the same transaction, for
     /// its sender's project ([`agentdocker_core::topic::scope`]), and its
     /// place there is returned.
@@ -1580,11 +1598,17 @@ impl Store {
         // the card a released message rode on. Both go, or neither.
         closed: &[agentdocker_core::MessageId],
         events: &[Event],
-        channel: Option<(&Channel, Option<&JournalEntry>)>,
+        channel: Option<&Channel>,
+        journal: Option<&JournalEntry>,
+        released: &[LeaseId],
         document: Option<(&str, &str, Option<&serde_json::Value>)>,
         tracked: bool,
     ) -> Result<Option<agentdocker_core::TopicPost>> {
         let tx = write_transaction(&self.conn)?;
+        for id in released {
+            self.conn
+                .execute("DELETE FROM leases WHERE id = ?1", params![id.as_str()])?;
+        }
         let post = match &message.to {
             agentdocker_core::Destination::Topic(topic) => Some(self.keep_topic_message(
                 message,
@@ -1619,11 +1643,11 @@ impl Store {
         for closed in closed {
             self.delete_document("question", closed.as_str())?;
         }
-        if let Some((channel, journal)) = channel {
+        if let Some(channel) = channel {
             self.put_document("channel", channel.id.as_str(), channel)?;
-            if let Some(entry) = journal {
-                self.insert_journal(entry)?;
-            }
+        }
+        if let Some(entry) = journal {
+            self.insert_journal(entry)?;
         }
         for event in events {
             self.append_event(event)?;
