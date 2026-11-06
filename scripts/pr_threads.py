@@ -111,7 +111,7 @@ def main():
         else:
             owner, name = repository_from_remote()
         threads = fetch_threads(owner, name, args.number)
-    except (subprocess.CalledProcessError, KeyError, ValueError, json.JSONDecodeError) as error:
+    except (subprocess.CalledProcessError, OSError, KeyError, ValueError, json.JSONDecodeError) as error:
         print(f"pr_threads: could not read the review threads of #{args.number}: {error}", file=sys.stderr)
         return 2
     pending = open_threads(threads, args.include_outdated)

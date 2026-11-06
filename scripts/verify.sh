@@ -261,9 +261,11 @@ case "${1:-check}" in
       step python3 scripts/docs_check.py
     fi
     step cargo fmt --all --check
+    # The selection is a checked step of its own: a Git or Cargo failure
+    # stops the run, and only a successful empty answer means nothing to test.
+    step python3 scripts/touched_crates.py --base "$base" --output "$campaign_dir/packages"
     selectors=()
-    while IFS= read -r line; do [ -n "$line" ] && selectors+=("$line"); done \
-      < <(python3 scripts/touched_crates.py --base "$base")
+    while IFS= read -r line; do [ -n "$line" ] && selectors+=("$line"); done < "$campaign_dir/packages"
     if [ "${#selectors[@]}" -eq 0 ]; then
       echo "verify.sh quick: no workspace package changed since ${base:0:12}; Cargo not run" >&2
     else

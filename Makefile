@@ -55,7 +55,7 @@ FORGET = if [ -x "$(LSREGISTER)" ]; then for app in $(1); do \
     "$(LSREGISTER)" -u "$$app" >/dev/null 2>&1 || true; \
   fi; done; fi
 
-.PHONY: help build check test clippy fmt app install install-preview status rollback run smoke restart-daemon clean-artifacts migrate-artifacts
+.PHONY: help build check quick package test clippy fmt app install install-preview status rollback run smoke restart-daemon clean-artifacts migrate-artifacts
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)

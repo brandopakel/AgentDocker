@@ -4,18 +4,21 @@
 `scripts/verify.sh quick` runs the suites of the packages a branch changed
 and of every package that depends on them, instead of the whole workspace.
 This script decides which those are, from the files that differ between the
-working tree and a base commit:
+working tree and the merge base with a base ref (committed or not, plus
+untracked files that are not ignored):
 
 - a file under a workspace package's directory touches that package, and
   through the dependency graph (from `cargo metadata`) every package that
-  depends on it;
+  depends on it; a renamed file touches both its old and its new place;
 - a file the whole workspace depends on (the root manifest, the lockfile,
   the toolchain file, Cargo and nextest configuration) touches every package;
 - any other file (documentation, scripts, packaging) touches no package.
 
 It prints Cargo package selectors, one per line (`-p`, then the name), or
-`--workspace` when everything is touched, or nothing when no package is.
-The exit status is 0 in every case; the caller decides what to run.
+`--workspace` when everything is touched, or nothing when no package is;
+`--output <file>` writes them there instead. The exit status is 0 when the
+selection was made and 1 when Git or Cargo could not answer, so a caller
+never mistakes a failure for "nothing changed".
 
     python3 scripts/touched_crates.py --base origin/main
     python3 scripts/touched_crates.py --base HEAD~1 --metadata metadata.json
@@ -89,7 +92,6 @@ def touched(paths, packages):
     reverse = dependents(packages)
     result = set()
     for path in paths:
-        path = path.strip()
         if not path:
             continue
         if path in WORKSPACE_WIDE or path.startswith(WORKSPACE_WIDE_DIRS):
@@ -102,22 +104,25 @@ def touched(paths, packages):
     return result
 
 
-def changed_paths(base):
-    """Paths that differ from `base`, committed or not, plus untracked files."""
+def git_paths(args, cwd=None):
+    """A NUL-separated path listing from Git, as the exact paths."""
+    out = subprocess.run(
+        ["git", *args, "-z"], capture_output=True, check=True, cwd=cwd
+    ).stdout
+    return [p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p]
+
+
+def changed_paths(base, cwd=None):
+    """Paths that differ from the merge base with `base`, committed or not,
+    plus untracked files that are not ignored. Renames are not folded: a
+    moved file counts at both its old and its new place."""
     merge_base = subprocess.run(
-        ["git", "merge-base", "HEAD", base], capture_output=True, text=True, check=False
+        ["git", "merge-base", "HEAD", base], capture_output=True, text=True, check=False, cwd=cwd
     )
     against = merge_base.stdout.strip() if merge_base.returncode == 0 else base
-    diff = subprocess.run(
-        ["git", "diff", "--name-only", against], capture_output=True, text=True, check=True
-    )
-    untracked = subprocess.run(
-        ["git", "ls-files", "--others", "--exclude-standard"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return diff.stdout.splitlines() + untracked.stdout.splitlines()
+    changed = git_paths(["diff", "--name-only", "--no-renames", against], cwd)
+    untracked = git_paths(["ls-files", "--others", "--exclude-standard"], cwd)
+    return changed + untracked
 
 
 def load_metadata(path):
@@ -149,11 +154,20 @@ def main():
     )
     parser.add_argument("--base", default="origin/main", help="the ref the change is measured against")
     parser.add_argument("--metadata", help="a saved `cargo metadata` JSON file instead of running cargo")
+    parser.add_argument("--output", help="write the selectors to this file instead of standard output")
     args = parser.parse_args()
-    packages = workspace_packages(load_metadata(args.metadata))
-    names = touched(changed_paths(args.base), packages)
-    for arg in selectors(names):
-        print(arg)
+    try:
+        packages = workspace_packages(load_metadata(args.metadata))
+        names = touched(changed_paths(args.base), packages)
+    except (subprocess.CalledProcessError, OSError, KeyError, ValueError) as error:
+        print(f"touched_crates: could not name the changed packages: {error}", file=sys.stderr)
+        return 1
+    text = "".join(f"{arg}\n" for arg in selectors(names))
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    else:
+        sys.stdout.write(text)
     return 0
 
 
