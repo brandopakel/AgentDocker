@@ -442,7 +442,7 @@ impl Agentfile {
             if version == 1 && entry.command.is_empty() {
                 bail!("agent `{name}` has an empty command");
             }
-            launch::check(name, entry).map_err(anyhow::Error::msg)?;
+            launch::check(name, entry, launch::Judged::AsWritten).map_err(anyhow::Error::msg)?;
             if let Some(restart) = &entry.restart
                 && agentdocker_core::RestartPolicy::parse(restart).is_none()
             {
@@ -561,7 +561,8 @@ impl Agentfile {
             .map(|name| {
                 let entry = self.agents[&name].expanded(&name, &lookup)?;
                 // What expansion produced is judged as written text was.
-                launch::check(&name, &entry).map_err(anyhow::Error::msg)?;
+                launch::check(&name, &entry, launch::Judged::Expanded)
+                    .map_err(anyhow::Error::msg)?;
                 if entry.command.first().is_some_and(String::is_empty) {
                     bail!("agent `{name}` has an empty command once expanded");
                 }
@@ -746,8 +747,9 @@ impl launch::Host for SystemHost {
 ///   is not followed here, so the hooks are added rather than trusted;
 /// - an untracked one is there only when `.worktreeinclude` has it copied,
 ///   by the daemon's own rules: a regular file (never a symlink), within
-///   the copy's size budget, never written through a symlink in the new
-///   worktree — whose tree is `HEAD`'s — and on Unix only, where the daemon
+///   the copy's size budget, never written through anything in the new
+///   worktree — whose tree is `HEAD`'s — that is not a directory, a
+///   symlink or a file on its way, and on Unix only, where the daemon
 ///   copies at all.
 ///
 /// False when `workdir` is in no checkout or git cannot say.
@@ -810,9 +812,11 @@ fn isolated_project_runs_hooks(workdir: &Path) -> bool {
             None => {
                 copied.iter().any(|path| path == file)
                     && agentdocker_host::vcs::worktree_include_writable(file, |at| {
+                        // `HEAD` checks out a tree as a directory; anything
+                        // else there — a symlink, a file — blocks the way.
                         at.to_str()
                             .and_then(|at| tracked.get(at))
-                            .is_some_and(|mode| mode == "120000")
+                            .is_some_and(|mode| mode != "040000")
                     })
                     && agentdocker_host::runtimes::claude_settings_file_runs_hooks(
                         &top.join(file),
@@ -1686,6 +1690,57 @@ depends_on = []
             let copied = claude_command(&host, &repo, "isolate = true");
             assert_eq!(settings_of(&copied), None, "a regular file is: {copied:?}");
         }
+    }
+
+    /// An include the new worktree cannot hold is not counted: `HEAD` has
+    /// `.claude` as a file, so the copy of a listed
+    /// `.claude/settings.local.json` fails there, and the hooks are added
+    /// although the checkout here has them in a directory of that name.
+    #[cfg(unix)]
+    #[test]
+    fn an_isolated_launch_does_not_trust_an_include_its_worktree_cannot_hold() {
+        if !have_git() {
+            return;
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().join("home");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&home, &repo, &["init", "-q"]);
+        std::fs::write(repo.join(".claude"), "a file, in HEAD\n").unwrap();
+        std::fs::write(repo.join(".gitignore"), ".claude/settings.local.json\n").unwrap();
+        std::fs::write(
+            repo.join(".worktreeinclude"),
+            ".claude/settings.local.json\n",
+        )
+        .unwrap();
+        git(&home, &repo, &["add", "."]);
+        git(
+            &home,
+            &repo,
+            &["commit", "-q", "-m", "a file named .claude"],
+        );
+        let exe = Path::new("/opt/ad/agentdocker");
+        std::fs::remove_file(repo.join(".claude")).unwrap();
+        std::fs::create_dir(repo.join(".claude")).unwrap();
+        std::fs::write(
+            repo.join(".claude/settings.local.json"),
+            wired_settings(exe),
+        )
+        .unwrap();
+        let host = machine(&[("HOME", home.as_path()), ("USERPROFILE", home.as_path())]);
+        let here = claude_command(&host, &repo, "");
+        assert_eq!(
+            settings_of(&here),
+            None,
+            "here, the directory is real: {here:?}"
+        );
+        let isolated = claude_command(&host, &repo, "isolate = true");
+        assert!(
+            settings_of(&isolated).is_some_and(runs_our_hooks),
+            "there, `.claude` is a file: {isolated:?}"
+        );
     }
 
     /// Every fenced `toml` block with an `[agents.` table in the guide and

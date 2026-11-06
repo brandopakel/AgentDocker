@@ -132,21 +132,19 @@ fn include_sources_within(
 }
 
 /// Whether a copy may write `relative` beneath a new worktree: an ordinary
-/// relative path none of whose prefixes, the file itself included, is a
-/// symlink there, as `is_symlink` says of each prefix in turn (relative to
-/// the worktree). Written through a symlink, the copy would land wherever
-/// it points, and a checkout made from somebody's commit can carry one.
-pub fn worktree_include_writable(
-    relative: &str,
-    mut is_symlink: impl FnMut(&Path) -> bool,
-) -> bool {
+/// relative path none of whose prefixes, the file itself included, is
+/// `blocked` there (relative to the worktree) — a symlink, or anything
+/// that is not a directory where a directory is needed. Written through a
+/// symlink the copy would land wherever it points, and a checkout made
+/// from somebody's commit can carry one; written into a file, it fails.
+pub fn worktree_include_writable(relative: &str, mut blocked: impl FnMut(&Path) -> bool) -> bool {
     let mut at = PathBuf::new();
     for part in Path::new(relative).components() {
         let std::path::Component::Normal(name) = part else {
             return false;
         };
         at.push(name);
-        if is_symlink(&at) {
+        if blocked(&at) {
             return false;
         }
     }
@@ -402,8 +400,8 @@ mod tests {
 
     #[test]
     fn a_worktree_include_is_never_written_through_a_symlink() {
-        let symlinks = ["shared", "a/b"];
-        let is_symlink = |at: &Path| symlinks.iter().any(|link| at == Path::new(link));
+        let blocked = ["shared", "a/b"];
+        let is_symlink = |at: &Path| blocked.iter().any(|link| at == Path::new(link));
         assert!(worktree_include_writable(
             ".claude/settings.local.json",
             is_symlink

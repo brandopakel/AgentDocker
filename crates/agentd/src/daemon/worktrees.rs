@@ -170,7 +170,10 @@ pub(super) async fn copy_includes(root: PathBuf, path: PathBuf) -> (usize, Optio
 /// symlink ([`agentdocker_host::vcs::worktree_include_writable`]).
 fn stays_inside(base: &Path, relative: &str) -> bool {
     agentdocker_host::vcs::worktree_include_writable(relative, |at| {
-        std::fs::symlink_metadata(base.join(at)).is_ok_and(|m| m.file_type().is_symlink())
+        // A symlink anywhere on the way, or a file where a folder is
+        // needed (the copy makes the file itself new, never over one).
+        std::fs::symlink_metadata(base.join(at))
+            .is_ok_and(|m| m.file_type().is_symlink() || !m.is_dir())
     })
 }
 

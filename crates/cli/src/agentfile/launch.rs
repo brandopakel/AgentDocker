@@ -131,13 +131,29 @@ pub fn anchored(name: &str, value: &str, start: &Path) -> std::ffi::OsString {
     }
 }
 
+/// Which text of an entry [`check`] is judging: as the file gives it,
+/// where a value with a `$` in it is still to be expanded and is left for
+/// later, or as expanded, where every value is final and a `$` is just a
+/// character.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Judged {
+    AsWritten,
+    Expanded,
+}
+
+impl Judged {
+    /// Whether `value` is still to be expanded, so it cannot be judged yet.
+    fn deferred(self, value: &str) -> bool {
+        self == Self::AsWritten && value.contains('$')
+    }
+}
+
 /// The first relative directory an entry's `env` names in a variable that
 /// chooses its CLI or profile, with the variable: what an isolated launch
 /// cannot place, since the worktree it starts in is the daemon's to make.
-/// A value still holding `${VAR}` is judged once expanded.
-fn relative_directory(env: &BTreeMap<String, String>) -> Option<(String, PathBuf)> {
+fn relative_directory(env: &BTreeMap<String, String>, judged: Judged) -> Option<(String, PathBuf)> {
     env.iter()
-        .filter(|(_, value)| !value.contains('$'))
+        .filter(|(_, value)| !judged.deferred(value))
         .find_map(|(name, value)| {
             directories(name, value)
                 .into_iter()
@@ -147,10 +163,11 @@ fn relative_directory(env: &BTreeMap<String, String>) -> Option<(String, PathBuf
 }
 
 /// What is wrong with an entry's launch fields, judged from the file alone,
-/// with the agent and the field named. A value with `${VAR}` in it is
-/// judged once expanded: [`check`] runs again on the expanded entry before
-/// anything is launched.
-pub fn check(name: &str, entry: &AgentEntry) -> Result<(), String> {
+/// with the agent and the field named. As written, a value with a `$` in
+/// it is still to be expanded and is left for later; [`check`] runs again
+/// on the expanded entry, where every value is final, before anything is
+/// launched.
+pub fn check(name: &str, entry: &AgentEntry, judged: Judged) -> Result<(), String> {
     let runtime = entry.runtime.as_str();
     if !entry.built() {
         for (field, set) in [
@@ -191,7 +208,7 @@ pub fn check(name: &str, entry: &AgentEntry) -> Result<(), String> {
     // directory in its own `env` is found; an isolated one starts in a
     // worktree the daemon makes, which is not known here.
     if entry.isolate
-        && let Some((var, dir)) = relative_directory(&entry.env)
+        && let Some((var, dir)) = relative_directory(&entry.env, judged)
     {
         return Err(format!(
             "agent `{name}` has `isolate = true` and `env.{var}` names the relative directory \
@@ -208,7 +225,7 @@ pub fn check(name: &str, entry: &AgentEntry) -> Result<(), String> {
     };
     match runtime {
         "claude-code" => {
-            effort_in(name, entry, CLAUDE_EFFORTS)?;
+            effort_in(name, entry, CLAUDE_EFFORTS, judged)?;
             if !terminal && entry.prompt.is_none() {
                 return Err(needs_prompt("Claude Code"));
             }
@@ -220,7 +237,7 @@ pub fn check(name: &str, entry: &AgentEntry) -> Result<(), String> {
             }
         }
         "codex" => {
-            effort_in(name, entry, CODEX_EFFORTS)?;
+            effort_in(name, entry, CODEX_EFFORTS, judged)?;
             if entry.idle_messages {
                 if entry.prompt.is_some() {
                     return Err(format!(
@@ -266,9 +283,14 @@ fn idle_unsupported(name: &str, runtime: &str) -> String {
     )
 }
 
-fn effort_in(name: &str, entry: &AgentEntry, levels: &[&str]) -> Result<(), String> {
+fn effort_in(
+    name: &str,
+    entry: &AgentEntry,
+    levels: &[&str],
+    judged: Judged,
+) -> Result<(), String> {
     match &entry.effort {
-        Some(effort) if !effort.contains('$') && !levels.contains(&effort.as_str()) => {
+        Some(effort) if !judged.deferred(effort) && !levels.contains(&effort.as_str()) => {
             Err(format!(
                 "agent `{name}` has effort = \"{effort}\"; {} takes {}",
                 entry.runtime,
@@ -959,6 +981,36 @@ config = { approval_policy = "never", sandbox = { mode = "workspace-write" }, fl
         .unwrap();
         entry("command = [\"make\"]\nisolate = true\nenv = { PATH = \"bin\" }").unwrap();
         entry("runtime = \"codex\"\nprompt = \"x\"\nenv = { PATH = \"bin\" }").unwrap();
+        // `$$` is one `$` once expanded: still relative, still refused;
+        // so is a variable whose value has a `$` in it.
+        for env in [
+            "{ CLAUDE_CONFIG_DIR = \"$$profile\" }",
+            "{ CODEX_HOME = \"${DOLLAR}\" }",
+        ] {
+            let file = Agentfile::parse(&format!(
+                "version = 2\n[agents.a]\nruntime = \"codex\"\nprompt = \"x\"\nisolate = true\nenv = {env}\n"
+            ))
+            .expect("as written, a `$` is still to be expanded");
+            let mut host = Fake::default();
+            host.vars.insert("DOLLAR", "$profile");
+            let error = file
+                .specs(Path::new("/repo/Agentfile.toml"), &[], &host)
+                .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("relative directory \"$profile\""),
+                "{env}: {error:#}"
+            );
+        }
+        let effort = Agentfile::parse(
+            "version = 2\n[agents.a]\nruntime = \"codex\"\nprompt = \"x\"\neffort = \"$$high\"\n",
+        )
+        .unwrap()
+        .specs(Path::new("/repo/Agentfile.toml"), &[], &Fake::default())
+        .unwrap_err();
+        assert!(
+            format!("{effort:#}").contains("effort = \"$high\""),
+            "{effort:#}"
+        );
         // A value still holding a variable is judged once it is expanded.
         let file = Agentfile::parse(
             "version = 2\n[agents.a]\nruntime = \"codex\"\nprompt = \"x\"\nisolate = true\nenv = { CODEX_HOME = \"${DIR}\" }\n",
