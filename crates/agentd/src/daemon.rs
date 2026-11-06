@@ -3448,10 +3448,12 @@ impl Daemon {
         }
         let mut envelope = Envelope::new(from.clone(), to, kind, payload, reply_to, Utc::now());
         envelope.links = links;
-        if let Some(ruling) = inbound {
-            return state.hold_message(envelope, ruling);
-        }
-        let response = state.publish(envelope);
+        // A held send is remembered as a sent one is: its message and
+        // card are kept, so a retry must not hold a second copy.
+        let response = match inbound {
+            Some(ruling) => state.hold_message(envelope, ruling),
+            None => state.publish(envelope),
+        };
         state.keep_keyed_send(&from, idempotency_key, &response);
         response
     }
@@ -5229,11 +5231,12 @@ impl State {
         self.keyed_sends.lookup(&sender, key, Utc::now()).cloned()
     }
 
-    /// Remember a keyed send's answer, once it queued something: a refusal
-    /// queued nothing, so repeating it is harmless and may now succeed.
+    /// Remember a keyed send's answer, once it kept something: a message
+    /// queued (`sent`) or held with its card (`held`). A refusal kept
+    /// nothing, so repeating it is harmless and may now succeed.
     fn keep_keyed_send(&mut self, from: &str, key: Option<String>, response: &Response) {
         if let Some(key) = key
-            && matches!(response, Response::Sent { .. })
+            && matches!(response, Response::Sent { .. } | Response::Held { .. })
             && let Some(sender) = self.keyed_sender(from)
         {
             self.keyed_sends
