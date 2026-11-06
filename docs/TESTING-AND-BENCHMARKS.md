@@ -161,6 +161,13 @@ CodeRabbit automatic review includes every base branch, including stacked
 fix/test/docs branches. A skipped or rate-limited review remains pending even
 when its status context is green. Draft PRs can run preliminary CI; final review
 and all applicable checks on the published head are required before integration.
+A pull request's desktop packaging and CLI archives are built on Linux only;
+the macOS ones run for main, for a `batch/**` branch (main with the approved
+pull requests merged in, which also runs the CI suite) and on demand, since
+macOS runners are few. A pull request merged from a batch needs its own
+checks and the batch's green. A new push to a pull request cancels the runs
+of its earlier heads; runs on main and batch branches are never cancelled by
+another.
 
 Controller-binding fixtures resolve the intended `sleep` executable before
 spawning, then wait at most five seconds for the child's kernel executable path
@@ -201,7 +208,49 @@ JUnit, coverage, benchmark manifests/results and failure logs before clearing
 inactive caches with [Cargo clean](https://doc.rust-lang.org/cargo/commands/cargo-clean.html).
 `cargo clean --profile dev` removes generated development output; inspect
 `--dry-run` first. Do not clean an active build/test directory, running binaries,
-or another session's cache. Each worktree keeps its own target directory.
+or another session's cache. Each worktree keeps its own target directory, inside
+the worktree (`target/`, and `fuzz/target/`), so `agentdocker worktree-remove`
+takes a worktree's cache away with the worktree: `git worktree remove` deletes
+the directory, ignored files included.
+
+`python3 scripts/build_storage.py --prune` removes the caches of the registered
+worktrees that are inactive, and only those: no live AgentDocker lease covers
+the worktree (a `path:` lease on it, on a file in it or on a folder above it, or
+a `branch:` lease on its branch), its branch is merged into `origin/main` or no
+longer exists (a detached checkout counts as merged when its commit is in
+`origin/main`; a checkout at `origin/main`'s tip, branch or detached, is current
+with nothing of its own merged, and stays), no running process names the worktree on its
+command line, works in it or runs a file from it (every process's working
+directory and executable, from `/proc` on Linux and `lsof` elsewhere, where the
+files a process maps count too; a command started as `target/debug/app` or
+`python3 server.py` names no worktree, and an absolute interpreter such as
+`/usr/bin/python3 server.py` says where the interpreter is, not where its script
+runs). Another user's processes and zombies do not build in this user's
+worktrees and are left out, and so is a pid that has exited by the time it is
+read. `lsof` scans every process one at a time while processes start and end,
+so a pid the scan passed without both a working-directory and an executable
+record is asked about again on its own. A live process of this user whose
+working directory or executable still cannot be read is blind, whatever its
+command line names, and one blind process keeps every worktree: the report names
+it, and nothing is pruned while it runs. When no process or place can be read at
+all, every worktree counts as busy. The last condition is that no Cargo build
+holds the cache's `.cargo-lock`. The current worktree (the checkout the script runs from, and
+whatever Cargo reports as its target directory), the project's main checkout
+and a `target` that is a symbolic link are never touched; only the cache goes,
+never the worktree. The leases are the machine's own daemon's, asked without
+starting one; when no daemon answers, every worktree may be active and nothing
+is pruned. A real prune holds `task:local-cargo-campaign` while it removes,
+as `verify.sh` holds it for a run (as the session when the daemon knows it,
+otherwise as a transient agent of its own; `AGENTDOCKER_CAMPAIGN_LEASE=off`
+when the caller already holds it), so no build starts under a cache on its way
+out, and a slot it cannot hold means nothing is pruned; nothing is held between
+the plan and the removals, so each worktree is judged again on fresh leases and
+processes right before its own caches go, and one that changed since the plan
+is skipped and said so. `--prune --dry-run` lists what would go, with sizes and
+the reason, and what stays and why, and holds no slot. `verify.sh`
+prints that report at the end of every run that started a step — the cache
+totals and the prunable candidates — and never prunes on its own; a report that
+cannot be produced is noted and does not fail the run.
 Workspace development builds disable incremental compilation, while keeping
 line-table debug information. Release builds optimize the complete linked
 dependency graph for size, use one codegen unit with full LTO and strip symbols.

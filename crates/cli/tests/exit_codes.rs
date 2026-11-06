@@ -117,6 +117,12 @@ fn the_exit_status_is_the_class_of_what_went_wrong() {
         ("storage_unavailable", 6, "storage failed"),
         ("unavailable", 6, "not now"),
         ("internal", 1, "something unexpected"),
+        (
+            "unconfirmed",
+            1,
+            "merged, but the new head could not be read",
+        ),
+        ("launch_failed", 2, "failed to execute command"),
     ] {
         let (tmp, socket) = private_socket(code);
         let daemon = FakeDaemon::serve(
