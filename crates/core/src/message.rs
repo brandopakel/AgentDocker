@@ -412,11 +412,7 @@ impl QuestionForm {
         if self.options.is_empty() {
             return None;
         }
-        let mut text = String::from(if self.multi_select {
-            "Choose any that apply, by number or label (a text answer is one choice; several need a client that sends choices):"
-        } else {
-            "Choose one, by number or label:"
-        });
+        let mut text = String::from(self.choose_line());
         for (index, option) in self.options.iter().enumerate() {
             text.push_str(&format!("\n{}. {}", index + 1, option.label));
             if !option.description.trim().is_empty() {
@@ -427,6 +423,16 @@ impl QuestionForm {
             text.push_str("\nOther: answer in your own words.");
         }
         Some(text)
+    }
+
+    /// How the options are to be chosen, said once above them: one, or
+    /// any that apply, with what a text answer counts for.
+    pub fn choose_line(&self) -> &'static str {
+        if self.multi_select {
+            "Choose any that apply, by number or label (a text answer is one choice; several need a client that sends choices):"
+        } else {
+            "Choose one, by number or label:"
+        }
     }
 
     /// The option `value` names: the one whose label it is, exactly;

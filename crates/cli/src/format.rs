@@ -192,8 +192,12 @@ pub fn question_line(question: &Question) -> String {
         ),
         single_line(&question.text)
     );
-    // The options as their own rows under the words, on separators of
-    // this function's own: a label or description is kept to one row.
+    // The options as their own rows under the words, headed by how they
+    // are chosen, on separators of this function's own: a label or
+    // description is kept to one row.
+    if !question.form.options.is_empty() {
+        line.push_str(&format!("\n    {}", question.form.choose_line()));
+    }
     for (index, option) in question.form.options.iter().enumerate() {
         line.push_str(&format!(
             "\n    {}. {}",
@@ -1627,14 +1631,26 @@ mod tests {
         };
         let line = super::question_line(&question);
         let rows: Vec<&str> = line.split('\n').collect();
-        assert_eq!(rows.len(), 4, "{line}");
+        assert_eq!(rows.len(), 5, "{line}");
         assert!(rows[0].ends_with("Which\\ntheme?"), "{line}");
-        assert_eq!(rows[1], "    1. Blue\\nRed — the current\\ntheme");
-        assert_eq!(rows[2], "    2. Green");
-        assert_eq!(rows[3], "    Other: answer in your own words.");
+        assert_eq!(rows[1], "    Choose one, by number or label:");
+        assert_eq!(rows[2], "    1. Blue\\nRed — the current\\ntheme");
+        assert_eq!(rows[3], "    2. Green");
+        assert_eq!(rows[4], "    Other: answer in your own words.");
         let mut strict = question;
         strict.form.allow_other = false;
-        assert_eq!(super::question_line(&strict).split('\n').count(), 3);
+        strict.form.multi_select = true;
+        let rows: Vec<String> = super::question_line(&strict)
+            .split('\n')
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(rows.len(), 4, "no Other line");
+        assert!(
+            rows[1].starts_with("    Choose any that apply")
+                && rows[1].contains("a text answer is one choice"),
+            "{}",
+            rows[1]
+        );
     }
 
     /// `ask`'s flags make the question form: an option is a label with an
