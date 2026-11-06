@@ -1130,6 +1130,7 @@ impl EventKind {
         "human_location_changed",
         "agent_started",
         "agent_session_bound",
+        "agent_thread_learned",
         "agent_reconciled",
         "contest_opened",
         "contest_entered",

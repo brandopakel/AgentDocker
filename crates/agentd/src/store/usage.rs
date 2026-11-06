@@ -243,8 +243,12 @@ impl Store {
             // a spawned thread's keeps its parent, so the thread's own
             // record can still take it.
             let own = contribution.session == session;
+            // Reconciliation moves whose the sample is, agent and project;
+            // the card and roles stamped on it when it was counted (to the
+            // parent's record, say) are history it keeps.
             let mut destination = contribution.bucket.clone();
-            destination.attribution = attribution.clone();
+            destination.attribution.agent = attribution.agent.clone();
+            destination.attribution.project = attribution.project.clone();
             if destination == contribution.bucket {
                 // Already this record's: only how it got here changes.
                 if own && contribution.parent.take().is_some() {
@@ -1675,6 +1679,21 @@ mod tests {
                 .map(|row| (row.key, row.counters.input_tokens.sum))
                 .collect()
         };
+        let grouped = |store: &Store, group: Group| -> BTreeMap<Option<String>, Option<u64>> {
+            store
+                .usage_report(
+                    Range::new(Some(at(9)), Some(at(12)), at(23), at(0)).unwrap(),
+                    group,
+                    None,
+                    None,
+                )
+                .unwrap()
+                .unwrap()
+                .rows
+                .into_iter()
+                .map(|row| (row.key, row.counters.input_tokens.sum))
+                .collect()
+        };
         let reconcile = |session: &str, agent: &str| {
             let seq = store.max_event_seq().unwrap() + 1;
             store
@@ -1697,7 +1716,15 @@ mod tests {
             "k",
             vec![
                 child("r1", 5, Attribution::default()),
-                child("r2", 7, to("parent-agent")),
+                child(
+                    "r2",
+                    7,
+                    Attribution {
+                        card: Some("card-a".into()),
+                        role: Some("reviewer".into()),
+                        ..to("parent-agent")
+                    },
+                ),
             ],
             at(0),
         )
@@ -1713,11 +1740,21 @@ mod tests {
             BTreeMap::from([(Some("parent-agent".into()), Some(12))])
         );
         assert!(reconcile("parent", "parent-agent").is_none());
-        // The thread's own record takes all of it from the parent's ...
+        // The thread's own record takes all of it from the parent's; what
+        // was stamped on a sample when it was counted to the parent (the
+        // card and roles held then) stays with it.
         assert!(reconcile("child", "child-agent").is_some());
         assert_eq!(
             rows(&store),
             BTreeMap::from([(Some("child-agent".into()), Some(12))])
+        );
+        assert_eq!(
+            grouped(&store, Group::Card),
+            BTreeMap::from([(None, Some(5)), (Some("card-a".into()), Some(7))])
+        );
+        assert_eq!(
+            grouped(&store, Group::Role),
+            BTreeMap::from([(None, Some(5)), (Some("reviewer".into()), Some(7))])
         );
         // ... and keeps it: neither reconciles it again.
         assert!(reconcile("parent", "parent-agent").is_none());
