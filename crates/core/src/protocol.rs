@@ -531,6 +531,13 @@ pub enum Request {
         /// the shape its kind requires.
         #[serde(default)]
         links: Vec<crate::Link>,
+        /// The sender's own token for this one send (a UUID, say): a
+        /// repeat with the same key from the same sender is answered as
+        /// the first was and queues nothing, for a day or until the
+        /// ledger of 4,096 keyed sends turns over, or the daemon
+        /// restarts. See [`crate::idempotency`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
     },
     /// Stream messages for `agent` and/or matching `topics` until the
     /// connection closes. Queued messages are replayed first and retained
@@ -631,12 +638,18 @@ pub enum Request {
     /// Answers with `answer {…}`, or `error(timeout)` when nobody replies
     /// in time. The question is delivered as an ordinary `question`
     /// message, so an agent that is only watching still sees it.
+    ///
+    /// The typed part is optional and flattened: `kind`, `options`,
+    /// `multi_select`, `allow_other`, `stale_after_secs` and `stale_action`
+    /// (see `QuestionForm`); none of them changes a plain question.
     Ask {
         from: String,
         to: String,
         question: String,
         #[serde(default = "default_ask_timeout")]
         timeout_secs: u64,
+        #[serde(flatten)]
+        form: crate::QuestionForm,
     },
     /// Create the same durable question as Ask, returning its message ID
     /// immediately. Answers remain in the ordinary inbox until acknowledged.
@@ -648,6 +661,8 @@ pub enum Request {
         presentation: Option<crate::QuestionPresentation>,
         #[serde(default = "default_ask_timeout")]
         timeout_secs: u64,
+        #[serde(flatten)]
+        form: crate::QuestionForm,
     },
     /// The asker may close its question. Already closed IDs are a no-op;
     /// accepted answers and the original question message are retained.
@@ -656,11 +671,24 @@ pub enum Request {
         message: MessageId,
     },
     /// Answer a question by its message id. The daemon knows who asked.
+    /// `choices` name the options taken, each by label or 1-based number.
+    /// `other` is the answerer's own words for the question's Other, taken
+    /// as written: never read as a label or a number, and refused where
+    /// the question takes no Other. With neither, `text` is the answer (one
+    /// choice, for a question with options); beside either it is not read.
+    /// `note` is the answerer's own words beside a choice.
     Answer {
         #[serde(default)]
         from: Option<String>,
         message: MessageId,
+        #[serde(default)]
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        choices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        other: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     /// Questions still waiting for an answer, newest first; `agent`
     /// narrows them to the ones put to that agent.
@@ -2101,11 +2129,21 @@ pub enum Response {
         availability: crate::ProviderAvailability,
         queued: usize,
     },
-    /// The reply to an `ask`: what was said, and who said it.
+    /// The reply to an `ask`: what was said, and who said it. `from` is
+    /// `agentd` and `default` true when nobody answered and the question's
+    /// stale rule chose its default option.
     Answer {
         message: MessageId,
         from: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        choices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        other: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        default: bool,
     },
     Questions {
         questions: Vec<crate::Question>,
@@ -2153,6 +2191,12 @@ pub enum Response {
         /// The project's files linked to it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<crate::ProjectFile>,
+        /// What the card has cost to date: the retained usage recorded
+        /// while an agent held it, as one usage row keyed by the card
+        /// (tokens with coverage, the provider-reported estimated cost where it said one).
+        /// Absent when no retained sample was made under the card.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<crate::usage::report::Row>,
     },
     /// A pull with no card named found none to take: what is in the pull
     /// source, how many are held by others and how many wait on

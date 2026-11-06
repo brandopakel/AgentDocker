@@ -1567,6 +1567,7 @@ impl<B: Backend> McpServer<B> {
                     payload,
                     reply_to: args.reply_to.map(MessageId::from),
                     links: args.links,
+                    idempotency_key: args.idempotency_key,
                 })
                 .await
             }
@@ -1630,6 +1631,7 @@ impl<B: Backend> McpServer<B> {
             }
             "ask_human" => {
                 let args: AskArgs = parse(arguments)?;
+                let form = args.form()?;
                 let native_queue = self.native_input
                     || (!self.claude_channel
                         && !self.codex_input
@@ -1644,6 +1646,7 @@ impl<B: Backend> McpServer<B> {
                             question: args.question,
                             presentation: None,
                             timeout_secs: args.timeout_secs.min(MAX_ASK_SECS),
+                            form,
                         })
                         .await
                         .map_err(transport)?;
@@ -1660,6 +1663,7 @@ impl<B: Backend> McpServer<B> {
                     to: agentdocker_core::HUMAN.to_owned(),
                     question: args.question,
                     timeout_secs: args.timeout_secs.min(MAX_ASK_SECS),
+                    form,
                 })
                 .await
             }
@@ -1669,6 +1673,9 @@ impl<B: Backend> McpServer<B> {
                     from: Some(me),
                     message: MessageId::from(args.message),
                     text: args.text,
+                    choices: args.choices,
+                    other: args.other,
+                    note: args.note,
                 })
                 .await
             }
@@ -2089,6 +2096,8 @@ struct SendMessageArgs {
     reply_to: Option<String>,
     #[serde(default)]
     links: Vec<agentdocker_core::Link>,
+    #[serde(default)]
+    idempotency_key: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2114,12 +2123,89 @@ struct AskArgs {
     question: String,
     #[serde(default = "default_ask")]
     timeout_secs: u64,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    options: Vec<AskOption>,
+    #[serde(default)]
+    multi_select: bool,
+    #[serde(default)]
+    allow_other: Option<bool>,
+    #[serde(default)]
+    stale_after_secs: Option<u64>,
+    #[serde(default)]
+    stale_action: Option<String>,
+}
+
+/// An option as the tool takes it: a bare label, or a label with what
+/// choosing it means.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AskOption {
+    Label(String),
+    Described {
+        label: String,
+        #[serde(default)]
+        description: String,
+    },
+}
+
+impl AskArgs {
+    /// The typed part of the question, or why the arguments do not make one.
+    fn form(&self) -> Result<agentdocker_core::QuestionForm, (i64, String)> {
+        let kind = match &self.kind {
+            Some(kind) => agentdocker_core::QuestionKind::parse(kind).ok_or((
+                INVALID_PARAMS,
+                "kind is question, permission or access".to_owned(),
+            ))?,
+            None => agentdocker_core::QuestionKind::Question,
+        };
+        let stale_action = match &self.stale_action {
+            Some(action) => agentdocker_core::StaleAction::parse(action).ok_or((
+                INVALID_PARAMS,
+                "stale_action is keep_waiting, withdraw or answer:<label>".to_owned(),
+            ))?,
+            None => agentdocker_core::StaleAction::KeepWaiting,
+        };
+        let options = self
+            .options
+            .iter()
+            .map(|option| match option {
+                AskOption::Label(label) => agentdocker_core::QuestionOption {
+                    label: label.trim().to_owned(),
+                    description: String::new(),
+                },
+                AskOption::Described { label, description } => agentdocker_core::QuestionOption {
+                    label: label.trim().to_owned(),
+                    description: description.trim().to_owned(),
+                },
+            })
+            .collect();
+        let form = agentdocker_core::QuestionForm {
+            kind,
+            options,
+            multi_select: self.multi_select,
+            allow_other: self.allow_other.unwrap_or(true),
+            stale_after_secs: self.stale_after_secs,
+            stale_action,
+        };
+        form.validate(self.timeout_secs.min(MAX_ASK_SECS))
+            .map_err(|reason| (INVALID_PARAMS, reason))?;
+        Ok(form)
+    }
 }
 
 #[derive(Deserialize)]
 struct AnswerArgs {
     message: String,
+    #[serde(default)]
     text: String,
+    #[serde(default)]
+    choices: Vec<String>,
+    #[serde(default)]
+    other: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -2491,11 +2577,29 @@ fn render_whole(response: Response) -> Value {
             message,
             from,
             text,
+            choices,
+            other,
+            note,
+            default,
         } => text_result(
-            &json!({ "answered": true, "message_id": message, "from": from, "text": text }),
+            &json!({ "answered": true, "message_id": message, "from": from, "text": text, "choices": choices, "other": other, "note": note, "default": default }),
             false,
         ),
-        Response::Questions { questions } => text_result(&json!({ "questions": questions }), false),
+        // Each question carries its `prompt`: the words with the numbered
+        // options and the Other line, as a terminal shows them, so a reader
+        // that renders only text offers the same choices the desktop does.
+        Response::Questions { questions } => text_result(
+            &json!({ "questions": questions.iter().map(|question| {
+                let mut value = json!(question);
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("prompt".into(), json!(question.prompt()));
+                    object.insert("kind".into(), json!(question.kind()));
+                    object.insert("stale".into(), json!(question.stale(chrono::Utc::now())));
+                }
+                value
+            }).collect::<Vec<_>>() }),
+            false,
+        ),
         Response::Lease { lease } => text_result(&json!(lease), false),
         Response::Leases { leases } => text_result(&json!({ "leases": leases }), false),
         Response::Digest { digest, .. } => text_result(&json!(digest), false),
@@ -2789,7 +2893,8 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "payload": { "type": "object", "description": "Structured payload instead of text." },
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
                     "reply_to": { "type": "string", "description": "Id of the message this answers." },
-                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
+                    "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
+                    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Your own token for this one send (a UUID). Retrying with the same key after a lost result queues nothing and returns the first message_id again, for up to 24 hours: the daemon keeps the newest 4,096 keys in memory, so after they turn over or it restarts the key is new." }
                 },
                 "required": ["to"],
                 "additionalProperties": false
@@ -2835,8 +2940,21 @@ fn bare_tool_definitions() -> Vec<Value> {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "question": { "type": "string", "description": "One specific question. Include the options if there are options." },
-                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_ASK_SECS, "default": 300 }
+                    "question": { "type": "string", "description": "One specific question, in words. Put the choices in `options`, not in the text." },
+                    "timeout_secs": { "type": "integer", "minimum": 1, "maximum": MAX_ASK_SECS, "default": 300 },
+                    "kind": { "type": "string", "enum": ["question", "permission", "access"], "default": "question", "description": "What is being decided: a question (a choice or information only the person has), a permission (leave to do one operation once), or access (standing access to a resource). Each kind shows as its own chip." },
+                    "options": {
+                        "type": "array", "maxItems": 16,
+                        "description": "The choices, shown identically as buttons in the desktop and a numbered list in a terminal or the connector. A string is a label; an object adds what choosing it means. Empty means free text.",
+                        "items": { "oneOf": [
+                            { "type": "string" },
+                            { "type": "object", "properties": { "label": { "type": "string" }, "description": { "type": "string" } }, "required": ["label"], "additionalProperties": false }
+                        ] }
+                    },
+                    "multi_select": { "type": "boolean", "default": false, "description": "Several options may be chosen at once." },
+                    "allow_other": { "type": "boolean", "default": true, "description": "Besides the options, take an answer in the person's own words (an Other)." },
+                    "stale_after_secs": { "type": "integer", "minimum": 1, "description": "Seconds after which the question goes stale; shorter than timeout_secs. Without it the question only expires." },
+                    "stale_action": { "type": "string", "default": "keep_waiting", "description": "What happens when it goes stale: keep_waiting (stays open, marked stale), withdraw (closed unanswered, the ask gets a timeout), or answer:<label> (that option is taken as the default, attributed to the daemon)." }
                 },
                 "required": ["question"],
                 "additionalProperties": false
@@ -2849,9 +2967,12 @@ fn bare_tool_definitions() -> Vec<Value> {
                 "type": "object",
                 "properties": {
                     "message": { "type": "string", "description": "The question's message id." },
-                    "text": { "type": "string" }
+                    "text": { "type": "string", "description": "The answer in words; for a question with options, one option by label or number. Not read beside choices or other." },
+                    "choices": { "type": "array", "items": { "type": "string" }, "description": "The options taken, each by label or 1-based number; several only for a multi-select question. An answer outside the options is taken only when the question allows Other." },
+                    "other": { "type": "string", "description": "Your own answer for the question's Other, taken as written: never read as an option's label or number. Only where the question allows Other; beside choices only for a multi-select question." },
+                    "note": { "type": "string", "description": "Your own words beside a choice." }
                 },
-                "required": ["message", "text"],
+                "required": ["message"],
                 "additionalProperties": false
             }
         }),
@@ -3052,7 +3173,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "usage",
-            "description": "Tokens the providers reported for this project's sessions, one row per agent (or model, provider, project, hour), each count with its coverage: a sum only where samples said, marked partial otherwise. The report says what it covers — the range answered, retention, gaps in the sources, whether collection is on and where it stands — and the overhead AgentDocker injected, which is 'not measured' until it is. Collection is off until agentd.toml enables it.",
+            "description": "Tokens the providers reported for this project's sessions, one row per agent (or model, provider, project, hour, card — the board card the agent held — or role), each count with its coverage: a sum only where samples said, marked partial otherwise; each row's cost_usd_micros is the provider-reported estimated cost where its telemetry said one (Claude Code's OTLP events, which it documents as an estimate; transcripts carry none) and cache_read_share_percent its share of input read from cache. The report says what it covers — the range answered, retention, gaps in the sources, whether collection is on and where it stands — and the overhead AgentDocker injected, which is 'not measured' until it is. Collection is off until agentd.toml enables it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3060,7 +3181,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "agent": { "type": "string", "description": "Only this agent: id, name or unique prefix." },
                     "since": { "type": "string", "description": "From when: a duration back from now (30m, 24h, 7d) or an RFC 3339 time." },
                     "until": { "type": "string", "format": "date-time", "description": "Until when, RFC 3339; now when absent." },
-                    "by": { "type": "string", "enum": ["agent", "model", "provider", "project", "hour"], "description": "One row per what; agent by default." }
+                    "by": { "type": "string", "enum": ["agent", "model", "provider", "project", "hour", "card", "role"], "description": "One row per what; agent by default. card groups by the board card (task:<id> lease) held when each sample was recorded, role by the agent's roles then." }
                 },
                 "additionalProperties": false
             }
@@ -3881,6 +4002,8 @@ mod tests {
             presentation: None,
             asked_at: now,
             expires_at: now,
+            form: Default::default(),
+            stale_since: None,
         };
         // The person, registered in this project too: their question to
         // another project is not this one's.
@@ -4796,7 +4919,7 @@ mod tests {
             json!({"posted":true,"question_id":"posted-question","answer_delivery":"channel"})
         );
         assert!(
-            matches!(channel.backend.requests().as_slice(), [Request::PostQuestion {from,to,question,presentation:None,timeout_secs:120}] if from == "abc123" && to == agentdocker_core::HUMAN && question == "Which color?")
+            matches!(channel.backend.requests().as_slice(), [Request::PostQuestion {from,to,question,presentation:None,timeout_secs:120, form}] if form.is_plain() && from == "abc123" && to == agentdocker_core::HUMAN && question == "Which color?")
         );
         let initialized = channel.initialize(&json!({}));
         let instructions = initialized["instructions"].as_str().unwrap();
@@ -4811,6 +4934,10 @@ mod tests {
                 message: "answer".to_owned().into(),
                 from: "human".into(),
                 text: "Blue".into(),
+                choices: Vec::new(),
+                note: None,
+                default: false,
+                other: None,
             },
         ]);
         let response = ordinary
@@ -4823,6 +4950,96 @@ mod tests {
         assert!(matches!(
             ordinary.backend.requests().as_slice(),
             [Request::Inspect { .. }, Request::Ask { .. }]
+        ));
+    }
+
+    /// `ask_human` carries the typed form to the daemon, refuses one that
+    /// does not hold before any request goes, and `answer_question` carries
+    /// choices and a note.
+    #[tokio::test]
+    async fn ask_human_carries_its_form_and_answer_question_its_choices() {
+        let s = server(vec![
+            Response::Error {
+                code: agentdocker_core::ErrorCode::NotFound,
+                message: "fixture has no binding".into(),
+                details: None,
+            },
+            Response::Answer {
+                message: "answer".to_owned().into(),
+                from: "agentd".into(),
+                text: "Blue".into(),
+                choices: vec!["Blue".into()],
+                note: None,
+                default: true,
+                other: None,
+            },
+            Response::Sent {
+                message: "reply".to_owned().into(),
+                subscribers: 1,
+                recipient_readiness: None,
+            },
+        ]);
+        let refused = s
+            .tool(
+                "ask_human",
+                json!({"question":"Which theme?","options":["Blue","Blue"]}),
+            )
+            .await;
+        assert!(matches!(refused, Err((code, _)) if code == INVALID_PARAMS));
+        assert!(
+            s.backend.requests().is_empty(),
+            "nothing went to the daemon"
+        );
+        let response = s
+            .tool(
+                "ask_human",
+                json!({
+                    "question":"Which theme?",
+                    "kind":"permission",
+                    "options":["Blue",{"label":"Green","description":"the mock-ups"}],
+                    "allow_other":false,
+                    "stale_after_secs":60,
+                    "stale_action":"answer:Blue",
+                    "timeout_secs":120
+                }),
+            )
+            .await
+            .unwrap();
+        let value: Value =
+            serde_json::from_str(response["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(value["answered"], true);
+        assert_eq!(value["default"], true);
+        assert_eq!(value["choices"], json!(["Blue"]));
+        let requests = s.backend.requests();
+        let Some(Request::Ask {
+            form, timeout_secs, ..
+        }) = requests.get(1)
+        else {
+            panic!("{requests:?}");
+        };
+        assert_eq!(*timeout_secs, 120);
+        assert_eq!(form.kind, agentdocker_core::QuestionKind::Permission);
+        assert_eq!(form.options[1].label, "Green");
+        assert_eq!(form.options[1].description, "the mock-ups");
+        assert!(!form.allow_other);
+        assert_eq!(form.stale_after_secs, Some(60));
+        assert_eq!(
+            form.stale_action,
+            agentdocker_core::StaleAction::AnswerDefault {
+                label: "Blue".into()
+            }
+        );
+        s.tool(
+            "answer_question",
+            json!({"message":"q1","choices":["2"],"other":"Teal","note":"the mock-ups won"}),
+        )
+        .await
+        .unwrap();
+        let requests = s.backend.requests();
+        assert!(matches!(
+            requests.last(),
+            Some(Request::Answer { text, choices, other: Some(other), note: Some(note), .. })
+                if text.is_empty() && choices == &["2".to_owned()] && other == "Teal" && note == "the mock-ups won"
         ));
     }
 
@@ -4945,7 +5162,7 @@ mod tests {
             .handle(rpc(
                 5,
                 "tools/call",
-                json!({ "name": "send_message", "arguments": { "to": "reviewer", "text": "hi" } }),
+                json!({ "name": "send_message", "arguments": { "to": "reviewer", "text": "hi", "idempotency_key": "send-1" } }),
             ))
             .await
             .unwrap();
@@ -4965,6 +5182,7 @@ mod tests {
                 payload: json!({ "text": "hi" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: Some("send-1".to_owned()),
             }
         );
     }

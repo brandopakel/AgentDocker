@@ -1950,6 +1950,7 @@ mod fence_tests {
                         to,
                         question: "is the offer held up?".into(),
                         timeout_secs: 30,
+                        form: Default::default(),
                     })
                     .await
             }
@@ -1990,6 +1991,7 @@ mod fence_tests {
                 payload: serde_json::json!({"text": "no"}),
                 reply_to: Some(question),
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(matches!(answered, Response::Sent { .. }), "{answered:?}");
