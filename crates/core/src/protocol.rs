@@ -531,6 +531,13 @@ pub enum Request {
         /// the shape its kind requires.
         #[serde(default)]
         links: Vec<crate::Link>,
+        /// The sender's own token for this one send (a UUID, say): a
+        /// repeat with the same key from the same sender is answered as
+        /// the first was and queues nothing, for a day or until the
+        /// ledger of 4,096 keyed sends turns over, or the daemon
+        /// restarts. See [`crate::idempotency`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
     },
     /// Stream messages for `agent` and/or matching `topics` until the
     /// connection closes. Queued messages are replayed first and retained

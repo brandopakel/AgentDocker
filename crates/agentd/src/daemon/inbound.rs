@@ -351,6 +351,7 @@ mod tests {
             payload: json!({ "text": text }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         }
     }
 
@@ -638,6 +639,73 @@ mod tests {
         );
     }
 
+    /// A held send repeated with its key is the one hold: the same
+    /// `held`, one card and one held document, and one delivery once the
+    /// person releases it; a repeat after the release makes no new card.
+    #[tokio::test]
+    async fn a_keyed_send_held_once_is_held_once_however_often_it_is_repeated() {
+        let dir = TempDir::new().unwrap();
+        let root = checkout(&dir, "[inbound]\nconnector = \"hold\"\n");
+        let daemon = open(&dir);
+        let (person, local, remote) = cast(&daemon, &root).await;
+        let keyed = || {
+            let mut request = send(&remote, "local", "the flag was renamed");
+            if let Request::Send {
+                idempotency_key, ..
+            } = &mut request
+            {
+                *idempotency_key = Some("send-1".into());
+            }
+            request
+        };
+        let first = daemon.handle(keyed()).await;
+        let Response::Held { message, question } = first.clone() else {
+            panic!("{first:?}")
+        };
+        let again = daemon.handle(keyed()).await;
+        assert_eq!(again, first, "the lost answer, given again");
+        let held: Vec<HeldMessage> = lock(&daemon.state).store.documents(DOCUMENT, None).unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].question, question);
+        assert_eq!(lock(&daemon.state).held_messages.len(), 1);
+        assert_eq!(inbox(&daemon, &person).await.len(), 1, "one card");
+        assert!(inbox(&daemon, &local).await.is_empty());
+        assert_eq!(
+            kinds(&daemon)
+                .iter()
+                .filter(|kind| matches!(kind, EventKind::MessageHeld { .. }))
+                .count(),
+            1
+        );
+
+        // Released once, delivered once; the key still answers as held.
+        let response = daemon
+            .handle(Request::Answer {
+                from: None,
+                message: question.clone(),
+                text: "release".into(),
+            })
+            .await;
+        assert!(
+            matches!(&response, Response::Sent { message: m, .. } if *m == message),
+            "{response:?}"
+        );
+        let later = daemon.handle(keyed()).await;
+        assert_eq!(later, first, "a repeat after the release holds nothing new");
+        let delivered = inbox(&daemon, &local).await;
+        assert_eq!(delivered.len(), 1);
+        assert_eq!(delivered[0].id, message);
+        let Response::Questions { questions } =
+            daemon.handle(Request::Questions { agent: None }).await
+        else {
+            panic!("questions")
+        };
+        assert!(questions.is_empty(), "{questions:?}");
+        assert!(lock(&daemon.state).held_messages.is_empty());
+        let held: Vec<HeldMessage> = lock(&daemon.state).store.documents(DOCUMENT, None).unwrap();
+        assert!(held.is_empty());
+    }
+
     /// Drop discards the message: nobody gets it, the card closes, and the
     /// stream says the person dropped it.
     #[tokio::test]
@@ -869,6 +937,7 @@ mod tests {
                 payload: json!({ "text": "--verbose" }),
                 reply_to: Some(asked.clone()),
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
         else {

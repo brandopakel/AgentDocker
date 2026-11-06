@@ -350,6 +350,7 @@ async fn one_identity_survives_both_halves_and_keeps_what_it_was_given() {
             payload: json!({"text": "still here?"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(matches!(delivered, Response::Sent { .. }), "{delivered:?}");
@@ -2631,6 +2632,7 @@ async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does
             payload: json!({ "text": "look at this" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     let notice = notices.try_recv().expect("a person is worth interrupting");
@@ -2658,12 +2660,158 @@ async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does
             payload: json!({ "text": "carry on" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(
         notices.try_recv().is_err(),
         "a program has no desktop to interrupt"
     );
+}
+
+/// A sender whose answer was lost sends again with the same key: the
+/// daemon answers as it first did, with the same message id, and the
+/// recipient has the message once. Another sender's same key is its own
+/// send, and a refused key is refused before anything is queued.
+#[tokio::test]
+async fn a_repeated_idempotency_key_replays_the_first_answer_and_queues_nothing() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sender = register(&daemon, "sender", distinct_pid()).await;
+    let other = register(&daemon, "other", distinct_pid()).await;
+    let reader = register(&daemon, "reader", distinct_pid()).await;
+    let send = |from: &AgentRecord, key: &str| Request::Send {
+        from: from.id.to_string(),
+        to: reader.id.to_string(),
+        kind: "chat".to_owned(),
+        payload: json!({ "text": "once" }),
+        reply_to: None,
+        links: Vec::new(),
+        idempotency_key: Some(key.to_owned()),
+    };
+
+    // The first answer is dropped on the way back; the retry carries the
+    // same key.
+    let first = daemon.handle(send(&sender, "send-1")).await;
+    let Response::Sent { message, .. } = &first else {
+        panic!("{first:?}");
+    };
+    let again = daemon.handle(send(&sender, "send-1")).await;
+    assert_eq!(again, first, "the first answer, unchanged");
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(
+        messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        vec![message],
+        "queued once"
+    );
+
+    // The same key from another sender is another send.
+    let theirs = daemon.handle(send(&other, "send-1")).await;
+    assert!(matches!(&theirs, Response::Sent { message: id, .. } if id != message));
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(messages.len(), 2);
+
+    // A refusal is not remembered: the retry is judged afresh.
+    let mut refused = send(&sender, "send-2");
+    if let Request::Send { to, .. } = &mut refused {
+        *to = "nobody-here".to_owned();
+    }
+    assert!(matches!(
+        daemon.handle(refused).await,
+        Response::Error { .. }
+    ));
+    assert!(
+        lock(&daemon.state)
+            .keyed_sends
+            .lookup(&sender.id.to_string(), "send-2", Utc::now())
+            .is_none()
+    );
+
+    // A key that is not one bounded line is refused before routing.
+    assert!(matches!(
+        daemon.handle(send(&sender, " padded")).await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+}
+
+/// A keyed retry is answered before its destination is resolved again:
+/// after a lost answer the recipient may have been renamed, or removed,
+/// and the message the retry repeats is queued all the same.
+#[tokio::test]
+async fn a_keyed_retry_is_answered_after_its_recipient_is_renamed_or_removed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sender = register(&daemon, "sender", distinct_pid()).await;
+    let reader = register(&daemon, "reader", distinct_pid()).await;
+    let send = |key: &str| Request::Send {
+        from: sender.id.to_string(),
+        to: "reader".to_owned(),
+        kind: "chat".to_owned(),
+        payload: json!({ "text": "once" }),
+        reply_to: None,
+        links: Vec::new(),
+        idempotency_key: Some(key.to_owned()),
+    };
+
+    // The answer is lost on the way back, and the recipient is renamed
+    // before the retry: its old name no longer reaches it.
+    let first = daemon.handle(send("send-1")).await;
+    let Response::Sent { message, .. } = &first else {
+        panic!("{first:?}");
+    };
+    let renamed = daemon
+        .handle(Request::Rename {
+            agent: reader.id.to_string(),
+            name: "renamed-reader".to_owned(),
+        })
+        .await;
+    assert!(matches!(renamed, Response::Agent { .. }), "{renamed:?}");
+    let fresh = daemon.handle(send("send-2")).await;
+    assert!(
+        matches!(fresh, Response::Error { .. }),
+        "a new send by the old name is refused: {fresh:?}"
+    );
+
+    let again = daemon.handle(send("send-1")).await;
+    assert_eq!(again, first, "the first answer, unchanged");
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(
+        messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        vec![message],
+        "queued once"
+    );
+
+    // And once the recipient is gone altogether.
+    let ended = lock(&daemon.state).deregister(&reader.id.to_string());
+    assert!(matches!(ended, Response::Agent { .. }), "{ended:?}");
+    assert_eq!(daemon.handle(send("send-1")).await, first);
 }
 
 // ----- snapshot restore ----------------------------------------------
@@ -2776,6 +2924,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             payload: json!({"text": "still for you"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
     else {
@@ -3209,6 +3358,7 @@ async fn a_relaunch_that_cannot_start_answers_and_leaves_the_record_ended() {
             payload: json!({"text": "waiting"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
     else {
@@ -6955,6 +7105,7 @@ deny = ["send:all"]
             payload: json!({ "text": "everyone!" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(matches!(
@@ -6978,6 +7129,7 @@ deny = ["send:all"]
                 payload: json!({ "text": "just you" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7742,6 +7894,7 @@ async fn failed_removal_retains_memory_and_never_reports_success() {
                 payload: json!({"text":"retain if removal fails"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7803,6 +7956,7 @@ async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing
                     payload: json!({"text":"retain after failed drain"}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None
                 })
                 .await,
             Response::Sent { .. }
@@ -7866,6 +8020,7 @@ async fn failed_inbox_touch_does_not_acknowledge_messages() {
                 payload: json!({"text":"retain after failed touch"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7911,6 +8066,7 @@ async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery()
                     payload: json!({"text":text}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None
                 })
                 .await,
             Response::Sent { .. }
@@ -8083,6 +8239,7 @@ async fn inbox_byte_pressure_survives_restart_and_acknowledgement_releases_capac
         payload,
         reply_to: None,
         links: Vec::new(),
+        idempotency_key: None,
     };
     for _ in 0..7 {
         assert!(matches!(
@@ -8335,6 +8492,7 @@ async fn inbox_ack_is_idempotent_and_preserves_new_arrivals() {
                 payload: json!({"text": text}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
     }
@@ -8394,6 +8552,7 @@ async fn state_survives_restart() {
             payload: json!({ "text": "hello" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     drop(daemon);
@@ -8470,6 +8629,7 @@ async fn remove_forgets_agent_and_inbox() {
             payload: json!({ "text": "late" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     daemon
@@ -9129,6 +9289,7 @@ async fn send(daemon: &Arc<Daemon>, from: &str, to: &str) -> Response {
             payload: json!({ "text": "hi" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
 }
@@ -9688,6 +9849,7 @@ async fn the_person_sees_where_their_message_stands_with_each_agent() {
                 payload: json!({"text": "on it"}),
                 reply_to: Some(message.clone()),
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
