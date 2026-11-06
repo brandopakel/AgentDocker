@@ -2692,15 +2692,15 @@ impl Daemon {
                 include_superseded,
                 min_score,
             } => {
-                self.memory_search(
+                self.memory_search(tasks::MemorySearchArgs {
                     from,
                     project,
-                    &query,
+                    query,
                     limit,
                     as_of,
                     include_superseded,
                     min_score,
-                )
+                })
                 .await
             }
             Request::MemoryProfile {

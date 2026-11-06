@@ -29,6 +29,19 @@ impl Reading {
     }
 }
 
+/// A memory search as the request spells it: who asks and for which
+/// project, the words, how many to return, the moment to read as of,
+/// whether superseded memories count, and the score below which none do.
+pub(in crate::daemon) struct MemorySearchArgs {
+    pub from: Option<String>,
+    pub project: Option<String>,
+    pub query: String,
+    pub limit: Option<usize>,
+    pub as_of: Option<chrono::DateTime<Utc>>,
+    pub include_superseded: bool,
+    pub min_score: Option<f64>,
+}
+
 impl State {
     /// How `from` reads `project`'s memory. Roles are a project's own, so
     /// an agent of another project holds none of them here and reads what
@@ -238,17 +251,20 @@ impl Daemon {
         Response::Memory { memory }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn memory_search(
         self: &Arc<Self>,
-        from: Option<String>,
-        project: Option<String>,
-        query: &str,
-        limit: Option<usize>,
-        as_of: Option<chrono::DateTime<Utc>>,
-        include_superseded: bool,
-        min_score: Option<f64>,
+        args: MemorySearchArgs,
     ) -> Response {
+        let MemorySearchArgs {
+            from,
+            project,
+            query,
+            limit,
+            as_of,
+            include_superseded,
+            min_score,
+        } = args;
+        let query = query.as_str();
         let project = match self.memory_project(from.as_deref(), project).await {
             Ok(project) => project,
             Err(response) => return *response,

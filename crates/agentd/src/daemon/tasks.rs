@@ -22,6 +22,7 @@ mod roles;
 mod rules;
 pub(in crate::daemon) mod verdicts;
 
+pub(in crate::daemon) use memory::MemorySearchArgs;
 pub(in crate::daemon) use plans::FilePutArgs;
 pub(in crate::daemon) use roles::RoleSaveArgs;
 
