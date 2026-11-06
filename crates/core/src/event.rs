@@ -686,8 +686,10 @@ pub enum EventKind {
     /// screen moved on), `process_changed` (another process is behind
     /// it), `screen_unreadable` (its screen can no longer be read: lost
     /// for a reason of the agent's own, or its source silent for
-    /// [`crate::judgment::OUTAGE_PASSES`] passes in a row) or `judge_off`
-    /// (the judge was turned off or cannot run), as
+    /// [`crate::judgment::OUTAGE_PASSES`] passes in a row), `judge_off`
+    /// (the judge was turned off or cannot run) or `superseded` (something
+    /// first-hand was reported after its screen was read, committed with
+    /// that report's `agent_activity_reported`), as
     /// [`crate::judgment::ClearReason`] words them.
     AgentJudgmentCleared {
         agent: AgentId,

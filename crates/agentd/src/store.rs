@@ -407,9 +407,16 @@ impl Store {
 
     /// Publish a lifecycle status and its replay evidence atomically.
     pub fn agent_transition(&self, record: &AgentRecord, event: &Event) -> Result<()> {
+        self.agent_transition_events(record, std::slice::from_ref(event))
+    }
+
+    /// An agent and the events that say what changed in it, as one commit.
+    pub fn agent_transition_events(&self, record: &AgentRecord, events: &[Event]) -> Result<()> {
         let tx = write_transaction(&self.conn)?;
         self.upsert_agent(record)?;
-        self.append_event(event)?;
+        for event in events {
+            self.append_event(event)?;
+        }
         tx.commit()?;
         Ok(())
     }

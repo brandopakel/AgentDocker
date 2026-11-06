@@ -471,19 +471,48 @@ impl State {
         if observation.source.is_none() {
             record.last_seen = record.last_seen.max(observation.observed_at);
         }
+        // A first-hand word is remembered apart from the observation a
+        // weaker one may later replace, and takes off for good a judgment
+        // of a screen read before it: nothing weaker that follows brings
+        // the judgment back, and a call still out for such a screen is
+        // refused when it returns (`ScreenJudgment::superseded_on`).
+        if observation.evidence() == status::Evidence::Strong {
+            record.first_hand_at =
+                Some(record.first_hand_at.map_or(observation.observed_at, |at| {
+                    at.max(observation.observed_at)
+                }));
+        }
+        let superseded = record
+            .judged
+            .as_ref()
+            .is_some_and(|judged| judged.superseded_by(&observation));
+        if superseded {
+            record.judged = None;
+        }
         record.reported_activity = Some(observation.clone());
-        let event = agentdocker_core::Event::new(
-            agentdocker_core::EventKind::AgentActivityReported {
+        let mut events = vec![Event::new(
+            EventKind::AgentActivityReported {
                 agent: id.clone(),
                 observation,
             },
             now,
-        );
-        let _ = self.transition(
+        )];
+        if superseded {
+            events.push(Event::new(
+                EventKind::AgentJudgmentCleared {
+                    agent: id.clone(),
+                    reason: agentdocker_core::judgment::ClearReason::Superseded
+                        .as_str()
+                        .to_owned(),
+                },
+                now,
+            ));
+        }
+        let _ = self.commit(
             "activity report",
-            event,
-            |store, event| store.agent_transition(&record, event),
-            |state| {
+            events,
+            |store, events| store.agent_transition_events(&record, events),
+            |state, _, ()| {
                 *state.registry.get_mut(&id).expect("resolved agent") = record.clone();
             },
         );

@@ -379,6 +379,14 @@ pub struct AgentRecord {
     pub last_seen: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_activity: Option<crate::ActivityObservation>,
+    /// When the newest first-hand (strong) observation of this agent was
+    /// made — its own adapter's report, Codex's shared server's — kept
+    /// apart from `reported_activity`, which a later weak word may
+    /// replace. A screen read before it is never judged waiting
+    /// ([`crate::judgment::ScreenJudgment::superseded_on`]). A daemon
+    /// predating it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_hand_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_delivery: Option<crate::InputDelivery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -408,9 +416,9 @@ pub struct AgentRecord {
     /// The opt-in judge read its quiet screen as waiting on the person:
     /// what for, how sure, and which screen of which process. It raises
     /// the agent's activity while it stands and never lowers it; a change
-    /// of screen, a screen that can no longer be read, a report from the
-    /// agent's own adapter or another process ends it (see
-    /// [`crate::judgment`]).
+    /// of screen, a screen that can no longer be read, a first-hand report
+    /// made after the screen was read (which takes it off the record for
+    /// good) or another process ends it (see [`crate::judgment`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judged: Option<crate::judgment::ScreenJudgment>,
 }
@@ -766,6 +774,7 @@ impl AgentRecord {
             finished_at: None,
             last_seen: now,
             reported_activity: None,
+            first_hand_at: None,
             input_delivery: None,
             provider_availability: None,
             adapter_contacts: Default::default(),

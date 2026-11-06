@@ -416,17 +416,27 @@ impl ScreenJudgment {
         observation.observed_at > self.judged_at && observation.evidence() == Evidence::Strong
     }
 
+    /// Whether anything first-hand on `record` came after the screen was
+    /// read: its newest first-hand observation (`first_hand_at`), which a
+    /// weaker word that replaced it on the record does not hide, or the
+    /// observation on the record itself ([`Self::superseded_by`]). Once
+    /// true it stays true for this judgment, whatever is reported later.
+    pub fn superseded_on(&self, record: &AgentRecord) -> bool {
+        record.first_hand_at.is_some_and(|at| at > self.judged_at)
+            || record
+                .reported_activity
+                .as_ref()
+                .is_some_and(|observation| self.superseded_by(observation))
+    }
+
     /// Whether it still stands for `record`: the same live process, and
     /// nothing first-hand reported since the screen was read
-    /// ([`Self::superseded_by`]). A report from the agent is first-hand and
+    /// ([`Self::superseded_on`]). A report from the agent is first-hand and
     /// outranks any reading of its screen; an inference does not.
     pub fn stands_for(&self, record: &AgentRecord) -> bool {
         record.status.is_live()
             && record.process_started_at == self.process_started_at
-            && record
-                .reported_activity
-                .as_ref()
-                .is_none_or(|observation| !self.superseded_by(observation))
+            && !self.superseded_on(record)
     }
 }
 
@@ -442,6 +452,9 @@ pub enum ClearReason {
     ScreenUnreadable,
     /// The judge was turned off or cannot run.
     JudgeOff,
+    /// Something first-hand was reported after its screen was read: the
+    /// agent's own word, or its conversation's server's.
+    Superseded,
 }
 
 impl ClearReason {
@@ -451,6 +464,7 @@ impl ClearReason {
             Self::ProcessChanged => "process_changed",
             Self::ScreenUnreadable => "screen_unreadable",
             Self::JudgeOff => "judge_off",
+            Self::Superseded => "superseded",
         }
     }
 }
@@ -899,6 +913,24 @@ mod tests {
         );
         record.reported_activity = Some(server);
         assert!(!judged.stands_for(&record));
+        // A first-hand word after it is remembered apart from the record's
+        // observation: a weak word that replaces it does not bring the
+        // judgment back.
+        record.first_hand_at = Some(at(23));
+        record.reported_activity = Some(
+            serde_json::from_value(
+                json!({"activity": "idle", "observed_at": at(24), "evidence": "weak"}),
+            )
+            .unwrap(),
+        );
+        assert!(judged.superseded_on(&record));
+        assert!(!judged.stands_for(&record), "not revived by a weaker word");
+        record.first_hand_at = Some(at(20));
+        assert!(
+            judged.stands_for(&record),
+            "a first-hand word before the screen"
+        );
+        record.first_hand_at = None;
         record.reported_activity = None;
         record.process_started_at = Some(at(-5));
         assert!(!judged.stands_for(&record), "another process");
@@ -913,6 +945,7 @@ mod tests {
         assert_eq!(ClearReason::ProcessChanged.as_str(), "process_changed");
         assert_eq!(ClearReason::ScreenUnreadable.as_str(), "screen_unreadable");
         assert_eq!(ClearReason::JudgeOff.as_str(), "judge_off");
+        assert_eq!(ClearReason::Superseded.as_str(), "superseded");
     }
 
     /// A screen read decides as before; one lost for the agent's own

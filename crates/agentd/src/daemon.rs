@@ -5950,6 +5950,7 @@ impl State {
         canonical.terminal = fresh.terminal.clone();
         canonical.vcs = fresh.vcs.clone();
         canonical.reported_activity = fresh.reported_activity.clone();
+        canonical.first_hand_at = fresh.first_hand_at;
         canonical.adapter_contacts = fresh.adapter_contacts.clone();
         canonical.queue_read = fresh.queue_read.clone();
         canonical.provider_availability = None;
