@@ -802,17 +802,29 @@ mod tests {
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         for cli in ["claude", "codex"] {
             #[cfg(unix)]
-            {
+            let path = {
                 let path = bin.join(cli);
                 std::fs::write(&path, "#!/bin/sh\necho 9.9.9\n").unwrap();
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-            }
+                path
+            };
             #[cfg(windows)]
-            std::fs::write(
-                bin.join(format!("{cli}.cmd")),
-                "@echo off\r\necho 9.9.9\r\n",
-            )
-            .unwrap();
+            let path = {
+                let path = bin.join(format!("{cli}.cmd"));
+                std::fs::write(&path, "@echo off\r\necho 9.9.9\r\n").unwrap();
+                path
+            };
+            // Run once here, with no deadline: a new executable's first
+            // run waits on the operating system's assessment of it (on
+            // macOS a tenth of a second alone, and seconds while other
+            // tests in the same run have it assess their fresh copies of
+            // the test binary, as the launcher fixtures do). A version is
+            // read under a deadline only once that has been paid.
+            let first = std::process::Command::new(&path)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .unwrap();
+            assert!(first.status.success(), "{}", path.display());
         }
         std::fs::create_dir_all(apps.join("Claude.app/Contents")).unwrap();
         let roots = Roots {
