@@ -198,7 +198,9 @@ cards, channels, `wait_for_messages` — is refused
 by name with the reason: the agent has no checkout here, and a long wait would
 hold an HTTP request. A `send_message` whose result is lost in transit may be
 repeated with the same `idempotency_key`: the daemon answers with the first
-message id and queues nothing more. Messages the connector's agent sends are attributed
+message id and queues nothing more, for up to 24 hours (the newest 4,096 keys
+are kept, in memory; after they turn over or the daemon restarts the key is
+new; see [the protocol](ARCHITECTURE.md#messaging)). Messages the connector's agent sends are attributed
 input to their recipients, never instructions; its own instructions say the
 same about what it reads on web pages, and tell a Claude Code or Codex
 session to use its own AgentDocker tools instead.

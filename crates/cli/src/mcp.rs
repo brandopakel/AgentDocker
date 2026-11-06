@@ -2731,7 +2731,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "kind": { "type": "string", "description": "chat, task, handoff, question, answer, notice...", "default": "chat" },
                     "reply_to": { "type": "string", "description": "Id of the message this answers." },
                     "links": { "type": "array", "maxItems": 16, "description": "Typed references beside it: what kind of thing and where — a path, a commit, a pr (URL, #123 or owner/repo#123), a url, a task (card id), a message (id) or a memory (its text is the target).", "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } },
-                    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Your own token for this one send (a UUID). Retrying with the same key after a lost result queues nothing and returns the first message_id again, for 24 hours." }
+                    "idempotency_key": { "type": "string", "minLength": 1, "maxLength": 128, "description": "Your own token for this one send (a UUID). Retrying with the same key after a lost result queues nothing and returns the first message_id again, for up to 24 hours: the daemon keeps the newest 4,096 keys in memory, so after they turn over or it restarts the key is new." }
                 },
                 "required": ["to"],
                 "additionalProperties": false
