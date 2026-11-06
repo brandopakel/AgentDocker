@@ -44,4 +44,4 @@ When several agents build on one machine, one build runs at a time under the exc
 
 `bash scripts/verify.sh coverage`, `bench` and `fuzz` run the other suites; see `docs/TESTING-AND-BENCHMARKS.md`. Release artifacts are built in CI only: a local release build carries the builder's paths.
 
-GitHub CI and code review are the review workflow: address valid findings, explain declined ones with evidence, and wait for checks on the final commit before merging.
+GitHub CI and code review are the review workflow: address valid findings, explain declined ones with evidence, and wait for checks on the final commit before merging. A pull request packages on Linux; the macOS packages and CLI archives, whose runners are few, are built for main, for a `batch/<name>` branch and on demand. Approved pull requests are merged in batches: a `batch/<name>` branch is main with each of them merged in, its full suite run locally and its packaging in CI, and each pull request is merged (`gh pr merge N --merge --match-head-commit <head>`) once its own checks and the batch's are green. A push to a pull request cancels its earlier runs.
