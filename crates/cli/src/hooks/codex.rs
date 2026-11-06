@@ -320,6 +320,9 @@ pub(super) async fn run(client: &Client) -> Result<()> {
     // stdin is a provider-owned pipe. Poll before every read, with bounded
     // retained bytes; a malformed or never-closed stream cannot hang a turn.
     let input = read_input(0, std::time::Duration::from_secs(1))?;
+    // Word that Codex ran this hook, as it does only once the person has
+    // trusted it: `setup --health` reads it. Only for an input Codex sent.
+    agentdocker_host::runtimes::hook_ran("codex");
     if !input.speaks_for_root() {
         return Ok(());
     }

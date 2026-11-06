@@ -862,9 +862,9 @@ impl Daemon {
         let Some(attempts) = state.store_read("webhook delivery log", |store| {
             store.webhook_attempts(name, limit)
         }) else {
-            return state
-                .storage_failure()
-                .unwrap_or_else(|| Response::error(ErrorCode::Internal, "storage failed"));
+            return state.storage_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::StorageUnavailable, "storage failed")
+            });
         };
         if attempts.is_empty() && !running {
             return Response::error(

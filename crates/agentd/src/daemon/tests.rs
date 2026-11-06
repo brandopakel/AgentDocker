@@ -3452,6 +3452,29 @@ async fn a_restore_that_cannot_run_records_the_failure_and_does_not_stop_the_oth
     daemon.stop_all().await;
 }
 
+/// A command whose program cannot be started is refused `launch_failed`,
+/// not `internal`: the request named something that cannot run.
+#[tokio::test]
+async fn a_command_that_cannot_start_is_refused_launch_failed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let mut missing = spec("missing");
+    missing.workdir = Some(dir.path().to_path_buf());
+    missing.command = vec!["/nonexistent/agentdocker-no-such-binary".into()];
+    let response = daemon.handle(Request::Run { spec: missing }).await;
+    assert!(
+        matches!(
+            &response,
+            Response::Error {
+                code: ErrorCode::LaunchFailed,
+                ..
+            }
+        ),
+        "{response:?}"
+    );
+    daemon.stop_all().await;
+}
+
 #[tokio::test]
 async fn an_agent_stopped_on_purpose_is_not_brought_back() {
     let dir = TempDir::new().unwrap();
@@ -9872,14 +9895,18 @@ async fn a_scan_started_before_registration_cannot_restore_an_adopted_process() 
 /// provider looks in the process table: its own name, no arguments. Bash
 /// and not `sleep` runs under that name, since the multi-call coreutils
 /// some Linux distributions ship refuse to run as a utility they are not.
-fn spawn_fake(fake: &std::path::Path, seconds: u32, cwd: &std::path::Path) -> std::process::Child {
+/// It runs in a process group of its own, which the guard ends whole when
+/// dropped, so the sleep bash started never outlives the test.
+fn spawn_fake(fake: &std::path::Path, seconds: u32, cwd: &std::path::Path) -> FakeProvider {
     use std::io::Write;
+    use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     let mut child = std::process::Command::new(fake)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .unwrap();
     child
@@ -9888,7 +9915,35 @@ fn spawn_fake(fake: &std::path::Path, seconds: u32, cwd: &std::path::Path) -> st
         .unwrap()
         .write_all(format!("sleep {seconds}\nexit 0\n").as_bytes())
         .unwrap();
-    child
+    FakeProvider(child)
+}
+
+/// A fake provider's process, its group ended when it is dropped.
+struct FakeProvider(std::process::Child);
+
+impl std::ops::Deref for FakeProvider {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for FakeProvider {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for FakeProvider {
+    fn drop(&mut self) {
+        // The group is the child's own pid; whatever is left of it goes.
+        if let Ok(group) = i32::try_from(self.0.id()) {
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+        }
+        let _ = self.0.wait();
+    }
 }
 
 #[tokio::test]
