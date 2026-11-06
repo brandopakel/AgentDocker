@@ -5938,6 +5938,14 @@ fn print_agents(
             .map(Session::describe)
             .unwrap_or_else(|| "-".to_owned())
     };
+    // What the provider says of an agent's own thread, where any says
+    // anything: the role it was spawned with and whose thread spawned it.
+    let with_threads = agents.iter().any(|a| {
+        a.thread
+            .as_ref()
+            .is_some_and(|t| t.role.is_some() || t.parent.is_some())
+    });
+    let thread_cell = |a: &AgentRecord| thread_cell(a, agents);
     let mut rows: Vec<Vec<String>> = agents
         .iter()
         .map(|a| {
@@ -5986,6 +5994,9 @@ fn print_agents(
                         .unwrap_or_else(|| "-".to_owned()),
                 );
             }
+            if with_threads {
+                row.push(thread_cell(a));
+            }
             if in_session {
                 row.push(session_cell(a.session.as_ref()));
             }
@@ -6018,6 +6029,9 @@ fn print_agents(
         if with_tokens {
             row.push("-".to_owned());
         }
+        if with_threads {
+            row.push("-".to_owned());
+        }
         if in_session {
             row.push(session_cell(p.session.as_ref()));
         }
@@ -6036,11 +6050,40 @@ fn print_agents(
     if with_tokens {
         headers.push("TOKENS 24H");
     }
+    if with_threads {
+        headers.push("THREAD");
+    }
     if in_session {
         headers.push("LIVES IN");
     }
     headers.extend(["PID", "CREATED"]);
     format::table_dimming(&headers, &rows, |i| i >= first_unadopted);
+}
+
+/// The `ps` THREAD cell: what the provider says of the agent's own thread.
+/// A spawned thread reads `<role> of <parent>` (or `child of <parent>`
+/// without a role), the parent by its agent's name where one is listed, by
+/// its short id, or by the thread's own first characters where no agent is
+/// bound to it; a root thread, or one not read yet, is `-`.
+fn thread_cell(agent: &AgentRecord, agents: &[AgentRecord]) -> String {
+    let Some(thread) = &agent.thread else {
+        return "-".to_owned();
+    };
+    let role = thread.role.as_deref().map(format::single_line);
+    let parent = thread.parent.as_ref().map(|parent| match &parent.agent {
+        Some(id) => agents
+            .iter()
+            .find(|a| a.id == *id)
+            .map(|a| a.spec.name.clone())
+            .unwrap_or_else(|| id.short().to_owned()),
+        None => format!("thread {}", format::short(&parent.thread)),
+    });
+    match (role, parent) {
+        (Some(role), Some(parent)) => format!("{role} of {parent}"),
+        (Some(role), None) => role,
+        (None, Some(parent)) => format!("child of {parent}"),
+        (None, None) => "-".to_owned(),
+    }
 }
 
 /// One row per channel, with how many reviews it carries.

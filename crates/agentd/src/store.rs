@@ -96,7 +96,11 @@ pub struct TaskTransition<'a> {
 // stale action, and the moment it went stale. An older daemon reloading one
 // would drop them, answer a withdrawn or defaulted question as still open,
 // and never apply the default its asker chose.
-pub(crate) const SCHEMA_VERSION: i64 = 29;
+// v30 is a bump although its one new table (`usage_accounts`) alone would
+// not be: each usage bucket now counts its exact samples, a field an older
+// daemon's strict bucket reader refuses, and an older daemon would count
+// both of a Codex session's accounts of the same tokens. It must refuse.
+pub(crate) const SCHEMA_VERSION: i64 = 30;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS usage_emissions (
@@ -239,6 +243,10 @@ CREATE INDEX IF NOT EXISTS usage_buckets_scope ON usage_buckets (hour, project, 
 CREATE TABLE IF NOT EXISTS usage_baselines (
     key TEXT PRIMARY KEY,
     json TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS usage_accounts (
+    key TEXT PRIMARY KEY,
+    account TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS usage_files (
     key TEXT PRIMARY KEY,
@@ -1051,6 +1059,9 @@ impl Store {
         // database rather than open it and quietly not hold anyone. v28's
         // boards, comments and card history are new documents too; a card
         // without a board is on its project's main board, made on demand.
+        // v30's bucket counts and session accounts start empty: a bucket
+        // without one cannot say whether it is exact, and a session with a
+        // cumulative baseline is on the account of running totals.
         Ok(())
     }
 

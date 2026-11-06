@@ -1298,6 +1298,7 @@ mod tests {
             proves_zero_baseline: false,
             cost_usd_micros: Some(100),
             aliases: Vec::new(),
+            parent_session: None,
         };
         assert_eq!(
             daemon.record_telemetry(&[sample("held", while_held), sample("after", after)], &[]),

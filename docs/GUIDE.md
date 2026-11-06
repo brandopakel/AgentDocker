@@ -545,10 +545,10 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); `--input-details` adds the one fix for each session that cannot take messages now |
+| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); a THREAD column, where any agent's provider says something of its own conversation, with the role a spawned Codex thread was given and whose thread spawned it (`reviewer of <agent>`, `child of thread <id>`); `--input-details` adds the one fix for each session that cannot take messages now |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is doing: working, idle, or blocked on a named resource |
-| `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour\|card\|role`: card is the board card held when each response was recorded, role the agent's roles then), each count with its coverage (`~` where some samples did not say, `—` where none did), the share of input read from cache, the provider-reported estimated cost where its telemetry said one, and under the table what the totals cover: the range answered, retention, gaps, whether collection is on and where the telemetry receiver listens, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
+| `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour\|card\|role`: card is the board card held when each response was recorded, role the agent's roles then), each count with its coverage (`~` where some samples did not say, `—` where none did), the share of input read from cache, the provider-reported estimated cost where its telemetry said one, a FIGURES column saying whether the row's counts are `exact` (the provider's own count for each response) or `estimated` (differences between its running totals are in it; `—` where older totals cannot say), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on and where the telemetry receiver listens, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
 | `inspect <agent>` | Everything known about one agent, as JSON |
 | `logs <agent>` | An agent's captured output, at most 16 MiB kept per agent (the newest 8 MiB and the 8 MiB before them); `-f` to follow, `--compress` for an rtk view |
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
@@ -1731,6 +1731,20 @@ Current behaviour that the sections above do not already state, by area.
   desktop's session rows show each session's tokens over the last day, with
   one line above the list that sums them and opens Usage. Both appear only
   when usage collection is on and there is something to show.
+
+- Exact or estimated: `agentdocker usage` says in its FIGURES column whether
+  a row's counts are the provider's own count for each response (`exact`:
+  Claude Code transcripts, and Codex threads first counted on this release)
+  or have differences between running totals in them (`estimated`: Codex
+  threads that were already being counted that way). Running totals can
+  fall short of what the provider counted: they leave out the call Codex
+  makes to compact a long conversation, and a reset in them is a gap, so an
+  `estimated` row can be lower than an `exact` one for the same work.
+
+- Codex threads spawned by an agent (its multi-agent tools) have no process
+  and, unless something binds one, no record: their tokens count to the
+  agent that spawned them, and a spawned thread that does have a record shows
+  its role and parent in `ps`'s THREAD column and in `inspect`.
 
 ### Project memory
 
