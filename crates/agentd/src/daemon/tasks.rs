@@ -3057,6 +3057,7 @@ mod tests {
                     summary: Some("stepping away".to_owned()),
                     summary_source: Default::default(),
                     only_automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Leases { .. }
@@ -3178,6 +3179,7 @@ mod tests {
                     summary: Some("stepping away".to_owned()),
                     summary_source: Default::default(),
                     only_automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Leases { .. }
@@ -3279,6 +3281,7 @@ mod tests {
                     summary: None,
                     summary_source: Default::default(),
                     only_automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Leases { .. }

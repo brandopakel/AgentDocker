@@ -226,6 +226,7 @@ impl Daemon {
                 None,
                 agentdocker_core::SummarySource::Explicit,
                 false,
+                None,
             );
         }
         Response::Checkpoint { checkpoint }

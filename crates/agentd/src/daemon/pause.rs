@@ -379,6 +379,7 @@ mod tests {
                     summary: None,
                     summary_source: Default::default(),
                     only_automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Error { .. }

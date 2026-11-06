@@ -165,11 +165,13 @@ pub struct Lease {
     /// before this field, which were all deliberate.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub automatic: bool,
-    /// Who inside the holder's session took it, where the session is
-    /// several agents in one process: a Claude Code in-process teammate's
-    /// id, as its hooks report it. Named in a refusal, so the agent
-    /// refused knows which teammate holds the file. Absent for a lease
-    /// the session took as itself.
+    /// Who inside the holder's session owns it, where the session is
+    /// several agents in one process: a Claude Code in-process teammate,
+    /// by its id in the team. Part of the lease's ownership — another
+    /// agent of the same session is blocked by it as another agent would
+    /// be — and named in a refusal. Absent for a lease the session holds
+    /// as itself (its lead), which is also how a lease stored before this
+    /// field reads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actor: Option<String>,
 }
@@ -199,9 +201,26 @@ impl Lease {
         self.expires_at <= now
     }
 
-    /// Would this lease stop `requester` from taking `mode` on `resource`?
-    fn blocks(&self, requester: &AgentId, mode: LeaseMode, resource: &ResourceKey) -> bool {
-        self.holder != *requester
+    /// Whether `holder`, acting as `actor` inside its session, owns this
+    /// lease. A lease is owned by its holder and actor together; no actor
+    /// is the session itself.
+    pub fn is_owned_by(&self, holder: &AgentId, actor: Option<&str>) -> bool {
+        self.holder == *holder && self.actor.as_deref() == actor
+    }
+
+    /// Would this lease stop `requester`, acting as `actor`, from taking
+    /// `mode` on `resource`? The same owner never blocks itself; any other
+    /// — another agent, or another agent inside the same session — is
+    /// blocked as another agent would be, on the same resource or an
+    /// overlapping one.
+    fn blocks(
+        &self,
+        requester: &AgentId,
+        actor: Option<&str>,
+        mode: LeaseMode,
+        resource: &ResourceKey,
+    ) -> bool {
+        !self.is_owned_by(requester, actor)
             && self.resource.overlaps(resource)
             && (self.mode == LeaseMode::Exclusive || mode == LeaseMode::Exclusive)
     }
@@ -290,13 +309,30 @@ impl LeaseTable {
         now: DateTime<Utc>,
         automatic: bool,
     ) -> Result<Claimed, LeaseError> {
+        self.claim_by(resource, holder, None, mode, ttl, note, now, automatic)
+    }
+
+    /// [`Self::claim_as`] by `actor` inside the holder's session (see
+    /// [`Lease::actor`]): the lease is owned by the pair. The same pair
+    /// claiming the same resource in the same mode renews it; any other
+    /// owner of an overlapping lease that conflicts in mode refuses it.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_by(
+        &mut self,
+        resource: ResourceKey,
+        holder: AgentId,
+        actor: Option<String>,
+        mode: LeaseMode,
+        ttl: Duration,
+        note: Option<String>,
+        now: DateTime<Utc>,
+        automatic: bool,
+    ) -> Result<Claimed, LeaseError> {
         self.expire(now);
 
-        if let Some(existing) = self
-            .leases
-            .values_mut()
-            .find(|l| l.holder == holder && l.resource == resource && l.mode == mode)
-        {
+        if let Some(existing) = self.leases.values_mut().find(|l| {
+            l.is_owned_by(&holder, actor.as_deref()) && l.resource == resource && l.mode == mode
+        }) {
             existing.expires_at = now + ttl;
             if note.is_some() {
                 existing.note = note;
@@ -311,7 +347,7 @@ impl LeaseTable {
         let held_by: Vec<Lease> = self
             .leases
             .values()
-            .filter(|l| l.blocks(&holder, mode, &resource))
+            .filter(|l| l.blocks(&holder, actor.as_deref(), mode, &resource))
             .cloned()
             .collect();
         if !held_by.is_empty() {
@@ -329,7 +365,7 @@ impl LeaseTable {
             note,
             amount: 0,
             automatic,
-            actor: None,
+            actor,
         };
         self.leases.insert(lease.id.clone(), lease.clone());
         Ok(Claimed::New(lease))
@@ -380,7 +416,8 @@ impl LeaseTable {
     /// Move every live lease of `from` to `to` in one step: what a handoff
     /// does at acceptance. Returns the leases as they now are, oldest
     /// first. Nothing is checked for conflicts: one holder may hold
-    /// overlapping leases.
+    /// overlapping leases. The receiver holds them as itself: an actor of
+    /// the giver's session is nobody in the receiver's.
     pub fn transfer(&mut self, from: &AgentId, to: &AgentId, now: DateTime<Utc>) -> Vec<Lease> {
         self.expire(now);
         let mut moved: Vec<Lease> = self
@@ -389,6 +426,7 @@ impl LeaseTable {
             .filter(|l| l.holder == *from)
             .map(|l| {
                 l.holder = to.clone();
+                l.actor = None;
                 l.clone()
             })
             .collect();
@@ -417,6 +455,7 @@ impl LeaseTable {
             })
             .map(|lease| {
                 lease.holder = to.clone();
+                lease.actor = None;
                 lease.clone()
             })
             .collect();
@@ -982,6 +1021,145 @@ mod tests {
         assert_eq!(t.release_all(&agent("a")).len(), 2);
         assert_eq!(t.by_holder(&agent("a")).len(), 0);
         assert_eq!(t.all().len(), 1);
+    }
+
+    /// A lease is owned by its holder and actor together: two agents of
+    /// one session (a lead and its in-process teammates) are refused by
+    /// each other's leases on the same resource or an overlapping one, as
+    /// two agents would be; the same pair renews; shared leases share; and
+    /// a lease stored before actors reads as its holder's own.
+    #[test]
+    fn a_lease_is_owned_by_its_holder_and_actor_together() {
+        let mut t = LeaseTable::new();
+        let now = Utc::now();
+        let lead = agent("lead");
+        let claim = |t: &mut LeaseTable, actor: Option<&str>, resource: &str, mode| {
+            t.claim_by(
+                key(resource),
+                lead.clone(),
+                actor.map(str::to_owned),
+                mode,
+                ttl(),
+                None,
+                now,
+                true,
+            )
+        };
+        let picker = Some("picker@vineyard");
+        let packer = Some("packer@vineyard");
+        let first = claim(&mut t, picker, "path:/r/src/lib.rs", LeaseMode::Exclusive)
+            .unwrap()
+            .into_lease();
+        assert_eq!(first.actor.as_deref(), picker);
+        // Another teammate of the same session, on the same path and on an
+        // overlapping one: refused, naming the owner's lease.
+        for resource in ["path:/r/src/lib.rs", "path:/r/src", "path:/r"] {
+            match claim(&mut t, packer, resource, LeaseMode::Exclusive) {
+                Err(LeaseError::Conflict { held_by, .. }) => {
+                    assert_eq!(held_by.len(), 1, "{resource}");
+                    assert_eq!(held_by[0].id, first.id);
+                    assert_eq!(held_by[0].actor.as_deref(), picker);
+                }
+                other => panic!("{resource}: {other:?}"),
+            }
+        }
+        // The lead itself is another owner too, either way round.
+        assert!(matches!(
+            claim(&mut t, None, "path:/r/src/lib.rs", LeaseMode::Exclusive),
+            Err(LeaseError::Conflict { .. })
+        ));
+        let lead_own = claim(&mut t, None, "path:/r/docs", LeaseMode::Exclusive)
+            .unwrap()
+            .into_lease();
+        assert!(matches!(
+            claim(
+                &mut t,
+                picker,
+                "path:/r/docs/guide.md",
+                LeaseMode::Exclusive
+            ),
+            Err(LeaseError::Conflict { .. })
+        ));
+        // The same pair renews, keeping the lease and its owner.
+        match claim(&mut t, picker, "path:/r/src/lib.rs", LeaseMode::Exclusive) {
+            Ok(Claimed::Renewed(lease)) => {
+                assert_eq!(lease.id, first.id);
+                assert_eq!(lease.actor.as_deref(), picker);
+            }
+            other => panic!("{other:?}"),
+        }
+        match claim(&mut t, None, "path:/r/docs", LeaseMode::Exclusive) {
+            Ok(Claimed::Renewed(lease)) => assert_eq!(lease.id, lead_own.id),
+            other => panic!("{other:?}"),
+        }
+        // Shared leases of two owners share.
+        assert!(claim(&mut t, picker, "task:review", LeaseMode::Shared).is_ok());
+        assert!(matches!(
+            claim(&mut t, packer, "task:review", LeaseMode::Shared),
+            Ok(Claimed::New(_))
+        ));
+        assert!(matches!(
+            claim(&mut t, None, "task:review", LeaseMode::Exclusive),
+            Err(LeaseError::Conflict { .. })
+        ));
+        // Another holder is refused by an actor's lease as by any.
+        assert!(matches!(
+            t.claim(
+                key("path:/r/src/lib.rs"),
+                agent("codex"),
+                LeaseMode::Exclusive,
+                ttl(),
+                None,
+                now
+            ),
+            Err(LeaseError::Conflict { .. })
+        ));
+        // A lease stored before actors is its holder's own.
+        let mut stored = serde_json::to_value(&lead_own).unwrap();
+        stored.as_object_mut().unwrap().remove("actor");
+        let read: Lease = serde_json::from_value(stored).unwrap();
+        assert_eq!(read.actor, None);
+        assert!(read.is_owned_by(&lead, None));
+        assert!(!read.is_owned_by(&lead, picker));
+        assert!(
+            serde_json::to_value(&lead_own)
+                .unwrap()
+                .get("actor")
+                .is_none(),
+            "an absent actor is written as absent"
+        );
+    }
+
+    /// A handoff gives the receiver the leases as its own.
+    #[test]
+    fn a_handoff_gives_the_receiver_its_givers_leases_as_its_own() {
+        let mut t = LeaseTable::new();
+        let now = Utc::now();
+        t.claim_by(
+            key("path:/r/a"),
+            agent("lead"),
+            Some("picker@vineyard".into()),
+            LeaseMode::Exclusive,
+            ttl(),
+            None,
+            now,
+            true,
+        )
+        .unwrap();
+        let moved = t.transfer(&agent("lead"), &agent("next"), now);
+        assert_eq!(moved.len(), 1);
+        assert_eq!(moved[0].actor, None);
+        assert!(matches!(
+            t.claim(
+                key("path:/r/a"),
+                agent("next"),
+                LeaseMode::Exclusive,
+                ttl(),
+                None,
+                now
+            ),
+            Ok(Claimed::Renewed(_))
+        ));
     }
 
     #[test]

@@ -1349,6 +1349,13 @@ pub enum Request {
         /// asked for stays held. The hooks adapter's turn-end release.
         #[serde(default)]
         only_automatic: bool,
+        /// Whose turn ended inside the agent's session, where a session
+        /// is several agents in one process (a Claude Code in-process
+        /// teammate's id, from its hooks): only the leases that teammate
+        /// owns are released. None, or one that names no teammate, is
+        /// the session itself, and every lease of the agent is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
     },
     /// Append a free-text note to the journal of the agent's project.
     JournalAdd {

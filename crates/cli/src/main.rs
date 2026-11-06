@@ -809,6 +809,10 @@ enum Command {
         /// What changed and why; becomes the project's journal entry.
         #[arg(long)]
         summary: Option<String>,
+        /// With `--all`: only the leases this teammate owns inside the
+        /// session (a Claude Code in-process teammate's id).
+        #[arg(long, requires = "all")]
+        actor: Option<String>,
     },
     /// The project's journal: what changed and why, one line per release, note, or commit.
     Journal(JournalArgs),
@@ -4951,6 +4955,7 @@ async fn run() -> Result<()> {
             lease,
             all,
             summary,
+            actor,
         } => {
             let agent = sender::resolve(&client, agent)
                 .await?
@@ -4961,6 +4966,7 @@ async fn run() -> Result<()> {
                     summary,
                     summary_source: agentdocker_core::SummarySource::Explicit,
                     only_automatic: false,
+                    actor,
                 };
                 if let Response::Leases { leases } = client.call(&request).await? {
                     for lease in leases {

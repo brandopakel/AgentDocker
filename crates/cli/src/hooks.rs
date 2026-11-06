@@ -261,12 +261,12 @@ async fn uncoordinated_cleanup<B: Backend>(backend: &B, input: &HookInput) -> Re
     match input.hook_event_name.as_str() {
         "Stop" => {
             if let Some(me) = session_agent(backend, input).await? {
-                release_held(backend, &me, None, true).await?;
+                release_held(backend, &me, None, true, input.agent_id.clone()).await?;
             }
         }
         "SessionEnd" => {
             if let Some(me) = session_agent(backend, input).await? {
-                release_held(backend, &me, None, false).await?;
+                release_held(backend, &me, None, false, None).await?;
                 backend
                     .call(Request::Deregister {
                         agent: me.id.to_string(),
@@ -1094,7 +1094,9 @@ pub async fn claude_code<B: Backend>(
             // itself is held until it says otherwise or the TTL ends. A
             // turn ends whenever the model answers, which is no reason
             // to lose what it deliberately holds.
-            release_held(backend, &me, summary, true).await?;
+            // Whose turn ended: a teammate inside the session gives back
+            // only its own; the session's own end gives back every one.
+            release_held(backend, &me, summary, true, input.agent_id.clone()).await?;
             // A newer limit may supersede this snapshot while Stop is running.
             // Keep that block, but do not let a rejected recovery retain leases
             // or produce another wake attempt.
@@ -1122,7 +1124,7 @@ pub async fn claude_code<B: Backend>(
         }
         "SessionEnd" => {
             if let Some(me) = session_agent(backend, input).await? {
-                release_held(backend, &me, None, false).await?;
+                release_held(backend, &me, None, false, None).await?;
                 backend
                     .call(Request::Deregister {
                         agent: me.id.to_string(),
@@ -1834,11 +1836,17 @@ async fn drain_inbox<B: Backend>(
 /// something the model typed for the journal.
 /// Give back this agent's leases: every one at session end, only the
 /// ones this adapter took for edits at the end of a turn.
+/// Release the session's leases, or with `only_automatic` those this
+/// adapter took for edits. `actor` is whose turn ended inside the session
+/// (the hook's `agent_id`): a Claude Code in-process teammate's ends only
+/// its own leases; none is the session's own end, which gives back every
+/// lease of the session.
 async fn release_held<B: Backend>(
     backend: &B,
     me: &AgentRecord,
     summary: Option<String>,
     only_automatic: bool,
+    actor: Option<String>,
 ) -> Result<()> {
     let summary_source = if summary.is_some() {
         SummarySource::Transcript
@@ -1851,6 +1859,7 @@ async fn release_held<B: Backend>(
             summary,
             summary_source,
             only_automatic,
+            actor,
         })
         .await?;
     anyhow::ensure!(
@@ -4635,6 +4644,70 @@ mod tests {
             "a session's end gives everything back"
         );
         assert!(matches!(&requests[2], Request::Deregister { agent } if agent == me.id.as_str()));
+    }
+
+    /// A turn's end says whose turn it was: a teammate inside the session
+    /// (the hook's `agent_id`) gives back only what it owns, the session's
+    /// own `Stop` names nobody and gives back every lease its edits took,
+    /// and a session's end ends every agent in it, whoever's hook it is.
+    #[tokio::test]
+    async fn a_turns_end_says_whose_turn_ended() {
+        let me = agent("claude-01234567", true);
+        let mut teammates = input("Stop");
+        teammates.agent_id = Some("pruner@orchard".into());
+        for (event, actor) in [
+            (teammates.clone(), Some("pruner@orchard")),
+            (input("Stop"), None),
+        ] {
+            let backend = Mock::with(vec![
+                Response::Agent { agent: me.clone() },
+                Response::Leases { leases: vec![] },
+            ]);
+            uncoordinated_cleanup(&backend, &event).await.unwrap();
+            assert!(
+                matches!(
+                    &backend.requests()[1],
+                    Request::ReleaseAll { only_automatic: true, actor: sent, .. }
+                        if sent.as_deref() == actor
+                ),
+                "{:?}",
+                backend.requests()
+            );
+        }
+        let mut ended = input("SessionEnd");
+        ended.agent_id = Some("pruner@orchard".into());
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me.clone() },
+            Response::Leases { leases: vec![] },
+            Response::Agent { agent: me.clone() },
+        ]);
+        uncoordinated_cleanup(&backend, &ended).await.unwrap();
+        assert!(matches!(
+            &backend.requests()[1],
+            Request::ReleaseAll {
+                only_automatic: false,
+                actor: None,
+                ..
+            }
+        ));
+        // The coordinated `Stop` says the same.
+        if host_pid().is_none() {
+            return;
+        }
+        let backend = Mock::with(vec![
+            Response::Agent { agent: me },
+            Response::error(ErrorCode::Internal, "stop after the release"),
+        ]);
+        let _ = claude_code(&backend, &teammates, &opts()).await;
+        assert!(
+            matches!(
+                &backend.requests()[1],
+                Request::ReleaseAll { only_automatic: true, actor: Some(sent), .. }
+                    if sent == "pruner@orchard"
+            ),
+            "{:?}",
+            backend.requests()
+        );
     }
 
     /// A folder taken off the list leaves its sessions alone, but one that

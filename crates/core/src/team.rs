@@ -447,6 +447,26 @@ impl TeamMembership {
         self.colour.as_deref().and_then(crate::RoleColor::parse)
     }
 
+    /// The owner an `actor` reported inside this agent's session is for a
+    /// lease (see `Lease::actor`): another member of this agent's team, by
+    /// its id there (its `agentId`, else its name), or `None` — the
+    /// session itself. An actor that names nobody in `team`, or names
+    /// this agent itself, is the session: Claude Code reports an
+    /// `agent_id` for an ordinary subagent too, and a subagent is the
+    /// session's own work, never an agent apart from it.
+    pub fn owner_actor(&self, actor: Option<&str>, team: Option<&Team>) -> Option<String> {
+        let member = team?.acting_member(actor?)?;
+        if same_name(&member.name, &self.name) {
+            return None;
+        }
+        Some(
+            member
+                .agent_id
+                .clone()
+                .unwrap_or_else(|| member.name.clone()),
+        )
+    }
+
     /// What a lease taken under this membership says of its holder when
     /// `actor` names who took it: the in-process teammate as the team
     /// names it (`pruner, teammate of team-lead in orchard`), the
@@ -875,6 +895,70 @@ mod tests {
             Some(PathBuf::from("/home/p/.claude"))
         );
         assert_eq!(config_dir(None, None), None);
+    }
+
+    /// Only another member of the agent's own team owns a lease apart
+    /// from its session: a subagent's id, the agent itself, or any actor
+    /// with no team read, is the session.
+    #[test]
+    fn only_another_member_of_the_team_owns_a_lease_apart_from_its_session() {
+        let team = Team::from_team_file("orchard", TEAM_FILE_JSON).unwrap();
+        let lead = membership(
+            &SessionFacts {
+                session_id: Some("0123456789abcdef0123"),
+                ..Default::default()
+            },
+            std::slice::from_ref(&team),
+        )
+        .unwrap();
+        assert_eq!(
+            lead.owner_actor(Some("pruner@orchard"), Some(&team))
+                .as_deref(),
+            Some("pruner@orchard")
+        );
+        assert_eq!(
+            lead.owner_actor(Some("Pruner"), Some(&team)).as_deref(),
+            Some("pruner@orchard"),
+            "keyed by the member's id however the actor spelt it"
+        );
+        assert_eq!(
+            lead.owner_actor(Some("a1b2c3d4e5"), Some(&team)),
+            None,
+            "a subagent"
+        );
+        assert_eq!(
+            lead.owner_actor(Some("team-lead@orchard"), Some(&team)),
+            None,
+            "itself"
+        );
+        assert_eq!(lead.owner_actor(None, Some(&team)), None);
+        assert_eq!(
+            lead.owner_actor(Some("pruner@orchard"), None),
+            None,
+            "no team read"
+        );
+        // A teammate in its own process reporting its own id is itself.
+        let line: Vec<String> = ["claude", "--agent-name", "pruner", "--team-name", "orchard"]
+            .map(str::to_owned)
+            .to_vec();
+        let pruner = membership(
+            &SessionFacts {
+                argv: Some(&line),
+                ..Default::default()
+            },
+            std::slice::from_ref(&team),
+        )
+        .unwrap();
+        assert_eq!(
+            pruner.owner_actor(Some("pruner@orchard"), Some(&team)),
+            None
+        );
+        assert_eq!(
+            pruner
+                .owner_actor(Some("grafter@orchard"), Some(&team))
+                .as_deref(),
+            Some("grafter@orchard")
+        );
     }
 
     #[test]

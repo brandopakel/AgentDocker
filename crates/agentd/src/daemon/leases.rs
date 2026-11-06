@@ -153,10 +153,15 @@ impl Daemon {
                             ));
                         }
                     }
+                    // Who inside the holder's session owns what it takes:
+                    // part of the lease's ownership, so two agents of one
+                    // session are refused by each other as any two are.
+                    let owner = state.owner_actor(&holder, actor.as_deref());
                     let result = if state.may_attempt(waiting.ticket()) {
-                        state.leases.clone().claim_as(
+                        state.leases.clone().claim_by(
                             resource.clone(),
                             holder.clone(),
+                            owner,
                             // A quota is shared by construction: it is spent,
                             // not occupied, so exclusivity would make every
                             // budget a lock on itself.
@@ -183,7 +188,6 @@ impl Daemon {
                     };
                     let (message, held_by) = match result {
                         Ok(Claimed::New(mut lease)) => {
-                            lease.actor = actor.clone();
                             lease.change_seq = state.store_read("lease ledger boundary", |store| {
                                 store.change_watermark()
                             });
@@ -205,11 +209,7 @@ impl Daemon {
                             }
                             break 'attempt Err((Response::Lease { lease }, WaitOutcome::Claimed));
                         }
-                        Ok(Claimed::Renewed(mut lease)) => {
-                            // Each claim says who in the session takes it
-                            // now, none being the session itself: the lead
-                            // editing a file a teammate had is the lead's.
-                            lease.actor = actor.clone();
+                        Ok(Claimed::Renewed(lease)) => {
                             if !state.commit_lease_activity(
                                 &holder,
                                 Some(&lease),
@@ -240,9 +240,10 @@ impl Daemon {
                                         // A member of a Claude Code team by
                                         // the name its lead gave it: the name
                                         // the team's other agents know. An
-                                        // in-process teammate took the lease
+                                        // in-process teammate owns its lease
                                         // under the lead's session, and is
-                                        // named by the actor it reported.
+                                        // named by the roster its holder was
+                                        // placed by.
                                         let team = holder
                                             .and_then(|a| a.team.as_ref())
                                             .map(|t| {
@@ -250,7 +251,7 @@ impl Daemon {
                                                     ", {}",
                                                     t.describe_acting(
                                                         l.actor.as_deref(),
-                                                        state.teams.get(&t.team),
+                                                        state.team_rosters.get(&l.holder),
                                                     )
                                                 )
                                             })
@@ -553,26 +554,50 @@ impl State {
         }
     }
 
+    /// Release the agent's leases, or with `only_automatic` those an
+    /// adapter took for an edit. An `actor` that is a teammate inside the
+    /// agent's session ([`State::owner_actor`]) releases only the leases it
+    /// owns: its turn ended, not its session's. No actor, or one that names
+    /// no teammate, is the session itself, and every lease of the agent's
+    /// is released, its in-process teammates' included — the session's own
+    /// turn end is the only boundary its hooks see for them, and a teammate
+    /// takes its lease again at its next edit.
     pub(super) fn release_all(
         &mut self,
         reference: &str,
         summary: Option<String>,
         source: SummarySource,
         only_automatic: bool,
+        actor: Option<&str>,
     ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        let owner = self.owner_actor(&holder, actor);
         let released = self
             .leases
             .by_holder(&holder)
             .into_iter()
             .filter(|l| !only_automatic || l.automatic)
+            .filter(|l| owner.is_none() || l.actor == owner)
             .cloned()
             .collect();
         let released = self.finish_release(&holder, released, summary, source);
         Response::Leases { leases: released }
+    }
+
+    /// The owner an `actor` reported inside `holder`'s session is: another
+    /// member of the holder's Claude Code team, as the roster the holder was
+    /// placed by names it, else `None` — the session itself (see
+    /// [`agentdocker_core::TeamMembership::owner_actor`]). As of the last
+    /// read of the team: every five seconds, and at each registration.
+    pub(super) fn owner_actor(&self, holder: &AgentId, actor: Option<&str>) -> Option<String> {
+        self.registry
+            .get(holder)?
+            .team
+            .as_ref()?
+            .owner_actor(actor, self.team_rosters.get(holder))
     }
 
     /// Stage deletion and the journal/replay evidence in one transaction,

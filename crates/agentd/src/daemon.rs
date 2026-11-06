@@ -511,10 +511,12 @@ struct State {
     /// directory as last read, by pid and birth, so they are read from the
     /// process table and its environment once rather than on every tick.
     team_processes: teams::ProcessCache,
-    /// Every Claude Code team last read, by name, so a lease's actor can
-    /// be named as the team names it. In memory only: read again on the
-    /// next tick.
-    teams: HashMap<String, agentdocker_core::Team>,
+    /// The roster each live Claude Code record was placed by, as last read
+    /// from that session's own configuration directory: who a lease's
+    /// actor is, and how a refusal names it. Kept per record, so two
+    /// directories with a team of one name never stand for each other. In
+    /// memory only: read again on the next tick.
+    team_rosters: HashMap<AgentId, agentdocker_core::Team>,
     /// Checkouts the daemon is committing in right now. The watcher polls
     /// on its own schedule and will see HEAD move part-way through, so
     /// without this it writes its own guessed-at entry for a commit the
@@ -1674,7 +1676,7 @@ impl Daemon {
                 project_checkouts: HashMap::new(),
                 claude_config_dir: agentdocker_host::teams::claude_config_dir(),
                 team_processes: HashMap::new(),
-                teams: HashMap::new(),
+                team_rosters: HashMap::new(),
                 committing: std::collections::BTreeSet::new(),
                 controller_pins: HashMap::new(),
                 question_waiters: HashSet::new(),
@@ -2951,9 +2953,16 @@ impl Daemon {
                 summary,
                 summary_source,
                 only_automatic,
+                actor,
             } => {
                 self.flush_release_watcher(&agent, None).await;
-                lock(&self.state).release_all(&agent, summary, summary_source, only_automatic)
+                lock(&self.state).release_all(
+                    &agent,
+                    summary,
+                    summary_source,
+                    only_automatic,
+                    actor.as_deref(),
+                )
             }
             Request::JournalAdd { agent, summary } => {
                 lock(&self.state).journal_add(&agent, summary)

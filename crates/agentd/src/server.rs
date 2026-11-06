@@ -1818,6 +1818,7 @@ mod tests {
                 summary: None,
                 summary_source: agentdocker_core::SummarySource::Explicit,
                 only_automatic: false,
+                actor: None,
             })
             .await;
         assert!(

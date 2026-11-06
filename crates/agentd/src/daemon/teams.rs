@@ -13,9 +13,10 @@
 //! environment where the platform lets the daemon read another process's
 //! (Linux), else the directory the session's hooks and MCP server
 //! resolved in theirs and put on its record (`claude_config_dir`), else
-//! the daemon's own. What changed is written and announced as
-//! `agent_team_changed`; nothing is written under `.claude/` or Claude's
-//! configuration directory.
+//! the daemon's own. Each record keeps the roster it was placed by, which
+//! says who a lease's actor inside its session is. What changed is
+//! written and announced as `agent_team_changed`; nothing is written under
+//! `.claude/` or Claude's configuration directory.
 
 use super::*;
 use agentdocker_core::team::{self, SessionFacts, Team, TeamMembership, TeammateArgs};
@@ -117,10 +118,10 @@ impl Daemon {
         if targets.is_empty() {
             let mut state = lock(&self.state);
             state.team_processes.clear();
-            state.teams.clear();
+            state.team_rosters.clear();
             return;
         }
-        let Ok((processes, memberships, teams_read)) = tokio::task::spawn_blocking(move || {
+        let Ok((processes, placed)) = tokio::task::spawn_blocking(move || {
             let mut processes: ProcessCache = HashMap::new();
             for target in &targets {
                 if let Some(pid) = target.pid {
@@ -155,7 +156,10 @@ impl Daemon {
                         (None, _) => Vec::new(),
                     });
             }
-            let memberships: Vec<(AgentId, Option<TeamMembership>)> = targets
+            // Each record's place, with the roster it was placed by: read
+            // from that session's own directory, so a team of one name
+            // under two directories is two rosters.
+            let placed: Vec<(AgentId, Option<TeamMembership>, Option<Team>)> = targets
                 .iter()
                 .map(|target| {
                     let plain_here = targets
@@ -171,16 +175,17 @@ impl Daemon {
                     let known = teams
                         .get(&(config_of(target), target.workdir.clone()))
                         .map_or(&[][..], Vec::as_slice);
-                    (target.id.clone(), team::membership(&facts, known))
+                    let membership = team::membership(&facts, known);
+                    let roster = membership.as_ref().and_then(|m| {
+                        known
+                            .iter()
+                            .find(|t| team::same_name(&t.name, &m.team))
+                            .cloned()
+                    });
+                    (target.id.clone(), membership, roster)
                 })
                 .collect();
-            // Every team read, by name, for naming a lease's actor.
-            let teams_read: HashMap<String, Team> = teams
-                .into_values()
-                .flatten()
-                .map(|team| (team.name.clone(), team))
-                .collect();
-            (processes, memberships, teams_read)
+            (processes, placed)
         })
         .await
         else {
@@ -188,8 +193,11 @@ impl Daemon {
         };
         let mut state = lock(&self.state);
         state.team_processes = processes;
-        state.teams = teams_read;
-        for (id, membership) in memberships {
+        state.team_rosters = placed
+            .iter()
+            .filter_map(|(id, _, roster)| Some((id.clone(), roster.clone()?)))
+            .collect();
+        for (id, membership, _) in placed {
             state.apply_team(&id, membership);
         }
     }
