@@ -1541,8 +1541,10 @@ Current behaviour that the sections above do not already state, by area.
   compacted it is told again the memories that answer what you last asked.
   One kept for some roles only
   (`--role reviewer`, `roles` on `add_memory`) is told to their holders and
-  to you, and never copied off the machine. It stays on this machine; anything that
-  looks like a secret is refused. To keep a copy in Supermemory as well,
+  to you, and never copied to Supermemory. Memories are kept on this
+  machine; one told to a session reaches that session's provider as
+  context, as the rest of the conversation does. Anything that looks like
+  a secret is refused. To keep a copy in Supermemory as well,
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is
   Supermemory's, on its terms). `base_url` names a server of your own
