@@ -38,7 +38,7 @@ Every change that alters behaviour or a contract updates the document that state
 
 ## Verification
 
-Run `bash scripts/verify.sh check` before opening or updating a ready PR: nextest (zero retries), doctests, formatting, strict Clippy, installer tests, packaging and the release build. Use targeted tests while editing, each worktree with its own Cargo target directory; `python3 scripts/build_storage.py` reports cache sizes. Run Cargo without a session's `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_SOCKET` or `AGENTDOCKER_HOME` in the environment: the hooks and service tests expect none (`verify.sh` drops them).
+Run `bash scripts/verify.sh check` before opening or updating a ready PR: nextest (zero retries), doctests, formatting, strict Clippy, installer tests, packaging and the release build. Use targeted tests while editing, each worktree with its own Cargo target directory; `python3 scripts/build_storage.py` reports cache sizes, and `--prune --dry-run` names the inactive worktrees whose caches `--prune` would remove (no lease, branch merged, no build running; never the current worktree's). Run Cargo without a session's `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_SOCKET` or `AGENTDOCKER_HOME` in the environment: the hooks and service tests expect none (`verify.sh` drops them).
 
 When several agents build on one machine, one build runs at a time under the exclusive lease `task:local-cargo-campaign`: `verify.sh` takes and releases it itself, and before a direct `cargo` run take it with `agentdocker claim task:local-cargo-campaign --wait 600 --note "…"` and release it as soon as the run ends.
 
