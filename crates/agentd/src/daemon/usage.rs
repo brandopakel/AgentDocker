@@ -324,13 +324,10 @@ impl Daemon {
     ) -> bool {
         let mut state = lock(&self.state);
         let now = Utc::now();
-        let samples: Vec<_> = batch
+        let held: Vec<_> = batch
             .samples
             .iter()
-            .map(|sample| {
-                let attribution = attribution_at(&state, sample);
-                (sample.clone(), attribution)
-            })
+            .map(|sample| (sample.clone(), attribution_at(&state, sample)))
             .collect();
         let progress = FileProgress {
             cursor: batch.cursor.clone(),
@@ -340,6 +337,7 @@ impl Daemon {
         let result = state.commit_produced(
             "usage accounting",
             |store, seq| {
+                let samples = stamped(store, &held)?;
                 let events = store.usage_ingest(Ingest {
                     key,
                     progress: &progress,
@@ -386,7 +384,7 @@ impl Daemon {
         let config = configuration(&self.home).unwrap_or_default();
         let now = Utc::now();
         let mut state = lock(&self.state);
-        let samples: Vec<_> = samples
+        let held: Vec<_> = samples
             .iter()
             .map(|sample| (sample.clone(), attribution_at(&state, sample)))
             .collect();
@@ -394,6 +392,7 @@ impl Daemon {
         let result = state.commit_produced(
             "usage telemetry",
             |store, seq| {
+                let samples = stamped(store, &held)?;
                 let events = store.usage_ingest_telemetry(
                     &samples,
                     rejected,
@@ -420,33 +419,33 @@ impl Daemon {
     }
 }
 
-/// The attribution a sample takes at ingestion: the registration of its
-/// session current at its time, with the card and roles that agent held.
-fn attribution_at(state: &State, sample: &agentdocker_host::usage::Sample) -> UsageAttribution {
-    let mut attribution = usage::registration_at(
+/// What memory says of a sample's attribution, before the store is asked:
+/// the registration of its session current at its time and, for the agent
+/// it names, the exclusive `task:` leases that agent holds covering that
+/// time (each with when it was taken) and its current `role` label.
+/// [`stamp`] finishes it in the ingest transaction.
+struct Held {
+    attribution: UsageAttribution,
+    leases: Vec<(DateTime<Utc>, String)>,
+    role_now: Option<String>,
+}
+
+fn attribution_at(state: &State, sample: &agentdocker_host::usage::Sample) -> Held {
+    let attribution = usage::registration_at(
         &registrations(state, &sample.runtime, &sample.session_id),
         sample.at,
     )
     .unwrap_or_default();
-    stamp(state, &mut attribution, sample.at);
-    attribution
-}
-
-/// The card and roles an attributed agent held when the response was
-/// made, onto its sample, however late its record arrives. The card: of
-/// the exclusive `task:` leases on a board card it held at `at` (one it
-/// still holds, held by then and not lapsed, or one the store kept when
-/// it ended), the latest it took; a `task:` lease on anything else (a
-/// build campaign) is never one. A lease handed over is held from the
-/// hand-over (`Lease::held_since`), never from the sender's claim. The roles: those its kept history says it held
-/// then, or its current ones when they have never changed. Nothing for an
-/// unattributed sample.
-fn stamp(state: &State, attribution: &mut UsageAttribution, at: DateTime<Utc>) {
     let Some(agent) = attribution.agent.clone() else {
-        return;
+        return Held {
+            attribution,
+            leases: Vec::new(),
+            role_now: None,
+        };
     };
-    let id = AgentId::from(agent.clone());
-    let live = state
+    let id = AgentId::from(agent);
+    let at = sample.at;
+    let leases = state
         .leases
         .by_holder(&id)
         .into_iter()
@@ -455,27 +454,71 @@ fn stamp(state: &State, attribution: &mut UsageAttribution, at: DateTime<Utc>) {
         })
         .filter_map(|lease| {
             let card = lease.resource.as_str().strip_prefix("task:")?;
-            state
-                .store
-                .usage_is_card(card)
-                .unwrap_or(false)
-                .then(|| (lease.held_since(), card.to_owned()))
-        });
-    let ended = state.store.usage_card_held(&agent, at).ok().flatten();
-    attribution.card = live
-        .chain(ended)
+            Some((lease.held_since(), card.to_owned()))
+        })
+        .collect();
+    let role_now = state
+        .registry
+        .get(&id)
+        .and_then(|record| record.spec.labels.get(agentdocker_core::agent::ROLE_LABEL))
+        .filter(|label| !label.is_empty())
+        .cloned();
+    Held {
+        attribution,
+        leases,
+        role_now,
+    }
+}
+
+/// The card and roles an attributed agent held when the response was
+/// made, onto its sample, however late its record arrives. The card: of
+/// the exclusive `task:` leases on a board card it held at `at` (one it
+/// still holds, held by then and not lapsed, or one the store kept when
+/// it ended), the latest it took; a `task:` lease on anything else (a
+/// build campaign) is never one. A lease handed over is held from the
+/// hand-over (`Lease::held_since`), never from the sender's claim. The
+/// roles: those its kept history says it held then, or its current ones
+/// when they have never changed. Nothing for an unattributed sample. Read
+/// in the ingest transaction: a read the store refuses fails the batch,
+/// which fences storage as any failed read does and leaves the sample for
+/// the exporter or the next scan to bring again, so no sample is ever
+/// stamped as held by nothing because the store could not say.
+fn stamp(
+    store: &crate::store::Store,
+    held: &Held,
+    at: DateTime<Utc>,
+) -> anyhow::Result<UsageAttribution> {
+    let mut attribution = held.attribution.clone();
+    let Some(agent) = attribution.agent.clone() else {
+        return Ok(attribution);
+    };
+    let mut cards = Vec::with_capacity(held.leases.len() + 1);
+    for (taken, card) in &held.leases {
+        if store.usage_is_card(card)? {
+            cards.push((*taken, card.clone()));
+        }
+    }
+    cards.extend(store.usage_card_held(&agent, at)?);
+    attribution.card = cards
+        .into_iter()
         .max_by_key(|(taken, _)| *taken)
         .map(|(_, card)| card);
-    attribution.role = match state.store.usage_role_held(&agent, at) {
-        Ok(Some(held)) => held.filter(|label| !label.is_empty()),
-        Ok(None) => state
-            .registry
-            .get(&id)
-            .and_then(|record| record.spec.labels.get(agentdocker_core::agent::ROLE_LABEL))
-            .filter(|label| !label.is_empty())
-            .cloned(),
-        Err(_) => None,
+    attribution.role = match store.usage_role_held(&agent, at)? {
+        Some(kept) => kept.filter(|label| !label.is_empty()),
+        None => held.role_now.clone(),
     };
+    Ok(attribution)
+}
+
+/// Every sample with its attribution finished against the store, for one
+/// ingest transaction; the first read the store refuses fails it.
+fn stamped(
+    store: &crate::store::Store,
+    held: &[(agentdocker_host::usage::Sample, Held)],
+) -> anyhow::Result<Vec<(agentdocker_host::usage::Sample, UsageAttribution)>> {
+    held.iter()
+        .map(|(sample, held)| Ok((sample.clone(), stamp(store, held, sample.at)?)))
+        .collect()
 }
 
 fn alive_wait(weak: &Weak<Daemon>, ticks: usize) -> bool {
@@ -495,11 +538,13 @@ fn worker(weak: Weak<Daemon>) {
         };
         let config = configuration(&daemon.home);
         drop(daemon);
-        if let Ok(config) = config
-            && config.enabled
-        {
-            collect_generation(&weak, &config);
-            if let Some(daemon) = weak.upgrade() {
+        if let Ok(config) = config {
+            if config.enabled {
+                collect_generation(&weak, &config);
+            }
+            if reconciles(&config)
+                && let Some(daemon) = weak.upgrade()
+            {
                 daemon.reconcile_usage(&config);
             }
         }
@@ -507,6 +552,14 @@ fn worker(weak: Weak<Daemon>) {
             return;
         }
     }
+}
+
+/// Whether the worker's tick reconciles unattributed history: under
+/// collection, and while the telemetry receiver is on without it, since
+/// an export whose session registers after it arrived is attributed by
+/// nothing else and would otherwise wait for collection to be turned on.
+fn reconciles(config: &UsageConfig) -> bool {
+    config.enabled || matches!(config.otlp_listen(), Ok(Some(_)))
 }
 
 /// Wait `seconds` between collections, checking once a second that the
@@ -1176,6 +1229,30 @@ fn registrations(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn the_worker_reconciles_under_collection_or_a_receiver() {
+        let off = UsageConfig::default();
+        assert!(!reconciles(&off));
+        let collecting = UsageConfig {
+            enabled: true,
+            ..UsageConfig::default()
+        };
+        assert!(reconciles(&collecting));
+        let receiving = UsageConfig {
+            otlp_listen: Some("127.0.0.1:4318".into()),
+            ..UsageConfig::default()
+        };
+        assert!(reconciles(&receiving));
+        let unbindable = UsageConfig {
+            otlp_listen: Some("0.0.0.0:4318".into()),
+            ..UsageConfig::default()
+        };
+        assert!(
+            !reconciles(&unbindable),
+            "a receiver that cannot bind is none"
+        );
+    }
 
     #[test]
     fn usage_configuration_counts_default_roots_against_the_limit() {

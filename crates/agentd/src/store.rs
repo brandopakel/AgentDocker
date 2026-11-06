@@ -924,6 +924,16 @@ impl Store {
             BEGIN SELECT RAISE(FAIL, 'injected validation event failure'); END;").unwrap();
     }
 
+    /// Fail every read of the card and role history: a temporary table of
+    /// the same name shadows it, so the queries that stamp a sample find
+    /// none of its columns.
+    #[cfg(test)]
+    pub(crate) fn reject_usage_holding_reads_for_test(&self) {
+        self.conn
+            .execute_batch("CREATE TEMP TABLE usage_holdings(injected)")
+            .unwrap();
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         Self::open_with(path, true)
     }

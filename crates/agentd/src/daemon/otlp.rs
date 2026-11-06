@@ -202,6 +202,9 @@ pub(crate) struct Request {
     pub path: String,
     pub content_type: Option<String>,
     pub content_encoding: Option<String>,
+    /// Whether the request named an `Origin`: a browser's does, an
+    /// exporter's never.
+    pub origin: bool,
     pub body: Vec<u8>,
 }
 
@@ -255,6 +258,7 @@ impl Reply {
         let reason = match self.status {
             200 => "OK",
             400 => "Bad Request",
+            403 => "Forbidden",
             404 => "Not Found",
             405 => "Method Not Allowed",
             413 => "Payload Too Large",
@@ -301,6 +305,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Request, Reply> {
     let mut content_length = None;
     let mut content_type = None;
     let mut content_encoding = None;
+    let mut origin = false;
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
             continue;
@@ -316,6 +321,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Request, Reply> {
             }
             "content-type" => content_type = Some(value.to_ascii_lowercase()),
             "content-encoding" => content_encoding = Some(value.to_ascii_lowercase()),
+            "origin" => origin = true,
             "transfer-encoding" => {
                 return Err(Reply::new(
                     400,
@@ -350,6 +356,7 @@ async fn read_request(stream: &mut TcpStream) -> Result<Request, Reply> {
         path,
         content_type,
         content_encoding,
+        origin,
         body,
     })
 }
@@ -364,6 +371,19 @@ pub(crate) fn respond(daemon: &Daemon, request: &Request) -> Reply {
     if !matches!(path, "/v1/logs" | "/v1/metrics") {
         return Reply::new(404, "the receiver serves /v1/logs and /v1/metrics");
     }
+    // A page any browser shows can reach this loopback port, and what it
+    // sends would be taken as the provider's word. A browser names the
+    // page's origin on every cross-site request and an exporter never
+    // does; and without a declared JSON type a browser posts a body with
+    // no preflight, so the type is required, not merely checked when
+    // given (the preflight the typed request needs is an OPTIONS, refused
+    // above).
+    if request.origin {
+        return Reply::new(
+            403,
+            "the receiver takes exports from an OTLP exporter, not from a web page",
+        );
+    }
     if request
         .content_encoding
         .as_deref()
@@ -374,10 +394,10 @@ pub(crate) fn respond(daemon: &Daemon, request: &Request) -> Reply {
             "compressed exports are not taken; leave OTEL_EXPORTER_OTLP_COMPRESSION unset",
         );
     }
-    if request
+    if !request
         .content_type
         .as_deref()
-        .is_some_and(|kind| !kind.starts_with("application/json"))
+        .is_some_and(|kind| kind.starts_with("application/json"))
     {
         return Reply::new(
             415,
@@ -463,16 +483,22 @@ mod tests {
     }
 
     fn post(address: SocketAddr, path: &str, kind: &str, body: &str) -> (u16, String) {
+        send(
+            address,
+            &format!(
+                "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        )
+    }
+
+    /// One request as written, and the status and body it gets.
+    fn send(address: SocketAddr, request: &str) -> (u16, String) {
         let mut stream = std::net::TcpStream::connect(address).unwrap();
         stream
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        write!(
-            stream,
-            "POST {path} HTTP/1.1\r\nHost: localhost\r\nContent-Type: {kind}\r\nContent-Length: {}\r\n\r\n{body}",
-            body.len()
-        )
-        .unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
         let mut reply = String::new();
         stream.read_to_string(&mut reply).unwrap();
         let status = reply
@@ -754,20 +780,100 @@ mod tests {
                 .unwrap();
             assert_eq!(status, expected, "{path} {kind}");
         }
-        let status = tokio::task::spawn_blocking(move || {
-            let mut stream = std::net::TcpStream::connect(address).unwrap();
-            stream.write_all(b"GET /v1/logs HTTP/1.1\r\n\r\n").unwrap();
-            let mut reply = String::new();
-            stream.read_to_string(&mut reply).unwrap();
-            reply.split(' ').nth(1).unwrap().parse::<u16>().unwrap()
-        })
-        .await
-        .unwrap();
+        let (status, _) =
+            tokio::task::spawn_blocking(move || send(address, "GET /v1/logs HTTP/1.1\r\n\r\n"))
+                .await
+                .unwrap();
         assert_eq!(status, 405);
+
+        // What a web page can make a browser send to this port: a POST with
+        // no Content-Type (a simple request, sent with no preflight), one
+        // with the type behind its Origin, and the preflight itself. Each
+        // is refused and the forged export is not counted.
+        let forged = export("sess-otlp", "req_forged", 9.0);
+        let browser: Vec<(String, u16)> = vec![
+            (
+                format!(
+                    "POST /v1/logs HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n\r\n{forged}",
+                    forged.len()
+                ),
+                415,
+            ),
+            (
+                format!(
+                    "POST /v1/logs HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:8080\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{forged}",
+                    forged.len()
+                ),
+                403,
+            ),
+            (
+                "OPTIONS /v1/logs HTTP/1.1\r\nHost: localhost\r\nOrigin: http://localhost:8080\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: content-type\r\n\r\n".to_owned(),
+                405,
+            ),
+        ];
+        for (request, expected) in browser {
+            let line = request.lines().next().unwrap_or("").to_owned();
+            let (status, _) = tokio::task::spawn_blocking(move || send(address, &request))
+                .await
+                .unwrap();
+            assert_eq!(status, expected, "{line}");
+        }
         let after_refusals = report(&daemon, Group::Agent).await;
         assert_eq!(after_refusals.rows[0].samples, 2);
         assert_eq!(after_refusals.rows[0].cost_usd_micros.sum, Some(512_500));
         keeper.abort();
+    }
+
+    /// A store that cannot say what the agent held when the response was
+    /// made takes nothing from it: the export is refused for the exporter
+    /// to retry, storage is fenced as after any failed read, and no sample
+    /// is counted without its card and role.
+    #[tokio::test]
+    async fn a_store_that_cannot_read_what_was_held_refuses_the_export() {
+        let temp = tempfile::tempdir().unwrap();
+        let checkout = temp.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let daemon =
+            Arc::new(Daemon::open(temp.path().to_owned(), temp.path().join("sock")).unwrap());
+        assert!(matches!(
+            daemon
+                .handle(Rq::Register {
+                    spec: AgentSpec {
+                        name: "claude-fixture".into(),
+                        runtime: "claude-code".into(),
+                        workdir: Some(checkout),
+                        labels: [("session_id".to_owned(), "sess-otlp".to_owned())]
+                            .into_iter()
+                            .collect(),
+                        ..Default::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await,
+            Response::Agent { .. }
+        ));
+        let seq_before = {
+            let state = super::super::lock(&daemon.state);
+            state.store.reject_usage_holding_reads_for_test();
+            state.next_seq
+        };
+        let request = Request {
+            method: "POST".into(),
+            path: "/v1/logs".into(),
+            content_type: Some("application/json".into()),
+            content_encoding: None,
+            origin: false,
+            body: export("sess-otlp", "req_1", 0.0125).into_bytes(),
+        };
+        let reply = respond(&daemon, &request);
+        assert_eq!(reply.status, 503, "{}", reply.body);
+        let state = super::super::lock(&daemon.state);
+        assert!(
+            state.storage_failure().is_some(),
+            "the failed read fences storage"
+        );
+        assert_eq!(state.next_seq, seq_before, "nothing was recorded");
     }
 
     /// The keeper follows the file: an address, a listener on it; none, no
