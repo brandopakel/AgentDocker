@@ -256,6 +256,11 @@ case "${1:-check}" in
     # no package did). CI remains the full check for the pushed head.
     if base="$(git merge-base HEAD origin/main 2>/dev/null)"; then
       step python3 scripts/docs_check.py --base "$base"
+    elif git rev-parse --verify --quiet origin/main >/dev/null; then
+      # A shallow clone has the ref but not the history behind it; measured
+      # against one commit, the gate would miss the branch's earlier changes.
+      echo "verify.sh quick: HEAD has no merge base with origin/main (a shallow clone?); fetch the history (git fetch --unshallow origin main) and run again" >&2
+      exit 1
     else
       base=HEAD~1
       step python3 scripts/docs_check.py

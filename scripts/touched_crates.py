@@ -25,7 +25,6 @@ never mistakes a failure for "nothing changed".
 """
 import argparse
 import json
-import os
 import subprocess
 import sys
 
@@ -41,10 +40,16 @@ WORKSPACE_WIDE = {
 WORKSPACE_WIDE_DIRS = (".cargo/", ".config/")
 
 
+def slashes(path):
+    """A path with forward slashes, as Git prints paths on every platform;
+    Cargo's metadata uses the platform separator."""
+    return path.replace("\\", "/")
+
+
 def workspace_packages(metadata):
     """The workspace's packages: name -> (directory relative to the root,
     names of the workspace packages it depends on)."""
-    root = metadata["workspace_root"].rstrip("/") + "/"
+    root = slashes(metadata["workspace_root"]).rstrip("/") + "/"
     members = set(metadata.get("workspace_members", []))
     by_id = {p["id"]: p for p in metadata["packages"]}
     names = {by_id[m]["name"] for m in members if m in by_id}
@@ -53,8 +58,8 @@ def workspace_packages(metadata):
         package = by_id.get(member)
         if package is None:
             continue
-        manifest = package["manifest_path"]
-        directory = os.path.dirname(manifest)
+        manifest = slashes(package["manifest_path"])
+        directory = manifest.rsplit("/", 1)[0] if "/" in manifest else ""
         if directory.startswith(root):
             directory = directory[len(root):]
         deps = {

@@ -41,6 +41,15 @@ class TouchedCrates(unittest.TestCase):
         self.assertEqual(self.packages["tools"], ("tools/", set()))
         self.assertNotIn("other", self.packages)
 
+    def test_windows_metadata_matches_the_paths_git_prints(self):
+        metadata = json.loads(json.dumps(METADATA))
+        metadata["workspace_root"] = "C:\\work\\example"
+        for package in metadata["packages"]:
+            package["manifest_path"] = package["manifest_path"].replace("/work/example", "C:\\work\\example").replace("/", "\\")
+        packages = TOUCHED.workspace_packages(metadata)
+        self.assertEqual(packages["middle"], ("crates/middle/", {"base"}))
+        self.assertEqual(TOUCHED.touched(["crates/top/src/lib.rs"], packages), {"top"})
+
     def test_a_change_in_a_leaf_touches_only_that_package(self):
         self.assertEqual(TOUCHED.touched(["crates/top/src/lib.rs"], self.packages), {"top"})
 
