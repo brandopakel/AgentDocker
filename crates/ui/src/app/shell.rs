@@ -4429,9 +4429,13 @@ impl App {
             }
             // Closed to the menu bar: the window keeps its state out of
             // sight and the item stays, the app's one presence until the
-            // item is clicked.
+            // item is clicked. The close attempt is over with it: a Close
+            // without saving was chosen for this close alone, and must not
+            // wave a later one past a draft that is dirty or failing.
             self.shell.closing = false;
             self.shell.hidden = true;
+            self.shell.drafts.discard_on_close = false;
+            self.shell.drafts.close_blocked = false;
             if let Some(id) = self.shell.window {
                 tasks.push(window::set_mode(id, window::Mode::Hidden));
             }
@@ -7694,6 +7698,65 @@ mod tests {
         app.shell.closing = false;
         let _ = app.update(Message::MenuBarItem(true));
         assert_eq!(app.shell.status_item, Some(offered.then_some(0)));
+    }
+
+    /// Close without saving is a choice for one close. Closed to the menu
+    /// bar instead of quit, the window comes back; a later close with new
+    /// draft text waits for its flush and is blocked by its failure as a
+    /// first close is, and with the item off it does not reach the exit
+    /// before the flush completes.
+    #[test]
+    fn close_without_saving_does_not_outlive_the_close_it_was_chosen_for() {
+        let close = || Message::Event(iced::Event::Window(window::Event::CloseRequested));
+        let (mut app, _, _) = app();
+        app.shell.window = Some(window::Id::unique());
+        app.shell.drafts = crate::drafts::Persistence::loaded();
+        app.shell.drafts.changed();
+        // The close starts the flush (generation 1) and waits for it.
+        let _ = app.update(close());
+        assert!(app.shell.closing && app.shell.drafts.saving());
+        let _ = app.update(Message::DraftsSaved(1, Err("disk full".into())));
+        assert!(
+            app.shell.drafts.close_blocked,
+            "a failed flush blocks the close"
+        );
+        assert!(!app.shell.closing);
+        let _ = app.update(Message::CloseWithoutDraftSave);
+        if !crate::status_item::offered() {
+            assert!(app.shell.closing, "quits, as it always has");
+            return;
+        }
+        assert!(app.shell.hidden, "closed to the menu bar");
+        assert!(
+            !app.shell.drafts.discard_on_close && !app.shell.drafts.close_blocked,
+            "the choice ends with the close it was made for"
+        );
+
+        // Back, saved after all, then new text: the next close is a new close.
+        let _ = app.update(Message::StatusItemClicked);
+        assert!(!app.shell.hidden);
+        let _ = app.update(Message::RetryDraftSave);
+        let _ = app.update(Message::DraftsSaved(1, Ok(())));
+        assert!(app.shell.drafts.clean());
+        app.shell.drafts.changed();
+        let _ = app.update(close());
+        assert!(!app.shell.hidden, "a dirty draft is flushed before hiding");
+        assert!(app.shell.closing && app.shell.drafts.saving());
+        let _ = app.update(Message::DraftsSaved(2, Err("disk full".into())));
+        assert!(app.shell.drafts.close_blocked && !app.shell.closing && !app.shell.hidden);
+
+        // With the item off the same gate holds before the exit.
+        let _ = app.update(Message::MenuBarItem(false));
+        let _ = app.update(Message::RetryDraftSave);
+        let _ = app.update(Message::DraftsSaved(2, Ok(())));
+        app.shell.drafts.changed();
+        let _ = app.update(close());
+        assert!(
+            app.shell.closing && app.shell.drafts.saving(),
+            "the exit waits for the flush instead of passing on the stale choice"
+        );
+        let _ = app.update(Message::DraftsSaved(3, Err("disk full".into())));
+        assert!(app.shell.drafts.close_blocked && !app.shell.closing);
     }
 
     /// A launched agent's terminal opens as soon as the list shows it
