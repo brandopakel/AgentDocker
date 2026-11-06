@@ -103,6 +103,16 @@ pub enum EventKind {
         question: MessageId,
         agent: AgentId,
     },
+    /// A question's stale window passed with no answer. Emitted once per
+    /// question, with the action its asker chose for this moment: keep
+    /// waiting (the question stays open, marked stale), answer with the
+    /// default option (a `question_closed` with the daemon's answer
+    /// follows), or withdraw it (a `question_closed` without an answer
+    /// follows).
+    QuestionStale {
+        question: MessageId,
+        action: crate::StaleAction,
+    },
     /// A remote sender's message the project's inbound trust holds for
     /// the person: kept whole and delivered to nobody until they release
     /// it from `question`, the card put to them. `rule` is the setting
@@ -819,6 +829,20 @@ pub enum EventKind {
         requester: AgentId,
         held_by: Vec<AgentId>,
     },
+    /// An agent asked a holder to let go of a resource; the holder has
+    /// the `release_request` message.
+    ReleaseRequested {
+        request: crate::ReleaseRequest,
+    },
+    /// The holder answered: `request.answer` says whether it accepted,
+    /// what it said, and which leases the daemon released for it.
+    ReleaseAnswered {
+        request: crate::ReleaseRequest,
+    },
+    /// A release request waited a day without an answer and was dropped.
+    ReleaseRequestExpired {
+        request: crate::ReleaseRequest,
+    },
     /// A repository was seen for the first time on this host.
     ProjectDiscovered {
         project: ProjectRef,
@@ -898,13 +922,20 @@ pub enum EventKind {
         of: AgentId,
         verdict: crate::Verdict,
     },
-    /// A reviewer gave its word on a branch at the commit it read.
+    /// A reviewer gave its word on a branch at the commit it read:
+    /// `pass`, `changes` or `none`, with its findings by severity and the
+    /// runtime the reviewer ran in (empty on one recorded before it was
+    /// kept).
     CodeVerdictGiven {
         project: ProjectId,
         branch: String,
         head: String,
         by: AgentId,
-        verdict: crate::Verdict,
+        verdict: crate::gate::Word,
+        #[serde(default)]
+        findings: crate::gate::Findings,
+        #[serde(default)]
+        runtime: String,
     },
     /// A journal entry was appended to a project.
     JournalAppended {

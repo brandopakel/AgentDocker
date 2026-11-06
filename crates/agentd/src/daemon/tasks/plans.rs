@@ -72,7 +72,9 @@ impl State {
             .collect();
         match matches.as_slice() {
             [one] => Ok((*one).clone()),
-            [] => Err(not_found(format!("no plan of the project is {words}"))),
+            [] => Err(Box::new(Response::not_found(format!(
+                "no plan of the project is {words}"
+            )))),
             _ => Err(Box::new(Response::error(
                 ErrorCode::Ambiguous,
                 format!("more than one plan answers {words}"),
@@ -83,7 +85,7 @@ impl State {
     pub(super) fn plan_by_id(&mut self, id: &str) -> Result<Plan, Box<Response>> {
         match self.store_read("plan", |store| store.document::<Plan>(PLAN, id)) {
             Some(Some(plan)) => Ok(plan),
-            Some(None) => Err(not_found(format!("no plan is {id}"))),
+            Some(None) => Err(Box::new(Response::not_found(format!("no plan is {id}")))),
             None => Err(Box::new(self.storage_failure().unwrap_or_else(|| {
                 Response::error(ErrorCode::StorageUnavailable, "the plan could not be read")
             }))),
@@ -149,7 +151,7 @@ impl State {
             .collect();
         match matches.as_slice() {
             [one] => Ok((*one).clone()),
-            [] => Err(not_found(format!("no file is {words}"))),
+            [] => Err(Box::new(Response::not_found(format!("no file is {words}")))),
             _ => Err(Box::new(Response::error(
                 ErrorCode::Ambiguous,
                 format!("more than one file answers {words}; give its id"),

@@ -1872,6 +1872,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: question.clone(),
                 text: "Yes".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {

@@ -2038,6 +2038,8 @@ mod tests {
                 presentation: None,
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             };
         app.questions = vec![
             question(

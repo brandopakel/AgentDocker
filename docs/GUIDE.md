@@ -521,13 +521,13 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. `--idempotency-key <key>` is your own token for this one send (a UUID, say): repeating the command with the same key after a lost answer queues nothing and prints the first message id again, for up to 24 hours; the daemon keeps the newest 4,096 keys in memory, so after they turn over or it restarts the same key is a new send (see [the protocol](ARCHITECTURE.md#messaging)). |
 | `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
 | `watch` | Stream messages for an agent or matching topics. Topics keep their messages: `watch --as <agent> 'repo/#'` first shows what each matching topic kept since the last topic message that agent acknowledged there (everything kept, the first time), then streams live; `inbox --as <agent> --ack <id>` on a topic message moves that topic on past it. A topic line shows its `seq:`; without an agent, topics are live only unless `--after-seq <n>` replays from that point. One watch replays at most a topic's newest 500, 5,000 in all, and says how many older ones it did not replay |
 | `inbox` | Messages queued while an agent was not watching |
-| `ask` | Ask an agent — or the human — and wait for the answer |
-| `answer` | Answer a question somebody is waiting on. A card for a remote sender's held message takes `Release` or `Drop` |
-| `questions` | Questions waiting for an answer |
+| `ask` | Ask an agent — or the human — and wait for the answer. `--kind question\|permission\|access` says what is being decided; `--option "Label: what it means"` (repeat) offers choices, `--multi` lets several be chosen, `--no-other` takes only those; `--stale-after <secs> --stale-action keep_waiting\|withdraw\|answer:<label>` says what happens when nobody answers in that time; see [Three kinds of question](#messaging-and-delivery) |
+| `answer` | Answer a question somebody is waiting on: words, or `--choice <label or number>` (repeat for a multi-select), `--other <words>` for an answer of your own, taken as written (never read as an option's label or number), and `--note` for words beside a choice. A card for a remote sender's held message takes `Release` or `Drop` |
+| `questions` | Questions waiting for an answer, each with its kind, `[stale]` when its window passed, and its options numbered |
 | `conversations` | What you can read: every conversation with its unread count, newest first |
 | `history <conversation>` | What was said in one conversation, oldest first; `--read` marks it read through the last line shown, for you or for `--as <agent>` (the agent's own shell, through `AGENTDOCKER_AGENT_ID`), never the other |
 | `thread <message>` | One message and the replies under it |
@@ -583,6 +583,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `claim` | Claim a lease on `path:`, `branch:`, `task:`, or anything |
 | `renew` / `release` | Extend or give up a lease you hold |
+| `request-release <resource>` | Ask whoever holds it to let go: each holder gets a `release_request` message with your `--reason`; the answer comes back to you as a `release_response` message. Asking again for the same resource repeats the pending request rather than sending another |
+| `respond-release <request>` | Answer a release request put to you, by its message id: `--accept --summary "…"` has the daemon release those leases for you and journal the summary; `--decline --reason "…"` keeps them and says why |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, in the order they will be served: higher priority first, then oldest |
 | `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card, from any open lane when nobody holds it; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds, and takes one nobody holds by pulling it by name; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off\|rule-on\|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|mine\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts); `--assignee mine` is your cards together with those held by your agents — launched with `run` or `up` from your own terminal, the app's launch, or `task start` and start rules, or a Claude Code or Codex session you started yourself in a terminal app or IDE (root's install, or one whose signature verifies), or over SSH, with no agent's session anywhere above it (their records carry `launched_by=user`, so `ps --label launched_by=user` lists them; a session inside a multiplexer server such as tmux cannot be told apart from an agent's and is not counted) — and, with `--as <agent>`, that agent's own |
@@ -630,8 +632,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one; `channel prune --before <seconds>` forgets channels closed longer ago than that (two weeks by default) |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
-| `verdict <branch> --head <commit> --approve\|--changes\|--comment [--from <commit>] [--findings P1,P2,P3] [note]` | Give your verdict on a branch at the commit you read; it counts for the roles you hold, and only for that commit |
-| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: approved at its head as it is now (exit 0), else changes asked, stale (commits since the approval) or unreviewed (exit 1). `--publish` sets the `agentdocker/review` commit status on GitHub |
+| `verdict <branch> --head <commit> --pass\|--changes\|--none [--from <commit>] [--findings important,nit,pre-existing] [note]` | Give your verdict on a branch at the commit you read, with what you found counted by severity (`0,1,0`; all zero when left out); it counts for the roles you hold, and only for that commit. Prints the verdict's id, then its parseable line (`verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`) on stderr. Refused on a branch you hold, are checked out on, or committed to |
+| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: passed at its head as it is now (exit 0), else changes asked, stale (commits since the pass) or unreviewed (exit 1). Prints what it said, then a line a job can gate on: `gate=approved branch=… head=… verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`. `--publish` sets the `agentdocker/review` commit status on GitHub, whose text carries the word, the reviewer, its runtime and the counts |
 | `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first; `contest close <id> [--winner <agent>]` declares the answer, by the ranking when the metric separated the entries |
 
 ### Containers
@@ -646,7 +648,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | Command | What it does |
 |---|---|
 | `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
-| `setup` | Wire us in: MCP registration, and hooks for Claude Code |
+| `setup` | Wire us in: MCP registration, and hooks for Claude Code. Docker Agent keeps its MCP servers in each agent's YAML, so `setup docker-agent --agent <file>` adds the toolset to that file's default agent (`root`, else the first) and `setup --remove docker-agent --agent <file>` takes it out; `--git-hook` plans the pre-commit backstop for this repository (below) |
 | `skill` | Print the portable coordination SKILL.md, without connecting to a daemon |
 | `provider` | Report a provider's availability (a limit, a sign-in), or resume delivery after checking one |
 | `ui` | Open the desktop app |
@@ -712,10 +714,24 @@ about us:
 `ask_human` · `open_questions` · `answer_question` · `report_activity` ·
 `report_provider_status`
 
-`claim` · `renew` · `release` · `list_leases`
+`ask_human` takes `kind`, `options` (labels, or `{label, description}`),
+`multi_select`, `allow_other`, `stale_after_secs` and `stale_action` beside the
+question; `answer_question` takes `choices` (labels or numbers), `other`
+(your own words for the Other, taken as written) and `note` beside `text`; `open_questions` returns each question's `prompt`, the words
+with the options numbered, so a reader that renders only text offers the same
+choices the desktop draws as buttons. See
+[Three kinds of question](#messaging-and-delivery).
 
-`read_journal` · `journal_note` · `observe_paths` · `check_stale` ·
-`read_set` · `overlap`
+`claim` · `renew` · `release` · `list_leases` · `request_release` ·
+`respond_release`
+
+`read_journal` · `mark_journal_read` · `journal_note` · `observe_paths` ·
+`check_stale` · `read_set` · `overlap`
+
+`read_journal` shows what changed since the agent's cursor and leaves the
+cursor where it is; `mark_journal_read` moves it past what `read_journal`
+shows, so the next read starts after it; `since` reads from a sequence
+number instead.
 
 `create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
 `validate` · `validation_results`
@@ -798,6 +814,33 @@ file about to be edited and `Stop` gives those edit leases back when the
 turn ends; a lease the session claimed itself — a worktree, a branch, the
 build campaign — is not touched until the session releases it, its TTL runs
 out, or the session ends.
+
+Those refusals exist only where an adapter runs: Claude Code's hooks, the
+OpenCode plugin, Codex's hooks. An agent with none (Gemini CLI, a shell
+script, you at the keyboard) can still commit over a held path. `agentdocker
+setup --git-hook`, run inside a repository, plans a backstop in its git
+`pre-commit` hook — a marked block in POSIX `sh`, keeping any hook you already
+have, saved as a plan you apply with `agentdocker setup --apply <id>` and undo
+like every other setup change — that pipes the staged paths to `agentdocker
+hook pre-commit`. Ordinary `agentdocker setup`, run inside a repository whose
+hook lacks it, says it is there to have. A commit touching a path
+another live agent holds exclusively is refused, naming the holder, its note
+and when the lease ends, and the `request-release` command that asks them to
+let go; your own leases pass (a session's `AGENTDOCKER_AGENT_ID`, or the
+provider session the command runs under). A daemon that cannot be reached
+lets the commit through and says so on stderr: that is deliberate — a backstop
+must never block you when the daemon is down, and without a daemon there are
+no leases to protect. `git commit --no-verify` skips it, and `agentdocker
+setup --remove --git-hook` takes the block out. The block is POSIX `sh`;
+Windows is not covered yet.
+
+Rather than wait a lease out, the refused agent can ask: `request_release`
+(the `request-release` command) sends the holder a `release_request` message
+naming the resource, the leases and the reason, and the holder answers with
+`respond_release` — accept, and the daemon releases those leases for it,
+journaled with the summary it gives; decline, with a reason. The answer
+reaches the asker's inbox as a `release_response` in reply to the request. A
+request nobody answers is dropped after a day.
 
 A session's read set — every file and folder it observed — holds up to 2,000
 observations, far more than sessions use. Past that, a new observation is
@@ -1063,17 +1106,51 @@ Current behaviour that the sections above do not already state, by area.
 - **A review counts for the commit it read.** A reviewer gives its verdict
   on a branch at the exact commit it read (`agentdocker verdict`, or the
   `review_verdict` tool), and `agentdocker gate <PR|branch>` says whether
-  the branch may land now: approved only at that commit. Any later commit,
-  a merge of main included, makes the approval stale until the reviewer
+  the branch may land now: passed only at that commit. Any later commit,
+  a merge of main included, makes the pass stale until the reviewer
   reads what came after. Whose word counts is a role you give
   (`reviewer` by default); `--publish` also sets it as a GitHub commit
   status that branch protection can require. An agent's verdict is
-  refused on the branch its checkout is on, and on any branch it
-  committed to through `agentdocker commit` or with git in a worktree
-  AgentDocker made for it, wherever its checkout is now and however
-  much of the journal is gone. Checking a branch out to read it is not
-  committing to it. Commits made with git in a checkout you made by hand
-  are not seen this way, so keep authors and reviewers separate agents.
+  refused on the branch its checkout is on, on a branch it holds (a
+  `branch:` lease), and on any branch it committed to through
+  `agentdocker commit`, with git in a worktree AgentDocker made for it,
+  or as the journal attributes a commit to it, wherever its checkout is
+  now and however much of the journal is gone. Checking a branch out to
+  read it is not committing to it. Commits made with git in a checkout
+  you made by hand are not seen this way, so keep authors and reviewers
+  separate agents.
+
+- **Verdicts have a fixed vocabulary.** A verdict is `pass`, `changes` or
+  `none` — `none` means the reviewer read the commit and gives no verdict,
+  which is not a pass with nothing found — and what it found is counted
+  as `important` (must be fixed before it lands; a pass cannot carry
+  one), `nit` (worth fixing, not blocking) and `pre-existing` (found
+  while reading, not caused by this change). Counts left out are zero.
+  Each verdict records the reviewer's runtime, so a Codex review of a
+  Claude branch is visible as such wherever the verdict appears: the
+  journal line in the app, the `gate` output and the GitHub status. A
+  review on a pull request and the check that gates on it:
+
+  ```sh
+  agentdocker verdict <branch> --head <commit> --changes --findings 1,2,0 \
+    "the lease check runs after the checkout read; nit: the test names"
+  # <verdict id>   (then, on stderr:)
+  # <branch> verdict=changes head=<commit> important=1 nit=2 pre_existing=0 runtime=codex by=reviewer-1
+
+  agentdocker gate <PR> --publish
+  # changes asked: <branch> by reviewer-1 (codex; important 1, nit 2, pre-existing 0) at <commit>
+  # gate=changes branch=<branch> head=<commit> verdict=changes head=<commit> important=1 nit=2 pre_existing=0 runtime=codex by=reviewer-1
+  ```
+
+  A job reads the second line (`gate=approved` is the only pass; every
+  field before `by=` is one `key=value` token, the runtime
+  percent-encoded if it has a space in it) or `--json`; the commit
+  status `agentdocker/review` says `changes by reviewer-1 (codex;
+  important 1, nit 2, pre-existing 0)`. `--approve` and `--comment` are
+  still accepted for `--pass` and `--none`, and in JSON (`--json`, the
+  tools' replies, `events`) the word is written `approve`, `changes` or
+  `comment`, the spelling older clients read: `pass` is `approve` and
+  `none` is `comment`.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
@@ -1108,6 +1185,41 @@ Current behaviour that the sections above do not already state, by area.
 
 
 ### Messaging and delivery
+
+- Three kinds of question. A question an agent puts to you (or to another
+  agent) is free text, and may say more: its kind, its options and what
+  happens when nobody answers in time. The three kinds get the same answer
+  controls and their own chip (*Permission*, *Access*; a plain question
+  carries none), so the eye finds the destructive decisions. An example of
+  each:
+
+  ```sh
+  # A question: a choice only the person can make.
+  agentdocker ask --to user --option "Blue: the current theme" \
+      --option "Green: the one in the mock-ups" "Which theme for the beta?"
+  # A permission: leave to do one operation once; stale after ten minutes,
+  # and then denied by default rather than left hanging.
+  agentdocker ask --to user --kind permission --option Allow --option Deny \
+      --no-other --timeout 1800 --stale-after 600 --stale-action answer:Deny \
+      "Run the migration against the staging database?"
+  # An access request: standing access to a resource; withdrawn if nobody
+  # answers within the hour, so the agent moves on.
+  agentdocker ask --to user --kind access --option "Read only" \
+      --option "Read and write" --timeout 7200 --stale-after 3600 \
+      --stale-action withdraw \
+      "Which access to the deploy credentials should agent-1 have?"
+  ```
+
+  The options show as buttons in the desktop, as a numbered list with an
+  *Other* line in a terminal and in the connector, and the answer is the
+  same wherever it is given: `agentdocker answer <id> 2`, `--choice Green`,
+  or words of your own with `--other` where the question allows them, taken
+  as written (`--other 2` is the words "2", not the second option). A question with a
+  stale window goes **stale** once the window passes: by default it stays
+  open and is marked so; `answer:<label>` takes that option as the answer,
+  attributed to the daemon as the default; `withdraw` closes it and the
+  asker's wait ends with a timeout. Without a window nothing changes: the
+  question waits until it is answered, cancelled or expires.
 
 - Conversations: every message is archived in the one conversation its
   destination names (`everyone:<project>`, `all`, `channel:<id>`,
@@ -1207,6 +1319,38 @@ Current behaviour that the sections above do not already state, by area.
 
 ### Agents, roles and setup
 
+- **Docker Agent joins per agent file.** Docker Agent (`docker agent`, or
+  `docker-agent` and its earlier name `cagent` on their own) runs the model
+  loop itself from a YAML file per agent and reads that agent's MCP servers
+  from the file's `toolsets`, so there is no file of its own for setup to
+  register in. `agentdocker runtimes` finds it on `PATH`, in the standard
+  directories and in the Docker CLI plugin directories, and counts its `run`
+  and `new` processes as sessions nobody registered (a bare `docker agent`
+  is a run of the project's agent file; one with `--help` or `--version` is
+  not); its `serve` and `board` processes are helpers `adopt` refuses.
+  `agentdocker setup docker-agent --agent <path/to/agent.yaml>` adds
+  AgentDocker's toolset to the agent `docker agent run` runs unless
+  `--agent` names another — the one named `root`, else the first — after
+  its last toolset, or under a new `toolsets:` key, with every other line
+  of the file as it was; the plan is saved like any other setup change,
+  `setup --undo <id>` puts the file back to the byte, and `setup --remove
+  docker-agent --agent <file>` takes exactly that entry out. A multi-line
+  `instruction: |` is kept whole, comments and all. The edit refuses,
+  saying what and on which line, a file that uses an anchor, an alias, a
+  merge key (`<<`), a tag or an explicit `? ` key anywhere; a quoted key
+  among the agents or in an agent's own keys; and, in the agent it edits, a
+  quoted value or inline list that runs over several lines, an inline
+  `toolsets: [...]`, or tabs. It also reads the file and its edit back as
+  YAML before writing anything, and refuses an edit it cannot confirm
+  changes nothing but that one entry in the default agent. `setup
+  docker-agent --dry-run` then prints the entry to paste by hand. Every run of an agent
+  whose file lists it appears as a `docker-agent` agent with the
+  coordination tools: it can claim, release, message and ask like any
+  other, and reads its messages at its next tool call; nothing wakes it
+  while it is idle. An agent with `harness:` set runs an external coding
+  CLI, whose toolsets Docker Agent ignores: that CLI's own session joins
+  through its own adapter (Claude Code's hooks, Codex's), and setup says so.
+
 - **A Codex started in a terminal is itself.** A plain `codex` in a terminal
   has its own record, by its thread: its AgentDocker tools work as it, and
   its messages reach it at its next prompt. It cannot be woken while idle; a
@@ -1302,6 +1446,13 @@ Current behaviour that the sections above do not already state, by area.
   **Wake terminal sessions**, and the MCP server reads the flag from its
   parent `claude`, so `AGENTDOCKER_CLAUDE_CHANNEL_INPUT` is not required
   from a terminal.
+
+- `agentdocker setup --git-hook`, run inside a repository, plans the
+  pre-commit backstop for it (see [Hooks](#hooks)): one reviewable change to
+  its git `pre-commit` hook, saved with a receipt like every other plan, that
+  `setup --apply <id>` applies and `setup --undo` or `setup --remove
+  --git-hook` takes back. It protects that
+  repository alone; run it in each checkout that needs it.
 
 - Agents that work inside a browser are inventoried: `runtimes` lists each
   vendor's extension per browser profile (`claude-browser`, `chatgpt-browser`)
@@ -1541,8 +1692,10 @@ Current behaviour that the sections above do not already state, by area.
   compacted it is told again the memories that answer what you last asked.
   One kept for some roles only
   (`--role reviewer`, `roles` on `add_memory`) is told to their holders and
-  to you, and never copied off the machine. It stays on this machine; anything that
-  looks like a secret is refused. To keep a copy in Supermemory as well,
+  to you, and never copied to Supermemory. Memories are kept on this
+  machine; one told to a session reaches that session's provider as
+  context, as the rest of the conversation does. Anything that looks like
+  a secret is refused. To keep a copy in Supermemory as well,
   name the projects and a key file under `[memory.supermemory]` in
   `agentd.toml` (off unless you turn it on; the hosted service is
   Supermemory's, on its terms). `base_url` names a server of your own

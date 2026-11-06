@@ -774,9 +774,17 @@ impl Daemon {
         peer: Option<Peer>,
         request: &Request,
     ) -> Option<Response> {
+        // Reads are not the person's to guard, but for a memory read: the
+        // person reads what is said only to some roles.
         if !self.person_check
             || !(mutates(request)
-                || matches!(request, Request::Subscribe { .. } | Request::Attach { .. }))
+                || matches!(
+                    request,
+                    Request::Subscribe { .. }
+                        | Request::Attach { .. }
+                        | Request::MemorySearch { .. }
+                        | Request::MemoryProfile { .. }
+                ))
         {
             return None;
         }
@@ -1949,6 +1957,7 @@ mod tests {
             payload: serde_json::json!({"text": "hello"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         };
         let running = |exe: &std::path::Path, sub: &str| Running {
             executable: Some(exe.to_owned()),
@@ -2223,6 +2232,31 @@ mod tests {
         );
         assert!(lock(&daemon.state).pauses.is_empty(), "nothing was paused");
 
+        // Nor may it read memory as the person, who reads what is said only
+        // to some roles; a read that names nobody is not the person's.
+        for (name, read) in [
+            (
+                "search-as-person",
+                r#"{"op":"memory_search","from":"user","query":"deploys"}"#,
+            ),
+            (
+                "profile-as-person",
+                r#"{"op":"memory_profile","from":"user"}"#,
+            ),
+        ] {
+            let reader = spawn(read.into());
+            register(name, reader.id()).await;
+            let reply = finish(reader).await;
+            assert!(
+                matches!(&reply, Response::Error { code: ErrorCode::Forbidden, message, .. }
+                    if message.contains("an agent's process")),
+                "{name}: {reply:?}"
+            );
+        }
+        let nobody: Request =
+            serde_json::from_str(r#"{"op":"memory_search","query":"deploys"}"#).unwrap();
+        assert!(daemon.person_refusal(None, &nobody).await.is_none());
+
         // A program that is not the daemon's companion controller, marked as a
         // supervised Codex terminal, typing "as the person" to itself: refused.
         let typed = spawn(String::new());
@@ -2312,6 +2346,9 @@ mod tests {
                     from: None,
                     message: agentdocker_core::MessageId::from("m".to_owned()),
                     text: "Allow".into(),
+                    choices: Vec::new(),
+                    note: None,
+                    other: None,
                 },
             )
             .await;
