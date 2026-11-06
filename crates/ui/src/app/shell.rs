@@ -1647,6 +1647,7 @@ impl App {
                 | Message::OpenQuestion(_)
                 | Message::Answer(_)
                 | Message::AnswerChoice(..)
+                | Message::ToggleChoice(..)
                 | Message::AnswerChoices(_)
                 | Message::ReviewFiles(_)
                 | Message::QuestionDetails(_)

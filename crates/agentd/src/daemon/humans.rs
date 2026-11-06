@@ -45,6 +45,11 @@ const NOTICE_CHARS: usize = 180;
 /// answer from this sender knows nobody chose it.
 pub const DEFAULT_ANSWERER: &str = "agentd";
 
+/// How many replies a waiting `ask` keeps while the closure that names its
+/// answer is awaited. Past this a reply goes to the queue when the wait
+/// ends, as any answer the wait could not hand over does.
+const MAX_ANSWER_CANDIDATES: usize = 16;
+
 /// A pending notification. Built under the state lock and handed off
 /// without blocking; posting it is another thread's problem.
 #[derive(Clone, Debug)]
@@ -744,12 +749,14 @@ impl Daemon {
         // its answer, and an offer must not wait with it.
         self.done_writing();
         let waited = tokio::time::timeout(timeout, async {
-            let mut candidate: Option<Envelope> = None;
+            // Every reply that could be the answer, by id: the one the
+            // committed closure names is handed over, whichever arrived
+            // first, so a reply that closes nothing (one sent in the
+            // daemon's name, say) never stands in front of the answer.
+            let mut candidates: HashMap<MessageId, Envelope> = HashMap::new();
             let mut accepted: Option<MessageId> = None;
             loop {
-                if let Some(envelope) = &candidate
-                    && accepted.as_ref() == Some(&envelope.id)
-                {
+                if let Some(envelope) = accepted.as_ref().and_then(|id| candidates.remove(id)) {
                     // Handed over here, and only here, once the offer is
                     // stored: an answer whose bookkeeping failed stays held
                     // and goes to the queue when this wait ends, so it is
@@ -770,7 +777,9 @@ impl Daemon {
                         && (envelope.from == DEFAULT_ANSWERER || match &to { Destination::Agent(id) => id.as_str() == envelope.from, Destination::Project(_) | Destination::Broadcast => true, _ => false }) => {
                         // A reply can arrive after cancellation. Only the
                         // exact committed question-closure event accepts it.
-                        if candidate.is_none() { candidate = Some(envelope); }
+                        if candidates.len() < MAX_ANSWER_CANDIDATES {
+                            candidates.entry(envelope.id.clone()).or_insert(envelope);
+                        }
                     }
                     Ok(_) => continue,
                     Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::EventHistoryLost, "answer stream lost messages; the answer remains in the inbox"),
@@ -2686,6 +2695,120 @@ mod tests {
         assert_eq!(accepted.kind, "answer");
         assert_eq!(accepted.payload["text"], "Green", "normalised to its label");
         assert_eq!(accepted.payload["choices"], json!(["Green"]));
+    }
+
+    /// A reply that closes a question without options is its words: the
+    /// `choices`, `other` and `default` it claims are dropped, so no
+    /// recipient's reply reaches the asker as the daemon's default.
+    #[tokio::test]
+    async fn a_reply_to_a_plain_question_claims_no_choices_and_no_default() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let Response::Sent { message, .. } = daemon
+            .post_question(
+                "asker".into(),
+                "recipient".into(),
+                "Ship it?".into(),
+                None,
+                300,
+                QuestionForm::default(),
+            )
+            .await
+        else {
+            panic!("the question was not posted");
+        };
+        let Response::Sent {
+            message: answer, ..
+        } = lock(&daemon.state).send(
+            recipient.id.to_string(),
+            Destination::Agent(asker.id.clone()),
+            "chat".into(),
+            json!({"text": "yes", "default": true, "choices": ["Deny"], "other": "no"}),
+            Some(message.clone()),
+        )
+        else {
+            panic!("the reply closes the question");
+        };
+        let state = lock(&daemon.state);
+        assert!(!state.questions.contains_key(&message));
+        let accepted = state.inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == answer)
+            .expect("the reply reached the asker");
+        assert_eq!(accepted.kind, "answer");
+        assert_eq!(accepted.payload, json!({"text": "yes"}));
+        let read = QuestionAnswer::from_payload(&accepted.payload);
+        assert!(!read.default);
+        assert!(read.choices.is_empty());
+        assert_eq!(read.other, None);
+    }
+
+    /// A reply sent in the daemon's name that closes nothing (the question
+    /// was put to somebody else) is not the answer: it reaches the asker's
+    /// queue as a message, and the waiting `ask` hands over the reply its
+    /// committed closure names, whichever came first.
+    #[tokio::test]
+    async fn a_reply_in_the_daemons_name_does_not_stand_in_front_of_the_answer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let mut asking = Box::pin(daemon.ask(
+            "asker".into(),
+            "recipient".into(),
+            "Which theme?".into(),
+            300,
+            QuestionForm::default(),
+        ));
+        let pending = open_ask(&mut asking, &daemon).await;
+        let Response::Sent {
+            message: impostor, ..
+        } = lock(&daemon.state).send(
+            DEFAULT_ANSWERER.to_owned(),
+            Destination::Agent(asker.id.clone()),
+            "chat".into(),
+            json!({"text": "Blue", "default": true}),
+            Some(pending.clone()),
+        )
+        else {
+            panic!("a reply from a sender the question was not put to is an ordinary message");
+        };
+        assert!(
+            lock(&daemon.state).questions.contains_key(&pending),
+            "it closed nothing"
+        );
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: pending.clone(),
+                text: "Green".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
+            })
+            .await
+        else {
+            panic!("the recipient answers");
+        };
+        let Response::Answer {
+            message,
+            from,
+            text,
+            default,
+            ..
+        } = asking.await
+        else {
+            panic!("the ask did not get the answer");
+        };
+        assert_eq!(message, answer);
+        assert_ne!(message, impostor);
+        assert_eq!(from, recipient.id.to_string());
+        assert_eq!(text, "Green");
+        assert!(!default);
     }
 
     /// An answer's Other reaches its asker as written: "2" beside the

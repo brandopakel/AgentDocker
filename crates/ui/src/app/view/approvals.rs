@@ -265,7 +265,7 @@ fn stale_chip<'a>(
     now: chrono::DateTime<Utc>,
     c: Colors,
 ) -> Option<Element<'a, Message>> {
-    question.stale(now).then(|| {
+    (question.stale(now) && !question.expired(now)).then(|| {
         Chip::new(
             format!("question-stale-{}", question.id),
             Some(Icon::Hourglass),
@@ -1223,24 +1223,16 @@ impl App {
         };
         // The kind and staleness are chips beside the time left, the
         // same words the Needs-you row shows.
-        let mut marks = row![].spacing(6).align_y(Center);
+        let mut header = row![ask_tile(kind_glyph(question.kind()), !expired, c), words]
+            .spacing(12)
+            .align_y(iced::Alignment::Start);
         if let Some(kind) = kind_chip(question, c) {
-            marks = marks.push(kind);
+            header = header.push(kind);
         }
         if let Some(stale) = stale_chip(question, now, c) {
-            marks = marks.push(stale);
+            header = header.push(stale);
         }
-        let mut body = column![
-            row![
-                ask_tile(kind_glyph(question.kind()), !expired, c),
-                words,
-                marks,
-                state
-            ]
-            .spacing(12)
-            .align_y(iced::Alignment::Start)
-        ]
-        .spacing(14);
+        let mut body = column![header.push(state)].spacing(14);
         let multi = question.form.multi_select && !question.form.options.is_empty();
         let picked: &[String] = self
             .shell
@@ -2463,6 +2455,13 @@ mod tests {
         assert!(
             card.control("question-stale-typed").is_some(),
             "the stale chip"
+        );
+        let mut expired = stale.clone();
+        expired.expires_at = Utc::now() - chrono::Duration::seconds(1);
+        let card = seen(app.question_card(&expired, Colors::new(false)));
+        assert!(
+            card.control("question-stale-typed").is_none(),
+            "expired, so no longer stale"
         );
     }
 

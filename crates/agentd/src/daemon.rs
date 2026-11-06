@@ -5357,6 +5357,16 @@ impl State {
                     );
                 }
             }
+        } else if default_for.is_none()
+            && closed.is_some()
+            && let Some(payload) = envelope.payload.as_object_mut()
+        {
+            // A question without options has no choices and no Other, and
+            // only the daemon's own answer is a default: a reply that
+            // claims any of them is read as the words it carries.
+            for claim in ["choices", "other", "default"] {
+                payload.remove(claim);
+            }
         }
         if closed.is_some() {
             envelope.kind = "answer".to_owned();

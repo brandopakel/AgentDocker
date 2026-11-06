@@ -525,7 +525,7 @@ each one by pid.
 | `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
 | `watch` | Stream messages for an agent or matching topics. Topics keep their messages: `watch --as <agent> 'repo/#'` first shows what each matching topic kept since the last topic message that agent acknowledged there (everything kept, the first time), then streams live; `inbox --as <agent> --ack <id>` on a topic message moves that topic on past it. A topic line shows its `seq:`; without an agent, topics are live only unless `--after-seq <n>` replays from that point. One watch replays at most a topic's newest 500, 5,000 in all, and says how many older ones it did not replay |
 | `inbox` | Messages queued while an agent was not watching |
-| `ask` | Ask an agent — or the human — and wait for the answer. `--kind question\|permission\|access` says what is being decided; `--option "Label: what it means"` (repeat) offers choices, `--multi` lets several be chosen, `--no-other` takes only those; `--stale-after <secs> --stale-action keep_waiting\|withdraw\|answer:<label>` says what happens when nobody answers in that time; see [Three kinds of question](#three-kinds-of-question) |
+| `ask` | Ask an agent — or the human — and wait for the answer. `--kind question\|permission\|access` says what is being decided; `--option "Label: what it means"` (repeat) offers choices, `--multi` lets several be chosen, `--no-other` takes only those; `--stale-after <secs> --stale-action keep_waiting\|withdraw\|answer:<label>` says what happens when nobody answers in that time; see [Three kinds of question](#messaging-and-delivery) |
 | `answer` | Answer a question somebody is waiting on: words, or `--choice <label or number>` (repeat for a multi-select), `--other <words>` for an answer of your own, taken as written (never read as an option's label or number), and `--note` for words beside a choice. A card for a remote sender's held message takes `Release` or `Drop` |
 | `questions` | Questions waiting for an answer, each with its kind, `[stale]` when its window passed, and its options numbered |
 | `conversations` | What you can read: every conversation with its unread count, newest first |
@@ -718,7 +718,7 @@ question; `answer_question` takes `choices` (labels or numbers), `other`
 (your own words for the Other, taken as written) and `note` beside `text`; `open_questions` returns each question's `prompt`, the words
 with the options numbered, so a reader that renders only text offers the same
 choices the desktop draws as buttons. See
-[Three kinds of question](#three-kinds-of-question).
+[Three kinds of question](#messaging-and-delivery).
 
 `claim` · `renew` · `release` · `list_leases`
 
