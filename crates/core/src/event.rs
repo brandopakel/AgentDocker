@@ -112,6 +112,7 @@ pub enum EventKind {
     QuestionStale {
         question: MessageId,
         action: crate::StaleAction,
+    },
     /// A remote sender's message the project's inbound trust holds for
     /// the person: kept whole and delivered to nobody until they release
     /// it from `question`, the card put to them. `rule` is the setting
