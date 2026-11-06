@@ -100,6 +100,7 @@ impl Daemon {
                 "too many release requests are already waiting for an answer",
             );
         }
+        let mut prepared = Vec::new();
         for (holder, leases) in to_send {
             let lease_ids: Vec<LeaseId> = leases.iter().map(|lease| lease.id.clone()).collect();
             let text = {
@@ -147,6 +148,18 @@ impl Daemon {
                 }),
                 ..envelope
             };
+            prepared.push((envelope, request));
+        }
+        // Every holder's queue has room, or nobody is asked: a second
+        // holder's full queue must not leave the first one asked alone.
+        if let Some(full) = prepared
+            .iter()
+            .find(|(envelope, request)| !state.inbox_takes(&request.holder, envelope))
+            .map(|(_, request)| request.holder.clone())
+        {
+            return state.inbox_full(&full);
+        }
+        for (envelope, request) in prepared {
             let transition = DocumentTransition {
                 kind: DOCUMENT,
                 id: request.message.to_string(),
@@ -193,6 +206,9 @@ impl Daemon {
         }
         let mut state = lock(&self.state);
         let now = Utc::now();
+        // A lease past its TTL is expired, not released: it must leave the
+        // table as such before an accept counts what is still held.
+        state.expire_leases_at(now);
         state.expire_release_requests(now);
         if let Some(error) = state.write_failure() {
             return error;
@@ -325,6 +341,26 @@ impl Daemon {
 }
 
 impl State {
+    /// Whether an agent's queue takes one more message, as the message path
+    /// decides it: under the count and under the bytes.
+    fn inbox_takes(&self, agent: &AgentId, envelope: &Envelope) -> bool {
+        let count = self.inboxes.get(agent).map_or(0, VecDeque::len);
+        let bytes = self.inbox_bytes.get(agent).copied().unwrap_or_default();
+        count < INBOX_CAPACITY && bytes.saturating_add(message_bytes(envelope)) <= INBOX_BYTES
+    }
+
+    /// The refusal the message path gives a full queue.
+    fn inbox_full(&self, agent: &AgentId) -> Response {
+        Response::error(
+            ErrorCode::Backpressure,
+            format!(
+                "Inbox for {} is full (limit {INBOX_CAPACITY} messages / {} MiB). Acknowledge existing messages before retrying; nothing was sent.",
+                agent.short(),
+                INBOX_BYTES / (1024 * 1024)
+            ),
+        )
+    }
+
     /// Drop the requests nobody answered within their day, each with its
     /// own event; nothing is dropped while storage is failing.
     pub(super) fn expire_release_requests(&mut self, now: DateTime<Utc>) {
@@ -843,6 +879,174 @@ mod tests {
         assert_eq!(replies.len(), 1);
         assert_eq!(replies[0].kind, RELEASE_RESPONSE_KIND);
         assert_eq!(replies[0].payload["released"], json!([lease.id]));
+    }
+
+    /// A request goes to every holder or to nobody: when one holder's
+    /// queue is full the whole request is `backpressure`, nothing is
+    /// recorded or announced, and the other holder is not asked alone.
+    #[tokio::test]
+    async fn a_request_goes_to_every_holder_or_to_none() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let project = dir.path().join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        register(&daemon, "first", &project).await;
+        let second = register(&daemon, "second", &project).await;
+        register(&daemon, "asker", &project).await;
+        for holder in ["first", "second"] {
+            assert!(matches!(
+                daemon
+                    .handle(Request::Claim {
+                        agent: holder.into(),
+                        resource: "db:shared".into(),
+                        mode: LeaseMode::Shared,
+                        amount: None,
+                        ttl_secs: 600,
+                        note: None,
+                        wait_secs: 0,
+                        priority: 0,
+                        automatic: false,
+                    })
+                    .await,
+                Response::Lease { .. }
+            ));
+        }
+        for n in 0..INBOX_CAPACITY {
+            assert!(matches!(
+                daemon
+                    .handle(Request::Send {
+                        from: agentdocker_core::HUMAN.into(),
+                        to: second.id.to_string(),
+                        kind: "chat".into(),
+                        payload: json!({ "text": format!("filler {n}") }),
+                        reply_to: None,
+                        links: Vec::new(),
+                    })
+                    .await,
+                Response::Sent { .. }
+            ));
+        }
+        let mut events = daemon.subscribe_events();
+        let refused = daemon
+            .handle(Request::RequestRelease {
+                from: "asker".into(),
+                resource: "db:shared".into(),
+                reason: None,
+            })
+            .await;
+        assert!(
+            matches!(
+                refused,
+                Response::Error {
+                    code: ErrorCode::Backpressure,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        assert!(events.try_recv().is_err(), "nothing was announced");
+        assert!(lock(&daemon.state).release_requests.is_empty());
+        assert!(inbox(&daemon, "first").await.is_empty(), "not asked alone");
+
+        // Room again: both are asked.
+        assert!(matches!(
+            daemon
+                .handle(Request::Inbox {
+                    agent: second.id.to_string(),
+                    drain: true,
+                })
+                .await,
+            Response::Messages { .. }
+        ));
+        let Response::ReleaseRequests { requests } = daemon
+            .handle(Request::RequestRelease {
+                from: "asker".into(),
+                resource: "db:shared".into(),
+                reason: None,
+            })
+            .await
+        else {
+            panic!("request")
+        };
+        assert_eq!(requests.len(), 2);
+        assert_eq!(inbox(&daemon, "first").await.len(), 1);
+        assert_eq!(inbox(&daemon, "second").await.len(), 1);
+    }
+
+    /// A lease past its TTL has expired, whatever the reaper has got to:
+    /// an accept in that window releases nothing, the lease leaves as
+    /// `lease_expired`, nothing is journaled, and the answer says nothing
+    /// was still held.
+    #[tokio::test]
+    async fn an_accept_after_the_ttl_finds_the_lease_expired_not_held() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let project = dir.path().join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        let holder = register(&daemon, "holder", &project).await;
+        register(&daemon, "asker", &project).await;
+        let lease = claim(&daemon, "holder", "branch:main").await;
+        let Response::ReleaseRequests { requests } = daemon
+            .handle(Request::RequestRelease {
+                from: "asker".into(),
+                resource: "branch:main".into(),
+                reason: None,
+            })
+            .await
+        else {
+            panic!("request")
+        };
+        // The TTL passes before the reaper's next tick.
+        {
+            let mut state = lock(&daemon.state);
+            let held = state.leases.release(&lease.id, &holder.id).unwrap();
+            state.leases.restore(Lease {
+                expires_at: Utc::now() - Duration::seconds(1),
+                ..held
+            });
+        }
+        let mut events = daemon.subscribe_events();
+        let Response::ReleaseRequest { request } = daemon
+            .handle(Request::RespondRelease {
+                from: "holder".into(),
+                request: requests[0].message.clone(),
+                accept: true,
+                text: Some("all yours".into()),
+            })
+            .await
+        else {
+            panic!("accept")
+        };
+        assert!(request.answer.unwrap().released.is_empty());
+        let mut kinds = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            kinds.push(event.kind);
+        }
+        assert!(
+            kinds
+                .iter()
+                .any(|k| matches!(k, EventKind::LeaseExpired { lease: l } if l.id == lease.id)),
+            "{kinds:?}"
+        );
+        assert!(
+            !kinds
+                .iter()
+                .any(|k| matches!(k, EventKind::LeaseReleased { .. }))
+        );
+        assert!(
+            !kinds
+                .iter()
+                .any(|k| matches!(k, EventKind::JournalAppended { .. }))
+        );
+        assert!(leases(&daemon).await.is_empty());
+        let replies = inbox(&daemon, "asker").await;
+        assert_eq!(replies[0].payload["released"], json!([]));
+        assert!(
+            replies[0].payload["text"]
+                .as_str()
+                .unwrap()
+                .contains("nothing was still held")
+        );
     }
 
     /// An accept after the lease has gone on its own releases nothing and
