@@ -949,6 +949,7 @@ mod tests {
         let row = |key: Option<&str>, input: Option<u64>, output: Option<u64>| Row {
             key: key.map(str::to_owned),
             samples: 1,
+            usage_source: None,
             counters: CounterReports {
                 input_tokens: counter(input, Coverage::Complete),
                 cache_read_input_tokens: counter(None, Coverage::Unknown),
@@ -998,6 +999,7 @@ mod tests {
         let row_with = |input: CounterReport| Row {
             key: Some("k".into()),
             samples: 1,
+            usage_source: None,
             counters: CounterReports {
                 input_tokens: input,
                 cache_read_input_tokens: counter(None, Coverage::Unknown),
@@ -1185,6 +1187,7 @@ mod tests {
         let row = Row {
             key: Some("model-a".into()),
             samples: 2,
+            usage_source: None,
             counters: CounterReports {
                 input_tokens: counter(Some(900), Coverage::Partial),
                 cache_read_input_tokens: counter(None, Coverage::Unknown),

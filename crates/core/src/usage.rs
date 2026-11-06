@@ -149,18 +149,43 @@ struct Total {
     known_samples: u64,
 }
 
+/// Where a counted figure comes from: the provider's own count for one
+/// response, or the difference between two of its running totals, which
+/// a reset or a gap between them makes an approximation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSource {
+    Exact,
+    Estimated,
+}
+
 /// A bucket retains known/sample counts with the sums, so moving historical
 /// attribution never turns unknown fields into zero or loses coverage.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "StoredAggregate")]
 pub struct Aggregate {
     samples: u64,
     totals: [Total; 5],
+    /// How many of `samples` are a provider's own per-response figure.
+    /// `None` once a bucket written before this was counted is in it: a
+    /// count that cannot say is never read as all estimated.
+    exact: Option<u64>,
     /// The provider-reported estimated cost of the samples that carried one, in
     /// micro-dollars (USD × 10⁶). Absent from buckets written before cost
     /// was collected, which read as a bucket no sample priced.
     #[serde(default, skip_serializing_if = "Total::is_empty")]
     cost: Total,
+}
+
+impl Default for Aggregate {
+    fn default() -> Self {
+        Self {
+            samples: 0,
+            totals: [Total::default(); 5],
+            exact: Some(0),
+            cost: Total::default(),
+        }
+    }
 }
 
 impl Total {
@@ -175,6 +200,8 @@ struct StoredAggregate {
     samples: u64,
     totals: [Total; 5],
     #[serde(default)]
+    exact: Option<u64>,
+    #[serde(default)]
     cost: Total,
 }
 
@@ -185,6 +212,7 @@ impl TryFrom<StoredAggregate> for Aggregate {
         let aggregate = Self {
             samples: stored.samples,
             totals: stored.totals,
+            exact: stored.exact,
             cost: stored.cost,
         };
         aggregate.validate()?;
@@ -226,11 +254,25 @@ impl Aggregate {
         }) {
             return Err("usage bucket coverage is inconsistent");
         }
+        if self.exact.is_some_and(|exact| exact > self.samples) {
+            return Err("usage bucket coverage is inconsistent");
+        }
         Ok(())
     }
 
     pub fn samples(&self) -> u64 {
         self.samples
+    }
+
+    /// `Exact` when every counted sample is a provider's own per-response
+    /// figure, `Estimated` when at least one is not; `None` for an empty
+    /// bucket or one that cannot say.
+    pub fn source(&self) -> Option<UsageSource> {
+        match self.exact {
+            Some(exact) if self.samples > 0 && exact == self.samples => Some(UsageSource::Exact),
+            Some(_) if self.samples > 0 => Some(UsageSource::Estimated),
+            _ => None,
+        }
     }
 
     /// Merge disjoint hourly buckets while preserving unknown/sample counts.
@@ -256,18 +298,27 @@ impl Aggregate {
                 .checked_add(added.known_samples)
                 .ok_or("usage bucket arithmetic is out of range")?;
         }
+        next.exact = match (self.exact, other.exact) {
+            (Some(mine), Some(theirs)) => Some(
+                mine.checked_add(theirs)
+                    .ok_or("usage bucket arithmetic is out of range")?,
+            ),
+            _ => None,
+        };
         next.validate()?;
         Ok(next)
     }
 
     /// Return a proposed replacement; an overflow/invalid removal cannot
     /// partially modify an existing bucket. Persistence commits it separately.
-    pub fn add(&self, counters: &Counters) -> Result<Self, &'static str> {
-        self.change(counters, None, false)
+    /// `exact` says whether the sample is a provider's own per-response
+    /// figure; a sample that cannot say leaves the bucket unable to.
+    pub fn add(&self, counters: &Counters, exact: Option<bool>) -> Result<Self, &'static str> {
+        self.change(counters, exact, None, false)
     }
 
-    pub fn remove(&self, counters: &Counters) -> Result<Self, &'static str> {
-        self.change(counters, None, true)
+    pub fn remove(&self, counters: &Counters, exact: Option<bool>) -> Result<Self, &'static str> {
+        self.change(counters, exact, None, true)
     }
 
     /// [`Self::add`] for a sample that also carried its price, in
@@ -275,17 +326,19 @@ impl Aggregate {
     pub fn add_priced(
         &self,
         counters: &Counters,
+        exact: Option<bool>,
         cost_usd_micros: Option<u64>,
     ) -> Result<Self, &'static str> {
-        self.change(counters, cost_usd_micros, false)
+        self.change(counters, exact, cost_usd_micros, false)
     }
 
     pub fn remove_priced(
         &self,
         counters: &Counters,
+        exact: Option<bool>,
         cost_usd_micros: Option<u64>,
     ) -> Result<Self, &'static str> {
-        self.change(counters, cost_usd_micros, true)
+        self.change(counters, exact, cost_usd_micros, true)
     }
 
     /// A price learnt after the sample was counted (the provider's event
@@ -310,6 +363,7 @@ impl Aggregate {
     fn change(
         &self,
         counters: &Counters,
+        exact: Option<bool>,
         cost_usd_micros: Option<u64>,
         remove: bool,
     ) -> Result<Self, &'static str> {
@@ -323,6 +377,11 @@ impl Aggregate {
         };
         let mut next = self.clone();
         next.samples = change(next.samples, 1)?;
+        next.exact = match (self.exact, exact) {
+            (Some(count), Some(true)) => Some(change(count, 1)?),
+            (Some(count), Some(false)) => Some(count),
+            _ => None,
+        };
         for (total, value) in next
             .totals
             .iter_mut()
@@ -754,11 +813,14 @@ mod tests {
     #[test]
     fn restored_aggregates_cannot_invent_counter_coverage() {
         let bucket = Aggregate::default()
-            .add(&Counters {
-                input_tokens: Some(8),
-                output_tokens: Some(0),
-                ..Counters::default()
-            })
+            .add(
+                &Counters {
+                    input_tokens: Some(8),
+                    output_tokens: Some(0),
+                    ..Counters::default()
+                },
+                Some(false),
+            )
             .unwrap();
         let stored = serde_json::to_value(&bucket).unwrap();
         assert_eq!(
@@ -771,7 +833,9 @@ mod tests {
         let mut corrupt = stored;
         corrupt["totals"][0]["known_samples"] = serde_json::json!(0);
         assert!(serde_json::from_value::<Aggregate>(corrupt).is_err());
-        let unknown = Aggregate::default().add(&Counters::default()).unwrap();
+        let unknown = Aggregate::default()
+            .add(&Counters::default(), Some(false))
+            .unwrap();
         let restored: Aggregate =
             serde_json::from_value(serde_json::to_value(&unknown).unwrap()).unwrap();
         assert!(
@@ -787,9 +851,9 @@ mod tests {
         let zero = Counters::from_values([Some(0), None, None, Some(0), None]);
         let known = Counters::from_values([Some(10), Some(2), None, Some(3), Some(1)]);
         let original = Aggregate::default()
-            .add(&zero)
+            .add(&zero, Some(false))
             .unwrap()
-            .add(&known)
+            .add(&known, Some(false))
             .unwrap();
         assert_eq!(original.samples(), 2);
         let complete = original.counters(true);
@@ -799,13 +863,46 @@ mod tests {
         assert_eq!(complete[2].coverage, Coverage::Unknown);
         assert_eq!(complete[2].sum, None);
         assert_eq!(original.counters(false)[0].coverage, Coverage::Partial);
-        let source = original.remove(&known).unwrap();
-        let destination = Aggregate::default().add(&known).unwrap();
+        let source = original.remove(&known, Some(false)).unwrap();
+        let destination = Aggregate::default().add(&known, Some(false)).unwrap();
         assert_eq!(source.counters(true)[0].sum, Some(0));
         assert_eq!(source.counters(true)[1].sum, None);
         assert_eq!(source.samples() + destination.samples(), original.samples());
-        assert_eq!(source.add(&known).unwrap(), original);
-        assert_eq!(source.remove(&zero).unwrap(), Aggregate::default());
+        assert_eq!(source.add(&known, Some(false)).unwrap(), original);
+        assert_eq!(
+            source.remove(&zero, Some(false)).unwrap(),
+            Aggregate::default()
+        );
+    }
+
+    #[test]
+    fn aggregate_says_whether_its_figures_are_exact() {
+        let known = Counters::from_values([Some(10), Some(2), None, Some(3), Some(1)]);
+        assert_eq!(Aggregate::default().source(), None);
+        let exact = Aggregate::default().add(&known, Some(true)).unwrap();
+        assert_eq!(exact.source(), Some(UsageSource::Exact));
+        let mixed = exact.add(&known, Some(false)).unwrap();
+        assert_eq!(mixed.source(), Some(UsageSource::Estimated));
+        assert_eq!(
+            mixed.remove(&known, Some(false)).unwrap().source(),
+            Some(UsageSource::Exact)
+        );
+        // A bucket written before the count existed cannot say, and nothing
+        // merged into it or added to it makes it say.
+        let mut stored = serde_json::to_value(&exact).unwrap();
+        stored.as_object_mut().unwrap().remove("exact");
+        let older: Aggregate = serde_json::from_value(stored).unwrap();
+        assert_eq!(older.source(), None);
+        assert_eq!(older.add(&known, Some(true)).unwrap().source(), None);
+        assert_eq!(exact.merge(&older).unwrap().source(), None);
+        assert_eq!(
+            exact.merge(&mixed).unwrap().source(),
+            Some(UsageSource::Estimated)
+        );
+        assert_eq!(exact.add(&known, None).unwrap().source(), None);
+        let mut corrupt = serde_json::to_value(&exact).unwrap();
+        corrupt["exact"] = serde_json::json!(5);
+        assert!(serde_json::from_value::<Aggregate>(corrupt).is_err());
     }
 
     /// Cost rides with a sample as its own total: a priced sample counts
@@ -816,11 +913,11 @@ mod tests {
     fn cost_is_a_counter_of_its_own_with_coverage_and_late_pricing() {
         let tokens = Counters::from_values([Some(10), None, None, Some(3), None]);
         let priced = Aggregate::default()
-            .add_priced(&tokens, Some(1_500))
+            .add_priced(&tokens, Some(true), Some(1_500))
             .unwrap();
         assert_eq!(priced.cost(true).sum, Some(1_500));
         assert_eq!(priced.cost(true).coverage, Coverage::Complete);
-        let mixed = priced.add(&tokens).unwrap();
+        let mixed = priced.add(&tokens, Some(true)).unwrap();
         assert_eq!(mixed.cost(true).sum, Some(1_500));
         assert_eq!(mixed.cost(true).coverage, Coverage::Partial);
         let late = mixed.price(500).unwrap();
@@ -828,7 +925,7 @@ mod tests {
         assert_eq!(late.cost(true).coverage, Coverage::Complete);
         assert_eq!(late.counters(true)[0].sum, Some(20), "tokens unchanged");
         assert!(Aggregate::default().price(1).is_err(), "nothing to price");
-        let back = late.remove_priced(&tokens, Some(500)).unwrap();
+        let back = late.remove_priced(&tokens, Some(true), Some(500)).unwrap();
         assert_eq!(back.cost(true), priced.cost(true));
         assert_eq!(back.samples(), 1);
         let legacy: Aggregate = serde_json::from_value(serde_json::json!({
@@ -857,13 +954,16 @@ mod tests {
             input_tokens: Some(u64::MAX),
             ..Counters::default()
         };
-        let original = Aggregate::default().add(&huge).unwrap();
+        let original = Aggregate::default().add(&huge, Some(false)).unwrap();
         let saved = original.clone();
-        assert!(original.add(&huge).is_err());
-        assert!(original.remove(&Counters::default()).is_err());
+        assert!(original.add(&huge, Some(false)).is_err());
+        assert!(original.remove(&Counters::default(), Some(false)).is_err());
         assert_eq!(original, saved);
-        assert_eq!(original.remove(&huge).unwrap(), Aggregate::default());
-        assert!(Aggregate::default().remove(&huge).is_err());
+        assert_eq!(
+            original.remove(&huge, Some(false)).unwrap(),
+            Aggregate::default()
+        );
+        assert!(Aggregate::default().remove(&huge, Some(false)).is_err());
     }
 
     #[test]
