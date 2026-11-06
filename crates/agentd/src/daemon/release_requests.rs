@@ -156,6 +156,7 @@ impl Daemon {
                 },
                 released: Vec::new(),
                 journal: None,
+                closes: None,
             };
             match state.publish_with_channel(envelope, None, None, Some(transition)) {
                 Response::Sent { .. } => {
@@ -311,6 +312,7 @@ impl Daemon {
             },
             released: still_held,
             journal,
+            closes: None,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
             Response::Sent { .. } => {
