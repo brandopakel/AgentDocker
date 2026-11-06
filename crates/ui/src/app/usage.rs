@@ -781,6 +781,7 @@ mod tests {
                 },
             },
             overhead: Overhead::default(),
+            context: Default::default(),
         }
     }
 

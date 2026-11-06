@@ -382,7 +382,10 @@ tool without one — and its name, then its standing chip and one more chip
 (the time left to answer while it waits on you, else the pull request chip). Pointing at the name shows its tool, branch and the tokens
 its provider reported over the last 24 hours when collection is on
 (`1.23M tokens in 24h`, `~` where some samples did not say, nothing where
-none did); the row's spoken name adds what it is doing. Sessions needing
+none did), and how full its context is where its provider's own record
+says (`Context 62 %`: the latest request's size against the model's
+window, an estimate from the provider's counts; nothing where no record
+says or the model's window is unknown); the row's spoken name adds what it is doing. Sessions needing
 input appear first within each project. An ended Claude Code session that can
 come back carries **Reconnect here** on its row itself (the same action as in
 Details, which says why a session cannot be reconnected yet); while its
@@ -429,7 +432,8 @@ Git's actual deletion or refusal report, including the full commit ID when Git
 reports a deletion, never a recovery command built from an earlier branch
 review; the reported commit recreates a deleted branch while Git retains the
 object. **Details** reveals the session ID, process,
-checkout, commit and last-seen time.
+checkout, commit and last-seen time, and its context use (*Context* `62 %`)
+where a provider record states it, as on the row.
 
 Diff previews stay within 512 KiB, ending on a complete line when possible and
 always on a complete character. Large Unicode patches remain readable without

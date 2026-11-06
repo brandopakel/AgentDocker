@@ -1,7 +1,9 @@
 //! Usage query and response values. Coverage belongs beside every total.
 
+use super::context::Context;
 use super::{Aggregate, CounterReport, Coverage};
 use chrono::{DateTime, Utc};
+use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +172,12 @@ pub struct Report {
     pub effective_until: DateTime<Utc>,
     pub coverage: ReportCoverage,
     pub overhead: Overhead,
+    /// Each agent's latest context use, by agent id, where a provider
+    /// record states it: the sessions in the query's scope, whatever its
+    /// range, and nothing for a session no record speaks for. Absent on
+    /// older daemons and while collection is off.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub context: BTreeMap<String, Context>,
 }
 
 /// A row's tokens, input and output together: the sum its samples gave and
@@ -194,7 +202,7 @@ impl Tokens {
 impl Report {
     /// Each row's tokens by its key. A row no sample gave a count for, and
     /// unattributed usage, are left out rather than shown as zero.
-    pub fn tokens(&self) -> std::collections::BTreeMap<String, Tokens> {
+    pub fn tokens(&self) -> BTreeMap<String, Tokens> {
         self.rows
             .iter()
             .filter_map(|row| {

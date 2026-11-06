@@ -1,5 +1,6 @@
 //! Atomic token accounting. File bytes never enter these tables.
 use super::*;
+use agentdocker_core::usage::context::Context;
 use agentdocker_core::usage::{self, Aggregate, Baseline, Counters, Range, report::*};
 use agentdocker_host::usage::{Sample, Semantics, reader};
 use serde::{Deserialize, Serialize};
@@ -48,6 +49,8 @@ pub(crate) struct Ingest<'a> {
     pub key: &'a str,
     pub progress: &'a FileProgress,
     pub samples: &'a [(Sample, Attribution)],
+    /// Each session's latest context use among the batch's records.
+    pub contexts: &'a BTreeMap<String, Context>,
     pub gaps: &'a [reader::Gap],
     pub collection: &'a Collection,
     pub retained_since: DateTime<Utc>,
@@ -247,6 +250,14 @@ impl Store {
                     gaps += missing;
                 }
                 None => gaps += self.usage_tracking_gap(batch.now.max(sample.at))?,
+            }
+        }
+        for (session, context) in batch.contexts {
+            if self
+                .usage_bounded_write(|| self.usage_keep_context(session, context))?
+                .is_none()
+            {
+                gaps += self.usage_tracking_gap(batch.now.max(context.at))?;
             }
         }
         for gap in batch.gaps {
@@ -469,6 +480,45 @@ impl Store {
         Ok((1, gaps))
     }
 
+    /// Keep a session's latest context use: a record no older than the one
+    /// kept replaces it, so a replayed or rescanned file cannot turn the
+    /// figure back, and a record that says nothing never reaches here.
+    fn usage_keep_context(&self, session: &str, context: &Context) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO usage_context VALUES (?1,?2,?3,?4)
+             ON CONFLICT(runtime,session) DO UPDATE SET at=excluded.at, json=excluded.json
+             WHERE excluded.at>=usage_context.at",
+            params![
+                context.runtime,
+                session,
+                text(context.at),
+                serde_json::to_string(context)?
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The latest context use of each named session (runtime, session id)
+    /// that a record states one for, keyed as the caller keys them.
+    pub(crate) fn usage_contexts(
+        &self,
+        sessions: &[(String, String, String)],
+    ) -> Result<BTreeMap<String, Context>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT json FROM usage_context WHERE runtime=?1 AND session=?2")?;
+        let mut found = BTreeMap::new();
+        for (key, runtime, session) in sessions {
+            let json: Option<String> = statement
+                .query_row(params![runtime, session], |r| r.get(0))
+                .optional()?;
+            if let Some(json) = json {
+                found.insert(key.clone(), serde_json::from_str(&json)?);
+            }
+        }
+        Ok(found)
+    }
+
     fn usage_gap(
         &self,
         key: &str,
@@ -530,6 +580,7 @@ impl Store {
         self.conn.execute("DELETE FROM usage_buckets WHERE key IN (SELECT key FROM usage_buckets WHERE hour<?1 LIMIT 1000)", [&since])?;
         self.conn.execute("UPDATE usage_samples SET contribution=NULL WHERE source_id IN (SELECT source_id FROM usage_samples WHERE at<?1 AND contribution IS NOT NULL LIMIT 1000)", [&since])?;
         self.conn.execute("DELETE FROM usage_gaps WHERE key IN (SELECT key FROM usage_gaps WHERE until<?1 LIMIT 1000)", [&since])?;
+        self.conn.execute("DELETE FROM usage_context WHERE (runtime,session) IN (SELECT runtime,session FROM usage_context WHERE at<?1 LIMIT 1000)", [&since])?;
         Ok(())
     }
 
@@ -621,6 +672,7 @@ impl Store {
                 project,
                 agent,
             )?,
+            context: BTreeMap::new(),
         }))
     }
 }
@@ -679,6 +731,7 @@ mod tests {
             key,
             progress,
             samples: &samples,
+            contexts: &BTreeMap::new(),
             gaps: &[],
             collection: &Collection {
                 discovery_generation: Some(1),

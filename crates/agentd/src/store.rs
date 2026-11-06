@@ -219,6 +219,13 @@ CREATE TABLE IF NOT EXISTS usage_samples (
     contribution TEXT
 );
 CREATE INDEX IF NOT EXISTS usage_samples_at ON usage_samples (at);
+CREATE TABLE IF NOT EXISTS usage_context (
+    runtime TEXT NOT NULL,
+    session TEXT NOT NULL,
+    at TEXT NOT NULL,
+    json TEXT NOT NULL,
+    PRIMARY KEY (runtime, session)
+);
 CREATE TABLE IF NOT EXISTS usage_buckets (
     key TEXT PRIMARY KEY,
     hour TEXT NOT NULL,

@@ -235,8 +235,32 @@ impl Daemon {
             },
             None => None,
         };
+        // The sessions in scope whose context a provider record may state:
+        // each record by its own id, with the runtime and session its
+        // transcript or rollout is read under.
+        let sessions: Vec<(String, String, String)> = state
+            .registry
+            .all()
+            .filter(|a| {
+                project.as_deref().is_none_or(|project| {
+                    a.project.as_ref().is_some_and(|p| p.id().to_string() == project)
+                })
+            })
+            .filter(|a| agent.as_deref().is_none_or(|agent| a.id.as_str() == agent))
+            .filter_map(|a| {
+                let session = a.spec.labels.get("session_id")?;
+                Some((a.id.to_string(), a.spec.runtime.clone(), session.clone()))
+            })
+            .collect();
         match state.store_read("usage query", |store| {
-            store.usage_report(range, query.by, project.as_deref(), agent.as_deref())
+            let mut report =
+                store.usage_report(range, query.by, project.as_deref(), agent.as_deref())?;
+            if let Some(report) = &mut report
+                && config.enabled
+            {
+                report.context = store.usage_contexts(&sessions)?;
+            }
+            Ok(report)
         }) {
             Some(Some(mut report)) => {
                 let effective_roots = match roots(&config) {
@@ -249,6 +273,7 @@ impl Daemon {
                     .collect();
                 if !config.enabled || report.coverage.collection.scope.roots != expected_roots {
                     report.coverage.collection = Collection::default();
+                    report.context.clear();
                     for row in &mut report.rows {
                         for counter in [
                             &mut row.counters.input_tokens,
@@ -336,6 +361,7 @@ impl Daemon {
                     key,
                     progress: &progress,
                     samples: &samples,
+                    contexts: &batch.contexts,
                     gaps: &batch.gaps,
                     collection,
                     retained_since: retained(now, config),
@@ -1970,6 +1996,80 @@ mod tests {
                 .count(),
             events
         );
+    }
+
+    /// A session's context is the latest request a record states, against
+    /// its model's window: on the usage answer by agent id, only while
+    /// collection is on, and absent for a session no record speaks for.
+    #[tokio::test]
+    async fn usage_answers_each_sessions_latest_context_only_with_collection_on() {
+        let (temp, daemon, config, root) = fixture();
+        let register = |name: &str, session: &str| {
+            daemon.handle(Request::Register {
+                spec: AgentSpec {
+                    name: name.into(),
+                    runtime: "claude-code".into(),
+                    labels: BTreeMap::from([("session_id".into(), session.into())]),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+        };
+        let Response::Agent { agent } = register("context-agent", "fixture-session").await else {
+            panic!("fixture registration failed")
+        };
+        let Response::Agent { agent: silent } = register("silent-agent", "other-session").await
+        else {
+            panic!("fixture registration failed")
+        };
+        let request = |id: &str, model: &str, read: u64, minutes: i64| {
+            serde_json::json!({"type":"assistant","version":"2.1.287","sessionId":"fixture-session",
+                "timestamp":(Utc::now()-Duration::minutes(minutes)).to_rfc3339(),
+                "message":{"id":id,"model":model,
+                    "usage":{"input_tokens":4000,"cache_read_input_tokens":read,"cache_creation_input_tokens":0,"output_tokens":2}}})
+            .to_string()
+                + "\n"
+        };
+        let path = root.join("session.jsonl");
+        std::fs::write(&path, request("first", "claude-sonnet-4-6", 120_000, 30)).unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        let context = report.context.get(agent.id.as_str()).expect("the record's context");
+        assert_eq!((context.percent(), context.used_tokens), (62, 124_000));
+        assert_eq!(context.record, "first");
+        assert_eq!(context.model.as_deref(), Some("claude-sonnet-4-6"));
+        assert!(
+            !report.context.contains_key(silent.id.as_str()),
+            "no record, no figure"
+        );
+        // A later request replaces it; one the table cannot place does not.
+        append(&path, &request("second", "claude-sonnet-4-6", 40_000, 20));
+        append(&path, &request("third", "fixture-model", 180_000, 10));
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let context = query(&daemon).await.context.remove(agent.id.as_str()).unwrap();
+        assert_eq!((context.percent(), context.record.as_str()), (22, "second"));
+        // Off, the answer carries no figure, as it carries no coverage.
+        let config_path = temp.path().join("agentd.toml");
+        let original = std::fs::read_to_string(&config_path).unwrap();
+        std::fs::write(&config_path, original.replace("enabled=true", "enabled=false")).unwrap();
+        assert!(query(&daemon).await.context.is_empty());
+        std::fs::write(&config_path, &original).unwrap();
+        assert_eq!(query(&daemon).await.context.len(), 1);
+        // The figure is per session: an agent filter keeps only its own.
+        let response = daemon
+            .handle(Request::Usage {
+                project: None,
+                agent: Some(silent.id.to_string()),
+                since: Some("24h".into()),
+                until: None,
+                by: Group::Agent,
+            })
+            .await;
+        let Response::Usage { report } = response else {
+            panic!("{response:?}")
+        };
+        assert!(report.context.is_empty());
     }
 
     fn append(path: &Path, text: &str) {

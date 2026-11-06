@@ -1518,6 +1518,12 @@ Current behaviour that the sections above do not already state, by area.
   one line above the list that sums them and opens Usage. Both appear only
   when usage collection is on and there is something to show.
 
+- Context where you look: a session row's hint and its Details say how full
+  the session's context is (`Context 62 %`) where its provider's own record
+  states the latest request's size and the model's window is known; it is an
+  estimate from the provider's counts, and there is nothing to show where no
+  record says or the model is unknown to AgentDocker.
+
 ### Project memory
 
 - **Project memory.** Agents and you can keep short facts for a project —

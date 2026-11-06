@@ -629,6 +629,9 @@ pub struct App {
     /// and when it was last asked for: at most once a minute, as the agent
     /// list refreshes.
     agent_tokens: BTreeMap<String, agentdocker_core::usage::report::Tokens>,
+    /// Each session's latest context use, by agent id, read with the
+    /// tokens and shown where they are.
+    agent_context: BTreeMap<String, agentdocker_core::usage::context::Context>,
     agent_tokens_asked: Option<std::time::Instant>,
     /// The selected session's branch read against the main folder's, by
     /// agent id; a merge on its way, and the last merge's outcome.
@@ -814,6 +817,7 @@ impl App {
             tasks: None,
             usage: None,
             agent_tokens: BTreeMap::new(),
+            agent_context: BTreeMap::new(),
             agent_tokens_asked: None,
             branch_review: None,
             merging: None,
@@ -907,6 +911,7 @@ impl App {
             tasks: None,
             usage: None,
             agent_tokens: BTreeMap::new(),
+            agent_context: BTreeMap::new(),
             agent_tokens_asked: None,
             branch_review: None,
             merging: None,
@@ -1400,6 +1405,7 @@ impl App {
                     // footnote on a row, not worth a message of their own.
                     if let Ok(report) = result {
                         self.agent_tokens = report.tokens();
+                        self.agent_context = report.context;
                     }
                 }
                 Msg::TaskCreated(project, request, result) => {

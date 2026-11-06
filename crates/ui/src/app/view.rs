@@ -2986,6 +2986,10 @@ impl App {
             if let Some(tokens) = tokens {
                 facts.push(tokens);
             }
+            // How full its context is, where its provider's record says.
+            if let Some(context) = self.agent_context.get(&id) {
+                facts.push(context.label());
+            }
             // Its roles, in the palette's words, said with the rest.
             let roles = self.role_names(agent);
             if !roles.is_empty() {
@@ -3617,6 +3621,13 @@ impl App {
                 && let Some(at) = delivery.and_then(|d| d.received_at)
             {
                 facts.push(("Last message".to_owned(), value(ago(Utc::now(), at))));
+            }
+            // How full its context is, where its provider's record says.
+            if let Some(context) = self.agent_context.get(&id) {
+                facts.push((
+                    "Context".to_owned(),
+                    value(format!("{} %", context.percent())),
+                ));
             }
             if let Some(pid) = agent.pid {
                 facts.push(("Process".to_owned(), mono_value(pid.to_string())));
@@ -5400,6 +5411,47 @@ mod tests {
         app.shell.session_details = true;
         let panel = seen(app.inspector(&ended, c));
         assert!(panel.reads("Last message"));
+    }
+
+    /// A session's context use is a fact on its row's spoken name and
+    /// under Details, as a percentage, and nothing where no record says.
+    #[test]
+    fn a_sessions_context_use_is_on_its_row_and_under_details_only_when_known() {
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let c = Colors::new(false);
+        let now = Utc::now();
+        let agent = AgentRecord::new(
+            AgentSpec {
+                name: "talker".into(),
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            now,
+        );
+        let rows = seen(app.session_rows(&[&agent], c));
+        assert!(!rows.reads("Context"), "no record, no figure");
+        app.shell.session_details = true;
+        assert!(!seen(app.inspector(&agent, c)).reads("Context"));
+        app.agent_context.insert(
+            agent.id.to_string(),
+            agentdocker_core::usage::context::Context {
+                used_tokens: 124_000,
+                window_tokens: 200_000,
+                model: None,
+                runtime: "claude-code".into(),
+                format: "fixture".into(),
+                record: "fixture".into(),
+                at: now,
+            },
+        );
+        let rows = seen(app.session_rows(&[&agent], c));
+        assert!(rows.reads("Context 62 %"), "{:?}", rows.controls);
+        let panel = seen(app.inspector(&agent, c));
+        assert!(panel.reads("Context") && panel.reads("62 %"), "{:?}", panel.texts);
     }
 
     #[test]
