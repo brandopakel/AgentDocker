@@ -417,6 +417,7 @@ mod tests {
                 question: "may I?".into(),
                 presentation: None,
                 timeout_secs: 60,
+                form: Default::default(),
             })
             .await;
         assert!(
@@ -516,6 +517,9 @@ mod tests {
                 from: Some(local.id.to_string()),
                 message: question.clone(),
                 text: "Release".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await;
         assert!(
@@ -534,6 +538,9 @@ mod tests {
                 from: None,
                 message: question.clone(),
                 text: "sure, go ahead".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await;
         assert!(
@@ -555,6 +562,9 @@ mod tests {
                 from: None,
                 message: question.clone(),
                 text: "release".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await;
         let Response::Sent {
@@ -607,6 +617,9 @@ mod tests {
                 from: None,
                 message: question,
                 text: "Drop".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await;
         assert!(
@@ -639,6 +652,9 @@ mod tests {
                 from: None,
                 message: question.clone(),
                 text: "Drop".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await;
         assert!(matches!(response, Response::Ok), "{response:?}");
@@ -676,6 +692,7 @@ mod tests {
                 to: HUMAN.into(),
                 question: "may I merge?".into(),
                 timeout_secs: 60,
+                form: Default::default(),
             }),
         )
         .await
@@ -696,6 +713,9 @@ mod tests {
                 from: None,
                 message: question,
                 text: "Release".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -775,6 +795,9 @@ mod tests {
                 from: None,
                 message: question,
                 text: "Release".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -824,6 +847,7 @@ mod tests {
                 question: "which flag?".into(),
                 presentation: None,
                 timeout_secs: 600,
+                form: Default::default(),
             })
             .await
         else {
@@ -855,6 +879,9 @@ mod tests {
                 from: None,
                 message: card.clone(),
                 text: "Release".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
