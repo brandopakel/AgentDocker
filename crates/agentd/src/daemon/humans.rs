@@ -46,9 +46,39 @@ const NOTICE_CHARS: usize = 180;
 pub const DEFAULT_ANSWERER: &str = "agentd";
 
 /// How many replies a waiting `ask` keeps while the closure that names its
-/// answer is awaited. Past this a reply goes to the queue when the wait
-/// ends, as any answer the wait could not hand over does.
+/// answer is awaited; the answer itself is never lost to this bound.
 const MAX_ANSWER_CANDIDATES: usize = 16;
+
+/// The replies a waiting `ask` has seen, by id, until the committed closure
+/// names its answer. Bounded: past [`MAX_ANSWER_CANDIDATES`] a reply is not
+/// kept unless the closure already names it, and an answer the closure names
+/// that was not kept is recovered from the asker's queue, where it is stored
+/// before the closure is published. Whichever arrives first, the closure or
+/// the reply, the answer is the one the closure names.
+#[derive(Default)]
+struct AnswerCandidates {
+    seen: HashMap<MessageId, Envelope>,
+    accepted: Option<MessageId>,
+}
+
+impl AnswerCandidates {
+    fn offer(&mut self, envelope: Envelope) {
+        if self.accepted.as_ref() == Some(&envelope.id) || self.seen.len() < MAX_ANSWER_CANDIDATES {
+            self.seen.entry(envelope.id.clone()).or_insert(envelope);
+        }
+    }
+
+    fn accept(&mut self, answer: MessageId) {
+        self.accepted = Some(answer);
+    }
+
+    /// The answer, once the closure has named it: as seen, else as
+    /// `recover` finds it.
+    fn take(&mut self, recover: impl FnOnce(&MessageId) -> Option<Envelope>) -> Option<Envelope> {
+        let id = self.accepted.as_ref()?;
+        self.seen.remove(id).or_else(|| recover(id))
+    }
+}
 
 /// A pending notification. Built under the state lock and handed off
 /// without blocking; posting it is another thread's problem.
@@ -753,10 +783,14 @@ impl Daemon {
             // committed closure names is handed over, whichever arrived
             // first, so a reply that closes nothing (one sent in the
             // daemon's name, say) never stands in front of the answer.
-            let mut candidates: HashMap<MessageId, Envelope> = HashMap::new();
-            let mut accepted: Option<MessageId> = None;
+            let mut candidates = AnswerCandidates::default();
             loop {
-                if let Some(envelope) = accepted.as_ref().and_then(|id| candidates.remove(id)) {
+                if let Some(envelope) = candidates.take(|id| {
+                    lock(&self.state)
+                        .inboxes
+                        .get(&AgentId::from(from.as_str()))
+                        .and_then(|queue| queue.iter().find(|m| m.id == *id).cloned())
+                }) {
                     // Handed over here, and only here, once the offer is
                     // stored: an answer whose bookkeeping failed stays held
                     // and goes to the queue when this wait ends, so it is
@@ -777,9 +811,7 @@ impl Daemon {
                         && (envelope.from == DEFAULT_ANSWERER || match &to { Destination::Agent(id) => id.as_str() == envelope.from, Destination::Project(_) | Destination::Broadcast => true, _ => false }) => {
                         // A reply can arrive after cancellation. Only the
                         // exact committed question-closure event accepts it.
-                        if candidates.len() < MAX_ANSWER_CANDIDATES {
-                            candidates.entry(envelope.id.clone()).or_insert(envelope);
-                        }
+                        candidates.offer(envelope);
                     }
                     Ok(_) => continue,
                     Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::EventHistoryLost, "answer stream lost messages; the answer remains in the inbox"),
@@ -791,8 +823,8 @@ impl Daemon {
                     Ok(Event { kind: EventKind::QuestionStale { question, action: StaleAction::Withdraw }, .. }) if question == message =>
                         return Response::error(ErrorCode::Timeout, "the question went stale and was withdrawn"),
                     Ok(Event { kind: EventKind::QuestionClosed { question, answer }, .. }) if question == message => {
-                        if answer.is_none() { return Response::error(ErrorCode::Timeout, "the question expired"); }
-                        accepted = answer;
+                        let Some(answer) = answer else { return Response::error(ErrorCode::Timeout, "the question expired"); };
+                        candidates.accept(answer);
                     }
                     Ok(_) => continue,
                     Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::EventHistoryLost, "question stream lost events; no answer can be confirmed"),
@@ -2806,6 +2838,125 @@ mod tests {
         };
         assert_eq!(message, answer);
         assert_ne!(message, impostor);
+        assert_eq!(from, recipient.id.to_string());
+        assert_eq!(text, "Green");
+        assert!(!default);
+    }
+
+    fn reply(id: &str) -> Envelope {
+        let mut envelope = Envelope::new(
+            "recipient",
+            Destination::Agent("asker".into()),
+            "answer",
+            json!({"text": id}),
+            Some(MessageId::from("q".to_owned())),
+            Utc::now(),
+        );
+        envelope.id = MessageId::from(id.to_owned());
+        envelope
+    }
+
+    /// The closure names the answer whichever came first, the reply or the
+    /// closure, and the bound on kept replies never loses it: a reply the
+    /// closure already names is kept past the bound, and one not kept is
+    /// recovered from where the daemon stored it.
+    #[test]
+    fn the_answer_the_closure_names_is_handed_over_in_either_order_and_past_the_bound() {
+        let none = |_: &MessageId| None;
+        // The reply first, then the closure.
+        let mut candidates = AnswerCandidates::default();
+        candidates.offer(reply("impostor"));
+        candidates.offer(reply("real"));
+        assert!(candidates.take(none).is_none(), "nothing named yet");
+        candidates.accept(MessageId::from("real".to_owned()));
+        assert_eq!(
+            candidates.take(none).map(|e| e.id.to_string()),
+            Some("real".to_owned())
+        );
+        // The closure first, then the reply, the bound already reached.
+        let mut candidates = AnswerCandidates::default();
+        for n in 0..MAX_ANSWER_CANDIDATES {
+            candidates.offer(reply(&format!("impostor-{n}")));
+        }
+        candidates.accept(MessageId::from("real".to_owned()));
+        candidates.offer(reply("real"));
+        assert_eq!(
+            candidates.take(none).map(|e| e.id.to_string()),
+            Some("real".to_owned())
+        );
+        // The reply first but not kept, the bound reached before it; the
+        // closure then finds it where it is stored.
+        let mut candidates = AnswerCandidates::default();
+        for n in 0..MAX_ANSWER_CANDIDATES {
+            candidates.offer(reply(&format!("impostor-{n}")));
+        }
+        candidates.offer(reply("real"));
+        candidates.accept(MessageId::from("real".to_owned()));
+        assert!(candidates.take(none).is_none(), "not kept, not found");
+        let recovered = candidates.take(|id| (id.as_str() == "real").then(|| reply("real")));
+        assert_eq!(recovered.map(|e| e.id.to_string()), Some("real".to_owned()));
+        // The closure first and the reply never seen on the bus.
+        let mut candidates = AnswerCandidates::default();
+        candidates.accept(MessageId::from("real".to_owned()));
+        let recovered = candidates.take(|id| (id.as_str() == "real").then(|| reply("real")));
+        assert_eq!(recovered.map(|e| e.id.to_string()), Some("real".to_owned()));
+    }
+
+    /// More non-closing replies in the daemon's name than the ask keeps,
+    /// then the recipient's answer: the ask still gets the answer, from
+    /// the asker's queue where it was stored with its closure.
+    #[tokio::test]
+    async fn a_flood_of_replies_in_the_daemons_name_does_not_lose_the_answer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let mut asking = Box::pin(daemon.ask(
+            "asker".into(),
+            "recipient".into(),
+            "Which theme?".into(),
+            300,
+            QuestionForm::default(),
+        ));
+        let pending = open_ask(&mut asking, &daemon).await;
+        for n in 0..MAX_ANSWER_CANDIDATES {
+            let Response::Sent { .. } = lock(&daemon.state).send(
+                DEFAULT_ANSWERER.to_owned(),
+                Destination::Agent(asker.id.clone()),
+                "chat".into(),
+                json!({"text": format!("Blue {n}"), "default": true}),
+                Some(pending.clone()),
+            ) else {
+                panic!("an ordinary message is sent");
+            };
+        }
+        assert!(lock(&daemon.state).questions.contains_key(&pending));
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: pending.clone(),
+                text: "Green".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
+            })
+            .await
+        else {
+            panic!("the recipient answers");
+        };
+        let Response::Answer {
+            message,
+            from,
+            text,
+            default,
+            ..
+        } = asking.await
+        else {
+            panic!("the ask did not get the answer");
+        };
+        assert_eq!(message, answer);
         assert_eq!(from, recipient.id.to_string());
         assert_eq!(text, "Green");
         assert!(!default);

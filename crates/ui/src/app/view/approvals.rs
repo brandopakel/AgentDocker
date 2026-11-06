@@ -2507,7 +2507,7 @@ mod tests {
             matches!(
                 sent.as_slice(),
                 [Cmd::AnswerChoices(sent_id, choices, Some(other))]
-                    if *sent_id == id && choices == &["Green".to_owned()] && other == "Red"
+                    if *sent_id == id && choices == &["2".to_owned()] && other == "Red"
             ),
             "{sent:?}"
         );
@@ -2601,9 +2601,49 @@ mod tests {
             matches!(
                 sent.as_slice(),
                 [Cmd::AnswerChoices(sent_id, choices, None)]
-                    if *sent_id == id && choices == &["Blue".to_owned()]
+                    if *sent_id == id && choices == &["1".to_owned()]
             ),
             "{sent:?}"
+        );
+    }
+
+    /// The longest valid form, every option picked, still goes: the rows
+    /// travel by number, so the labels' size never meets the window's
+    /// command limit.
+    #[test]
+    fn a_large_multi_select_with_everything_picked_fits_the_command_limit() {
+        let (mut app, commands) = app();
+        let options: Vec<agentdocker_core::QuestionOption> = (0..5)
+            .map(|n| agentdocker_core::QuestionOption {
+                label: format!("{}{n}", "x".repeat(13_999)),
+                description: String::new(),
+            })
+            .collect();
+        let form = agentdocker_core::QuestionForm {
+            options: options.clone(),
+            multi_select: true,
+            ..Default::default()
+        };
+        assert!(form.validate(300).is_ok(), "a valid form");
+        let labels: usize = options.iter().map(|o| o.label.len()).sum();
+        assert!(labels > super::super::super::queue::COMMAND_BYTES);
+        let question = typed(&mut app, "large", form);
+        let id = question.id.clone();
+        for option in &options {
+            let _ = app.update(Message::ToggleChoice(id.clone(), option.label.clone()));
+        }
+        let _ = app.update(Message::AnswerChoices(id.clone()));
+        assert!(app.sending.contains(&id));
+        assert!(!app.shell.answer_errors.contains_key(&id));
+        let sent: Vec<_> = commands.try_iter().collect();
+        assert!(
+            matches!(
+                sent.as_slice(),
+                [Cmd::AnswerChoices(sent_id, choices, None)]
+                    if *sent_id == id && choices == &["1", "2", "3", "4", "5"]
+            ),
+            "{}",
+            sent.len()
         );
     }
 

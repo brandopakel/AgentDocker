@@ -3506,25 +3506,39 @@ impl App {
                 }
             }
             Message::AnswerChoices(id) => {
-                // The picked rows by label, and the written words, where
-                // the question allows an Other, as that Other: sent apart
-                // and as written, never read as a label or a number, never
-                // a note.
-                let choices = self.shell.picked.get(&id).cloned().unwrap_or_default();
-                let other = self
+                // The picked rows by their numbers, in the form's order,
+                // so the longest valid form fits the window's command
+                // limit (the daemon writes the labels into the answer); and
+                // the written words, where the question allows an Other,
+                // as that Other: sent apart and as written, never read as
+                // a label or a number, never a note.
+                let question = self
                     .questions
                     .iter()
-                    .find(|q| q.id == id && q.form.multi_select && q.form.allow_other)
+                    .find(|q| q.id == id && q.form.multi_select && !q.expired(Utc::now()));
+                let picked = self.shell.picked.get(&id);
+                let choices: Vec<String> = question
+                    .map(|q| {
+                        q.form
+                            .options
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, option)| {
+                                picked.is_some_and(|picked| picked.contains(&option.label))
+                            })
+                            .map(|(at, _)| (at + 1).to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let other = question
+                    .filter(|q| q.form.allow_other)
                     .and_then(|_| self.shell.answers.get(&id))
                     .map(|words| words.trim().to_owned())
                     .filter(|words| !words.is_empty());
                 if self.connected.is_ok()
                     && !self.sending.contains(&id)
                     && (!choices.is_empty() || other.is_some())
-                    && self
-                        .questions
-                        .iter()
-                        .any(|q| q.id == id && q.form.multi_select && !q.expired(Utc::now()))
+                    && question.is_some()
                 {
                     self.shell.answer_errors.remove(&id);
                     self.sending.insert(id.clone());
@@ -3533,8 +3547,9 @@ impl App {
                     self.shell
                         .chosen_answers
                         .retain(|id, _| sending.contains(id));
-                    let receipt: Vec<&str> = choices
-                        .iter()
+                    let receipt: Vec<&str> = picked
+                        .into_iter()
+                        .flatten()
                         .chain(other.iter())
                         .map(String::as_str)
                         .collect();

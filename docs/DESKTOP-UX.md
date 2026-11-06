@@ -861,7 +861,7 @@ Options an agent offered are full-width rows, the label on the left and what
 choosing it means on the right, a refusal in red; pressing one is the answer,
 and the chosen row stands in for the rows as the receipt while it goes. A
 multi-select question's rows pick and unpick (a picked row stays washed) and
-**Send choices** sends them together; words in the box beside them go as the
+**Send choices** sends them together, each by its number; words in the box beside them go as the
 *Other*, alone or with the picked rows, exactly as written (a typed *2* is the
 words *2*, never the second option). Writing is the *Other*: the box is there
 when the question takes words of your own, on a single-choice question too,
