@@ -803,6 +803,7 @@ mod tests {
                         payload: json!({ "text": format!("filler {n}") }),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await,
                 Response::Sent { .. }
@@ -921,6 +922,7 @@ mod tests {
                         payload: json!({ "text": format!("filler {n}") }),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await,
                 Response::Sent { .. }
