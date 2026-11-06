@@ -45,6 +45,10 @@ pub(super) struct Input {
     // must not report activity, bootstrap a receiver or consume that queue.
     pub agent_id: Option<String>,
     pub agent_type: Option<String>,
+    /// What the person typed, at `UserPromptSubmit`: searched in the
+    /// project's memory, never stored or sent anywhere else.
+    #[serde(default)]
+    pub prompt: Option<String>,
 }
 
 impl Input {
@@ -469,8 +473,13 @@ pub(super) async fn run(client: &Client) -> Result<()> {
                 output: denied,
                 acknowledgement: None,
                 continuation: None,
+                told: None,
             });
         }
+        // A root prompt is told the memories that bear on it too.
+        let prompting = agent
+            .clone()
+            .filter(|_| input.is_root() && input.hook_event_name == "UserPromptSubmit");
         let delivery = match agent {
             // Hooks in the shared server: a terminal's conversation, or one
             // a binding already names. Its receiver reaches it at idle
@@ -507,7 +516,7 @@ pub(super) async fn run(client: &Client) -> Result<()> {
                     let context = crate::codex_input::external::hooks::context(&agent, &input.hook_event_name, &input.session_id, deadline).await?;
                     Ok(Delivery { output: context.map_or_else(|| json!({}), |text| json!({"hookSpecificOutput": {
                         "hookEventName": input.hook_event_name, "additionalContext": text
-                    }})), acknowledgement: None, continuation: None })
+                    }})), acknowledgement: None, continuation: None, told: None })
                 },
                 Ok(false) => prepare(client, &input, agent.id.to_string()).await,
                 Err(error) => {
@@ -517,6 +526,23 @@ pub(super) async fn run(client: &Client) -> Result<()> {
             },
             None => Ok(Delivery::empty()),
         }?;
+        let delivery = match (&prompting, input.prompt.as_deref()) {
+            (Some(agent), Some(prompt)) => {
+                // What the session has been told, listed under AgentDocker's home.
+                let known = super::told::Told::at(&agentdocker_host::dirs::home(), agent.id.as_str())
+                    .as_ref()
+                    .map(super::told::Told::read)
+                    .unwrap_or_default();
+                let (memory, said) = super::prompt_memory(client, agent, prompt, &known).await;
+                let telling = super::Telling {
+                    agent: agent.id.to_string(),
+                    start: false,
+                    memories: said,
+                };
+                with_memory(delivery, memory, telling)
+            }
+            _ => delivery,
+        };
         match starting {
             // No path answers a session start with anything of its own.
             Some(agent) if delivery.is_empty() => {
@@ -673,6 +699,8 @@ struct Delivery {
     output: Value,
     acknowledgement: Option<Request>,
     continuation: Option<String>,
+    /// What the output tells of memory, the session's once it is written.
+    told: Option<super::Telling>,
 }
 
 impl Delivery {
@@ -681,13 +709,17 @@ impl Delivery {
             output: json!({}),
             acknowledgement: None,
             continuation: None,
+            told: None,
         }
     }
 
     /// Whether it answers nothing: no output, no acknowledgement, no
-    /// continuation.
+    /// continuation, nothing told.
     fn is_empty(&self) -> bool {
-        self.output == json!({}) && self.acknowledgement.is_none() && self.continuation.is_none()
+        self.output == json!({})
+            && self.acknowledgement.is_none()
+            && self.continuation.is_none()
+            && self.told.is_none()
     }
 }
 
@@ -733,6 +765,7 @@ async fn prepare<B: Backend>(backend: &B, input: &Input, agent: String) -> Resul
             agent,
             messages: ids,
         }),
+        told: None,
     })
 }
 
@@ -741,15 +774,28 @@ async fn prepare<B: Backend>(backend: &B, input: &Input, agent: String) -> Resul
 /// terminal. Codex runs this hook as a conversation starts or resumes (at
 /// its first turn), after `/clear` and after a compaction, so a compacted
 /// conversation is told again. Nothing is read from the queue and nothing
-/// is acknowledged. Empty for any other event, a subagent's, an agent in
-/// no project, or a project with nothing kept.
+/// is acknowledged. What it says begins the session's list of memories
+/// told again once it is written, as the conversation's context does, and
+/// so does a start with nothing to say. Empty for any other event, a
+/// subagent's, or an agent in no project.
 async fn session_start<B: Backend>(backend: &B, input: &Input, agent: &AgentRecord) -> Delivery {
     if !input.is_root() || input.hook_event_name != "SessionStart" {
         return Delivery::empty();
     }
-    let memory = super::memory_profile(backend, agent, super::MEMORY_PROFILE_CHARS).await;
-    if memory.is_empty() {
+    if agent.project.is_none() {
         return Delivery::empty();
+    }
+    let (memory, said) = super::memory_profile(backend, agent, super::MEMORY_PROFILE_CHARS).await;
+    let told = Some(super::Telling {
+        agent: agent.id.to_string(),
+        start: true,
+        memories: said,
+    });
+    if memory.is_empty() {
+        return Delivery {
+            told,
+            ..Delivery::empty()
+        };
     }
     Delivery {
         output: json!({"hookSpecificOutput": {
@@ -758,7 +804,33 @@ async fn session_start<B: Backend>(backend: &B, input: &Input, agent: &AgentReco
         }}),
         acknowledgement: None,
         continuation: None,
+        told,
     }
+}
+
+/// A prompt's delivery with the memories that bear on it after whatever it
+/// already says: its context, or a context of their own when it says
+/// nothing, carrying what it tells. An answer that is not context is left
+/// as it is and tells nothing.
+fn with_memory(mut delivery: Delivery, memory: String, telling: super::Telling) -> Delivery {
+    if memory.is_empty() {
+        return delivery;
+    }
+    if delivery.output == json!({}) {
+        delivery.output = json!({"hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": memory
+        }});
+        delivery.told = Some(telling);
+    } else if let Some(slot) = delivery
+        .output
+        .pointer_mut("/hookSpecificOutput/additionalContext")
+        && let Some(text) = slot.as_str().map(str::to_owned)
+    {
+        *slot = json!(format!("{text}\n\n{memory}"));
+        delivery.told = Some(telling);
+    }
+    delivery
 }
 
 fn context(messages: &[Envelope]) -> (String, Vec<MessageId>) {
@@ -792,6 +864,10 @@ async fn deliver<B: Backend>(
     let bytes = format!("{}\n", delivery.output);
     super::write_output_before(fd, bytes.as_bytes(), deadline)
         .context("output delivery failed; inbox retained")?;
+    // Written, so told: the session has these memories now.
+    if let Some(telling) = &delivery.told {
+        telling.delivered(&agentdocker_host::dirs::home());
+    }
     let completion = async {
         if let Some(request) = delivery.acknowledgement {
             match tokio::time::timeout_at(deadline, backend.call(request))
@@ -893,7 +969,52 @@ mod tests {
             tool_input: None,
             agent_id: None,
             agent_type: None,
+            prompt: None,
         }
+    }
+
+    /// A prompt's memories follow its context, or are its context when it
+    /// had none; an answer that is not context is left as it is.
+    #[test]
+    fn a_prompt_s_memories_join_its_delivery() {
+        let telling = crate::hooks::Telling {
+            agent: "agent-1".into(),
+            start: false,
+            memories: vec!["m1".into()],
+        };
+        let empty = with_memory(Delivery::empty(), "memory".into(), telling.clone());
+        assert_eq!(
+            empty.output["hookSpecificOutput"]["additionalContext"],
+            "memory"
+        );
+        assert_eq!(empty.told.as_ref(), Some(&telling));
+        let told = Delivery {
+            output: json!({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "inbox"}}),
+            acknowledgement: None,
+            continuation: None,
+            told: None,
+        };
+        let joined = with_memory(told, "memory".into(), telling.clone());
+        assert_eq!(
+            joined.output["hookSpecificOutput"]["additionalContext"],
+            "inbox\n\nmemory"
+        );
+        assert_eq!(joined.told.as_ref(), Some(&telling));
+        let block = Delivery {
+            output: json!({"decision": "block", "reason": "inbox"}),
+            acknowledgement: None,
+            continuation: None,
+            told: None,
+        };
+        // A block answer carries no context: the memories are not in it,
+        // so nothing is told and the next prompt may say them.
+        let blocked = with_memory(block, "memory".into(), telling.clone());
+        assert_eq!(
+            blocked.output,
+            json!({"decision": "block", "reason": "inbox"})
+        );
+        assert_eq!(blocked.told, None);
+        assert!(with_memory(Delivery::empty(), String::new(), telling).is_empty());
     }
 
     fn message(text: &str) -> Envelope {
@@ -1101,6 +1222,7 @@ mod tests {
                     messages: vec!["original-id".to_owned().into()],
                 }),
                 continuation: Some("receiver".into()),
+                told: None,
             };
             let result = deliver(
                 &backend,
@@ -1264,6 +1386,15 @@ mod tests {
         let backend = MemoryOnly::new(vec![rule.clone(), news.clone()]);
         let delivery = session_start(&backend, &input("SessionStart"), &record).await;
         assert_eq!(
+            delivery.told,
+            Some(crate::hooks::Telling {
+                agent: record.id.to_string(),
+                start: true,
+                memories: vec![rule.id.to_string(), news.id.to_string()],
+            }),
+            "the list begins again with what this start says, once written"
+        );
+        assert_eq!(
             delivery.output["hookSpecificOutput"]["hookEventName"],
             "SessionStart"
         );
@@ -1361,11 +1492,13 @@ mod tests {
             assert!(session_start(&backend, &child, &record).await.is_empty());
             assert!(backend.requests.borrow().is_empty());
         }
+        // Nothing kept: nothing said, and the list begins again empty.
         let backend = MemoryOnly::new(Vec::new());
-        assert!(
-            session_start(&backend, &input("SessionStart"), &record)
-                .await
-                .is_empty()
+        let start = session_start(&backend, &input("SessionStart"), &record).await;
+        assert_eq!(start.output, json!({}));
+        assert_eq!(
+            start.told.map(|t| (t.start, t.memories)),
+            Some((true, Vec::new()))
         );
         let mut elsewhere = record.clone();
         elsewhere.project = None;
@@ -1510,6 +1643,7 @@ mod tests {
                     tool_input: None,
                     agent_id: None,
                     agent_type: None,
+                    prompt: None,
                 },
                 42,
                 now,
@@ -1567,6 +1701,7 @@ mod tests {
             tool_input: None,
             agent_id: None,
             agent_type: None,
+            prompt: None,
         };
         let registered = report(&backend, &input, 42, now, now)
             .await
@@ -1860,6 +1995,7 @@ mod tests {
             tool_input: None,
             agent_id: None,
             agent_type: None,
+            prompt: None,
         };
         let backend = Mock::with(vec![
             Response::Agent {

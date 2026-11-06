@@ -322,17 +322,33 @@ pub fn search<'a>(
     reader: Reader<'_>,
     at: DateTime<Utc>,
 ) -> Vec<&'a Memory> {
-    rank(current(memories, reader, at), query, limit)
+    rank(current(memories, reader, at), query, limit, 0.0)
 }
 
-/// [`search`] over the history as well: the superseded memories that
-/// answer too, each with what replaced it, so what was once held true is
-/// read without picking a moment. Those past their `forget_after` stay
+/// [`search`], keeping only the memories whose words score at least
+/// `min_score`: a word few memories hold counts for more than one most of
+/// them hold, so a threshold keeps out a memory that shares only common
+/// words with the query.
+pub fn search_above<'a>(
+    memories: &'a [Memory],
+    query: &str,
+    limit: usize,
+    min_score: f64,
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> Vec<&'a Memory> {
+    rank(current(memories, reader, at), query, limit, min_score)
+}
+
+/// [`search_above`] over the history as well: the superseded memories
+/// that answer too, each with what replaced it, so what was once held true
+/// is read without picking a moment. Those past their `forget_after` stay
 /// out.
 pub fn search_history<'a>(
     memories: &'a [Memory],
     query: &str,
     limit: usize,
+    min_score: f64,
     reader: Reader<'_>,
     at: DateTime<Utc>,
 ) -> (
@@ -343,7 +359,7 @@ pub fn search_history<'a>(
         .filter(|m| m.said_at(at))
         .collect();
     pool.sort_by(|a, b| b.created_at.cmp(&a.created_at).then(a.id.cmp(&b.id)));
-    let found = rank(pool, query, limit);
+    let found = rank(pool, query, limit, min_score);
     let replaced = superseded(memories, reader, at);
     let marks = found
         .iter()
@@ -353,8 +369,9 @@ pub fn search_history<'a>(
 }
 
 /// The memories of `said` that answer `query`, the best first, as
-/// [`search`] ranks them.
-fn rank<'a>(said: Vec<&'a Memory>, query: &str, limit: usize) -> Vec<&'a Memory> {
+/// [`search`] ranks them. A query with no words lists them all, unless a
+/// `min_score` asks for matches: then nothing scores.
+fn rank<'a>(said: Vec<&'a Memory>, query: &str, limit: usize, min_score: f64) -> Vec<&'a Memory> {
     let asked = words(query);
     let held: Vec<std::collections::HashSet<String>> =
         said.iter().map(|m| words(&m.text)).collect();
@@ -380,7 +397,13 @@ fn rank<'a>(said: Vec<&'a Memory>, query: &str, limit: usize) -> Vec<&'a Memory>
             held.sort_by(f64::total_cmp);
             (held.into_iter().sum::<f64>(), memory)
         })
-        .filter(|(score, _)| asked.is_empty() || *score > 0.0)
+        .filter(|(score, _)| {
+            if asked.is_empty() {
+                min_score <= 0.0
+            } else {
+                *score > 0.0 && *score >= min_score
+            }
+        })
         .collect();
     scored.sort_by(|a, b| {
         b.0.total_cmp(&a.0)
@@ -564,7 +587,7 @@ mod tests {
             search(&all, "releases", 10, Reader::Person, at(15))[0].id,
             "first"
         );
-        let (found, replaced) = search_history(&all, "releases", 10, Reader::Person, at(50));
+        let (found, replaced) = search_history(&all, "releases", 10, 0.0, Reader::Person, at(50));
         let mut found: Vec<&str> = found.iter().map(|m| m.id.as_str()).collect();
         found.sort();
         assert_eq!(found, ["first", "second"]);
@@ -584,6 +607,49 @@ mod tests {
             None
         );
         assert_eq!(kept.valid_from(Some(at(1))).unwrap().true_since(), at(1));
+    }
+
+    /// A threshold keeps out a memory that shares only words most memories
+    /// hold, and keeps one that holds a word few do.
+    #[test]
+    fn a_search_above_a_score_keeps_only_strong_matches() {
+        let all: Vec<Memory> = (0..10_i64)
+            .map(|i| {
+                let text = if i == 0 {
+                    "the deploy needs the staging check".to_owned()
+                } else {
+                    format!("the note number {i}")
+                };
+                memory(&format!("m{i}"), &text, i, None)
+            })
+            .collect();
+        let ids = |query: &str, min: f64| {
+            search_above(&all, query, 10, min, Reader::Person, now())
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids("staging", 1.0), ["m0"]);
+        assert!(ids("the", 1.0).is_empty(), "a word every memory holds");
+        assert_eq!(ids("the", 0.0).len(), 10);
+        // A query of no words asks for nothing a threshold can match.
+        assert!(ids("????????????", 1.0).is_empty());
+        assert_eq!(
+            ids("????????????", 0.0).len(),
+            10,
+            "unthresholded, it lists"
+        );
+        // The history is held to the same threshold.
+        let history = |query: &str, min: f64| {
+            search_history(&all, query, 10, min, Reader::Person, now())
+                .0
+                .iter()
+                .map(|m| m.id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(history("staging", 1.0), ["m0"]);
+        assert!(history("the", 1.0).is_empty());
+        assert!(history("????????????", 1.0).is_empty());
     }
 
     /// A moment after every memory these tests keep.

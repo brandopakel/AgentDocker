@@ -1244,6 +1244,7 @@ async fn a_projects_memory_is_read_as_it_stood_at_a_moment() {
         limit: None,
         as_of,
         include_superseded,
+        min_score: None,
     };
     let found = |response: Response| match response {
         Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
@@ -1333,6 +1334,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
         limit: None,
         as_of: None,
         include_superseded: false,
+        min_score: None,
     };
     let found = |response: Response| match response {
         Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
@@ -1454,6 +1456,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         limit: None,
         as_of: None,
         include_superseded: false,
+        min_score: None,
     };
     let Response::Memories { memories } = d.handle(search("deploys friday")).await else {
         panic!()
