@@ -235,8 +235,18 @@ impl Daemon {
             },
             None => None,
         };
+        let prices = match config.price_table() {
+            Ok(prices) => prices,
+            Err(error) => return Response::error(ErrorCode::Invalid, error),
+        };
         match state.store_read("usage query", |store| {
-            store.usage_report(range, query.by, project.as_deref(), agent.as_deref())
+            store.usage_report(
+                range,
+                query.by,
+                project.as_deref(),
+                agent.as_deref(),
+                &prices,
+            )
         }) {
             Some(Some(mut report)) => {
                 let effective_roots = match roots(&config) {
@@ -250,17 +260,7 @@ impl Daemon {
                 if !config.enabled || report.coverage.collection.scope.roots != expected_roots {
                     report.coverage.collection = Collection::default();
                     for row in &mut report.rows {
-                        for counter in [
-                            &mut row.counters.input_tokens,
-                            &mut row.counters.cache_read_input_tokens,
-                            &mut row.counters.cache_write_input_tokens,
-                            &mut row.counters.output_tokens,
-                            &mut row.counters.reasoning_output_tokens,
-                        ] {
-                            if counter.coverage == usage::Coverage::Complete {
-                                counter.coverage = usage::Coverage::Partial;
-                            }
-                        }
+                        row.demote_complete();
                     }
                 }
                 report.coverage.collection.enabled = Some(config.enabled);
@@ -362,12 +362,29 @@ fn alive_wait(weak: &Weak<Daemon>, ticks: usize) -> bool {
 }
 
 fn worker(weak: Weak<Daemon>) {
+    // A configuration that does not hold is said once, when it changes,
+    // like the rest of the file: a bad price or root is not a reason to
+    // stop the daemon, and the usage query says the same to its caller.
+    let mut notice: Option<String> = None;
     loop {
         let Some(daemon) = weak.upgrade() else {
             return;
         };
         let config = configuration(&daemon.home);
         drop(daemon);
+        match &config {
+            Ok(_) => {
+                if notice.take().is_some() {
+                    info!("usage configuration holds again");
+                }
+            }
+            Err(reason) => {
+                if notice.as_ref() != Some(reason) {
+                    warn!(%reason, "usage configuration ignored");
+                    notice = Some(reason.clone());
+                }
+            }
+        }
         if let Ok(config) = config
             && config.enabled
         {

@@ -7,6 +7,7 @@ use chrono::{DateTime, Duration, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 
 pub mod emission;
+pub mod price;
 pub mod report;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

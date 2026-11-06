@@ -2946,7 +2946,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "usage",
-            "description": "Tokens the providers reported for this project's sessions, one row per agent (or model, provider, project, hour), each count with its coverage: a sum only where samples said, marked partial otherwise. The report says what it covers — the range answered, retention, gaps in the sources, whether collection is on and where it stands — and the overhead AgentDocker injected, which is 'not measured' until it is. Collection is off until agentd.toml enables it.",
+            "description": "Tokens the providers reported for this project's sessions, one row per agent (or model, provider, project, hour), each count with its coverage: a sum only where samples said, marked partial otherwise. A row carries `cost` (microdollars, with coverage) only when the person's own price table in agentd.toml matched its usage: an estimate from reported tokens, never a bill. The report says what it covers — the range answered, retention, gaps in the sources, whether collection is on and where it stands — and the overhead AgentDocker injected, which is 'not measured' until it is. Collection is off until agentd.toml enables it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

@@ -1100,6 +1100,17 @@ pub fn counter(report: &agentdocker_core::usage::CounterReport) -> String {
     }
 }
 
+/// What an estimated cost is and is not, under a table that shows one.
+pub const COST_NOTE: &str =
+    "Est. cost is your own price table in agentd.toml applied to the tokens reported; it is not a bill";
+
+/// A row's estimated cost as the report knows it: `$1.23`, marked `~`
+/// when some of its usage had no price or some samples did not say, `—`
+/// when no price matched or nothing priced was reported.
+pub fn cost(report: Option<&agentdocker_core::usage::price::CostReport>) -> String {
+    report.map_or_else(|| "—".to_owned(), |cost| cost.label())
+}
+
 /// Each agent's tokens over a usage report grouped by agent, as `ps`
 /// cells keyed by agent id.
 pub fn tokens_by_agent(
@@ -1231,11 +1242,14 @@ pub fn usage_report(
             println!("No usage in this range.");
         }
     } else {
+        // The cost column only when some row has a price: the person's
+        // own price table applied to the tokens reported, not a bill.
+        let priced = report.priced();
         let rows: Vec<Vec<String>> = report
             .rows
             .iter()
             .map(|row| {
-                vec![
+                let mut cells = vec![
                     usage_key(row.key.as_deref(), names),
                     thousands(row.samples),
                     counter(&row.counters.input_tokens),
@@ -1243,22 +1257,30 @@ pub fn usage_report(
                     counter(&row.counters.cache_write_input_tokens),
                     counter(&row.counters.output_tokens),
                     counter(&row.counters.reasoning_output_tokens),
-                ]
+                ];
+                if priced {
+                    cells.push(cost(row.cost.as_ref()));
+                }
+                cells
             })
             .collect();
-        table(
-            &[
-                key,
-                "SAMPLES",
-                "INPUT",
-                "CACHE READ",
-                "CACHE WRITE",
-                "OUTPUT",
-                "REASONING",
-            ],
-            &rows,
-        );
+        let mut headers = vec![
+            key,
+            "SAMPLES",
+            "INPUT",
+            "CACHE READ",
+            "CACHE WRITE",
+            "OUTPUT",
+            "REASONING",
+        ];
+        if priced {
+            headers.push("EST. COST");
+        }
+        table(&headers, &rows);
         println!("~ some samples did not say; — none did");
+        if priced {
+            println!("{COST_NOTE}");
+        }
     }
     println!(
         "Range {} to {}{}{}; retained since {}{}",
@@ -1557,6 +1579,29 @@ mod tests {
         assert_eq!(super::thousands(999), "999");
         assert_eq!(super::thousands(1_000), "1,000");
         assert_eq!(super::thousands(10_000_000), "10,000,000");
+        use agentdocker_core::usage::price::CostReport;
+        assert_eq!(super::cost(None), "—", "no price matched: no cost, not zero");
+        assert_eq!(
+            super::cost(Some(&CostReport {
+                micro_usd: Some(2_145_000),
+                coverage: Coverage::Complete
+            })),
+            "$2.14"
+        );
+        assert_eq!(
+            super::cost(Some(&CostReport {
+                micro_usd: Some(2_145_000),
+                coverage: Coverage::Partial
+            })),
+            "$2.14~"
+        );
+        assert_eq!(
+            super::cost(Some(&CostReport {
+                micro_usd: None,
+                coverage: Coverage::Unknown
+            })),
+            "—"
+        );
     }
 
     /// Rows name the agent or project when it is known and keep the ID

@@ -14,7 +14,7 @@ pub const FILE_NAME: &str = "agentd.toml";
 /// once-a-minute tick stays short however far behind retention has fallen.
 pub const RETENTION_BATCH: usize = 1_000;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default)]
@@ -149,7 +149,7 @@ impl Default for AgentsConfig {
 }
 
 /// Local accounting roots only; transcript text is parsed but never retained.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageConfig {
     #[serde(default)]
@@ -161,6 +161,68 @@ pub struct UsageConfig {
     pub claude_roots: Vec<std::path::PathBuf>,
     #[serde(default = "usage_retention_days")]
     pub retention_days: u32,
+    /// The person's own prices, `[[usage.price]]` entries; none are
+    /// shipped, and without any the reports carry no cost.
+    #[serde(default)]
+    pub price: Vec<PriceConfig>,
+}
+
+/// One `[[usage.price]]` entry as the file gives it: the numbers are US
+/// dollars per million tokens, every one required, so a price nobody
+/// wrote is refused rather than read as free.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceConfig {
+    /// Left out, the entry prices any provider; named, only usage
+    /// reporting that provider (without case).
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// The model name or a pattern over it (`*`, `?`).
+    pub model: String,
+    #[serde(default)]
+    pub input: Option<f64>,
+    #[serde(default)]
+    pub cache_read: Option<f64>,
+    #[serde(default)]
+    pub cache_write: Option<f64>,
+    #[serde(default)]
+    pub output: Option<f64>,
+}
+
+impl PriceConfig {
+    /// The entry as a price, or why it is not one: a number missing,
+    /// negative or not a number, named by the entry and the field.
+    fn price(&self, index: usize) -> Result<crate::usage::price::Price, String> {
+        let name = |field: &str| format!("usage.price[{index}] ({}) {field}", self.model);
+        if self.model.trim().is_empty() {
+            return Err(format!("usage.price[{index}] needs a model name or pattern"));
+        }
+        if self.provider.as_deref().is_some_and(|p| p.trim().is_empty()) {
+            return Err(format!(
+                "usage.price[{index}] ({}) provider must be a name or left out",
+                self.model
+            ));
+        }
+        let number = |field: &str, value: Option<f64>| match value {
+            None => Err(format!(
+                "{} is missing: US dollars per million tokens, zero or more",
+                name(field)
+            )),
+            Some(value) if !value.is_finite() || value < 0.0 => Err(format!(
+                "{} must be US dollars per million tokens, zero or more",
+                name(field)
+            )),
+            Some(value) => Ok(value),
+        };
+        Ok(crate::usage::price::Price {
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            input: number("input", self.input)?,
+            cache_read: number("cache_read", self.cache_read)?,
+            cache_write: number("cache_write", self.cache_write)?,
+            output: number("output", self.output)?,
+        })
+    }
 }
 
 fn usage_retention_days() -> u32 {
@@ -174,6 +236,7 @@ impl Default for UsageConfig {
             codex_roots: Vec::new(),
             claude_roots: Vec::new(),
             retention_days: 30,
+            price: Vec::new(),
         }
     }
 }
@@ -183,6 +246,7 @@ impl UsageConfig {
         if !(1..=3650).contains(&self.retention_days) {
             return Err("usage.retention_days must be 1–3650".into());
         }
+        self.price_table()?;
         if self.codex_roots.len() + self.claude_roots.len() > 16
             || self
                 .codex_roots
@@ -196,6 +260,21 @@ impl UsageConfig {
             );
         }
         Ok(())
+    }
+
+    /// The file's prices as a table, each entry checked, in the file's
+    /// order (the first match prices a row); empty when the file has none.
+    pub fn price_table(&self) -> Result<crate::usage::price::Table, String> {
+        use crate::usage::price::{PRICES, Table};
+        if self.price.len() > PRICES {
+            return Err(format!("usage.price has at most {PRICES} entries"));
+        }
+        self.price
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| entry.price(index))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Table::new)
     }
 }
 
@@ -769,6 +848,61 @@ pub fn parse_duration(text: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No price is shipped; the file's entries are checked one by one, a
+    /// number missing or negative named with its entry, and read into a
+    /// table in the file's order.
+    #[test]
+    fn the_price_table_is_empty_until_written_and_every_entry_is_checked() {
+        let parsed = |text: &str| toml::from_str::<DaemonConfig>(text).unwrap().usage;
+        assert!(parsed("").price_table().unwrap().is_empty());
+        assert_eq!(parsed("").check(), Ok(()));
+        let entry = |extra: &str| {
+            format!(
+                "[[usage.price]]\nmodel = \"fable-*\"\ninput = 3\ncache_read = 0.3\ncache_write = 3.75\n{extra}"
+            )
+        };
+        let good = parsed(&entry("output = 15\nprovider = \"acme\"\n"));
+        let table = good.price_table().unwrap();
+        let price = table.find(Some("Acme"), Some("fable-7")).unwrap();
+        assert_eq!(
+            (price.input, price.cache_read, price.cache_write, price.output),
+            (3.0, 0.3, 3.75, 15.0)
+        );
+        assert!(table.find(None, Some("fable-7")).is_none());
+        let missing = parsed(&entry("")).check().unwrap_err();
+        assert_eq!(
+            missing,
+            "usage.price[0] (fable-*) output is missing: US dollars per million tokens, zero or more"
+        );
+        let negative = parsed(&entry("output = -1\n")).check().unwrap_err();
+        assert_eq!(
+            negative,
+            "usage.price[0] (fable-*) output must be US dollars per million tokens, zero or more"
+        );
+        assert!(
+            parsed(&entry("output = nan\n"))
+                .check()
+                .unwrap_err()
+                .contains("output must be")
+        );
+        assert!(
+            parsed("[[usage.price]]\nmodel = \"\"\ninput = 1\ncache_read = 1\ncache_write = 1\noutput = 1\n")
+                .check()
+                .unwrap_err()
+                .contains("needs a model name")
+        );
+        assert!(
+            toml::from_str::<DaemonConfig>(&entry("output = 15\nextra = 1\n")).is_err(),
+            "an unknown field is refused as everywhere in the file"
+        );
+        let two = format!("{}{}", entry("output = 15\n"), entry("output = 1\nmodel = \"*\"\n").replace("model = \"fable-*\"\n", ""));
+        let ordered = parsed(&two).price_table().unwrap();
+        assert_eq!(ordered.find(None, Some("fable-7")).unwrap().output, 15.0);
+        assert_eq!(ordered.find(None, Some("other")).unwrap().output, 1.0);
+        let many = entry("output = 15\n").repeat(crate::usage::price::PRICES + 1);
+        assert!(parsed(&many).check().unwrap_err().contains("at most"));
+    }
 
     /// The mirror is off unless turned on, names its projects, keeps its
     /// key in an absolute file and talks https (or http to this machine).

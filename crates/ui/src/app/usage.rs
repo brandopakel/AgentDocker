@@ -180,6 +180,30 @@ fn mark_meaning(shown: &str) -> Option<&'static str> {
     }
 }
 
+/// What an estimated cost is, on every cost's tooltip: the person's own
+/// price table applied to the tokens reported, never a bill.
+pub const COST_MEANING: &str =
+    "Your price table in agentd.toml applied to the tokens reported; not a bill";
+
+/// The column's name, shown only when some row has a price.
+const COST: &str = "Est. cost";
+
+/// A row's estimated cost as shown: `$1.23`, marked `~` when some of its
+/// usage had no price or some samples did not say, `—` when no price
+/// matched or nothing priced was reported.
+pub fn cost(report: Option<&agentdocker_core::usage::price::CostReport>) -> String {
+    report.map_or_else(|| "—".to_owned(), |cost| cost.label())
+}
+
+/// A cost's tooltip: what its mark means, then what a cost is.
+fn cost_detail(shown: &str) -> String {
+    mark_meaning(shown)
+        .into_iter()
+        .chain([COST_MEANING])
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// A count as drawn, said whole: when it has more to say than its
 /// figure, it is a node of its own named by the count, whose value is
 /// that detail — what its mark means and, for a total, what the totals do
@@ -423,6 +447,8 @@ impl App {
     ) -> Element<'_, Message> {
         // No legend: what a count's mark means is on the count itself.
         let rows = ranked(report);
+        // The cost column only when some row has a price.
+        let priced = report.priced();
         if compact {
             let mut entries = column![].width(Fill);
             for (index, row_) in rows.iter().copied().enumerate() {
@@ -466,6 +492,26 @@ impl App {
                         }),
                     );
                 }
+                if priced {
+                    let shown = cost(row_.cost.as_ref());
+                    counts = counts.push(
+                        column![small(COST, c), {
+                            counted(
+                                format!("usage-count-{index}-cost"),
+                                shown.clone(),
+                                Some(cost_detail(&shown)),
+                                text(shown).size(13).color(c.text),
+                                c,
+                            )
+                        }]
+                        .spacing(2)
+                        .width(124)
+                        .padding(iced::Padding {
+                            bottom: 6.0,
+                            ..iced::Padding::ZERO
+                        }),
+                    );
+                }
                 entry = entry.push(counts.wrap());
                 entries = entries.push(container(entry).padding([12, 14]));
             }
@@ -491,6 +537,9 @@ impl App {
         for (label, _) in COUNTERS {
             header = header.push(head(label, NUMBER));
         }
+        if priced {
+            header = header.push(head(COST, NUMBER));
+        }
         let all: u64 = report
             .rows
             .iter()
@@ -502,8 +551,15 @@ impl App {
                 table = table.push(rule(c));
             }
             table = table.push(
-                container(self.usage_row(index, row_, report.by, bars.then_some(all), c))
-                    .padding([9, 0]),
+                container(self.usage_row(
+                    index,
+                    row_,
+                    report.by,
+                    bars.then_some(all),
+                    priced,
+                    c,
+                ))
+                .padding([9, 0]),
             );
         }
         container(table)
@@ -574,6 +630,7 @@ impl App {
         row_: &Row,
         by: Group,
         share_of: Option<u64>,
+        priced: bool,
         c: Colors,
     ) -> Element<'_, Message> {
         let cell = |label: &str, value: String, width: f32| {
@@ -631,6 +688,20 @@ impl App {
         );
         for (label, pick) in COUNTERS {
             line = line.push(cell(label, counter(pick(&row_.counters)), NUMBER));
+        }
+        if priced {
+            let shown = cost(row_.cost.as_ref());
+            line = line.push(
+                container(counted(
+                    format!("usage-count-{index}-cost"),
+                    shown.clone(),
+                    Some(cost_detail(&shown)),
+                    text(shown).size(13).color(c.text),
+                    c,
+                ))
+                .width(NUMBER)
+                .align_x(iced::alignment::Horizontal::Right),
+            );
         }
         line.into()
     }
@@ -952,6 +1023,7 @@ mod tests {
                 output_tokens: counter(output, Coverage::Complete),
                 reasoning_output_tokens: counter(None, Coverage::Unknown),
             },
+            cost: None,
         };
         let read = report(
             vec![
@@ -999,6 +1071,7 @@ mod tests {
                 output_tokens: counter(Some(5), Coverage::Complete),
                 reasoning_output_tokens: counter(None, Coverage::Unknown),
             },
+            cost: None,
         };
         let mut both = report(
             vec![
@@ -1184,6 +1257,7 @@ mod tests {
                 output_tokens: counter(Some(40), Coverage::Complete),
                 reasoning_output_tokens: counter(None, Coverage::Unknown),
             },
+            cost: None,
         };
         let mut read = report(vec![row], CollectionState::CaughtUp, Some(1));
         read.by = Group::Model;
@@ -1203,12 +1277,12 @@ mod tests {
                 .unwrap_or_else(|| panic!("a node for {id}"));
             (node.1.clone(), node.2.clone().unwrap_or_default())
         };
-        let mut at = |width: f32| {
+        let at = |app: &mut App, width: f32| {
             app.shell.width = width;
             app.panes.window_width(width);
             seen(app.usage_view(c))
         };
-        let (narrow, wide) = (at(800.0), at(1600.0));
+        let (narrow, wide) = (at(&mut app, 800.0), at(&mut app, 1600.0));
         assert!(narrow.texts.iter().any(|t| t == "2 samples"), "cards");
         assert!(wide.texts.iter().any(|t| t == "Samples"), "the table");
         for view in [&narrow, &wide] {
@@ -1244,6 +1318,49 @@ mod tests {
                 Some("Not reported")
             );
         }
+
+        // No price matched: no cost column at all, wide or narrow.
+        for view in [&narrow, &wide] {
+            assert!(view.control("usage-count-0-cost").is_none());
+            assert!(!view.texts.iter().any(|t| t == COST), "no column");
+        }
+        // A price matched one row: the column, every row's cost on it (a
+        // row no price matched shows the dash), and on each cost what it
+        // is — the person's own table, not a bill — after what its mark
+        // means.
+        let (root, mut read) = app.usage.take().unwrap();
+        let mut unpriced = read.rows[0].clone();
+        unpriced.key = Some("model-b".into());
+        read.rows[0].cost = Some(agentdocker_core::usage::price::CostReport {
+            micro_usd: Some(2_145_000),
+            coverage: Coverage::Partial,
+        });
+        read.rows.push(unpriced);
+        app.usage = Some((root, read));
+        let (narrow, wide) = (at(&mut app, 800.0), at(&mut app, 1600.0));
+        for view in [&narrow, &wide] {
+            assert!(view.texts.iter().any(|t| t == COST), "the column");
+            assert_eq!(
+                said(view, "usage-count-0-cost"),
+                (
+                    "$2.14~".to_owned(),
+                    format!("Partial coverage\n{COST_MEANING}")
+                )
+            );
+            assert_eq!(
+                said(view, "usage-count-1-cost"),
+                ("—".to_owned(), format!("Not reported\n{COST_MEANING}"))
+            );
+        }
+        assert_eq!(cost(None), "—");
+        assert_eq!(
+            cost(Some(&agentdocker_core::usage::price::CostReport {
+                micro_usd: Some(10_000),
+                coverage: Coverage::Complete
+            })),
+            "$0.01"
+        );
+        assert_eq!(cost_detail("$0.01"), COST_MEANING);
 
         assert_eq!(mark_meaning("900~"), Some("Partial coverage"));
         assert_eq!(mark_meaning("12.4K~"), Some("Partial coverage"));

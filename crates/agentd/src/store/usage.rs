@@ -533,12 +533,16 @@ impl Store {
         Ok(())
     }
 
+    /// The rows of a usage report, each bucket in range folded into its
+    /// group's counts and, where `prices` has a price for the bucket's
+    /// provider and model, its estimated cost.
     pub(crate) fn usage_report(
         &self,
         mut range: Range,
         by: Group,
         project: Option<&str>,
         agent: Option<&str>,
+        prices: &usage::price::Table,
     ) -> Result<Option<Report>> {
         let retained_since = self.usage_retained_since(range.retained_since)?;
         range.history_truncated |= range.effective_since < retained_since;
@@ -555,7 +559,8 @@ impl Store {
             ],
             |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
         )?;
-        let mut grouped: BTreeMap<Option<String>, Aggregate> = BTreeMap::new();
+        let mut grouped: BTreeMap<Option<String>, (Aggregate, usage::price::Costing)> =
+            BTreeMap::new();
         for (index, record) in records.enumerate() {
             if index >= 10_000 {
                 return Ok(None);
@@ -563,6 +568,7 @@ impl Store {
             let (key, value) = record?;
             let key: Bucket = serde_json::from_str(&key)?;
             let value: Aggregate = serde_json::from_str(&value)?;
+            let price = prices.find(key.provider.as_deref(), key.model.as_deref());
             let group = match by {
                 Group::Agent => key.attribution.agent,
                 Group::Project => key.attribution.project,
@@ -570,10 +576,13 @@ impl Store {
                 Group::Provider => key.provider,
                 Group::Hour => Some(text(key.hour)),
             };
-            let aggregate = grouped.entry(group).or_default();
+            let (aggregate, costing) = grouped.entry(group).or_default();
             let Ok(merged) = aggregate.merge(&value) else {
                 return Ok(None);
             };
+            if costing.add(price, &value).is_err() {
+                return Ok(None);
+            }
             *aggregate = merged;
         }
         // A parser gap can lack session metadata. Conservatively keep it in
@@ -592,10 +601,11 @@ impl Store {
                 .is_some_and(|at| range.effective_until <= at);
         let rows = grouped
             .into_iter()
-            .map(|(key, value)| Row {
+            .map(|(key, (value, costing))| Row {
                 key,
                 samples: value.samples(),
                 counters: CounterReports::new(&value, complete),
+                cost: costing.report(complete),
             })
             .collect();
         Ok(Some(Report {
@@ -698,6 +708,7 @@ mod tests {
                 Group::Agent,
                 None,
                 None,
+                &usage::price::Table::default(),
             )
             .unwrap()
             .unwrap()
@@ -715,6 +726,88 @@ mod tests {
             .conn
             .execute("UPDATE usage_tracking SET capacity=?1", [capacity])
             .unwrap();
+    }
+
+    /// A price matched by a bucket's provider and model costs that
+    /// bucket's tokens into every grouping of it; a bucket no price
+    /// matched costs nothing, and a row made only of such buckets has no
+    /// cost at all, as every row has without a table.
+    #[test]
+    fn usage_report_costs_only_the_buckets_a_price_matches() {
+        use usage::price::{Price, Table};
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let mut priced = sample("priced", 2, 10, false);
+        priced.provider = Some("acme".into());
+        priced.model = Some("fable-7".into());
+        let mut unpriced = sample("unpriced", 2, 10, false);
+        unpriced.model = Some("gizmo".into());
+        ingest(
+            &store,
+            &progress,
+            "file",
+            vec![
+                (priced, Attribution::default()),
+                (unpriced, Attribution::default()),
+            ],
+            at(0),
+        )
+        .unwrap();
+        let table = Table::new(vec![Price {
+            provider: Some("acme".into()),
+            model: "fable-*".into(),
+            input: 3.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 15.0,
+        }]);
+        let rows = |by: Group, table: &Table| {
+            store
+                .usage_report(
+                    Range::new(Some(at(0)), Some(at(21)), at(23), at(0)).unwrap(),
+                    by,
+                    None,
+                    None,
+                    table,
+                )
+                .unwrap()
+                .unwrap()
+                .rows
+        };
+        let by_model = rows(Group::Model, &table);
+        assert_eq!(by_model.len(), 2);
+        let cost = |rows: &[Row], key: &str| {
+            rows.iter()
+                .find(|r| r.key.as_deref() == Some(key))
+                .unwrap()
+                .cost
+                .clone()
+        };
+        let fable = cost(&by_model, "fable-7").unwrap();
+        assert_eq!(fable.micro_usd, Some(30), "ten input tokens at $3 per million");
+        assert_eq!(
+            fable.coverage,
+            usage::Coverage::Partial,
+            "collection has not caught up, and the cache share is unknown"
+        );
+        assert_eq!(cost(&by_model, "gizmo"), None);
+        let by_agent = rows(Group::Agent, &table);
+        assert_eq!(by_agent.len(), 1);
+        let together = by_agent[0].cost.clone().unwrap();
+        assert_eq!(together.micro_usd, Some(30), "the unpriced bucket adds nothing");
+        assert_eq!(together.coverage, usage::Coverage::Partial);
+        assert!(
+            rows(Group::Model, &Table::default())
+                .iter()
+                .all(|r| r.cost.is_none()),
+            "no table, no cost"
+        );
+        let json = serde_json::to_value(&by_model).unwrap();
+        assert!(
+            json.as_array().unwrap().iter().any(|r| r.get("cost").is_none()),
+            "a row without a cost does not carry the field"
+        );
     }
 
     #[test]
@@ -1012,6 +1105,7 @@ mod tests {
                     Group::Hour,
                     None,
                     None,
+                    &usage::price::Table::default(),
                 )
                 .unwrap()
                 .unwrap();
@@ -1432,7 +1526,13 @@ mod tests {
         );
         let query = Range::new(Some(at(0)), Some(at(21)), at(23), at(0)).unwrap();
         let report = store
-            .usage_report(query.clone(), Group::Agent, Some("project"), None)
+            .usage_report(
+                query.clone(),
+                Group::Agent,
+                Some("project"),
+                None,
+                &usage::price::Table::default(),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(report.rows.len(), 1);
@@ -1442,7 +1542,13 @@ mod tests {
         assert_eq!(report.rows[0].counters.output_tokens.known_samples, 1);
         assert!(
             store
-                .usage_report(query, Group::Agent, Some("other-project"), None)
+                .usage_report(
+                    query,
+                    Group::Agent,
+                    Some("other-project"),
+                    None,
+                    &usage::price::Table::default()
+                )
                 .unwrap()
                 .unwrap()
                 .rows

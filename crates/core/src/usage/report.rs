@@ -1,5 +1,6 @@
 //! Usage query and response values. Coverage belongs beside every total.
 
+use super::price::CostReport;
 use super::{Aggregate, CounterReport, Coverage};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -42,6 +43,17 @@ pub struct CounterReports {
 }
 
 impl CounterReports {
+    /// The five, in the order the counters are kept.
+    pub fn each_mut(&mut self) -> [&mut CounterReport; 5] {
+        [
+            &mut self.input_tokens,
+            &mut self.cache_read_input_tokens,
+            &mut self.cache_write_input_tokens,
+            &mut self.output_tokens,
+            &mut self.reasoning_output_tokens,
+        ]
+    }
+
     pub fn new(aggregate: &Aggregate, complete: bool) -> Self {
         let [
             input_tokens,
@@ -66,6 +78,49 @@ pub struct Row {
     pub key: Option<String>,
     pub samples: u64,
     pub counters: CounterReports,
+    /// The person's own price table applied to the tokens reported, only
+    /// where a price matched some of the row's usage: absent otherwise,
+    /// and never a bill.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost: Option<CostReport>,
+}
+
+impl Row {
+    /// Every count's coverage, and the cost's, settled again from what
+    /// the samples said: complete only when `complete` and every sample
+    /// said. Partial coverage is kept partial, and the cost follows its
+    /// counts, since it is computed from them.
+    pub fn settle_coverage(&mut self, complete: bool) {
+        for counter in self.counters.each_mut() {
+            counter.coverage = if counter.known_samples == 0 {
+                Coverage::Unknown
+            } else if complete && counter.known_samples == self.samples {
+                Coverage::Complete
+            } else {
+                Coverage::Partial
+            };
+        }
+        if let Some(cost) = &mut self.cost
+            && cost.coverage == Coverage::Complete
+            && !complete
+        {
+            cost.coverage = Coverage::Partial;
+        }
+    }
+
+    /// No count, and no cost, claims to be complete.
+    pub fn demote_complete(&mut self) {
+        for counter in self.counters.each_mut() {
+            if counter.coverage == Coverage::Complete {
+                counter.coverage = Coverage::Partial;
+            }
+        }
+        if let Some(cost) = &mut self.cost
+            && cost.coverage == Coverage::Complete
+        {
+            cost.coverage = Coverage::Partial;
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -192,6 +247,12 @@ impl Tokens {
 }
 
 impl Report {
+    /// Whether any row has an estimated cost: the column is shown only
+    /// then, since a table with no price matched has nothing to say.
+    pub fn priced(&self) -> bool {
+        self.rows.iter().any(|row| row.cost.is_some())
+    }
+
     /// Each row's tokens by its key. A row no sample gave a count for, and
     /// unattributed usage, are left out rather than shown as zero.
     pub fn tokens(&self) -> std::collections::BTreeMap<String, Tokens> {

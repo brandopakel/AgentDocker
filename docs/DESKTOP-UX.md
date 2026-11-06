@@ -642,7 +642,13 @@ Project tabs provide:
   tokens, each shown only where samples said (`~` where some did not, `—`
   where none did; the mark's meaning is the count's tooltip and, for a
   screen reader, its value, with no legend)
-  and never as an invented zero. There is no heading (the More tab names
+  and never as an invented zero. An *Est. cost* column follows them only
+  when a `[[usage.price]]` entry in `agentd.toml` matched some row: the
+  person's own prices applied to the tokens reported (`~` where some of
+  the row's usage had no price or some samples did not say, `—` on a row
+  no price matched), and every cost's tooltip and accessible value say
+  so — *Your price table in agentd.toml applied to the tokens reported;
+  not a bill* — after what its mark means. There is no heading (the More tab names
   the screen): the window and the grouping are the two tracks, which are
   the range, and beside them a chip says where collection stands
   (*Collection caught up*, *Collection scanning*, *Collection starting*,
