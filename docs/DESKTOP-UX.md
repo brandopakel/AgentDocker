@@ -213,7 +213,9 @@ session that has since ended carries a *Session ended* chip, and its spoken
 line says it was asked before the session ended; a permission or access
 request carries its kind as a chip, **Permission** or **Access**, a plain
 question none; one whose stale window passed unanswered carries **Stale**,
-with what that means in the chip's detail), and sessions stopped at a
+with what that means in the chip's detail; a remote sender's message
+the project holds is a question from that sender with **Release** and
+**Drop** as its choices), and sessions stopped at a
 permission prompt or question in their own terminal, each the agent's name
 with a chip for the errand — **Wants permission**, **Has a question**, or
 **Waiting for you** when its hooks did not say which — read aloud as *Claude

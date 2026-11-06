@@ -158,7 +158,7 @@ impl State {
 
     /// An agent's name where it has one, else whatever the sender called
     /// itself: `agentd` and `user` also send, and neither is looked up.
-    fn display_name(&self, from: &str) -> String {
+    pub(super) fn display_name(&self, from: &str) -> String {
         self.registry
             .get(&AgentId::from(from))
             .map(|a| a.spec.name.clone())
@@ -181,7 +181,16 @@ impl State {
             return;
         }
         expired.sort();
-        let events: Vec<_> = expired
+        // A card that carried a held message takes the message with it.
+        let held: Vec<(MessageId, MessageId)> = expired
+            .iter()
+            .filter_map(|question| {
+                self.held_messages
+                    .get(question)
+                    .map(|held| (question.clone(), held.envelope.id.clone()))
+            })
+            .collect();
+        let mut events: Vec<_> = expired
             .iter()
             .map(|question| {
                 Event::new(
@@ -193,16 +202,35 @@ impl State {
                 )
             })
             .collect();
+        events.extend(held.iter().map(|(question, message)| {
+            Event::new(
+                EventKind::HeldMessageDropped {
+                    message: message.clone(),
+                    question: question.clone(),
+                    by: super::inbound::EXPIRY.to_owned(),
+                },
+                now,
+            )
+        }));
+        let delete: Vec<(&str, String)> = expired
+            .iter()
+            .map(|question| ("question", question.as_str().to_owned()))
+            .chain(
+                held.iter()
+                    .map(|(question, _)| (super::inbound::DOCUMENT, question.as_str().to_owned())),
+            )
+            .collect();
         let _ = self.commit(
             "question expiration",
             events,
-            |store, events| store.close_questions(&expired, events),
+            |store, events| store.documents_change(&[], &delete, events),
             |state, _, ()| {
                 for question in &expired {
                     state.questions.remove(question);
                     if state.blocked_defaults.remove(question) {
                         info!(%question, "question expired before its refused stale default answer could be published");
                     }
+                    state.held_messages.remove(question);
                 }
             },
         );
@@ -422,6 +450,11 @@ fn title(from: &str, kind: &str) -> String {
 /// answer to its question is held for it; when it ends, whatever is still
 /// held is released to the asker's queue. Dropped on every exit from
 /// `ask`, including a client that went away.
+///
+/// Dropping it takes the state lock, so it must never be dropped by a
+/// holder of a state guard: it is made after the hold that opened the
+/// question ends and dropped, explicitly, before the hold that follows
+/// the wait.
 struct Waiter {
     daemon: Arc<Daemon>,
     question: MessageId,
@@ -665,10 +698,28 @@ impl Daemon {
             return Response::error(ErrorCode::Invalid, "a question needs some text");
         }
         let timeout = StdDuration::from_secs(timeout_secs.clamp(1, 24 * 60 * 60));
+        let inbound = match self.inbound_ruling(&from, &to).await {
+            Ok(ruling) => ruling,
+            Err(response) => return *response,
+        };
         let (from, to) = match self.endpoints(from, &to).await {
             Ok(pair) => pair,
             Err(response) => return *response,
         };
+        // A held question does not wait: the person decides whether it is
+        // put at all, and if released it reaches its recipient as a
+        // message, with nobody blocked on it.
+        if let Some(ruling) = inbound {
+            let envelope = Envelope::new(
+                from,
+                to,
+                "question",
+                json!({"text": question}),
+                None,
+                Utc::now(),
+            );
+            return lock(&self.state).hold_message(envelope, ruling);
+        }
         // Subscribe before sending, so an answer that arrives while the
         // question is still being routed cannot be missed; and register as
         // the waiter under the same guard, so an answer can never be
@@ -722,8 +773,8 @@ impl Daemon {
                         if candidate.is_none() { candidate = Some(envelope); }
                     }
                     Ok(_) => continue,
-                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::Internal, "answer stream lost messages; the answer remains in the inbox"),
-                    Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Internal, "the message bus closed"),
+                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::EventHistoryLost, "answer stream lost messages; the answer remains in the inbox"),
+                    Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Unavailable, "the message bus closed"),
                 },
                 event = events.recv() => match event {
                     Ok(Event { kind: EventKind::QuestionCancelled { question, .. }, .. }) if question == message =>
@@ -735,8 +786,8 @@ impl Daemon {
                         accepted = answer;
                     }
                     Ok(_) => continue,
-                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::Internal, "question stream lost events; no answer can be confirmed"),
-                    Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Internal, "the event bus closed"),
+                    Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::EventHistoryLost, "question stream lost events; no answer can be confirmed"),
+                    Err(broadcast::error::RecvError::Closed) => return Response::error(ErrorCode::Unavailable, "the event bus closed"),
                 }
                 }
             }
@@ -777,10 +828,25 @@ impl Daemon {
                 "question controls must match the complete question text",
             );
         }
+        let inbound = match self.inbound_ruling(&from, &to).await {
+            Ok(ruling) => ruling,
+            Err(response) => return *response,
+        };
         let (from, to) = match self.endpoints(from, &to).await {
             Ok(pair) => pair,
             Err(response) => return *response,
         };
+        if let Some(ruling) = inbound {
+            let envelope = Envelope::new(
+                from,
+                to,
+                "question",
+                json!({"text": question}),
+                None,
+                Utc::now(),
+            );
+            return lock(&self.state).hold_message(envelope, ruling);
+        }
         lock(&self.state).open_question(
             from,
             to,
@@ -808,6 +874,19 @@ impl Daemon {
                 ErrorCode::Forbidden,
                 "only the asker can cancel this question",
             );
+        }
+        // A held message's card withdrawn by its sender takes the message
+        // with it: nobody asked for it to be delivered.
+        if let Some(held) = state.held_messages.get(message).cloned() {
+            state.drop_held(
+                &[(message.clone(), held.envelope.id)],
+                agent.as_str(),
+                Some(EventKind::QuestionCancelled {
+                    question: message.clone(),
+                    agent: agent.clone(),
+                }),
+            );
+            return state.write_failure().unwrap_or(Response::Ok);
         }
         let event = Event::new(
             EventKind::QuestionCancelled {
@@ -855,6 +934,9 @@ impl Daemon {
                 format!("no question {message} is waiting for an answer"),
             );
         };
+        if lock(&self.state).holds_message(&message) {
+            return self.decide_held(from, message, &text).await;
+        }
         let (from, to) = match self
             .endpoints(from.unwrap_or_else(|| HUMAN.to_owned()), &question.from)
             .await
@@ -906,6 +988,43 @@ impl Daemon {
             answer.payload(),
             Some(message),
         )
+    }
+
+    /// The answer to a held message's card is the person's decision about
+    /// the message, not a word back to its sender: `Release` sends it as it
+    /// was, `Drop` discards it. Only the person decides; anything but the
+    /// two words is refused, so an agent's reply cannot release it by
+    /// accident.
+    async fn decide_held(
+        self: &Arc<Self>,
+        from: Option<String>,
+        question: MessageId,
+        text: &str,
+    ) -> Response {
+        let by = from.unwrap_or_else(|| HUMAN.to_owned());
+        let mut state = lock(&self.state);
+        let by = match state.registry.resolve(&by) {
+            Ok(id) => id,
+            Err(RegistryError::NotFound(_)) if by == HUMAN => AgentId::from(HUMAN),
+            Err(err) => return registry_error(err),
+        };
+        if !state.is_human_id(&by) {
+            return Response::error(
+                ErrorCode::Forbidden,
+                "only the person releases or drops a held message",
+            );
+        }
+        let Some(decision) = agentdocker_core::HeldDecision::parse(text) else {
+            return Response::error(
+                ErrorCode::Invalid,
+                format!(
+                    "a held message is answered `{}` or `{}`",
+                    agentdocker_core::message::RELEASE,
+                    agentdocker_core::message::DROP
+                ),
+            );
+        };
+        state.settle_held(&question, decision, by.as_str())
     }
 
     /// `questions`: what is waiting, for whoever wants to answer it.

@@ -458,6 +458,47 @@ pub mod tmux {
         usable().is_ok()
     }
 
+    /// tmux itself could not be started, so it asked the server for
+    /// nothing and nothing was started. Any other error from
+    /// [`new_session`] comes after a tmux client ran, when the server may
+    /// have made the session.
+    #[derive(Debug)]
+    pub struct Refused(pub String);
+
+    impl std::fmt::Display for Refused {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for Refused {}
+
+    /// The pane `new-session -P` made, from what a tmux client that ran
+    /// printed and how it ended. Any failure is an error and never a
+    /// refusal: the server may have made the session and started its
+    /// command even when the client says otherwise (an `after-new-session`
+    /// hook that failed after the pane was printed) or says nothing (a
+    /// client killed after the server accepted its command).
+    fn created_pane(success: bool, stdout: &[u8], stderr: &[u8]) -> io::Result<String> {
+        let id = String::from_utf8_lossy(stdout).trim().to_owned();
+        let why = String::from_utf8_lossy(stderr).trim().to_owned();
+        match (success, id.is_empty()) {
+            (true, false) => Ok(id),
+            (true, true) => Err(io::Error::other("tmux created a pane but did not name it")),
+            (false, true) => Err(io::Error::other(format!(
+                "tmux did not confirm the session: {why}"
+            ))),
+            (false, false) => Err(io::Error::other(format!(
+                "tmux made pane {id} but then reported a failure: {why}"
+            ))),
+        }
+    }
+
+    /// Whether `error` from [`new_session`] says nothing was started.
+    pub fn refused(error: &io::Error) -> bool {
+        error.get_ref().is_some_and(|inner| inner.is::<Refused>())
+    }
+
     /// Start `command` in a new detached session named `session`, in
     /// `workdir`, with `env` set for the process.
     ///
@@ -486,17 +527,19 @@ pub mod tmux {
         }
         // `--` so an agent's own flags are never read as tmux's.
         tmux.arg("--").args(command);
-        let output = tmux.output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "tmux refused to create the session: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if id.is_empty() {
-            return Err(io::Error::other("tmux created a pane but did not name it"));
-        }
+        // Only a tmux that could not be started at all sent the server
+        // nothing; once it runs, the server may have made the session
+        // whatever the client reports or however it ends.
+        let child = tmux
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                io::Error::other(Refused(format!("tmux could not be run: {error}")))
+            })?;
+        let output = child.wait_with_output()?;
+        let id = created_pane(output.status.success(), &output.stdout, &output.stderr)?;
         let pid = pane_pid(&id)?;
         Ok(Pane {
             session: describe_pane(&id, "#{session_name}").unwrap_or_else(|_| session.to_owned()),
@@ -676,6 +719,31 @@ pub mod tmux {
     mod tests {
         use super::*;
 
+        /// A refusal says nothing started; an error after tmux made the
+        /// pane (it did not name it, its pid could not be read) does not.
+        #[test]
+        fn only_a_refusal_says_nothing_started() {
+            assert!(refused(&io::Error::other(Refused("no server".into()))));
+            assert!(!refused(&io::Error::other(
+                "tmux created a pane but did not name it"
+            )));
+            assert!(!refused(&io::Error::from(io::ErrorKind::NotFound)));
+            assert_eq!(created_pane(true, b"%3\n", b"").unwrap(), "%3");
+            // A client that ran and failed proves nothing about the server:
+            // one killed after the server accepted its command prints
+            // nothing, and that command ran.
+            let silent = created_pane(false, b"", b"").unwrap_err();
+            assert!(!refused(&silent), "{silent}");
+            let said_no = created_pane(false, b"", b"duplicate session: probe").unwrap_err();
+            assert!(!refused(&said_no), "{said_no}");
+            // The pane was made and printed, then an after-new-session hook
+            // failed and tmux exited 1: its command may be running.
+            let hooked = created_pane(false, b"%1\n", b"'exit 1' returned 1").unwrap_err();
+            assert!(!refused(&hooked), "{hooked}");
+            assert!(hooked.to_string().contains("%1"), "{hooked}");
+            assert!(!refused(&created_pane(true, b"\n", b"").unwrap_err()));
+        }
+
         #[test]
         fn a_session_name_avoids_tmuxs_own_target_syntax() {
             assert_eq!(session_name("claude-main"), "claude-main");
@@ -734,13 +802,22 @@ pub mod tmux {
             assert_eq!(err.error().kind(), io::ErrorKind::InvalidInput);
         }
 
-        /// A tmux that never answers is killed at the deadline and its
+        /// A tmux that never answers is given up on at the deadline, one
+        /// that answers past its output's bound is killed there and its
         /// process reaped, and a pane whose process is not the agent's is
-        /// refused before anything is captured.
+        /// refused before anything is captured. Nothing here needs a
+        /// stand-in to reach a line before a clock runs out: the deadline
+        /// is held only to what it guarantees wherever the stand-in was,
+        /// the output's bound is crossed only after the stand-in has named
+        /// itself, and a stand-in meant to answer has `BOUND` to do it.
         #[cfg(unix)]
         #[test]
         fn a_capture_is_bounded_and_bound_to_the_agents_process() {
             use std::os::unix::fs::PermissionsExt;
+            use std::time::{Duration, Instant};
+            /// What a stand-in meant to answer is given: a backstop a
+            /// loaded machine does not reach, never what the test waits on.
+            const BOUND: Duration = Duration::from_secs(10);
             let dir = tempfile::tempdir().unwrap();
             let stand_in = |name: &str, body: &str| {
                 let path = dir.path().join(name);
@@ -748,19 +825,29 @@ pub mod tmux {
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
                 path
             };
+            // The pid a stand-in wrote of itself, once all of it is there.
+            let named = |marker: &Path| -> Option<u32> {
+                std::fs::read_to_string(marker).ok()?.trim().parse().ok()
+            };
             let socket = dir.path().join("server");
-            let marker = dir.path().join("hung");
+
+            // A tmux that never answers is given up on at the deadline,
+            // whether it was still starting then or already asleep. One
+            // that got as far as naming itself is gone and reaped; under
+            // load it may not have, and the output's bound below shows the
+            // reaping whatever the clock did.
+            let hung = dir.path().join("hung");
             let hanging = stand_in(
                 "hanging",
-                &format!("echo $$ > {}; exec sleep 30", marker.display()),
+                &format!("echo $$ > {}; exec sleep 30", hung.display()),
             );
-            let started = std::time::Instant::now();
+            let started = Instant::now();
             let err = capture_bound(
                 &hanging,
                 &socket,
                 "%0",
                 |_| true,
-                std::time::Duration::from_millis(300),
+                Duration::from_millis(300),
             )
             .unwrap_err();
             assert!(err.to_string().contains("timed out"), "{err}");
@@ -768,13 +855,28 @@ pub mod tmux {
                 matches!(err, Uncaptured::Unanswered(_)),
                 "a tmux that gave no answer said nothing of the pane"
             );
-            assert!(started.elapsed() < std::time::Duration::from_secs(5));
-            let hung: u32 = std::fs::read_to_string(&marker)
-                .unwrap()
-                .trim()
-                .parse()
-                .unwrap();
-            assert!(!crate::procinfo::alive(hung), "killed and reaped");
+            assert!(started.elapsed() < BOUND);
+            if let Some(pid) = named(&hung) {
+                assert!(!crate::procinfo::alive(pid), "killed and reaped");
+            }
+
+            // A tmux that names itself and then answers past its output's
+            // bound while still running: given up on there, killed and
+            // reaped. Its pid is written before any of its output, so the
+            // order is the script's own and no clock is raced.
+            let flooded = dir.path().join("flooded");
+            let flooding = stand_in(
+                "flooding",
+                &format!(
+                    "echo $$ > {}; head -c 5000000 /dev/zero; exec sleep 30",
+                    flooded.display()
+                ),
+            );
+            let err = capture_bound(&flooding, &socket, "%0", |_| true, BOUND).unwrap_err();
+            assert!(err.to_string().contains("output exceeded"), "{err}");
+            assert!(matches!(err, Uncaptured::Unanswered(_)), "{err}");
+            let pid = named(&flooded).expect("it named itself before its output");
+            assert!(!crate::procinfo::alive(pid), "killed and reaped");
 
             // A stand-in that says the pane holds process 4242, and records
             // whether a capture was asked for.
@@ -786,16 +888,14 @@ pub mod tmux {
                     captured.display()
                 ),
             );
-            let err = capture_bound(&answering, &socket, "%0", |pid| pid == 1, CAPTURE_DEADLINE)
-                .unwrap_err();
+            let err = capture_bound(&answering, &socket, "%0", |pid| pid == 1, BOUND).unwrap_err();
             assert!(matches!(err, Uncaptured::Refused(_)));
             assert_eq!(err.error().kind(), io::ErrorKind::PermissionDenied);
             assert!(!captured.exists(), "nothing was captured");
 
             // A server that answers that the pane is not there.
             let missing = stand_in("missing", "echo \"can't find pane: %0\" >&2; exit 1");
-            let err =
-                capture_bound(&missing, &socket, "%0", |_| true, CAPTURE_DEADLINE).unwrap_err();
+            let err = capture_bound(&missing, &socket, "%0", |_| true, BOUND).unwrap_err();
             assert!(matches!(err, Uncaptured::Refused(_)), "{err}");
 
             // A tmux that cannot be run at all.
@@ -808,14 +908,7 @@ pub mod tmux {
             )
             .unwrap_err();
             assert!(matches!(err, Uncaptured::Unanswered(_)), "{err}");
-            let text = capture_bound(
-                &answering,
-                &socket,
-                "%0",
-                |pid| pid == 4242,
-                CAPTURE_DEADLINE,
-            )
-            .unwrap();
+            let text = capture_bound(&answering, &socket, "%0", |pid| pid == 4242, BOUND).unwrap();
             assert_eq!(text.trim(), "screen");
         }
     }
