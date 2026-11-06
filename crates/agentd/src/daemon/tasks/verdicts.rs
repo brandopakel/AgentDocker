@@ -153,7 +153,10 @@ impl State {
         );
         if committed != Persisted::Committed {
             return Some(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the verdict set aside was not recorded")
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "the verdict set aside was not recorded",
+                )
             }));
         }
         None
