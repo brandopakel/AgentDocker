@@ -1034,6 +1034,19 @@ pub struct Observed {
     pub kind: ChangeKind,
 }
 
+/// A send as the request spells it: who sends and to whom, the kind and
+/// payload, the message it answers, the links beside it, and the sender's
+/// key for this one send.
+struct SendArgs {
+    from: String,
+    to: String,
+    kind: String,
+    payload: Value,
+    reply_to: Option<MessageId>,
+    links: Vec<agentdocker_core::Link>,
+    idempotency_key: Option<String>,
+}
+
 impl Daemon {
     pub fn emit(&self, kind: EventKind) {
         lock(&self.state).emit(kind);
@@ -2404,8 +2417,16 @@ impl Daemon {
                 links,
                 idempotency_key,
             } => {
-                self.send(from, &to, kind, payload, reply_to, links, idempotency_key)
-                    .await
+                self.send(SendArgs {
+                    from,
+                    to,
+                    kind,
+                    payload,
+                    reply_to,
+                    links,
+                    idempotency_key,
+                })
+                .await
             }
             Request::Me { workdir } => self.me(workdir).await,
             Request::OpenSecretReview {
@@ -3450,17 +3471,17 @@ impl Daemon {
         Response::Agents { agents, aliases }
     }
 
-    #[allow(clippy::too_many_arguments)] // one per field of `Request::Send`
-    async fn send(
-        &self,
-        from: String,
-        to: &str,
-        kind: String,
-        payload: Value,
-        reply_to: Option<MessageId>,
-        links: Vec<agentdocker_core::Link>,
-        idempotency_key: Option<String>,
-    ) -> Response {
+    async fn send(&self, args: SendArgs) -> Response {
+        let SendArgs {
+            from,
+            to,
+            kind,
+            payload,
+            reply_to,
+            links,
+            idempotency_key,
+        } = args;
+        let to = to.as_str();
         if let Err(reason) = agentdocker_core::link::check(&links) {
             return Response::error(ErrorCode::Invalid, reason);
         }
