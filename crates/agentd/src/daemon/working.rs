@@ -689,6 +689,7 @@ impl State {
             }
         }
         self.flush_contested();
+        self.sweep_channel_ghosts();
     }
 }
 

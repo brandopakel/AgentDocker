@@ -2216,6 +2216,7 @@ impl App {
             | EventKind::ChannelInvited { .. }
             | EventKind::ChannelOpened { .. }
             | EventKind::ChannelJoined { .. }
+            | EventKind::ChannelLeft { .. }
             | EventKind::ChannelClosed { .. } => self.on_conversation_activity(),
             // What the daemon pruned must not live on here: the archives
             // are dropped and the open one read again.

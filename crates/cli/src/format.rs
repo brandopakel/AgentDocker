@@ -727,6 +727,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::ChannelJoined { channel, agent } => {
             format!("channel joined   {channel} by {}", agent.short())
         }
+        EventKind::ChannelLeft { channel, agent } => {
+            format!("channel left     {channel} by {}", agent.short())
+        }
         EventKind::ConversationRead {
             reader,
             conversation,

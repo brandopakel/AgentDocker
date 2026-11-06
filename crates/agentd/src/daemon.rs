@@ -4126,7 +4126,7 @@ impl State {
             .unwrap_or(Response::Agent { agent: record })
     }
 
-    pub fn is_live(&mut self, id: &AgentId) -> bool {
+    pub fn is_live(&self, id: &AgentId) -> bool {
         self.registry.get(id).is_some_and(|a| a.status.is_live())
     }
 
@@ -5223,10 +5223,20 @@ impl State {
                 .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
                 .map(|a| a.id.clone())
                 .collect(),
+            // A staged room is persisted with its whole membership, an
+            // ended record included for its session's return; it is
+            // routed, like a stored one, to the members that are live.
             Destination::Channel(id) => channel
                 .as_ref()
                 .filter(|staged| staged.id == *id)
-                .map(|staged| staged.members.clone())
+                .map(|staged| {
+                    staged
+                        .members
+                        .iter()
+                        .filter(|member| self.is_live(member))
+                        .cloned()
+                        .collect()
+                })
                 .unwrap_or_else(|| self.channel_members(id))
                 .into_iter()
                 .filter(|id| id.as_str() != envelope.from)
