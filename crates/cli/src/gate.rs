@@ -33,16 +33,16 @@ pub struct VerdictArgs {
     /// The commit an earlier review read, when you read only what came after it.
     #[arg(long)]
     from: Option<String>,
-    #[arg(long, group = "word", required = true)]
-    /// Good to land at this commit.
-    approve: bool,
+    #[arg(long, group = "word", required = true, visible_alias = "approve")]
+    /// Good to land at this commit (no important finding).
+    pass: bool,
     #[arg(long, group = "word")]
     /// Not yet; say what to change in the note.
     changes: bool,
-    #[arg(long, group = "word")]
-    /// Neither approves nor blocks.
-    comment: bool,
-    /// Findings by priority, as `P1,P2,P3` counts (`0,1,0`).
+    #[arg(long, group = "word", visible_alias = "comment")]
+    /// Read, and no verdict given: neither passes nor blocks.
+    none: bool,
+    /// Findings by severity, as `important,nit,pre-existing` counts (`0,1,0`; all zero when absent).
     #[arg(long, value_parser = parse_findings, default_value = "0,0,0")]
     findings: Findings,
     /// Project id, root or unique prefix (default: the reviewer's, or this checkout's).
@@ -76,19 +76,21 @@ pub struct GateArgs {
     json: bool,
 }
 
+const FINDINGS_FORM: &str = "findings are three counts, important,nit,pre-existing (`0,1,0`)";
+
 fn parse_findings(text: &str) -> Result<Findings, String> {
     let counts: Vec<u32> = text
         .split(',')
         .map(|n| n.trim().parse::<u32>())
         .collect::<Result<_, _>>()
-        .map_err(|_| "findings are three counts, P1,P2,P3 (`0,1,0`)".to_owned())?;
+        .map_err(|_| FINDINGS_FORM.to_owned())?;
     match counts.as_slice() {
-        [p1, p2, p3] => Ok(Findings {
-            p1: *p1,
-            p2: *p2,
-            p3: *p3,
+        [important, nit, pre_existing] => Ok(Findings {
+            important: *important,
+            nit: *nit,
+            pre_existing: *pre_existing,
         }),
-        _ => Err("findings are three counts, P1,P2,P3 (`0,1,0`)".to_owned()),
+        _ => Err(FINDINGS_FORM.to_owned()),
     }
 }
 
@@ -217,12 +219,19 @@ fn short(commit: &str) -> &str {
     &commit[..commit.len().min(8)]
 }
 
+/// The reviewer, its runtime and what it found, as a person reads it:
+/// `reviewer-1 (codex; important 0, nit 1, pre-existing 0)`.
+fn who(v: &CodeVerdict) -> String {
+    format!(
+        "{} ({}; {})",
+        v.by_name,
+        v.runtime_said(),
+        v.findings.said()
+    )
+}
+
 /// One line saying what the gate said.
 fn said(gate: &Gate, branch: &str, head: &str) -> String {
-    let who = |v: &CodeVerdict| {
-        let Findings { p1, p2, p3 } = v.findings;
-        format!("{} (P1 {p1}, P2 {p2}, P3 {p3})", v.by_name)
-    };
     match gate {
         Gate::Approved { verdict } => {
             format!("approved: {branch} at {} by {}", short(head), who(verdict))
@@ -233,25 +242,27 @@ fn said(gate: &Gate, branch: &str, head: &str) -> String {
             short(&verdict.head)
         ),
         Gate::Stale { verdict } => format!(
-            "stale: {branch} was approved at {} by {}; {}..{} is unreviewed",
+            "stale: {branch} was passed at {} by {}; {}..{} is unreviewed",
             short(&verdict.head),
-            verdict.by_name,
+            who(verdict),
             short(&verdict.head),
             short(head)
         ),
-        Gate::Missing => format!("unreviewed: nobody who counts has approved {branch}"),
+        Gate::Missing => format!("unreviewed: nobody who counts has passed {branch}"),
     }
 }
 
-/// The commit status that says the same: GitHub keeps it on this commit
-/// only, so a later one starts without it.
+/// The commit status that says the same, with the counts and the
+/// reviewer's runtime: GitHub keeps it on this commit only, so a later
+/// one starts without it.
 fn status(gate: &Gate) -> (&'static str, String) {
     let description = match gate {
-        Gate::Approved { verdict } => format!("approved by {}", verdict.by_name),
-        Gate::Changes { verdict } => format!("{} asked for changes", verdict.by_name),
+        Gate::Approved { verdict } => format!("pass by {}", who(verdict)),
+        Gate::Changes { verdict } => format!("changes by {}", who(verdict)),
         Gate::Stale { verdict } => format!(
-            "approved at {}; later commits unreviewed",
-            short(&verdict.head)
+            "pass at {} by {}; later commits unreviewed",
+            short(&verdict.head),
+            who(verdict)
         ),
         Gate::Missing => "not reviewed".to_owned(),
     };
@@ -286,12 +297,12 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
     let agent = sender::resolve(client, args.agent)
         .await?
         .unwrap_or_else(|| HUMAN.into());
-    let word = if args.approve {
-        "approve"
+    let word = if args.pass {
+        "pass"
     } else if args.changes {
         "changes"
     } else {
-        "comment"
+        "none"
     };
     let request = Request::CodeVerdict {
         project: project(client, args.project, &agent).await?,
@@ -306,15 +317,10 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
     let Response::CodeVerdict { verdict } = client.call(&request).await? else {
         bail!("the daemon did not record the verdict");
     };
-    // Its id, as every command that makes something says it; the rest is
-    // for the person reading.
+    // Its id, as every command that makes something says it; then the
+    // line a job parses, for the person reading.
     println!("{}", verdict.id);
-    eprintln!(
-        "{} {} at {}",
-        verdict.verdict,
-        verdict.branch,
-        short(&verdict.head)
-    );
+    eprintln!("{} {}", verdict.branch, verdict.line());
     Ok(())
 }
 
@@ -343,7 +349,9 @@ pub async fn gate(client: &Client, args: GateArgs) -> Result<bool> {
             }))?
         );
     } else {
+        // What it said for the person, then the line a job gates on.
         println!("{}", said(&gate, &branch, &head));
+        println!("{}", gate.line(&branch, &head));
     }
     Ok(gate.approved())
 }
@@ -399,7 +407,8 @@ pub async fn report_commit(witness: &Path) -> Result<Response> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentdocker_core::{AgentId, ProjectId, Verdict};
+    use agentdocker_core::gate::Word;
+    use agentdocker_core::{AgentId, ProjectId};
 
     /// The report names HEAD and its full ref, a tag of the branch's name
     /// notwithstanding, and no branch when HEAD is detached.
@@ -457,11 +466,12 @@ mod tests {
             by_name: "reviewer-1".into(),
             human: false,
             roles: vec!["reviewer".into()],
-            verdict: Verdict::Approve,
+            runtime: "codex".into(),
+            verdict: Word::Pass,
             findings: Findings {
-                p1: 0,
-                p2: 1,
-                p3: 0,
+                important: 0,
+                nit: 1,
+                pre_existing: 0,
             },
             note: String::new(),
             at: chrono::Utc::now(),
@@ -473,9 +483,9 @@ mod tests {
         assert_eq!(
             parse_findings("0, 2,1").unwrap(),
             Findings {
-                p1: 0,
-                p2: 2,
-                p3: 1
+                important: 0,
+                nit: 2,
+                pre_existing: 1
             }
         );
         for bad in ["", "1,2", "1,2,3,4", "a,b,c", "-1,0,0"] {
@@ -499,16 +509,38 @@ mod tests {
             verdict: verdict(&head),
         };
         assert_eq!(status(&approved).0, "success");
-        assert!(said(&approved, "b", &head).starts_with("approved: b at aaaaaaaa"));
+        // The status and the line carry the counts and the runtime.
+        assert_eq!(
+            status(&approved).1,
+            "pass by reviewer-1 (codex; important 0, nit 1, pre-existing 0)"
+        );
+        assert_eq!(
+            said(&approved, "b", &head),
+            "approved: b at aaaaaaaa by reviewer-1 (codex; important 0, nit 1, pre-existing 0)"
+        );
         let stale = Gate::Stale {
             verdict: verdict(&head),
         };
         assert_eq!(status(&stale).0, "pending");
         assert!(said(&stale, "b", &other).contains("aaaaaaaa..bbbbbbbb is unreviewed"));
         let mut changes = verdict(&head);
-        changes.verdict = Verdict::Changes;
-        assert_eq!(status(&Gate::Changes { verdict: changes }).0, "failure");
+        changes.verdict = Word::Changes;
+        let changes = Gate::Changes { verdict: changes };
+        assert_eq!(status(&changes).0, "failure");
+        assert!(
+            status(&changes)
+                .1
+                .starts_with("changes by reviewer-1 (codex;")
+        );
         assert_eq!(status(&Gate::Missing).0, "pending");
         assert!(status(&approved).1.chars().count() <= 140);
+        // A verdict kept before runtimes were says so rather than nothing.
+        let mut older = verdict(&head);
+        older.runtime = String::new();
+        assert!(
+            status(&Gate::Approved { verdict: older })
+                .1
+                .contains("(unknown;")
+        );
     }
 }

@@ -68,7 +68,9 @@ impl State {
             }));
         }
         if catalog.len() + unknown.len() > tag::TAGS_PER_PROJECT {
-            return Err(invalid("a project has at most 200 tags"));
+            return Err(Box::new(Response::invalid(
+                "a project has at most 200 tags",
+            )));
         }
         Ok(unknown
             .iter()
@@ -108,7 +110,7 @@ impl Daemon {
         };
         actor
             .and_then(|a| a.project)
-            .ok_or_else(|| invalid("name a project"))
+            .ok_or_else(|| Box::new(Response::invalid("name a project")))
     }
 
     pub(in crate::daemon) async fn tags(self: &Arc<Self>, project: Option<String>) -> Response {

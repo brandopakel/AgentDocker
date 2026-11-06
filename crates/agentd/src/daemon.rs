@@ -248,8 +248,10 @@ enum Coordination {
 /// everything else answers `transferring` until a coordinator owns the
 /// database again. `Shutdown` and `Reload` steer the daemon itself
 /// rather than its data: neither is fenced, and neither counts as a
-/// mutation in flight, or a reload would refuse itself.
-fn mutates(request: &Request) -> bool {
+/// mutation in flight, or a reload would refuse itself. A journal digest
+/// writes only when it advances the reader's cursor. Public because the
+/// MCP server's tests check each tool's `readOnlyHint` against it.
+pub fn mutates(request: &Request) -> bool {
     !matches!(
         request,
         Request::Shutdown
@@ -275,6 +277,10 @@ fn mutates(request: &Request) -> bool {
             | Request::Pauses
             | Request::Contests { .. }
             | Request::Journal { digest: None, .. }
+            | Request::Journal {
+                digest: Some(DigestRequest { advance: false, .. }),
+                ..
+            }
             | Request::Channels { .. }
             | Request::Conversations { .. }
             | Request::History { .. }
@@ -753,7 +759,7 @@ fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
                 }
             };
             if !wait_until(10, &mut || {
-                !(process_exists(pid) && same_process(pid, Some(started)))
+                !(procinfo::alive(pid) && same_process(pid, Some(started)))
             }) {
                 return;
             }
@@ -771,11 +777,10 @@ fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
         });
 }
 
-/// Is there a process with this pid? `EPERM` means it exists but belongs to
-/// someone else, which still counts as alive. Zero and out-of-range values
-/// would address process groups, so they are never alive.
 /// A pid a signal could address: positive, and within the range the OS
-/// uses. Unix keeps the typed pid; Windows only needs the check.
+/// uses (zero and out-of-range values would address process groups). Unix
+/// keeps the typed pid; Windows only needs the check. Whether such a
+/// process exists is `procinfo::alive`'s question.
 #[cfg(unix)]
 fn signal_pid(pid: u32) -> Option<Pid> {
     let raw = i32::try_from(pid).ok()?;
@@ -907,10 +912,13 @@ fn trim_in_place(path: &Path, what: &str) {
     }
 }
 
-/// Whether a process with this pid exists — ours or not; an access
-/// refusal is a yes. Both platforms answer through the host crate.
-fn process_exists(pid: u32) -> bool {
-    signal_pid(pid).is_some_and(|_| procinfo::alive(pid))
+/// The physical form of a path, resolved off the runtime: as much of it
+/// canonical as exists, the missing tail kept. A path the host cannot
+/// resolve is an error, never a guess.
+async fn physical(path: PathBuf) -> anyhow::Result<PathBuf> {
+    tokio::task::spawn_blocking(move || project::try_canonical(&path))
+        .await?
+        .map_err(Into::into)
 }
 
 /// Does the pid still belong to the process that registered it? Compared by
@@ -1058,7 +1066,9 @@ impl Daemon {
         };
         for candidate in candidates {
             let alive = match candidate.pid {
-                Some(pid) => process_exists(pid) && same_process(pid, candidate.process_started_at),
+                Some(pid) => {
+                    procinfo::alive(pid) && same_process(pid, candidate.process_started_at)
+                }
                 None => !candidate.managed,
             };
             if alive {
@@ -1199,7 +1209,7 @@ impl Daemon {
             return Response::error(ErrorCode::Invalid, "invalid signal target");
         };
         // Host inspection and signaling never hold the global coordination guard.
-        let alive = process_exists(pid);
+        let alive = procinfo::alive(pid);
         let current_started_at = procinfo::start_time(pid);
         let group_alive = record.process_group.is_some_and(supervisor::group_exists);
         if !alive && group_alive {
@@ -4501,7 +4511,7 @@ impl State {
                 };
                 let mut record = (*latest).clone();
                 if record.pid.is_some_and(|pid| {
-                    process_exists(pid) && same_process(pid, record.process_started_at)
+                    procinfo::alive(pid) && same_process(pid, record.process_started_at)
                 }) {
                     return Some(Response::error(
                         ErrorCode::Conflict,
@@ -6041,7 +6051,7 @@ impl State {
         // gone, or this is two lives of one session at once.
         for record in earlier.iter().chain(std::iter::once(prior)) {
             if record.pid.is_some_and(|old| {
-                process_exists(old) && same_process(old, record.process_started_at)
+                procinfo::alive(old) && same_process(old, record.process_started_at)
             }) {
                 return fresh;
             }

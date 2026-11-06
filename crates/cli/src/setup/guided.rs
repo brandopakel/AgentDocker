@@ -659,7 +659,23 @@ fn file_removal(
 /// plugin and the shell block — only entries that run AgentDocker, and
 /// only installed files still as installed. Previewed, applied and undone
 /// like any setup plan, without needing the receipt that wired them.
-fn prepare_remove(roots: &Roots, names: &[String], git_hook: Option<&Path>) -> Result<Plan> {
+#[cfg(test)]
+fn prepare_remove(roots: &Roots, names: &[String]) -> Result<Plan> {
+    prepare_remove_for(roots, names, None, None)
+}
+
+/// `prepare_remove`, with the Docker Agent YAML file `--agent` named (the
+/// one place its toolset can be taken out of) and the checkout whose
+/// `pre-commit` hook `--remove --git-hook` names.
+fn prepare_remove_for(
+    roots: &Roots,
+    names: &[String],
+    agent: Option<&Path>,
+    git_hook: Option<&Path>,
+) -> Result<Plan> {
+    if agent.is_some() {
+        super::ensure_agent_names_docker_agent(names)?;
+    }
     let mut plan = Plan {
         format: 2,
         id: uuid::Uuid::new_v4().to_string(),
@@ -743,6 +759,13 @@ fn prepare_remove(roots: &Roots, names: &[String], git_hook: Option<&Path>) -> R
                     }
                 }
             }
+            _ if spec.mcp == McpWiring::AgentConfig => match agent {
+                Some(path) => docker_agent_removal(&mut plan, path)?,
+                None => plan.notes.push(format!(
+                    "{}: its MCP toolset lives in each agent's YAML file; `agentdocker setup --remove {name} --agent <file>` takes it out of one",
+                    runtime.label
+                )),
+            },
             _ => {
                 if let Some(path) = runtimes::mcp_config_path(spec, roots) {
                     let key = runtimes::servers_key(spec);
@@ -953,15 +976,25 @@ fn offer_git_hook(plan: &mut Plan, repo: &Path) {
 }
 
 /// Plan edits from injectable provider roots, without changing their files.
-/// `git_hook` names the checkout whose `pre-commit` hook `--git-hook`
-/// plans, instead of any tool's wiring.
-fn prepare(
+#[cfg(test)]
+fn prepare(roots: &Roots, names: &[String], executable: &Path, shell: bool) -> Result<Plan> {
+    prepare_for(roots, names, executable, shell, None, None)
+}
+
+/// `prepare`, with the Docker Agent YAML file `--agent` named, when it
+/// did, and `git_hook` naming the checkout whose `pre-commit` hook
+/// `--git-hook` plans, instead of any tool's wiring.
+fn prepare_for(
     roots: &Roots,
     names: &[String],
     executable: &Path,
     shell: bool,
+    agent: Option<&Path>,
     git_hook: Option<&Path>,
 ) -> Result<Plan> {
+    if agent.is_some() {
+        super::ensure_agent_names_docker_agent(names)?;
+    }
     if shell || git_hook.is_some() {
         let mut plan = Plan {
             format: 1,
@@ -1029,6 +1062,9 @@ fn prepare(
             (runtimes::hook_config_path(spec, roots), "hooks")
         } else if let Some(path) = runtimes::mcp_config_path(spec, roots) {
             (path, "mcp")
+        } else if spec.mcp == McpWiring::AgentConfig {
+            docker_agent_change(&mut plan, runtime, executable, agent)?;
+            continue;
         } else {
             plan.notes.push(format!(
                 "{}: no supported setup adapter; discovery alone does not enable coordination",
@@ -1064,7 +1100,7 @@ fn prepare(
                 McpWiring::OpencodeJson { .. } => {
                     super::opencode_edit(&path, before.as_deref(), executable)?
                 }
-                McpWiring::None => unreachable!(),
+                McpWiring::AgentConfig | McpWiring::None => unreachable!(),
             }
         };
         if let Some(after) = after {
@@ -1185,7 +1221,98 @@ fn prepare(
 
 /// Ordinary setup must not report success after silently omitting Claude MCP.
 /// An explicit preview can still offer hooks for a partially configured tool.
+/// The agent file `--agent` names, made absolute as the plan saves it, so
+/// that `--apply` and `--undo` find it from any directory.
+fn agent_file(path: &Path) -> Result<PathBuf> {
+    std::path::absolute(path)
+        .with_context(|| format!("cannot resolve the agent file {}", path.display()))
+}
+
+/// The one change Docker Agent takes: our MCP toolset in the default
+/// agent (`root`, else the first) of the YAML file named with `--agent`,
+/// read and rewritten like any other configuration file. Without a file
+/// there is nothing to plan, and the note says what to pass.
+fn docker_agent_change(
+    plan: &mut Plan,
+    runtime: &RuntimeInfo,
+    executable: &Path,
+    agent: Option<&Path>,
+) -> Result<()> {
+    let Some(path) = agent else {
+        plan.notes.push(format!(
+            "{}: MCP servers are declared in each agent's YAML file, not in a file of its own; `agentdocker setup {} --agent <file>` adds the toolset to that file's default agent (`root`, else the first), and `agentdocker setup {} --dry-run` prints the entry to add by hand",
+            runtime.label, runtime.name, runtime.name
+        ));
+        return Ok(());
+    };
+    let path = &agent_file(path)?;
+    let before =
+        read_config(path)?.with_context(|| format!("no agent file at {}", path.display()))?;
+    let (after, target) = super::docker_agent_edit(path, &before, executable)?;
+    if target.harness {
+        plan.notes.push(format!(
+            "{}: agent `{}` runs a harness (an external coding CLI), and {} ignores the toolsets of such an agent; the harness's own session joins through that tool's adapter",
+            runtime.label, target.agent, runtime.label
+        ));
+    }
+    match after {
+        Some(after) => plan.changes.push(Change {
+            runtime: runtime.name.clone(),
+            channel: "mcp".into(),
+            target: project::try_canonical(path)?,
+            path: path.to_owned(),
+            before: Some(before),
+            after: Some(after),
+            removal: false,
+        }),
+        None => plan.notes.push(format!(
+            "{}: agent `{}` in {} already lists the toolset; connection is not yet verified",
+            runtime.label,
+            target.agent,
+            path.display()
+        )),
+    }
+    Ok(())
+}
+
+/// The removal of our toolset from the default agent of a Docker Agent
+/// YAML file. A file that is not there is refused, as setup refuses it,
+/// and one that lists no toolset of ours says so, so that a mistyped path
+/// never reads as a removal done.
+fn docker_agent_removal(plan: &mut Plan, path: &Path) -> Result<()> {
+    let path = &agent_file(path)?;
+    let before =
+        read_config(path)?.with_context(|| format!("no agent file at {}", path.display()))?;
+    match super::docker_agent_removal(path, &before)? {
+        Some(after) => plan.changes.push(Change {
+            runtime: agentdocker_core::docker_agent::RUNTIME.into(),
+            channel: "mcp".into(),
+            target: project::try_canonical(path)?,
+            path: path.to_owned(),
+            before: Some(before),
+            after: Some(after),
+            removal: true,
+        }),
+        None => plan.notes.push(format!(
+            "Docker Agent: the default agent in {} lists no AgentDocker toolset; there is nothing to take out",
+            path.display()
+        )),
+    }
+    Ok(())
+}
+
+#[cfg(test)]
 fn prepare_install(roots: &Roots, names: &[String], executable: &Path) -> Result<Plan> {
+    prepare_install_for(roots, names, executable, None)
+}
+
+/// `prepare_install`, with the Docker Agent YAML file `--agent` named.
+fn prepare_install_for(
+    roots: &Roots,
+    names: &[String],
+    executable: &Path,
+    agent: Option<&Path>,
+) -> Result<Plan> {
     for runtime in selected_inventory(roots, names)? {
         let selected = if names.is_empty() {
             runtime.installed()
@@ -1204,7 +1331,7 @@ fn prepare_install(roots: &Roots, names: &[String], executable: &Path) -> Result
             "Claude Code CLI is needed to register MCP; nothing changed. Install Claude Code first, or use `agentdocker setup claude-code --preview` to review the available hooks-only changes"
         );
     }
-    prepare(roots, names, executable, false, None)
+    prepare_for(roots, names, executable, false, agent, None)
 }
 
 fn prepare_codex_activity(plan: &mut Plan, roots: &Roots, executable: &Path) -> Result<()> {
@@ -1594,6 +1721,7 @@ pub async fn run(
     action: Action<'_>,
     json_output: bool,
     shell: bool,
+    agent: Option<&Path>,
     git_hook: bool,
 ) -> Result<()> {
     // The repository `--git-hook` protects: the one the command runs in.
@@ -1672,15 +1800,16 @@ pub async fn run(
         let mut plan = if let Some(id) = apply_id.or(undo_id) {
             load(&directory, id)?
         } else if remove {
-            prepare_remove(&roots, names, repo.as_deref())?
+            prepare_remove_for(&roots, names, agent, repo.as_deref())?
         } else if install {
-            prepare_install(&roots, names, &crate::desktop::setup_executable()?)?
+            prepare_install_for(&roots, names, &crate::desktop::setup_executable()?, agent)?
         } else {
-            prepare(
+            prepare_for(
                 &roots,
                 names,
                 &crate::desktop::setup_executable()?,
                 shell,
+                agent,
                 repo.as_deref(),
             )?
         };
@@ -1762,7 +1891,7 @@ mod tests {
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
         let directory = directory(&tmp.path().join("state")).unwrap();
 
-        let mut plan = prepare(&roots, &[], &executable, false, Some(&repo)).unwrap();
+        let mut plan = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
         assert_eq!(plan.changes.len(), 1);
         assert_eq!(plan.changes[0].channel, "pre-commit hook");
         assert_eq!(plan.changes[0].runtime, "git");
@@ -1813,7 +1942,7 @@ mod tests {
             "their hook gained the execute bits"
         );
         assert_eq!(crate::git_hook::wiring(&hook, &executable), Wiring::Wired);
-        let again = prepare(&roots, &[], &executable, false, Some(&repo)).unwrap();
+        let again = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
         assert!(again.changes.is_empty());
         assert!(
             again
@@ -1832,17 +1961,17 @@ mod tests {
         assert_eq!(crate::git_hook::wiring(&hook, &executable), Wiring::Missing);
 
         // The block is removed from their hook, leaving their lines.
-        let mut plan = prepare(&roots, &[], &executable, false, Some(&repo)).unwrap();
+        let mut plan = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
         save(&directory, &plan).unwrap();
         apply(&directory, &mut plan, false).unwrap();
-        let mut removal = prepare_remove(&roots, &[], Some(&repo)).unwrap();
+        let mut removal = prepare_remove_for(&roots, &[], None, Some(&repo)).unwrap();
         assert_eq!(removal.changes.len(), 1, "only the hook, not the tools");
         assert!(removal.changes[0].removal);
         assert_eq!(removal.changes[0].after.as_deref(), Some(theirs));
         save(&directory, &removal).unwrap();
         apply(&directory, &mut removal, false).unwrap();
         assert_eq!(std::fs::read_to_string(&hook).unwrap(), theirs);
-        let nothing = prepare_remove(&roots, &[], Some(&repo)).unwrap();
+        let nothing = prepare_remove_for(&roots, &[], None, Some(&repo)).unwrap();
         assert!(nothing.changes.is_empty());
         assert!(
             nothing
@@ -1853,7 +1982,7 @@ mod tests {
 
         // No hook at all: a new executable script, deleted by the removal.
         std::fs::remove_file(&hook).unwrap();
-        let mut plan = prepare(&roots, &[], &executable, false, Some(&repo)).unwrap();
+        let mut plan = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
         assert!(plan.changes[0].before.is_none());
         assert!(
             plan.changes[0]
@@ -1868,7 +1997,7 @@ mod tests {
             std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
             0o755
         );
-        let mut removal = prepare_remove(&roots, &[], Some(&repo)).unwrap();
+        let mut removal = prepare_remove_for(&roots, &[], None, Some(&repo)).unwrap();
         assert_eq!(removal.changes[0].after, None, "the file was ours");
         save(&directory, &removal).unwrap();
         apply(&directory, &mut removal, false).unwrap();
@@ -1889,7 +2018,7 @@ mod tests {
             crate::git_hook::wiring(&hook, &executable),
             Wiring::Unverified
         );
-        let mut plan = prepare(&roots, &[], &executable, false, Some(&repo)).unwrap();
+        let mut plan = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
         assert_eq!(plan.changes.len(), 1);
         assert_eq!(plan.changes[0].before, plan.changes[0].after);
         assert_eq!(plan.changes[0].mode, Some(0o600));
@@ -1921,7 +2050,7 @@ mod tests {
 
         // A hook in another language is a note, not a change.
         std::fs::write(&hook, "#!/usr/bin/env python3\nprint('lint')\n").unwrap();
-        let other = prepare(&roots, &[], &executable, false, Some(&repo)).unwrap();
+        let other = prepare_for(&roots, &[], &executable, false, None, Some(&repo)).unwrap();
         assert!(other.changes.is_empty());
         assert!(
             other
@@ -1934,7 +2063,7 @@ mod tests {
 
         let outside = tmp.path().join("plain");
         std::fs::create_dir_all(&outside).unwrap();
-        let note = prepare(&roots, &[], &executable, false, Some(&outside)).unwrap();
+        let note = prepare_for(&roots, &[], &executable, false, None, Some(&outside)).unwrap();
         assert!(note.changes.is_empty());
         assert!(note.notes[0].contains("not inside a git repository"));
     }
@@ -1956,7 +2085,7 @@ mod tests {
         std::fs::write(&executable, "#!/bin/sh\n").unwrap();
         std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-        let mut plan = prepare(&roots, &[], &executable, true, None).unwrap();
+        let mut plan = prepare(&roots, &[], &executable, true).unwrap();
         assert_eq!(plan.changes.len(), 1);
         assert_eq!(plan.changes[0].channel, "shell");
         assert_eq!(plan.changes[0].path, rc);
@@ -1983,7 +2112,7 @@ mod tests {
             0o644,
             "the startup file keeps its mode"
         );
-        let again = prepare(&roots, &[], &executable, true, None).unwrap();
+        let again = prepare(&roots, &[], &executable, true).unwrap();
         assert!(again.changes.is_empty());
         assert!(
             again
@@ -1997,7 +2126,7 @@ mod tests {
         assert_eq!(runtimes::shell::wiring(&roots), Wiring::Missing);
 
         roots.shell = Some("/bin/tcsh".into());
-        let unknown = prepare(&roots, &[], &executable, true, None).unwrap();
+        let unknown = prepare(&roots, &[], &executable, true).unwrap();
         assert!(unknown.changes.is_empty());
         assert!(unknown.notes[0].contains("not a shell setup knows"));
     }
@@ -2016,6 +2145,116 @@ mod tests {
             versions: false,
             hook_stamps: None,
         }
+    }
+
+    /// Docker Agent's setup is one reviewable change to the agent file
+    /// named with `--agent`: planned with the rest of the file untouched,
+    /// applied, undone to the byte, and taken out by a removal of its own;
+    /// without the file it is a note, and the file is Docker Agent's alone.
+    #[test]
+    fn docker_agent_setup_edits_the_named_agent_file_and_undoes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let yaml = tmp.path().join("team.yaml");
+        let before = "# the team\nagents:\n  root:\n    model: openai/gpt-5-mini\n    toolsets:\n      - type: filesystem\n  writer:\n    model: openai/gpt-5-mini\n";
+        std::fs::write(&yaml, before).unwrap();
+        let executable = tmp.path().join("bin/agentdocker");
+        std::fs::create_dir_all(executable.parent().unwrap()).unwrap();
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let names = vec!["docker-agent".to_owned()];
+
+        let without = prepare(&roots, &names, &executable, false).unwrap();
+        assert!(without.changes.is_empty());
+        assert!(
+            without
+                .notes
+                .iter()
+                .any(|note| note.contains("--agent <file>")),
+            "{:?}",
+            without.notes
+        );
+        assert!(prepare_for(&roots, &[], &executable, false, Some(&yaml)).is_err());
+        assert!(prepare_for(&roots, &["codex".into()], &executable, false, Some(&yaml)).is_err());
+
+        let mut plan = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].channel, "mcp");
+        assert_eq!(plan.changes[0].runtime, "docker-agent");
+        assert_eq!(plan.changes[0].path, yaml);
+        let after = plan.changes[0].after.clone().unwrap();
+        assert_eq!(
+            after,
+            format!(
+                "# the team\nagents:\n  root:\n    model: openai/gpt-5-mini\n    toolsets:\n      - type: filesystem\n      - type: mcp\n        command: \"{}\"\n        args: [\"mcp\", \"--runtime\", \"docker-agent\"]\n  writer:\n    model: openai/gpt-5-mini\n",
+                executable.display()
+            )
+        );
+        assert!(
+            !plan.view().to_string().contains("gpt-5-mini"),
+            "snapshots stay private"
+        );
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
+        let again = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        assert!(again.changes.is_empty());
+        assert!(
+            again
+                .notes
+                .iter()
+                .any(|note| note.contains("already lists the toolset"))
+        );
+        apply(&directory, &mut plan, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), before);
+
+        // A removal of its own takes out exactly what setup added.
+        let mut fresh = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        save(&directory, &fresh).unwrap();
+        apply(&directory, &mut fresh, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
+        let mut removal = prepare_remove_for(&roots, &names, Some(&yaml)).unwrap();
+        assert_eq!(removal.changes.len(), 1);
+        assert!(removal.changes[0].removal);
+        assert_eq!(removal.changes[0].after.as_deref(), Some(before));
+        save(&directory, &removal).unwrap();
+        apply(&directory, &mut removal, false).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), before);
+        apply(&directory, &mut removal, true).unwrap();
+        assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
+        let nothing = prepare_remove(&roots, &names).unwrap();
+        assert!(nothing.changes.is_empty());
+        assert!(
+            nothing
+                .notes
+                .iter()
+                .any(|note| note.contains("--agent <file>"))
+        );
+
+        // A missing file is refused before anything is planned, for a
+        // removal too, and one that lists nothing of ours says so.
+        let missing = tmp.path().join("none.yaml");
+        assert!(prepare_for(&roots, &names, &executable, false, Some(&missing)).is_err());
+        let error = prepare_remove_for(&roots, &names, Some(&missing)).unwrap_err();
+        assert!(format!("{error:#}").contains("no agent file"), "{error:#}");
+        let plain = tmp.path().join("plain.yaml");
+        std::fs::write(&plain, before).unwrap();
+        let untouched = prepare_remove_for(&roots, &names, Some(&plain)).unwrap();
+        assert!(untouched.changes.is_empty());
+        assert!(
+            untouched
+                .notes
+                .iter()
+                .any(|note| note.contains("lists no AgentDocker toolset")),
+            "{:?}",
+            untouched.notes
+        );
+        // A relative path is saved absolute, so apply and undo find it
+        // from any directory.
+        let relative = agent_file(Path::new("team.yaml")).unwrap();
+        assert!(relative.is_absolute() && relative.ends_with("team.yaml"));
+        assert_eq!(agent_file(&yaml).unwrap(), yaml);
     }
 
     /// A removal takes out only AgentDocker's own wiring, across the tools
@@ -2070,7 +2309,7 @@ mod tests {
             .map(|path| std::fs::read_to_string(path).unwrap())
             .collect();
 
-        let plan = prepare_remove(&roots, &[], None).unwrap();
+        let plan = prepare_remove(&roots, &[]).unwrap();
         let channels: std::collections::BTreeSet<(String, String)> = plan
             .changes
             .iter()
@@ -2176,7 +2415,7 @@ mod tests {
             let entry = json!({"type": "stdio", "command": "/x/agentdocker",
                 "args": ["mcp", "--runtime", "claude-code"], "env": env});
             let config = claude_entry(tmp.path(), &entry);
-            let plan = prepare_remove(&roots, &["claude-code".into()], None).unwrap();
+            let plan = prepare_remove(&roots, &["claude-code".into()]).unwrap();
             assert_eq!(plan.delegated.len(), 1, "{:?}", plan.notes);
             let directory = directory(&tmp.path().join("state")).unwrap();
             save(&directory, &plan).unwrap();
@@ -2206,7 +2445,7 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let (roots, _) = fake_claude(tmp.path());
             claude_entry(tmp.path(), &entry);
-            let plan = prepare_remove(&roots, &["claude-code".into()], None).unwrap();
+            let plan = prepare_remove(&roots, &["claude-code".into()]).unwrap();
             assert!(plan.delegated.is_empty(), "{entry}");
             assert!(
                 plan.notes
@@ -2233,7 +2472,7 @@ mod tests {
             "args": ["mcp", "--runtime", "claude-code"],
             "env": {"A_FLAG": "1", "API_TOKEN": secret, "Z_FLAG": "c"}});
         claude_entry(tmp.path(), &entry);
-        let mut plan = prepare_remove(&roots, &["claude-code".into()], None).unwrap();
+        let mut plan = prepare_remove(&roots, &["claude-code".into()]).unwrap();
         assert!(!plan.view().to_string().contains(secret));
         let directory = directory(&tmp.path().join("state")).unwrap();
         save(&directory, &plan).unwrap();
@@ -2287,7 +2526,7 @@ mod tests {
             r#"{"mcpServers": {"agentdocker": {"command": "npx", "args": ["something-else"]}}}"#,
         )
         .unwrap();
-        let plan = prepare_remove(&roots, &["claude-code".into(), "cursor".into()], None).unwrap();
+        let plan = prepare_remove(&roots, &["claude-code".into(), "cursor".into()]).unwrap();
         assert!(plan.changes.is_empty(), "{:?}", plan.view());
         assert!(
             plan.notes.iter().any(|note| note.contains("edited")),
@@ -2305,7 +2544,7 @@ mod tests {
         let error = prepare_install(&roots, &names, &executable).unwrap_err();
         assert!(error.to_string().contains("CLI is needed to register MCP"));
         assert!(!roots.home.join(".claude/settings.json").exists());
-        let preview = prepare(&roots, &names, &executable, false, None).unwrap();
+        let preview = prepare(&roots, &names, &executable, false).unwrap();
         assert!(
             !preview.changes.is_empty(),
             "explicit hooks preview remains available"
@@ -2343,7 +2582,7 @@ mod tests {
         let settings = roots.home.join(".claude/settings.json");
         std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
         std::fs::write(&settings, json!({"hooks": events}).to_string()).unwrap();
-        let plan = prepare(&roots, &names, &executable, false, None).unwrap();
+        let plan = prepare(&roots, &names, &executable, false).unwrap();
         assert!(
             plan.notes.iter().any(|note| note
                 == "Claude Code: hooks outdated, installed by an earlier version without \
@@ -2405,7 +2644,7 @@ path.write_text(json.dumps(value))
             writing_claude(tmp.path());
             let executable = tmp.path().join("bin/agentdocker");
             let mut plan =
-                prepare(&roots, &["claude-code".into()], &executable, false, None).unwrap();
+                prepare(&roots, &["claude-code".into()], &executable, false).unwrap();
             let directory = directory(&tmp.path().join("separate-agentdocker-state")).unwrap();
             save(&directory, &plan).unwrap();
             if undo {
@@ -2477,7 +2716,6 @@ path.write_text(json.dumps(value))
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
             false,
-            None,
         )
         .unwrap();
 
@@ -2549,7 +2787,6 @@ path.write_text(json.dumps(value))
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
             false,
-            None,
         )
         .unwrap();
         assert!(plan.delegated.is_empty(), "already wired; nothing to add");
@@ -2622,7 +2859,7 @@ path.write_text(json.dumps(value))
         let exe = temp.path().join("bin/agentdocker");
 
         // The ordinary case: we make it, so we may take it back.
-        let mut ours = prepare(&roots, &["claude-code".into()], &exe, false, None).unwrap();
+        let mut ours = prepare(&roots, &["claude-code".into()], &exe, false).unwrap();
         save(&directory, &ours).unwrap();
         std::fs::write(
             temp.path().join(".claude.json"),
@@ -2643,7 +2880,7 @@ path.write_text(json.dumps(value))
 
         // The case that used to lose somebody's work: the registration
         // appears between the preview and the apply.
-        let mut theirs = prepare(&roots, &["claude-code".into()], &exe, false, None).unwrap();
+        let mut theirs = prepare(&roots, &["claude-code".into()], &exe, false).unwrap();
         assert_eq!(theirs.delegated.len(), 1);
         run_step(&theirs.delegated[0], &theirs.delegated[0].add).unwrap();
         assert!(registers_us(&theirs.delegated[0]).unwrap());
@@ -2676,7 +2913,7 @@ path.write_text(json.dumps(value))
         let directory = directory(&temp.path().join("state")).unwrap();
         let exe = temp.path().join("bin/agentdocker");
 
-        let mut plan = prepare(&roots, &["claude-code".into()], &exe, false, None).unwrap();
+        let mut plan = prepare(&roots, &["claude-code".into()], &exe, false).unwrap();
         save(&directory, &plan).unwrap();
         apply(&directory, &mut plan, false).unwrap();
         // Read back from disk rather than from the plan in hand: the
@@ -2707,7 +2944,6 @@ path.write_text(json.dumps(value))
                 &["claude-code".into()],
                 &temp.path().join("bin/agentdocker"),
                 false,
-                None,
             )
             .unwrap();
             save(&directory, &plan).unwrap();
@@ -2753,7 +2989,6 @@ path.write_text(json.dumps(value))
                     &["claude-code".into()],
                     &temp.path().join("bin/agentdocker"),
                     false,
-                    None,
                 )
                 .unwrap();
                 save(&directory, &plan).unwrap();
@@ -2785,7 +3020,6 @@ path.write_text(json.dumps(value))
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
             false,
-            None,
         )
         .unwrap();
         plan.phase = "applying".into();
@@ -2814,7 +3048,6 @@ path.write_text(json.dumps(value))
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
             false,
-            None,
         )
         .unwrap();
         save(&directory, &plan).unwrap();
@@ -2846,7 +3079,6 @@ path.write_text(json.dumps(value))
                 &["claude-code".into()],
                 &temp.path().join("bin/agentdocker"),
                 false,
-                None,
             )
             .unwrap();
             let step = &plan.delegated[0];
@@ -2883,7 +3115,6 @@ path.write_text(json.dumps(value))
             &["claude-code".into()],
             &temp.path().join("bin/agentdocker"),
             false,
-            None,
         )
         .unwrap();
         assert!(
@@ -2938,7 +3169,6 @@ path.write_text(json.dumps(value))
             &["codex".into()],
             &std::env::current_exe().unwrap(),
             false,
-            None,
         )
         .unwrap();
         assert_eq!(plan.changes.len(), 3);
@@ -3037,7 +3267,7 @@ path.write_text(json.dumps(value))
         // recognized by their actual `agentdocker` executable name.
         let executable = tmp.path().join("agentdocker");
         std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
-        let mut plan = prepare(&roots, &["codex".into()], &executable, false, None).unwrap();
+        let mut plan = prepare(&roots, &["codex".into()], &executable, false).unwrap();
         assert_eq!(plan.changes.len(), 3);
         assert!(
             plan.changes
@@ -3053,7 +3283,7 @@ path.write_text(json.dumps(value))
                 .contains("my-check")
         );
         assert!(
-            prepare(&roots, &["codex".into()], &executable, false, None)
+            prepare(&roots, &["codex".into()], &executable, false)
                 .unwrap()
                 .changes
                 .is_empty()
@@ -3073,7 +3303,7 @@ path.write_text(json.dumps(value))
         let executable = tmp.path().join("agentdocker");
         std::os::unix::fs::symlink(std::env::current_exe().unwrap(), &executable).unwrap();
         let names = vec!["codex".into(), "claude-code".into(), "gemini-cli".into()];
-        let mut plan = prepare(&roots, &names, &executable, false, None).unwrap();
+        let mut plan = prepare(&roots, &names, &executable, false).unwrap();
         let skills: Vec<_> = plan
             .changes
             .iter()
@@ -3098,7 +3328,7 @@ path.write_text(json.dumps(value))
             );
         }
         assert!(
-            prepare(&roots, &names, &executable, false, None)
+            prepare(&roots, &names, &executable, false)
                 .unwrap()
                 .changes
                 .is_empty()
@@ -3110,7 +3340,7 @@ path.write_text(json.dumps(value))
         std::fs::write(&skills[0], &edited).unwrap();
         assert!(apply(&directory, &mut plan, true).is_err());
         assert_eq!(std::fs::read_to_string(&skills[0]).unwrap(), edited);
-        let fresh = prepare(&roots, &names, &executable, false, None).unwrap();
+        let fresh = prepare(&roots, &names, &executable, false).unwrap();
         assert!(
             fresh.changes.is_empty(),
             "a fresh plan also preserves the edit"
@@ -3143,7 +3373,7 @@ path.write_text(json.dumps(value))
             Sha256::digest(body.as_bytes())
         );
         std::fs::write(&path, &old).unwrap();
-        let mut plan = prepare(&roots, &["codex".into()], &executable, false, None).unwrap();
+        let mut plan = prepare(&roots, &["codex".into()], &executable, false).unwrap();
         let directory = directory(&tmp.path().join("state")).unwrap();
         apply(&directory, &mut plan, false).unwrap();
         assert_eq!(
@@ -3153,7 +3383,7 @@ path.write_text(json.dumps(value))
         apply(&directory, &mut plan, true).unwrap();
         assert_eq!(std::fs::read_to_string(&path).unwrap(), old);
         std::fs::write(&path, "My independent skill\n").unwrap();
-        let fresh = prepare(&roots, &["codex".into()], &executable, false, None).unwrap();
+        let fresh = prepare(&roots, &["codex".into()], &executable, false).unwrap();
         assert!(!fresh.changes.iter().any(|change| change.path == path));
     }
 
