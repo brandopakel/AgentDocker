@@ -209,7 +209,7 @@ pub fn refusals(
 ) -> Vec<Refusal> {
     let mut refused = Vec::new();
     for path in staged {
-        let absolute = crate::hooks::normalize(&root.join(path));
+        let absolute = agentdocker_host::project::canonical(&root.join(path));
         let key = ResourceKey::new(format!("path:{}", absolute.display()));
         for lease in leases {
             if lease.mode != LeaseMode::Exclusive
@@ -248,7 +248,7 @@ pub async fn check<B: Backend>(
     if staged.is_empty() {
         return Verdict::Clear;
     }
-    let root = crate::hooks::normalize(root);
+    let root = agentdocker_host::project::canonical(root);
     let leases = match tokio::time::timeout_at(
         deadline,
         backend.call(Request::Leases {
@@ -357,7 +357,7 @@ pub fn report(verdict: &Verdict, root: &Path) -> (String, i32) {
             let first = &refused[0];
             let resource = format!(
                 "path:{}",
-                crate::hooks::normalize(&root.join(&first.path)).display()
+                agentdocker_host::project::canonical(&root.join(&first.path)).display()
             );
             let resource = shlex::try_quote(&resource)
                 .map(|quoted| quoted.into_owned())

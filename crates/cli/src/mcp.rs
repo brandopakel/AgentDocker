@@ -2545,10 +2545,10 @@ fn annotations(name: &str) -> Value {
         // card, a channel, a review, an entry.
         "send_message" | "ask_human" | "answer_question" | "journal_note" | "claim" | "release"
         | "request_release" | "respond_release" | "save_checkpoint" | "handoff"
-        | "resume_checkpoint" | "commit" | "create_worktree"
-        | "open_channel" | "request_review" | "review" | "enter_contest" | "submit_entry"
-        | "create_task" | "create_tasks" | "move_task" | "pull_task" | "update_task"
-        | "comment_task" | "create_tag" | "save_plan" | "put_file" | "link_file" | "add_memory" => {
+        | "resume_checkpoint" | "commit" | "create_worktree" | "open_channel"
+        | "request_review" | "review" | "enter_contest" | "submit_entry" | "create_task"
+        | "create_tasks" | "move_task" | "pull_task" | "update_task" | "comment_task"
+        | "create_tag" | "save_plan" | "put_file" | "link_file" | "add_memory" => {
             (false, false, false, false)
         }
         // Taking things away: a card off the board (the person can put it

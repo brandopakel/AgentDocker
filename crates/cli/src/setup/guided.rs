@@ -1264,6 +1264,8 @@ fn docker_agent_change(
             before: Some(before),
             after: Some(after),
             removal: false,
+            executable: false,
+            mode: None,
         }),
         None => plan.notes.push(format!(
             "{}: agent `{}` in {} already lists the toolset; connection is not yet verified",
@@ -1292,6 +1294,8 @@ fn docker_agent_removal(plan: &mut Plan, path: &Path) -> Result<()> {
             before: Some(before),
             after: Some(after),
             removal: true,
+            executable: false,
+            mode: None,
         }),
         None => plan.notes.push(format!(
             "Docker Agent: the default agent in {} lists no AgentDocker toolset; there is nothing to take out",
@@ -2174,10 +2178,20 @@ mod tests {
             "{:?}",
             without.notes
         );
-        assert!(prepare_for(&roots, &[], &executable, false, Some(&yaml)).is_err());
-        assert!(prepare_for(&roots, &["codex".into()], &executable, false, Some(&yaml)).is_err());
+        assert!(prepare_for(&roots, &[], &executable, false, Some(&yaml), None).is_err());
+        assert!(
+            prepare_for(
+                &roots,
+                &["codex".into()],
+                &executable,
+                false,
+                Some(&yaml),
+                None
+            )
+            .is_err()
+        );
 
-        let mut plan = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        let mut plan = prepare_for(&roots, &names, &executable, false, Some(&yaml), None).unwrap();
         assert_eq!(plan.changes.len(), 1);
         assert_eq!(plan.changes[0].channel, "mcp");
         assert_eq!(plan.changes[0].runtime, "docker-agent");
@@ -2198,7 +2212,7 @@ mod tests {
         save(&directory, &plan).unwrap();
         apply(&directory, &mut plan, false).unwrap();
         assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
-        let again = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        let again = prepare_for(&roots, &names, &executable, false, Some(&yaml), None).unwrap();
         assert!(again.changes.is_empty());
         assert!(
             again
@@ -2210,11 +2224,11 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&yaml).unwrap(), before);
 
         // A removal of its own takes out exactly what setup added.
-        let mut fresh = prepare_for(&roots, &names, &executable, false, Some(&yaml)).unwrap();
+        let mut fresh = prepare_for(&roots, &names, &executable, false, Some(&yaml), None).unwrap();
         save(&directory, &fresh).unwrap();
         apply(&directory, &mut fresh, false).unwrap();
         assert_eq!(std::fs::read_to_string(&yaml).unwrap(), after);
-        let mut removal = prepare_remove_for(&roots, &names, Some(&yaml)).unwrap();
+        let mut removal = prepare_remove_for(&roots, &names, Some(&yaml), None).unwrap();
         assert_eq!(removal.changes.len(), 1);
         assert!(removal.changes[0].removal);
         assert_eq!(removal.changes[0].after.as_deref(), Some(before));
@@ -2235,12 +2249,12 @@ mod tests {
         // A missing file is refused before anything is planned, for a
         // removal too, and one that lists nothing of ours says so.
         let missing = tmp.path().join("none.yaml");
-        assert!(prepare_for(&roots, &names, &executable, false, Some(&missing)).is_err());
-        let error = prepare_remove_for(&roots, &names, Some(&missing)).unwrap_err();
+        assert!(prepare_for(&roots, &names, &executable, false, Some(&missing), None).is_err());
+        let error = prepare_remove_for(&roots, &names, Some(&missing), None).unwrap_err();
         assert!(format!("{error:#}").contains("no agent file"), "{error:#}");
         let plain = tmp.path().join("plain.yaml");
         std::fs::write(&plain, before).unwrap();
-        let untouched = prepare_remove_for(&roots, &names, Some(&plain)).unwrap();
+        let untouched = prepare_remove_for(&roots, &names, Some(&plain), None).unwrap();
         assert!(untouched.changes.is_empty());
         assert!(
             untouched
@@ -2643,8 +2657,7 @@ path.write_text(json.dumps(value))
             let (roots, _) = fake_claude(tmp.path());
             writing_claude(tmp.path());
             let executable = tmp.path().join("bin/agentdocker");
-            let mut plan =
-                prepare(&roots, &["claude-code".into()], &executable, false).unwrap();
+            let mut plan = prepare(&roots, &["claude-code".into()], &executable, false).unwrap();
             let directory = directory(&tmp.path().join("separate-agentdocker-state")).unwrap();
             save(&directory, &plan).unwrap();
             if undo {
@@ -3185,7 +3198,6 @@ path.write_text(json.dumps(value))
                 .collect::<Vec<_>>(),
             &std::env::current_exe().unwrap(),
             false,
-            None,
         )
         .unwrap()
     }
