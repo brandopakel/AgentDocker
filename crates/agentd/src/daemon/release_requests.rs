@@ -73,8 +73,8 @@ impl Daemon {
             // A request already waiting on this holder for this resource
             // is the answer: asking twice would only queue the same word.
             if let Some(pending) = state.release_requests.values().find(|request| {
-                request.requester == requester
-                    && request.holder == holder
+                *state.registry.canonical_id(&request.requester) == requester
+                    && *state.registry.canonical_id(&request.holder) == holder
                     && request.resource == resource
             }) {
                 requests.push(pending.clone());
@@ -154,6 +154,8 @@ impl Daemon {
                 event: EventKind::ReleaseRequested {
                     request: request.clone(),
                 },
+                released: Vec::new(),
+                journal: None,
             };
             match state.publish_with_channel(envelope, None, None, Some(transition)) {
                 Response::Sent { .. } => {
@@ -200,27 +202,29 @@ impl Daemon {
                 format!("no release request {message} is waiting for an answer"),
             );
         };
-        // A holder whose record was folded into another since the request
-        // is that other record now.
-        let holder = state
-            .registry
-            .resolve(request.holder.as_str())
-            .unwrap_or_else(|_| request.holder.clone());
+        // Either side may have been folded into another record since the
+        // request (a session that came back, `resume_input` retiring the
+        // fresh record into its predecessor): the request is that record's
+        // now, and its answer goes where the requester lives on.
+        let holder = state.registry.canonical_id(&request.holder).clone();
+        let requester = state.registry.canonical_id(&request.requester).clone();
         if holder != responder {
             return Response::error(
                 ErrorCode::Forbidden,
                 format!(
                     "this release request was put to {}, not to you",
-                    state.agent_name(&request.holder)
+                    state.agent_name(&holder)
                 ),
             );
         }
-        let requester_name = state.agent_name(&request.requester);
-        let holder_name = state.agent_name(&request.holder);
-        let mut released = Vec::new();
-        if accept {
-            // Only the request's leases, and only those still held: a
-            // lease the holder took since is not what was asked for.
+        let requester_name = state.agent_name(&requester);
+        let holder_name = state.agent_name(&holder);
+        // Only the request's leases, and only those still held: a lease the
+        // holder took since is not what was asked for. They are let go in
+        // the same transaction as the answer, below: a requester whose
+        // queue is full, or a write that fails, leaves them held and the
+        // request answerable.
+        let (still_held, journal) = if accept {
             let still_held: Vec<Lease> = request
                 .leases
                 .iter()
@@ -229,27 +233,34 @@ impl Daemon {
                 .cloned()
                 .collect();
             // The journal line already says what was released; the summary
-            // says what changed, and that it was let go on request.
-            let summary = match &text {
-                Some(text) => format!("{text} (at {requester_name}'s request)"),
-                None => format!("at {requester_name}'s request"),
-            };
-            // Nothing still held is nothing released, and no journal entry
-            // that says otherwise.
-            if !still_held.is_empty() {
-                let freed = state.finish_release(
+            // says what changed, and that it was let go on request. Nothing
+            // still held is nothing released, and no entry that says so.
+            let journal = if still_held.is_empty() {
+                None
+            } else {
+                let summary = match &text {
+                    Some(text) => format!("{text} (at {requester_name}'s request)"),
+                    None => format!("at {requester_name}'s request"),
+                };
+                state.release_entry(
                     &responder,
-                    still_held,
+                    &still_held,
                     Some(summary),
                     SummarySource::Explicit,
-                );
-                if let Some(error) = state.write_failure() {
-                    return error;
-                }
-                released = freed.into_iter().map(|lease| lease.id).collect();
+                )
+            };
+            if let Some(error) = state.write_failure() {
+                return error;
             }
-        }
+            (still_held, journal)
+        } else {
+            (Vec::new(), None)
+        };
+        let released: Vec<LeaseId> = still_held.iter().map(|lease| lease.id.clone()).collect();
+        // The answer names the records as they are now.
         let answered = ReleaseRequest {
+            holder: holder.clone(),
+            requester: requester.clone(),
             answer: Some(ReleaseAnswer {
                 accepted: accept,
                 text: text.clone(),
@@ -285,7 +296,7 @@ impl Daemon {
         payload[if accept { "summary" } else { "reason" }] = json!(text);
         let envelope = Envelope::new(
             responder.to_string(),
-            Destination::Agent(request.requester.clone()),
+            Destination::Agent(requester),
             RELEASE_RESPONSE_KIND.to_owned(),
             payload,
             Some(request.message.clone()),
@@ -298,6 +309,8 @@ impl Daemon {
             event: EventKind::ReleaseAnswered {
                 request: answered.clone(),
             },
+            released: still_held,
+            journal,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
             Response::Sent { .. } => {
@@ -702,6 +715,132 @@ mod tests {
             replies[0].payload["text"],
             json!("holder declined to release branch:main: mid-rebase, ten minutes")
         );
+    }
+
+    /// An accept is one transaction with its answer. A requester whose
+    /// queue is full refuses the answer (`backpressure`), and nothing is
+    /// released or journaled: the lease stays held and the request can be
+    /// answered once there is room. A write that fails at the commit leaves
+    /// the same: after a restart the lease is still held, the request still
+    /// waits, and answering it then releases the lease, journaled once.
+    #[tokio::test]
+    async fn an_accept_releases_nothing_unless_its_answer_lands() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let project = dir.path().join("repo");
+        std::fs::create_dir_all(&project).unwrap();
+        register(&daemon, "holder", &project).await;
+        let asker = register(&daemon, "asker", &project).await;
+        let lease = claim(&daemon, "holder", "branch:main").await;
+        let Response::ReleaseRequests { requests } = daemon
+            .handle(Request::RequestRelease {
+                from: "asker".into(),
+                resource: "branch:main".into(),
+                reason: None,
+            })
+            .await
+        else {
+            panic!("request")
+        };
+        let message = requests[0].message.clone();
+        let accept = |daemon: Arc<Daemon>, message: MessageId| async move {
+            daemon
+                .handle(Request::RespondRelease {
+                    from: "holder".into(),
+                    request: message,
+                    accept: true,
+                    text: Some("done with it".into()),
+                })
+                .await
+        };
+
+        // The requester's queue is full.
+        for n in 0..INBOX_CAPACITY {
+            assert!(matches!(
+                daemon
+                    .handle(Request::Send {
+                        from: agentdocker_core::HUMAN.into(),
+                        to: "asker".into(),
+                        kind: "chat".into(),
+                        payload: json!({ "text": format!("filler {n}") }),
+                        reply_to: None,
+                        links: Vec::new(),
+                    })
+                    .await,
+                Response::Sent { .. }
+            ));
+        }
+        let mut events = daemon.subscribe_events();
+        let refused = accept(daemon.clone(), message.clone()).await;
+        assert!(
+            matches!(
+                refused,
+                Response::Error {
+                    code: ErrorCode::Backpressure,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        assert!(events.try_recv().is_err(), "nothing happened");
+        assert!(leases(&daemon).await.iter().any(|l| l.id == lease.id));
+        assert!(lock(&daemon.state).release_requests.contains_key(&message));
+
+        // Room again: the same answer now lands.
+        assert!(matches!(
+            daemon
+                .handle(Request::Inbox {
+                    agent: asker.id.to_string(),
+                    drain: true,
+                })
+                .await,
+            Response::Messages { .. }
+        ));
+
+        // A write that fails at the commit: nothing moves, in memory or on
+        // disk.
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("release_answered");
+        let failed = accept(daemon.clone(), message.clone()).await;
+        assert!(matches!(failed, Response::Error { .. }), "{failed:?}");
+        {
+            let state = lock(&daemon.state);
+            assert!(state.leases.get(&lease.id).is_some(), "still held");
+            assert!(state.release_requests.contains_key(&message));
+        }
+        drop(daemon);
+        let daemon = open(&dir);
+        assert!(leases(&daemon).await.iter().any(|l| l.id == lease.id));
+        assert!(lock(&daemon.state).release_requests.contains_key(&message));
+        assert!(inbox(&daemon, "asker").await.is_empty());
+
+        let mut events = daemon.subscribe_events();
+        let Response::ReleaseRequest { request } = accept(daemon.clone(), message.clone()).await
+        else {
+            panic!("accept after the restart")
+        };
+        assert_eq!(request.answer.unwrap().released, vec![lease.id.clone()]);
+        assert!(leases(&daemon).await.is_empty());
+        let mut journaled = 0;
+        let mut kinds = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if matches!(event.kind, EventKind::JournalAppended { .. }) {
+                journaled += 1;
+            }
+            kinds.push(event.kind);
+        }
+        assert_eq!(journaled, 1, "one release, journaled once");
+        let position = |want: fn(&EventKind) -> bool| kinds.iter().position(want).unwrap();
+        assert!(
+            position(|k| matches!(k, EventKind::LeaseReleased { .. }))
+                < position(|k| matches!(k, EventKind::ReleaseAnswered { .. })),
+            "the release, then its answer, in one commit"
+        );
+        let replies = inbox(&daemon, "asker").await;
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].kind, RELEASE_RESPONSE_KIND);
+        assert_eq!(replies[0].payload["released"], json!([lease.id]));
     }
 
     /// An accept after the lease has gone on its own releases nothing and

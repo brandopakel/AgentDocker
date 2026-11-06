@@ -172,6 +172,12 @@ pub(crate) struct DocumentTransition {
     /// The document to put, or none to delete it.
     pub value: Option<serde_json::Value>,
     pub event: EventKind,
+    /// Leases released in the same transaction, each with its
+    /// `lease_released`: an accepted release request lets go of them with
+    /// its answer, or not at all.
+    pub released: Vec<Lease>,
+    /// The journal entry that records them; its sequence is given here.
+    pub journal: Option<JournalEntry>,
 }
 
 /// What became of a write.
@@ -5138,6 +5144,23 @@ impl State {
             Some((channel, events, journal)) => (Some(channel), events, journal),
             None => (None, Vec::new(), None),
         };
+        let mut document = document;
+        let released = document
+            .as_mut()
+            .map(|document| std::mem::take(&mut document.released))
+            .unwrap_or_default();
+        if let Some(entry) = document
+            .as_mut()
+            .and_then(|document| document.journal.take())
+        {
+            if journal.is_some() {
+                return Response::error(
+                    ErrorCode::Internal,
+                    "a message carries at most one journal entry",
+                );
+            }
+            journal = Some(entry);
+        }
         if let Some(error) = self.write_failure() {
             return error;
         }
@@ -5258,6 +5281,9 @@ impl State {
             };
         }
         let mut kinds: Vec<_> = transition.into_iter().collect();
+        kinds.extend(released.iter().map(|lease| EventKind::LeaseReleased {
+            lease: lease.clone(),
+        }));
         if let Some(document) = &document {
             kinds.push(document.event.clone());
         }
@@ -5304,7 +5330,12 @@ impl State {
                     question.as_ref(),
                     closed.as_ref(),
                     events,
-                    channel.as_ref().map(|channel| (channel, journal.as_ref())),
+                    channel.as_ref(),
+                    journal.as_ref(),
+                    &released
+                        .iter()
+                        .map(|lease| lease.id.clone())
+                        .collect::<Vec<_>>(),
                     document
                         .as_ref()
                         .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
@@ -5315,6 +5346,12 @@ impl State {
                 post = kept;
                 if let Some(channel) = &channel {
                     state.channels.insert(channel.id.clone(), channel.clone());
+                }
+                for lease in &released {
+                    state
+                        .leases
+                        .release(&lease.id, &lease.holder)
+                        .expect("release protection retained until commit");
                 }
                 if let Some(entry) = &journal {
                     state

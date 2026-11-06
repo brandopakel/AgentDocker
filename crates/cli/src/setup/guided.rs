@@ -786,16 +786,20 @@ fn prepare_remove(roots: &Roots, names: &[String], git_hook: Option<&Path>) -> R
     {
         if crate::git_hook::has_block(&before) {
             let after = crate::git_hook::without(&before).flatten();
+            let target = project::try_canonical(&path)?;
+            // What undo puts back runs as it ran: the mode goes in the
+            // receipt with the bytes.
+            let mode = file_mode(&target)?;
             plan.changes.push(Change {
                 runtime: "git".into(),
                 channel: "pre-commit hook".into(),
-                target: project::try_canonical(&path)?,
+                target,
                 path,
                 before: Some(before),
                 after,
                 removal: true,
-                executable: false,
-                mode: None,
+                executable: true,
+                mode,
             });
         } else {
             plan.notes.push(format!(
@@ -867,19 +871,13 @@ fn prepare_git_hook(plan: &mut Plan, repo: &Path, executable: &Path) -> Result<(
         ));
         return Ok(());
     };
-    match crate::git_hook::wiring(&path, executable) {
-        Wiring::Wired => {
-            plan.notes.push(format!(
-                "git hook: {} already refuses commits over held paths",
-                path.display()
-            ));
-            return Ok(());
-        }
-        Wiring::Unverified => plan.notes.push(format!(
-            "git hook: {} holds an older agentdocker block; this plan replaces it",
+    let wiring = crate::git_hook::wiring(&path, executable);
+    if wiring == Wiring::Wired {
+        plan.notes.push(format!(
+            "git hook: {} already refuses commits over held paths",
             path.display()
-        )),
-        Wiring::Missing | Wiring::Unsupported => {}
+        ));
+        return Ok(());
     }
     let before = read_config(&path)?;
     let after = match crate::git_hook::with_block(before.as_deref(), executable) {
@@ -892,15 +890,16 @@ fn prepare_git_hook(plan: &mut Plan, repo: &Path, executable: &Path) -> Result<(
             return Ok(());
         }
     };
+    // Our block, but not this one: an earlier executable's. The same bytes
+    // in a hook git cannot run need only the execute bit, said below.
+    if wiring == Wiring::Unverified && before.as_deref() != Some(after.as_str()) {
+        plan.notes.push(format!(
+            "git hook: {} holds an older agentdocker block; this plan replaces it",
+            path.display()
+        ));
+    }
     let target = project::try_canonical(&path)?;
-    #[cfg(unix)]
-    let mode = match std::fs::metadata(&target) {
-        Ok(metadata) => Some(metadata.permissions().mode() & 0o7777),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-        Err(e) => return Err(e).with_context(|| format!("cannot read {}", target.display())),
-    };
-    #[cfg(not(unix))]
-    let mode = None;
+    let mode = file_mode(&target)?;
     if mode.is_some_and(|mode| mode & 0o111 == 0) {
         plan.notes.push(format!(
             "git hook: {} is not executable, so git has been skipping it; applying makes it executable, and the lines already in it will run with every commit too",
@@ -1313,15 +1312,37 @@ fn check(change: &Change) -> Result<Option<String>> {
     Ok(current)
 }
 
+/// A file's permission bits, or none where it does not exist or the
+/// platform has none to keep.
+fn file_mode(path: &Path) -> Result<Option<u32>> {
+    #[cfg(unix)]
+    {
+        match std::fs::metadata(path) {
+            Ok(metadata) => Ok(Some(metadata.permissions().mode() & 0o7777)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("cannot read {}", path.display())),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
 /// The mode a change that must run leaves its file with: on apply, a new
 /// file `0755` (it arrives private) and an existing one its own mode plus
-/// the execute bits it lacked; on undo, the mode it had before the plan.
+/// the execute bits it lacked, while a removal keeps the mode it finds; on
+/// undo, the mode it had before the plan — so a hook a removal deleted
+/// comes back runnable, not as a private file git skips.
 #[cfg(unix)]
 fn settle_mode(change: &Change, undo: bool) -> Result<()> {
     let mode = std::fs::metadata(&change.target)?.permissions().mode() & 0o7777;
     let wanted = match (undo, change.mode) {
         (true, Some(before)) => before & 0o7777,
         (true, None) => return Ok(()),
+        // Taking the block out keeps whatever mode the hook has.
+        (false, _) if change.removal => return Ok(()),
         (false, _) if change.before.is_none() => 0o755,
         (false, _) => mode | 0o111,
     };
@@ -1818,6 +1839,49 @@ mod tests {
         assert!(!hook.exists());
         apply(&directory, &mut removal, true).unwrap();
         assert!(hook.exists(), "undoing the removal puts it back");
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "runnable, as it was, not a private file git skips"
+        );
+        assert_eq!(crate::git_hook::wiring(&hook, &executable), Wiring::Wired);
+
+        // The current block in a hook git cannot run is not wired: the plan
+        // gives it the execute bit, and says why, with the bytes unchanged.
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            crate::git_hook::wiring(&hook, &executable),
+            Wiring::Unverified
+        );
+        let mut plan = prepare(&roots, &[], &executable, false, Some(&repo)).unwrap();
+        assert_eq!(plan.changes.len(), 1);
+        assert_eq!(plan.changes[0].before, plan.changes[0].after);
+        assert_eq!(plan.changes[0].mode, Some(0o600));
+        assert!(
+            plan.notes
+                .iter()
+                .any(|n| n.contains("is not executable, so git has been skipping it")),
+            "{:?}",
+            plan.notes
+        );
+        assert!(
+            !plan
+                .notes
+                .iter()
+                .any(|n| n.contains("older agentdocker block"))
+        );
+        save(&directory, &plan).unwrap();
+        apply(&directory, &mut plan, false).unwrap();
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o711,
+            "its own mode plus the execute bits"
+        );
+        apply(&directory, &mut plan, true).unwrap();
+        assert_eq!(
+            std::fs::metadata(&hook).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
 
         // A hook in another language is a note, not a change.
         std::fs::write(&hook, "#!/usr/bin/env python3\nprint('lint')\n").unwrap();

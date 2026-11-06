@@ -70,7 +70,10 @@ that is committed — the plan says that too. Like `--shell`, `--git-hook` saves
 the plan and prints `agentdocker setup --apply PLAN_ID`; `setup --undo
 PLAN_ID` restores the hook to the byte and to its earlier mode. `setup --remove
 --git-hook` takes the block out without the receipt, leaving your lines or
-deleting a file that was only ours; it touches no tool's configuration.
+deleting a file that was only ours, and its undo puts the hook back with the
+mode it had; it touches no tool's configuration. The block in a hook git
+cannot run — one without its execute bit — does not count as set up:
+`--git-hook` plans the bit, with the same warning.
 Ordinary `agentdocker setup`, run inside a repository whose hook lacks the
 block, adds a note that `--git-hook` offers it; it never plans the hook
 unasked.

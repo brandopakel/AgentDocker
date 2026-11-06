@@ -145,11 +145,13 @@ pub fn has_block(text: &str) -> bool {
     current_block(text).is_some_and(|found| found.starts_with(&format!("{BEGIN} {PURPOSE}")))
 }
 
-/// Whether the repository's hook carries the block this executable plans.
+/// Whether the repository's hook carries the block this executable plans,
+/// in a file git will run: the right bytes in a hook without the execute
+/// bit are skipped by git, so they are not wired.
 pub fn wiring(path: &Path, executable: &Path) -> Wiring {
     match std::fs::read_to_string(path) {
         Ok(text) => match current_block(&text) {
-            Some(found) if found == block(executable) => Wiring::Wired,
+            Some(found) if found == block(executable) && runnable(path) => Wiring::Wired,
             Some(_) if has_block(&text) => Wiring::Unverified,
             Some(_) | None => Wiring::Missing,
         },
@@ -158,11 +160,26 @@ pub fn wiring(path: &Path, executable: &Path) -> Wiring {
     }
 }
 
+/// Whether git would run the file: on Unix, an execute bit; elsewhere git
+/// decides by itself.
+fn runnable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        true
+    }
+}
+
 /// One staged path another agent holds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
     /// As git named it: relative to the working tree.
-    pub path: String,
+    pub path: PathBuf,
     pub lease: Lease,
     /// The holder's name, or its short id when it has none.
     pub holder: String,
@@ -184,7 +201,7 @@ pub enum Verdict {
 /// by an agent that is no longer live is nobody's.
 pub fn refusals(
     root: &Path,
-    staged: &[String],
+    staged: &[PathBuf],
     leases: &[Lease],
     agents: &[AgentRecord],
     me: Option<&AgentId>,
@@ -223,7 +240,7 @@ pub fn refusals(
 pub async fn check<B: Backend>(
     backend: &B,
     root: &Path,
-    staged: &[String],
+    staged: &[PathBuf],
     me: Option<&str>,
 ) -> Verdict {
     if staged.is_empty() {
@@ -323,7 +340,8 @@ pub fn report(verdict: &Verdict, root: &Path) -> (String, i32) {
             for refusal in refused {
                 text.push_str(&format!(
                     "  {} — {} ({}), {} lease, ends {}",
-                    refusal.path,
+                    // A name may hold a newline: shown escaped, on its line.
+                    refusal.path.display().to_string().escape_debug(),
                     refusal.holder,
                     refusal.lease.holder.short(),
                     refusal.lease.mode,
@@ -335,16 +353,44 @@ pub fn report(verdict: &Verdict, root: &Path) -> (String, i32) {
                 text.push('\n');
             }
             let first = &refused[0];
-            let resource = crate::hooks::normalize(&root.join(&first.path));
+            let resource = format!(
+                "path:{}",
+                crate::hooks::normalize(&root.join(&first.path)).display()
+            );
+            let resource = shlex::try_quote(&resource)
+                .map(|quoted| quoted.into_owned())
+                .unwrap_or(resource);
             text.push_str(&format!(
-                "Ask the holder to let go: agentdocker request-release path:{} --reason \"...\" \
+                "Ask the holder to let go: agentdocker request-release {resource} --reason \"...\" \
                  (they answer with respond-release and you get a release_response message); or wait \
-                 for the lease to expire. `git commit --no-verify` commits over it anyway.\n",
-                resource.display()
+                 for the lease to expire. `git commit --no-verify` commits over it anyway.\n"
             ));
             (text, 1)
         }
     }
+}
+
+/// The staged paths as `git diff --name-only -z` writes them: each name
+/// ends at a NUL, and every other byte, a newline included, is part of it.
+/// On Unix the bytes are the name exactly, whatever their encoding.
+pub fn staged_paths(bytes: &[u8]) -> Vec<PathBuf> {
+    bytes
+        .split(|byte| *byte == 0)
+        .filter(|name| !name.is_empty())
+        .map(path_of)
+        .collect()
+}
+
+#[cfg(unix)]
+fn path_of(name: &[u8]) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+    PathBuf::from(std::ffi::OsStr::from_bytes(name))
+}
+
+/// Git writes names as UTF-8 where the platform's are not bytes.
+#[cfg(not(unix))]
+fn path_of(name: &[u8]) -> PathBuf {
+    PathBuf::from(String::from_utf8_lossy(name).into_owned())
 }
 
 /// `agentdocker hook pre-commit`: the staged paths come NUL-separated on
@@ -358,11 +404,7 @@ pub async fn run(client: crate::client::Client) -> Result<i32> {
     std::io::stdin()
         .read_to_end(&mut bytes)
         .context("cannot read the staged paths from stdin")?;
-    let staged: Vec<String> = bytes
-        .split(|byte| *byte == 0 || *byte == b'\n')
-        .filter(|path| !path.is_empty())
-        .map(|path| String::from_utf8_lossy(path).into_owned())
-        .collect();
+    let staged = staged_paths(&bytes);
     let root = std::env::current_dir().context("cannot read the working directory")?;
     let me = match std::env::var("AGENTDOCKER_AGENT_ID") {
         Ok(id) if !id.is_empty() => Some(id),
@@ -446,7 +488,7 @@ mod tests {
             lease(&reviewer.id, &path("shared.rs"), LeaseMode::Shared, None),
             lease(&departed.id, &path("gone.rs"), LeaseMode::Exclusive, None),
         ];
-        let staged: Vec<String> = [
+        let staged: Vec<PathBuf> = [
             "src/lib.rs",
             "src/deep/mod.rs",
             "README.md",
@@ -455,7 +497,7 @@ mod tests {
             "gone.rs",
         ]
         .into_iter()
-        .map(str::to_owned)
+        .map(PathBuf::from)
         .collect();
         let backend = Mock::with(vec![
             Response::Leases {
@@ -471,8 +513,8 @@ mod tests {
             panic!("{verdict:?}");
         };
         assert_eq!(
-            refused.iter().map(|r| r.path.as_str()).collect::<Vec<_>>(),
-            ["src/lib.rs", "src/deep/mod.rs"]
+            refused.iter().map(|r| r.path.as_path()).collect::<Vec<_>>(),
+            [Path::new("src/lib.rs"), Path::new("src/deep/mod.rs")]
         );
         assert!(refused.iter().all(|r| r.holder == "Claude reviewer"));
         let requests = backend.requests();
@@ -509,7 +551,52 @@ mod tests {
         let Verdict::Refused(refused) = check(&backend, &root, &staged, None).await else {
             panic!("refused");
         };
-        assert!(refused.iter().any(|r| r.path == "mine.rs"));
+        assert!(refused.iter().any(|r| r.path == Path::new("mine.rs")));
+    }
+
+    /// `-z` ends a name at a NUL and nowhere else: a newline is part of the
+    /// name, so a file named across two lines is one path, and an exact
+    /// lease on it is found; on Unix a name that is not UTF-8 keeps its
+    /// bytes. The refusal shows such a name escaped, on one line.
+    #[test]
+    fn a_staged_name_ends_only_at_nul() {
+        let staged = staged_paths(b"a.rs\0line\nbreak.txt\0dir/c d.rs\0\0");
+        assert_eq!(
+            staged,
+            [
+                PathBuf::from("a.rs"),
+                PathBuf::from("line\nbreak.txt"),
+                PathBuf::from("dir/c d.rs")
+            ]
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let raw = staged_paths(b"caf\xe9.txt\0");
+            assert_eq!(raw[0].as_os_str().as_bytes(), b"caf\xe9.txt");
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        std::fs::write(root.join("line\nbreak.txt"), "").unwrap();
+        let holder = agent("holder");
+        let held = lease(
+            &holder.id,
+            &format!("path:{}", root.join("line\nbreak.txt").display()),
+            LeaseMode::Exclusive,
+            None,
+        );
+        let refused = refusals(&root, &staged, &[held], &[holder], None);
+        assert_eq!(refused.len(), 1, "{refused:?}");
+        assert_eq!(refused[0].path, PathBuf::from("line\nbreak.txt"));
+        let (text, status) = report(&Verdict::Refused(refused), &root);
+        assert_eq!(status, 1);
+        assert!(
+            text.lines()
+                .nth(1)
+                .is_some_and(|line| line.starts_with("  line\\nbreak.txt — holder (")),
+            "the path is one line, escaped: {text}"
+        );
     }
 
     /// Nothing held under the repository, or nothing staged, is clear
@@ -521,7 +608,7 @@ mod tests {
         let root = tmp.path().to_path_buf();
         let backend = Mock::with(vec![Response::Leases { leases: vec![] }]);
         assert_eq!(
-            check(&backend, &root, &["a.rs".to_owned()], None).await,
+            check(&backend, &root, &[PathBuf::from("a.rs")], None).await,
             Verdict::Clear
         );
         assert_eq!(backend.requests().len(), 1, "no agent list for nothing");
@@ -535,7 +622,7 @@ mod tests {
                 Err(anyhow::anyhow!("connection refused"))
             }
         }
-        let verdict = check(&Down, &root, &["a.rs".to_owned()], None).await;
+        let verdict = check(&Down, &root, &[PathBuf::from("a.rs")], None).await;
         assert!(matches!(&verdict, Verdict::Skipped(why) if why.contains("connection refused")));
         let (text, status) = report(&verdict, &root);
         assert_eq!(status, 0);
@@ -623,6 +710,15 @@ mod tests {
         assert_eq!(wiring(&hook, exe), Wiring::Missing);
         let added = with_block(Some(theirs), exe).unwrap();
         std::fs::write(&hook, &added).unwrap();
+        assert_eq!(
+            wiring(&hook, exe),
+            Wiring::Unverified,
+            "the right bytes in a file git skips"
+        );
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         assert_eq!(wiring(&hook, exe), Wiring::Wired);
         assert_eq!(
             wiring(&hook, Path::new("/usr/local/bin/agentdocker")),
