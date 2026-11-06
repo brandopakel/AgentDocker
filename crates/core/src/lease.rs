@@ -13,7 +13,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{AgentId, ProjectId};
+use crate::{AgentId, MessageId, ProjectId};
 
 /// Something agents coordinate over. Keys are `kind:value`, for example
 /// `path:/repo/src/main.rs`, `file:<project id>/src/main.rs`,
@@ -169,6 +169,64 @@ pub struct Lease {
 
 fn is_zero(n: &u64) -> bool {
     *n == 0
+}
+
+/// How long a release request waits for the holder's answer before the
+/// daemon drops it: a day, so a holder that never answers does not keep
+/// the request on the books for ever.
+pub const RELEASE_REQUEST_TTL_SECS: i64 = 24 * 60 * 60;
+
+/// How long a reason or summary on a release request may be: enough to
+/// say why, not a document.
+pub const RELEASE_REQUEST_TEXT_CHARS: usize = 400;
+
+/// An agent asking another to let go of a resource it holds.
+///
+/// The hooks adapters and the git pre-commit hook refuse an edit or a
+/// commit over a path somebody else holds; this is how the refused agent
+/// asks for the path instead of waiting the lease out. The daemon sends
+/// the holder a `release_request` message, keeps the request as a
+/// document until it is answered or [`RELEASE_REQUEST_TTL_SECS`] pass,
+/// and on an accept releases the named leases on the holder's behalf,
+/// journaled with the summary they give.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseRequest {
+    /// The `release_request` message's id, which the answer names.
+    pub message: MessageId,
+    pub requester: AgentId,
+    pub holder: AgentId,
+    /// What was asked for, as the requester named it (canonical).
+    pub resource: ResourceKey,
+    /// The holder's leases overlapping it when the request was made.
+    pub leases: Vec<LeaseId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// Filled when the holder has answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<ReleaseAnswer>,
+}
+
+impl ReleaseRequest {
+    pub fn expired(&self, now: DateTime<Utc>) -> bool {
+        self.answer.is_none() && self.expires_at <= now
+    }
+}
+
+/// The holder's answer to a [`ReleaseRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseAnswer {
+    pub accepted: bool,
+    /// The summary that went to the journal on an accept; the reason on a
+    /// decline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub at: DateTime<Utc>,
+    /// The leases the daemon released on the holder's behalf: those of
+    /// the request's that were still held when it was accepted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released: Vec<LeaseId>,
 }
 
 impl LeaseTable {
@@ -585,6 +643,35 @@ mod tests {
 
     fn key(s: &str) -> ResourceKey {
         ResourceKey::new(s)
+    }
+
+    /// A request expires only unanswered, and at its deadline, not before.
+    #[test]
+    fn a_release_request_expires_only_unanswered_and_at_its_deadline() {
+        let now = Utc::now();
+        let mut request = ReleaseRequest {
+            message: MessageId::from("m1".to_owned()),
+            requester: agent("a"),
+            holder: agent("b"),
+            resource: key("branch:main"),
+            leases: Vec::new(),
+            reason: None,
+            at: now - Duration::hours(1),
+            expires_at: now + Duration::seconds(1),
+            answer: None,
+        };
+        assert!(!request.expired(now), "not yet due");
+        request.expires_at = now;
+        assert!(request.expired(now), "due at its deadline");
+        request.expires_at = now - Duration::seconds(1);
+        assert!(request.expired(now), "past due");
+        request.answer = Some(ReleaseAnswer {
+            accepted: false,
+            text: None,
+            at: now,
+            released: Vec::new(),
+        });
+        assert!(!request.expired(now), "answered: nothing to drop");
     }
 
     #[test]

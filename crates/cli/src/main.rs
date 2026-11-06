@@ -16,6 +16,7 @@ mod desktop;
 mod emission;
 mod format;
 mod gate;
+mod git_hook;
 mod hooks;
 mod input_status;
 mod mcp;
@@ -539,7 +540,10 @@ enum Command {
         /// Make every `claude` typed in a terminal carry the channel flag that lets AgentDocker wake it: a marked block in your shell's startup file, previewed like every other change.
         #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show"])]
         shell: bool,
-        /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
+        /// Plan a marked block in this repository's git `pre-commit` hook that refuses a commit over a path another live agent holds; `--apply <id>` installs it, `--undo <id>` takes it back. A daemon that cannot be reached lets the commit through. With `--remove`, takes the block out at once.
+        #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show", "shell"])]
+        git_hook: bool,
+        /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block; with `--git-hook`, this repository's pre-commit block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
         #[arg(long, conflicts_with_all = ["dry_run", "apply", "undo", "health", "list", "show", "shell"])]
         remove: bool,
         /// Docker Agent only: the agent YAML file to add AgentDocker's MCP toolset to (its default agent, the one `docker agent run` runs: `root`, else the first), or to take it out of with `--remove`. Docker Agent reads MCP servers from each agent's file, so `setup docker-agent` needs one.
@@ -848,6 +852,37 @@ enum Command {
         /// What changed and why; becomes the project's journal entry.
         #[arg(long)]
         summary: Option<String>,
+    },
+    /// Ask whoever holds a resource to let go of it: each holder gets a `release_request` message and answers with `respond-release`; the answer comes back to you as a `release_response` message.
+    RequestRelease {
+        /// Agent id, name or unique prefix (defaults to this session).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// `path:`, `branch:`, `task:`... as `claim` takes it; a bare path is a `path:`.
+        resource: String,
+        /// Why you need it, for the holder to read (at most 400 characters).
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Answer a release request put to you, by its message id: `--accept` has the daemon release those leases for you, journaled with `--summary`; `--decline` sends `--reason` back.
+    RespondRelease {
+        /// Agent id, name or unique prefix (defaults to this session).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// The `release_request` message's id.
+        request: String,
+        /// Let go: the daemon releases the request's leases you still hold.
+        #[arg(long, required_unless_present = "decline", conflicts_with = "decline")]
+        accept: bool,
+        /// Keep them, and say why with --reason.
+        #[arg(long)]
+        decline: bool,
+        /// What changed under the leases and why; becomes the journal entry (with --accept).
+        #[arg(long, conflicts_with = "reason")]
+        summary: Option<String>,
+        /// Why you keep them (with --decline).
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// The project's journal: what changed and why, one line per release, note, or commit.
     Journal(JournalArgs),
@@ -4143,6 +4178,7 @@ async fn run() -> Result<()> {
             show,
             json,
             shell,
+            git_hook,
             remove,
             agent,
         } => {
@@ -4150,6 +4186,7 @@ async fn run() -> Result<()> {
                 || preview
                 || !dry_run
                 || shell
+                || git_hook
                 || apply.is_some()
                 || undo.is_some()
                 || health
@@ -4171,13 +4208,21 @@ async fn run() -> Result<()> {
                     Action::RemovePreview
                 } else if remove {
                     Action::Remove
-                } else if preview || shell {
+                } else if preview || shell || git_hook {
                     Action::Preview
                 } else {
                     Action::Install
                 };
-                setup::guided::run(socket, &runtimes, action, json, shell, agent.as_deref())
-                    .await?;
+                setup::guided::run(
+                    socket,
+                    &runtimes,
+                    action,
+                    json,
+                    shell,
+                    agent.as_deref(),
+                    git_hook,
+                )
+                .await?;
             } else {
                 setup::run(&client, &runtimes, dry_run, agent.as_deref()).await?;
             }
@@ -5121,6 +5166,75 @@ async fn run() -> Result<()> {
                     summary_source: agentdocker_core::SummarySource::Explicit,
                 };
                 client.call(&request).await?;
+            }
+        }
+        Command::RequestRelease {
+            agent,
+            resource,
+            reason,
+        } => {
+            let from = sender::resolve(&client, agent)
+                .await?
+                .context("ask as an agent: give --as, or run from an agent's session")?;
+            let request = Request::RequestRelease {
+                from,
+                resource: resource_key(&resource),
+                reason,
+            };
+            if let Response::ReleaseRequests { requests } = client.call(&request).await? {
+                for request in requests {
+                    eprintln!(
+                        "asked {} to release {} ({} lease{}); its answer arrives as a release_response message",
+                        request.holder.short(),
+                        format::resource(&request.resource),
+                        request.leases.len(),
+                        if request.leases.len() == 1 { "" } else { "s" }
+                    );
+                    println!("{}", request.message);
+                }
+            }
+        }
+        Command::RespondRelease {
+            agent,
+            request,
+            accept,
+            decline,
+            summary,
+            reason,
+        } => {
+            let from = sender::resolve(&client, agent)
+                .await?
+                .context("answer as an agent: give --as, or run from an agent's session")?;
+            let request = Request::RespondRelease {
+                from,
+                request: MessageId::from(request),
+                accept: accept && !decline,
+                text: if decline { reason } else { summary },
+            };
+            if let Response::ReleaseRequest { request } = client.call(&request).await? {
+                let answer = request.answer.as_ref();
+                let released = answer.map_or(0, |a| a.released.len());
+                if answer.is_some_and(|a| a.accepted) && released == 0 {
+                    eprintln!(
+                        "nothing to release on {} for {}: the leases were already gone",
+                        format::resource(&request.resource),
+                        request.requester.short()
+                    );
+                } else if answer.is_some_and(|a| a.accepted) {
+                    eprintln!(
+                        "released {} ({} lease{}) for {}",
+                        format::resource(&request.resource),
+                        released,
+                        if released == 1 { "" } else { "s" },
+                        request.requester.short()
+                    );
+                } else {
+                    eprintln!(
+                        "declined to release {} for {}",
+                        format::resource(&request.resource),
+                        request.requester.short()
+                    );
+                }
             }
         }
         Command::Journal(args) => journal_command(&client, args).await?,

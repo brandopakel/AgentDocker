@@ -122,6 +122,8 @@ impl State {
                 rule: ruling.rule,
             },
             closes: None,
+            released: Vec::new(),
+            journal: None,
         };
         let question_id = question.id.clone();
         match self.publish_with_channel(card, Some(question), None, Some(transition)) {
@@ -184,6 +186,8 @@ impl State {
                         by: by.to_owned(),
                     },
                     closes: Some(question.clone()),
+                    released: Vec::new(),
+                    journal: None,
                 };
                 let response =
                     self.publish_with_channel(held.envelope, None, None, Some(transition));

@@ -74,6 +74,7 @@ mod provider;
 mod read_content;
 mod recovery;
 mod relay;
+mod release_requests;
 pub mod reload;
 mod restarts;
 mod restore;
@@ -172,6 +173,12 @@ pub(crate) struct DocumentTransition {
     /// The document to put, or none to delete it.
     pub value: Option<serde_json::Value>,
     pub event: EventKind,
+    /// Leases released in the same transaction, each with its
+    /// `lease_released`: an accepted release request lets go of them with
+    /// its answer, or not at all.
+    pub released: Vec<Lease>,
+    /// The journal entry that records them; its sequence is given here.
+    pub journal: Option<JournalEntry>,
     /// A question settled without an answer in the same commit — the card
     /// a held message rode on, once the message goes out — closed with
     /// `question_closed {answer: None}`.
@@ -575,6 +582,9 @@ struct State {
     secret_reviews: HashMap<String, secret_reviews::Entry>,
     /// The projects told to hold, and why; kept as documents.
     pauses: HashMap<ProjectId, agentdocker_core::Pause>,
+    /// Requests to let go of a resource that wait for the holder's answer,
+    /// by the request message's id; kept as documents.
+    release_requests: HashMap<MessageId, agentdocker_core::ReleaseRequest>,
     /// Claims waiting for a resource, in arrival order. Connection-scoped
     /// and never persisted: a restart drops every waiting client, which
     /// reconnects and takes a new place.
@@ -1339,6 +1349,7 @@ impl Daemon {
         let mut state = lock(&self.state);
         state.expire_leases();
         state.expire_questions(Utc::now());
+        state.expire_release_requests(Utc::now());
         state.expire_secret_reviews();
     }
     /// Send the stale and contested notices that accumulated since the
@@ -1572,6 +1583,11 @@ impl Daemon {
             .into_iter()
             .map(|pause| (pause.project.clone(), pause))
             .collect();
+        let release_requests: HashMap<MessageId, agentdocker_core::ReleaseRequest> = store
+            .documents::<agentdocker_core::ReleaseRequest>("release_request", None)?
+            .into_iter()
+            .map(|request| (request.message.clone(), request))
+            .collect();
         let mut questions: HashMap<_, _> = store
             .documents::<agentdocker_core::Question>("question", None)?
             .into_iter()
@@ -1720,6 +1736,7 @@ impl Daemon {
                 held_messages,
                 secret_reviews: HashMap::new(),
                 pauses,
+                release_requests,
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
                 host_policy: policies::Loaded::default(),
@@ -3005,6 +3022,17 @@ impl Daemon {
                 self.flush_release_watcher(&agent, None).await;
                 lock(&self.state).release_all(&agent, summary, summary_source, only_automatic)
             }
+            Request::RequestRelease {
+                from,
+                resource,
+                reason,
+            } => self.request_release(from, resource, reason).await,
+            Request::RespondRelease {
+                from,
+                request,
+                accept,
+                text,
+            } => self.respond_release(from, request, accept, text).await,
             Request::JournalAdd { agent, summary } => {
                 lock(&self.state).journal_add(&agent, summary)
             }
@@ -5247,6 +5275,23 @@ impl State {
             Some((channel, events, journal)) => (Some(channel), events, journal),
             None => (None, Vec::new(), None),
         };
+        let mut document = document;
+        let released = document
+            .as_mut()
+            .map(|document| std::mem::take(&mut document.released))
+            .unwrap_or_default();
+        if let Some(entry) = document
+            .as_mut()
+            .and_then(|document| document.journal.take())
+        {
+            if journal.is_some() {
+                return Response::error(
+                    ErrorCode::Internal,
+                    "a message carries at most one journal entry",
+                );
+            }
+            journal = Some(entry);
+        }
         if let Some(error) = self.write_failure() {
             return error;
         }
@@ -5426,6 +5471,9 @@ impl State {
             };
         }
         let mut kinds: Vec<_> = transition.into_iter().collect();
+        kinds.extend(released.iter().map(|lease| EventKind::LeaseReleased {
+            lease: lease.clone(),
+        }));
         if let Some(document) = &document {
             kinds.push(document.event.clone());
         }
@@ -5490,7 +5538,12 @@ impl State {
                     question.as_ref(),
                     &closing,
                     events,
-                    channel.as_ref().map(|channel| (channel, journal.as_ref())),
+                    channel.as_ref(),
+                    journal.as_ref(),
+                    &released
+                        .iter()
+                        .map(|lease| lease.id.clone())
+                        .collect::<Vec<_>>(),
                     document
                         .as_ref()
                         .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
@@ -5501,6 +5554,12 @@ impl State {
                 post = kept;
                 if let Some(channel) = &channel {
                     state.channels.insert(channel.id.clone(), channel.clone());
+                }
+                for lease in &released {
+                    state
+                        .leases
+                        .release(&lease.id, &lease.holder)
+                        .expect("release protection retained until commit");
                 }
                 if let Some(entry) = &journal {
                     state
