@@ -470,8 +470,8 @@ text; the words and any details still go to stderr as `Error: … (Code)`.
 | Status | Meaning | Daemon answers |
 | --- | --- | --- |
 | 0 | done | — |
-| 1 | something unexpected: an internal error, or a failure that is not the daemon's answer (no daemon, a broken connection) | `internal` |
-| 2 | a usage error, the argument parser's own; also an invalid request | `invalid` |
+| 1 | something unexpected: an internal error, a change made but not confirmed (look before retrying), or a failure that is not the daemon's answer (no daemon, a broken connection) | `internal`, `unconfirmed` |
+| 2 | a usage error, the argument parser's own; also an invalid request, or a command that could not be started | `invalid`, `launch_failed` |
 | 3 | nothing by that name, or too many | `not_found`, `ambiguous` |
 | 4 | held or taken by somebody else | `conflict`, `name_taken`, `deadlock` |
 | 5 | refused: not the caller's to do, the project is paused, or it acts as an agent, or registers a process, from inside another agent's session or from a sender that cannot be traced | `forbidden`, `paused`, `identity_mismatch` |
@@ -776,7 +776,7 @@ when its conversation ends, giving back its leases — and `SubagentStart` and
 `SubagentStop`, which keep the conversation working while its subagents run.
 Hooks an earlier version installed are *outdated*: `agentdocker runtimes` shows
 `outdated (…)` with the events they lack, the Tools card says *Hooks outdated*,
-and `agentdocker setup claude-code` (or `codex`) adds them. They are what let the daemon see an agent's session
+and `agentdocker setup claude-code` (or `codex`) adds them. Codex runs a hook only once you trust it in its `/hooks`, and trust ends when the hook's definition changes: setup leaves AgentDocker's Codex hooks exactly as they are once they are current, says so when it must change one you may have trusted, and `agentdocker setup --health` says *Never run: trust them in Codex's /hooks* until Codex has run one of them (which one is not recorded, so a hook setup changed is flagged only by setup itself). They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, the
 project's memory, and anything it read that has gone stale. Codex's
@@ -1230,7 +1230,10 @@ Current behaviour that the sections above do not already state, by area.
 - **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
   starts Codex in the terminal you are in, through AgentDocker's launcher:
   messages wake it even while it is idle, and you can give it a role, such
-  as reviewer, like any agent. Codex's own options go after `--`. While
+  as reviewer, like any agent. Codex's own options go after `--`: those
+  that set its configuration (`-c`, `--model`, `-a`, `-s`, `--yolo`, the
+  last meaning no approvals and no sandbox); a prompt or a profile is
+  refused, so send the first message through AgentDocker. While
   Codex has the terminal AgentDocker writes nothing into it: the INPUT
   column of `agentdocker ps` and the app say when it can take messages, and
   the launcher's own words go to its launch log. A plain

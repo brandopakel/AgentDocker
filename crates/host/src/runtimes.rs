@@ -39,6 +39,38 @@ pub struct Roots {
     pub shell: Option<String>,
     /// Ask each CLI for its version; off in tests that only lay out files.
     pub versions: bool,
+    /// Where each runtime's hooks leave word that they ran
+    /// ([`hook_ran`]); `None` says nothing about whether they did.
+    pub hook_stamps: Option<PathBuf>,
+}
+
+/// The file a runtime's hooks touch each time one runs: where `setup
+/// --check` reads whether the provider has ever run them, which for Codex
+/// says whether the person has trusted them.
+pub fn hook_stamp(stamps: &Path, runtime: &str) -> PathBuf {
+    stamps.join(format!("{runtime}.ran"))
+}
+
+/// Where hooks leave word that they ran, beneath AgentDocker's home.
+pub fn hook_stamps() -> PathBuf {
+    crate::dirs::home().join("hooks")
+}
+
+/// Leave word that one of `runtime`'s hooks ran, now. Only where
+/// AgentDocker's home already is: a hook never makes the home for it, as
+/// it never starts a daemon. Best effort: a hook never fails for it.
+pub fn hook_ran(runtime: &str) {
+    hook_ran_in(&crate::dirs::home(), runtime);
+}
+
+/// [`hook_ran`] beneath `home`.
+pub fn hook_ran_in(home: &Path, runtime: &str) {
+    if !home.is_dir() {
+        return;
+    }
+    let stamps = home.join("hooks");
+    let _ = std::fs::create_dir_all(&stamps)
+        .and_then(|()| std::fs::write(hook_stamp(&stamps, runtime), b""));
 }
 
 impl Roots {
@@ -93,6 +125,7 @@ impl Roots {
             path,
             app_dirs,
             versions: true,
+            hook_stamps: Some(hook_stamps()),
         }
     }
 }
@@ -595,6 +628,19 @@ pub fn missing_hook_events<'a>(
 
 #[cfg(test)]
 mod tests {
+
+    /// A hook leaves word that it ran only where AgentDocker's home already
+    /// is: it never makes the home for it.
+    #[test]
+    fn a_hook_stamps_only_an_existing_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("state");
+        hook_ran_in(&home, "codex");
+        assert!(!home.exists(), "the home is not made");
+        std::fs::create_dir(&home).unwrap();
+        hook_ran_in(&home, "codex");
+        assert!(hook_stamp(&home.join("hooks"), "codex").is_file());
+    }
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -889,6 +935,7 @@ mod tests {
             browser_dirs: vec![],
             shell: None,
             versions: false,
+            hook_stamps: None,
         };
         (tmp, roots)
     }

@@ -458,6 +458,47 @@ pub mod tmux {
         usable().is_ok()
     }
 
+    /// tmux itself could not be started, so it asked the server for
+    /// nothing and nothing was started. Any other error from
+    /// [`new_session`] comes after a tmux client ran, when the server may
+    /// have made the session.
+    #[derive(Debug)]
+    pub struct Refused(pub String);
+
+    impl std::fmt::Display for Refused {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(&self.0)
+        }
+    }
+
+    impl std::error::Error for Refused {}
+
+    /// The pane `new-session -P` made, from what a tmux client that ran
+    /// printed and how it ended. Any failure is an error and never a
+    /// refusal: the server may have made the session and started its
+    /// command even when the client says otherwise (an `after-new-session`
+    /// hook that failed after the pane was printed) or says nothing (a
+    /// client killed after the server accepted its command).
+    fn created_pane(success: bool, stdout: &[u8], stderr: &[u8]) -> io::Result<String> {
+        let id = String::from_utf8_lossy(stdout).trim().to_owned();
+        let why = String::from_utf8_lossy(stderr).trim().to_owned();
+        match (success, id.is_empty()) {
+            (true, false) => Ok(id),
+            (true, true) => Err(io::Error::other("tmux created a pane but did not name it")),
+            (false, true) => Err(io::Error::other(format!(
+                "tmux did not confirm the session: {why}"
+            ))),
+            (false, false) => Err(io::Error::other(format!(
+                "tmux made pane {id} but then reported a failure: {why}"
+            ))),
+        }
+    }
+
+    /// Whether `error` from [`new_session`] says nothing was started.
+    pub fn refused(error: &io::Error) -> bool {
+        error.get_ref().is_some_and(|inner| inner.is::<Refused>())
+    }
+
     /// Start `command` in a new detached session named `session`, in
     /// `workdir`, with `env` set for the process.
     ///
@@ -486,17 +527,19 @@ pub mod tmux {
         }
         // `--` so an agent's own flags are never read as tmux's.
         tmux.arg("--").args(command);
-        let output = tmux.output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "tmux refused to create the session: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        let id = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-        if id.is_empty() {
-            return Err(io::Error::other("tmux created a pane but did not name it"));
-        }
+        // Only a tmux that could not be started at all sent the server
+        // nothing; once it runs, the server may have made the session
+        // whatever the client reports or however it ends.
+        let child = tmux
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| {
+                io::Error::other(Refused(format!("tmux could not be run: {error}")))
+            })?;
+        let output = child.wait_with_output()?;
+        let id = created_pane(output.status.success(), &output.stdout, &output.stderr)?;
         let pid = pane_pid(&id)?;
         Ok(Pane {
             session: describe_pane(&id, "#{session_name}").unwrap_or_else(|_| session.to_owned()),
@@ -675,6 +718,31 @@ pub mod tmux {
     #[cfg(test)]
     mod tests {
         use super::*;
+
+        /// A refusal says nothing started; an error after tmux made the
+        /// pane (it did not name it, its pid could not be read) does not.
+        #[test]
+        fn only_a_refusal_says_nothing_started() {
+            assert!(refused(&io::Error::other(Refused("no server".into()))));
+            assert!(!refused(&io::Error::other(
+                "tmux created a pane but did not name it"
+            )));
+            assert!(!refused(&io::Error::from(io::ErrorKind::NotFound)));
+            assert_eq!(created_pane(true, b"%3\n", b"").unwrap(), "%3");
+            // A client that ran and failed proves nothing about the server:
+            // one killed after the server accepted its command prints
+            // nothing, and that command ran.
+            let silent = created_pane(false, b"", b"").unwrap_err();
+            assert!(!refused(&silent), "{silent}");
+            let said_no = created_pane(false, b"", b"duplicate session: probe").unwrap_err();
+            assert!(!refused(&said_no), "{said_no}");
+            // The pane was made and printed, then an after-new-session hook
+            // failed and tmux exited 1: its command may be running.
+            let hooked = created_pane(false, b"%1\n", b"'exit 1' returned 1").unwrap_err();
+            assert!(!refused(&hooked), "{hooked}");
+            assert!(hooked.to_string().contains("%1"), "{hooked}");
+            assert!(!refused(&created_pane(true, b"\n", b"").unwrap_err()));
+        }
 
         #[test]
         fn a_session_name_avoids_tmuxs_own_target_syntax() {
