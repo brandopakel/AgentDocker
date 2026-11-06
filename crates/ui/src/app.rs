@@ -2217,6 +2217,7 @@ impl App {
             | EventKind::ChannelInvited { .. }
             | EventKind::ChannelOpened { .. }
             | EventKind::ChannelJoined { .. }
+            | EventKind::ChannelLeft { .. }
             | EventKind::ChannelClosed { .. } => self.on_conversation_activity(),
             // What the daemon pruned must not live on here: the archives
             // are dropped and the open one read again.
@@ -3328,6 +3329,9 @@ fn memory_search(project: &str, query: &str) -> Request {
         project: Some(project.to_owned()),
         query: query.to_owned(),
         limit: Some(MEMORY_PAGE),
+        as_of: None,
+        include_superseded: false,
+        min_score: None,
     }
 }
 
@@ -3800,6 +3804,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 standing: false,
                 forget_after: None,
                 roles: Vec::new(),
+                valid_from: None,
             }) {
                 Ok(Response::Memory { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -5393,6 +5398,7 @@ pub(crate) mod tests {
         let serving = agentdocker_host::connector::Serving {
             pid: 1,
             public_url: "https://node.example.ts.net".into(),
+            authorize_url: None,
             bind: "127.0.0.1:1".into(),
             default_project: None,
             pairing_code: "ABCD-EFGH".into(),

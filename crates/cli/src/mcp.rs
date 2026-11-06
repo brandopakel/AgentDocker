@@ -2427,6 +2427,12 @@ fn render_whole(response: Response) -> Value {
                 false,
             )
         }
+        Response::Held { message, question } => text_result(
+            &json!({ "sent": false, "held": true, "message_id": message, "question_id": question,
+            "delivery": "held_for_the_person",
+            "note": "This project holds what you send until the person releases it from the question put to them; nobody has it yet. Do not resend." }),
+            false,
+        ),
         Response::Messages { messages } => text_result(&json!({ "messages": messages }), false),
         Response::Answer {
             message,
@@ -3278,6 +3284,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                     "standing": { "type": "boolean", "description": "Said first in the profile, before the recent ones: a convention or a decision rather than news." },
                     "forget_after": { "type": "string", "format": "date-time", "description": "An RFC 3339 time after which it is no longer said." },
                     "roles": { "type": "array", "maxItems": 8, "items": { "type": "string" }, "description": "Said only to the agents holding one of these project roles, and to the person; to everyone when absent." },
+                    "valid_from": { "type": "string", "format": "date-time", "description": "When its fact became true, if before now (RFC 3339)." },
                     "links": { "type": "array", "maxItems": 8, "items": { "type": "object", "properties": { "kind": { "type": "string", "enum": ["path", "commit", "pr", "url", "task", "message", "memory"] }, "target": { "type": "string" }, "note": { "type": "string" } }, "required": ["kind", "target"], "additionalProperties": false } }
                 },
                 "required": ["content"],
@@ -3286,12 +3293,14 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "search_memory",
-            "description": "This project's memories that answer the words, the best first: whole words, the rarer ones counting for more, a newer memory winning a tie; superseded and expired ones are left out.",
+            "description": "This project's memories that answer the words, the best first: whole words, the rarer ones counting for more, a newer memory winning a tie; superseded and expired ones are left out, unless include_superseded lists the superseded ones too with what replaced each. as_of reads them as they stood then.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "query": { "type": "string" },
-                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 100 },
+                    "as_of": { "type": "string", "format": "date-time", "description": "Read them as they stood at this RFC 3339 time." },
+                    "include_superseded": { "type": "boolean", "description": "List superseded memories that answer too, each with what replaced it." }
                 },
                 "required": ["query"],
                 "additionalProperties": false
@@ -3299,11 +3308,12 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_profile",
-            "description": "What this project's agents should know first: its standing memories, the oldest first, then the others, newest first.",
+            "description": "What this project's agents should know first: its standing memories, the oldest first, then the others, newest first; as_of as they stood then.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "max_chars": { "type": "integer", "minimum": 1, "maximum": 64000 }
+                    "max_chars": { "type": "integer", "minimum": 1, "maximum": 64000 },
+                    "as_of": { "type": "string", "format": "date-time", "description": "As they stood at this RFC 3339 time." }
                 },
                 "additionalProperties": false
             }
@@ -4675,6 +4685,26 @@ mod tests {
             text["recipient_readiness"]["details"][0]["fix"]["kind"],
             "reconnect"
         );
+    }
+
+    /// A held send says so plainly, with the card to watch, and never
+    /// reads as sent: the hosted model must neither resend nor assume
+    /// delivery.
+    #[test]
+    fn a_held_send_is_rendered_as_held_not_sent() {
+        let result = render_whole(Response::Held {
+            message: "0123456789abcdef".to_owned().into(),
+            question: "fedcba9876543210".to_owned().into(),
+        });
+        let text: Value =
+            serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(text["sent"], false);
+        assert_eq!(text["held"], true);
+        assert_eq!(text["message_id"], "0123456789abcdef");
+        assert_eq!(text["question_id"], "fedcba9876543210");
+        assert_eq!(text["delivery"], "held_for_the_person");
+        assert!(text["note"].as_str().unwrap().contains("Do not resend"));
+        assert_eq!(result["isError"], false);
     }
 
     /// Sessions in every readiness state, of the runtimes that differ, and

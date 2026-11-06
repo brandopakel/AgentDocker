@@ -3452,6 +3452,29 @@ async fn a_restore_that_cannot_run_records_the_failure_and_does_not_stop_the_oth
     daemon.stop_all().await;
 }
 
+/// A command whose program cannot be started is refused `launch_failed`,
+/// not `internal`: the request named something that cannot run.
+#[tokio::test]
+async fn a_command_that_cannot_start_is_refused_launch_failed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let mut missing = spec("missing");
+    missing.workdir = Some(dir.path().to_path_buf());
+    missing.command = vec!["/nonexistent/agentdocker-no-such-binary".into()];
+    let response = daemon.handle(Request::Run { spec: missing }).await;
+    assert!(
+        matches!(
+            &response,
+            Response::Error {
+                code: ErrorCode::LaunchFailed,
+                ..
+            }
+        ),
+        "{response:?}"
+    );
+    daemon.stop_all().await;
+}
+
 #[tokio::test]
 async fn an_agent_stopped_on_purpose_is_not_brought_back() {
     let dir = TempDir::new().unwrap();
@@ -9251,6 +9274,337 @@ async fn send_readiness_reports_only_queued_recipients_and_never_receipts() {
     );
 }
 
+/// A channel's recipients are its live members. One that exits is no
+/// recipient and is not listed, so a send into the room is not told to
+/// get a dead session ready; it stays in the stored membership, since a
+/// session that comes back takes up its record, and what it said there
+/// stays in the channel's history.
+#[tokio::test]
+async fn an_ended_member_is_neither_recipient_nor_listed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let workdir = dir.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let opener = register_in(&daemon, "opener", &workdir).await;
+    let stays = register_in(&daemon, "stays", &workdir).await;
+    let leaves = register_in(&daemon, "leaves", &workdir).await;
+    let Response::Channel { channel } = daemon
+        .handle(Request::ChannelOpen {
+            agent: opener.id.to_string(),
+            task: "membership".into(),
+            members: vec![stays.id.to_string(), leaves.id.to_string()],
+            name: None,
+            project: None,
+        })
+        .await
+    else {
+        panic!("channel failed")
+    };
+    assert_eq!(channel.members.len(), 3);
+    let destination = format!("channel:{}", channel.id);
+    // Said while live: the message outlives the session.
+    let Response::Sent { message: said, .. } =
+        send(&daemon, leaves.id.as_str(), &destination).await
+    else {
+        panic!("send failed")
+    };
+    let Response::Sent {
+        recipient_readiness: Some(before),
+        ..
+    } = send(&daemon, opener.id.as_str(), &destination).await
+    else {
+        panic!("send failed")
+    };
+    assert_eq!(before.recipients, 2, "{before:?}");
+
+    daemon
+        .handle(Request::Deregister {
+            agent: leaves.id.to_string(),
+        })
+        .await;
+
+    // Listed to clients without it; stored with it, for its return.
+    let Response::Channels { channels } = daemon
+        .handle(Request::Channels {
+            project: String::new(),
+            all: true,
+            agent: Some(opener.id.to_string()),
+        })
+        .await
+    else {
+        panic!("channels failed")
+    };
+    assert_eq!(channels.len(), 1, "{channels:?}");
+    assert!(channels[0].is_open(), "two live members keep the room open");
+    assert_eq!(
+        channels[0].members,
+        vec![opener.id.clone(), stays.id.clone()]
+    );
+    let Response::Conversations { conversations } = daemon
+        .handle(Request::Conversations {
+            project: None,
+            reader: Some(opener.id.to_string()),
+        })
+        .await
+    else {
+        panic!("conversations failed")
+    };
+    let room = conversations
+        .iter()
+        .find(|c| c.conversation == agentdocker_core::ConversationId::channel(&channel.id))
+        .expect("the room is among the reader's conversations");
+    assert_eq!(room.members, vec![opener.id.clone(), stays.id.clone()]);
+    let stored: agentdocker_core::Channel = lock(&daemon.state)
+        .store
+        .document("channel", channel.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.members.len(), 3, "{stored:?}");
+    assert!(
+        !daemon
+            .recent_events(50)
+            .iter()
+            .any(|e| matches!(&e.kind, EventKind::ChannelClosed { .. })),
+        "a room with live members left in it does not close"
+    );
+
+    // A send now fans out to the live members only: nobody is told to
+    // bring a dead session back.
+    let Response::Sent {
+        message,
+        recipient_readiness: Some(after),
+        ..
+    } = send(&daemon, opener.id.as_str(), &destination).await
+    else {
+        panic!("send failed")
+    };
+    assert_eq!(after.recipients, 1, "{after:?}");
+    assert!(
+        after.details.iter().all(|d| d.agent != leaves.id),
+        "{after:?}"
+    );
+    assert!(
+        inbox(&daemon, stays.id.as_str(), false)
+            .await
+            .iter()
+            .any(|m| m.id == message)
+    );
+    assert!(
+        !inbox(&daemon, leaves.id.as_str(), false)
+            .await
+            .iter()
+            .any(|m| m.id == message)
+    );
+    // What the ended member said is still the channel's history.
+    let Response::History { messages, .. } = daemon
+        .handle(Request::History {
+            conversation: agentdocker_core::ConversationId::channel(&channel.id),
+            before_seq: None,
+            limit: 50,
+        })
+        .await
+    else {
+        panic!("history failed")
+    };
+    assert!(
+        messages.iter().any(|m| m.envelope.id == said),
+        "{messages:?}"
+    );
+}
+
+/// The notices an invitation, a review request, a review and a close
+/// send go to the room's live members too: each stages the stored room,
+/// which keeps an ended member for its return, and routes to the live
+/// ones, so a dead session's full queue can never block them.
+#[tokio::test]
+async fn channel_actions_notify_live_members_only() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let workdir = dir.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let opener = register_in(&daemon, "opener", &workdir).await;
+    let stays = register_in(&daemon, "stays", &workdir).await;
+    let leaves = register_in(&daemon, "leaves", &workdir).await;
+    let latecomer = register_in(&daemon, "latecomer", &workdir).await;
+    let Response::Channel { channel } = daemon
+        .handle(Request::ChannelOpen {
+            agent: opener.id.to_string(),
+            task: "notices".into(),
+            members: vec![stays.id.to_string(), leaves.id.to_string()],
+            name: None,
+            project: None,
+        })
+        .await
+    else {
+        panic!("channel failed")
+    };
+    daemon
+        .handle(Request::Deregister {
+            agent: leaves.id.to_string(),
+        })
+        .await;
+    // Its queue is full: a notice routed to it would be refused.
+    {
+        let mut state = lock(&daemon.state);
+        let queue = state.inboxes.entry(leaves.id.clone()).or_default();
+        for n in 0..INBOX_CAPACITY {
+            queue.push_back(Envelope::new(
+                "agentd",
+                Destination::Agent(leaves.id.clone()),
+                "chat",
+                json!({"text": format!("filler {n}")}),
+                None,
+                Utc::now(),
+            ));
+        }
+    }
+    let queued = |daemon: Arc<Daemon>, id: AgentId| async move {
+        lock(&daemon.state)
+            .inboxes
+            .get(&id)
+            .map_or(0, VecDeque::len)
+    };
+    let dead_before = queued(daemon.clone(), leaves.id.clone()).await;
+    let live_before = queued(daemon.clone(), stays.id.clone()).await;
+
+    let expect_channel = |response: Response| match response {
+        Response::Channel { channel } => channel,
+        other => panic!("{other:?}"),
+    };
+    expect_channel(
+        daemon
+            .handle(Request::ChannelInvite {
+                agent: opener.id.to_string(),
+                channel: channel.id.to_string(),
+                member: latecomer.id.to_string(),
+            })
+            .await,
+    );
+    expect_channel(
+        daemon
+            .handle(Request::ReviewRequest {
+                agent: opener.id.to_string(),
+                channel: channel.id.to_string(),
+                note: Some("ready".into()),
+            })
+            .await,
+    );
+    expect_channel(
+        daemon
+            .handle(Request::Review {
+                agent: stays.id.to_string(),
+                channel: channel.id.to_string(),
+                of: Some(opener.id.to_string()),
+                verdict: "approve".into(),
+                note: None,
+            })
+            .await,
+    );
+    let Response::Channel { channel: closed } = daemon
+        .handle(Request::ChannelClose {
+            agent: opener.id.to_string(),
+            channel: channel.id.to_string(),
+            resolution: Some("landed".into()),
+        })
+        .await
+    else {
+        panic!("close failed")
+    };
+    assert!(!closed.is_open());
+    // The invitation, the review request and the close reached a live
+    // member (the review is its own word, not queued back to it); none
+    // reached the ended one, whose membership the stored room kept.
+    assert_eq!(
+        queued(daemon.clone(), stays.id.clone()).await,
+        live_before + 3
+    );
+    assert_eq!(queued(daemon.clone(), leaves.id.clone()).await, dead_before);
+    let stored: agentdocker_core::Channel = lock(&daemon.state)
+        .store
+        .document("channel", channel.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert!(stored.has(&leaves.id));
+    assert!(stored.has(&latecomer.id));
+}
+
+/// A room that still lists records the daemon has forgotten is cleared
+/// on the tick: each leaves with `channel_left`, an ended record whose
+/// session may still come back stays, and a room left with nobody
+/// closes.
+#[tokio::test]
+async fn the_tick_takes_forgotten_records_out_of_open_channels() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let workdir = dir.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let opener = register_in(&daemon, "opener", &workdir).await;
+    let ended = register_in(&daemon, "ended", &workdir).await;
+    let forgotten = register_in(&daemon, "forgotten", &workdir).await;
+    let Response::Channel { channel } = daemon
+        .handle(Request::ChannelOpen {
+            agent: opener.id.to_string(),
+            task: "ghosts".into(),
+            members: vec![ended.id.to_string(), forgotten.id.to_string()],
+            name: None,
+            project: None,
+        })
+        .await
+    else {
+        panic!("channel failed")
+    };
+    // Behind the room's back: one record ended, one gone entirely.
+    {
+        let mut state = lock(&daemon.state);
+        state.registry.get_mut(&ended.id).unwrap().status = AgentStatus::Exited { code: Some(0) };
+        state.registry.remove(&forgotten.id);
+    }
+    daemon.flush_notices();
+    let stored = lock(&daemon.state).channels[&channel.id].clone();
+    assert!(stored.is_open());
+    assert_eq!(
+        stored.members,
+        vec![opener.id.clone(), ended.id.clone()],
+        "the forgotten record is out, the ended one still a member"
+    );
+    let left: Vec<AgentId> = daemon
+        .recent_events(50)
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::ChannelLeft { channel: c, agent } if c == &channel.id => Some(agent.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(left, vec![forgotten.id.clone()]);
+    // Durable: the store says the same.
+    let on_disk: agentdocker_core::Channel = lock(&daemon.state)
+        .store
+        .document("channel", channel.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert_eq!(on_disk.members, stored.members);
+    // Swept again, nothing more is said.
+    let seen = daemon.recent_events(100).len();
+    daemon.flush_notices();
+    assert_eq!(daemon.recent_events(100).len(), seen);
+
+    // With every member forgotten, the sweep closes the room instead.
+    {
+        let mut state = lock(&daemon.state);
+        for id in [&opener.id, &ended.id] {
+            state.registry.remove(id);
+        }
+    }
+    daemon.flush_notices();
+    let closed = lock(&daemon.state).channels[&channel.id].clone();
+    assert!(!closed.is_open());
+    assert!(closed.members.is_empty());
+    assert_eq!(closed.resolution.as_deref(), Some("everyone left"));
+    assert!(daemon.recent_events(50).iter().any(
+        |e| matches!(&e.kind, EventKind::ChannelClosed { channel: c, .. } if c == &channel.id)
+    ));
+}
+
 /// The person can see where their message stands with each agent it
 /// was queued for: one that took it and answered says so, one nothing
 /// woke waits for its next prompt, and a session caught up after the
@@ -9861,14 +10215,18 @@ async fn a_scan_started_before_registration_cannot_restore_an_adopted_process() 
 /// provider looks in the process table: its own name, no arguments. Bash
 /// and not `sleep` runs under that name, since the multi-call coreutils
 /// some Linux distributions ship refuse to run as a utility they are not.
-fn spawn_fake(fake: &std::path::Path, seconds: u32, cwd: &std::path::Path) -> std::process::Child {
+/// It runs in a process group of its own, which the guard ends whole when
+/// dropped, so the sleep bash started never outlives the test.
+fn spawn_fake(fake: &std::path::Path, seconds: u32, cwd: &std::path::Path) -> FakeProvider {
     use std::io::Write;
+    use std::os::unix::process::CommandExt;
     use std::process::Stdio;
     let mut child = std::process::Command::new(fake)
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
+        .process_group(0)
         .spawn()
         .unwrap();
     child
@@ -9877,7 +10235,35 @@ fn spawn_fake(fake: &std::path::Path, seconds: u32, cwd: &std::path::Path) -> st
         .unwrap()
         .write_all(format!("sleep {seconds}\nexit 0\n").as_bytes())
         .unwrap();
-    child
+    FakeProvider(child)
+}
+
+/// A fake provider's process, its group ended when it is dropped.
+struct FakeProvider(std::process::Child);
+
+impl std::ops::Deref for FakeProvider {
+    type Target = std::process::Child;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for FakeProvider {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+impl Drop for FakeProvider {
+    fn drop(&mut self) {
+        // The group is the child's own pid; whatever is left of it goes.
+        if let Ok(group) = i32::try_from(self.0.id()) {
+            unsafe {
+                libc::kill(-group, libc::SIGKILL);
+            }
+        }
+        let _ = self.0.wait();
+    }
 }
 
 #[tokio::test]
@@ -13674,4 +14060,28 @@ async fn a_full_watcher_flush_queue_cannot_block_release_indefinitely() {
     .await
     .expect("queue admission must share the flush timeout");
     assert!(matches!(response, Response::Leases { .. }));
+}
+
+#[test]
+fn concurrent_state_timing_samples_stop_at_the_limit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let samples = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    (0..100)
+                        .filter(|_| claim_state_timing_sample(&samples))
+                        .count()
+                })
+            })
+            .collect();
+        let accepted: usize = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .sum();
+        assert_eq!(accepted, 256);
+    });
+    assert_eq!(samples.load(Ordering::Relaxed), 256);
+    assert!(!claim_state_timing_sample(&samples));
 }

@@ -119,6 +119,12 @@ pub struct ServeArgs {
     /// quick tunnel, which chooses its own; required with a named one.
     #[arg(long)]
     pub public_url: Option<String>,
+    /// The address the person's browser opens for consent, when it is not
+    /// --public-url: published as the OAuth authorization endpoint while the
+    /// issuer, the token and registration endpoints and /mcp stay on
+    /// --public-url. For a tunnel whose host a browser cannot load.
+    #[arg(long)]
+    pub authorize_url: Option<String>,
     /// The loopback address to listen on; port 0 picks a free one.
     #[arg(long, default_value = "127.0.0.1:0")]
     pub bind: String,
@@ -157,6 +163,9 @@ impl ServeArgs {
         let mut argv = Vec::new();
         if let Some(url) = &self.public_url {
             argv.extend(["--public-url".to_owned(), url.clone()]);
+        }
+        if let Some(url) = &self.authorize_url {
+            argv.extend(["--authorize-url".to_owned(), url.clone()]);
         }
         if self.bind != "127.0.0.1:0" {
             argv.extend(["--bind".to_owned(), self.bind.clone()]);
@@ -268,17 +277,27 @@ fn save_store(path: &Path, store: &Store) -> Result<()> {
 /// The public address, checked: HTTPS, or plain HTTP only on loopback for
 /// a trial without a tunnel.
 fn public_url(raw: &str) -> Result<String> {
+    origin("--public-url", raw)
+}
+
+/// The address the browser opens for consent, checked the same way: the
+/// person's browser may well reach loopback, a vendor's tunnel never.
+fn authorize_url(raw: &str) -> Result<String> {
+    origin("--authorize-url", raw)
+}
+
+fn origin(flag: &str, raw: &str) -> Result<String> {
     let url = raw.trim().trim_end_matches('/').to_owned();
     if let Some(rest) = url.strip_prefix("http://") {
         let host = rest.split(['/', ':']).next().unwrap_or("");
         if !matches!(host, "127.0.0.1" | "localhost" | "[::1]") {
-            bail!("--public-url must be https://; plain http is accepted only on loopback");
+            bail!("{flag} must be https://; plain http is accepted only on loopback");
         }
     } else if !url.starts_with("https://") {
-        bail!("--public-url must start with https://");
+        bail!("{flag} must start with https://");
     }
     if url.contains(['?', '#']) || url.len() > 512 {
-        bail!("--public-url must be a plain origin, with at most a path");
+        bail!("{flag} must be a plain origin, with at most a path");
     }
     Ok(url)
 }
@@ -287,6 +306,9 @@ fn public_url(raw: &str) -> Result<String> {
 pub struct Connector<B> {
     backend: B,
     public_url: String,
+    /// Where the browser is sent for consent when that is not the public
+    /// URL; the only endpoint that moves.
+    authorize_url: Option<String>,
     /// Proposed first on the consent page; the person may choose another.
     default_project: Option<agentdocker_core::ProjectRef>,
     extra_callbacks: Vec<String>,
@@ -368,6 +390,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         Self {
             backend,
             public_url,
+            authorize_url: None,
             default_project,
             extra_callbacks,
             gate: Mutex::new(Gate {
@@ -384,6 +407,15 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             allowlist: None,
             fetcher: Arc::new(cimd::fetch),
         }
+    }
+
+    /// Publish this address as the authorization endpoint, for a browser
+    /// that cannot load the public one. Everything else stays on the public
+    /// URL: the issuer, the token and registration endpoints, `/mcp`, and
+    /// the `iss` every authorization response carries.
+    pub fn with_authorize_url(mut self, url: Option<String>) -> Self {
+        self.authorize_url = url;
+        self
     }
 
     /// Admit only these addresses at the vendor-facing endpoints.
@@ -731,7 +763,10 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
     fn server_metadata(&self) -> Value {
         json!({
             "issuer": self.public_url,
-            "authorization_endpoint": format!("{}/authorize", self.public_url),
+            "authorization_endpoint": format!(
+                "{}/authorize",
+                self.authorize_url.as_deref().unwrap_or(&self.public_url)
+            ),
             "token_endpoint": format!("{}/token", self.public_url),
             "registration_endpoint": format!("{}/register", self.public_url),
             "response_types_supported": ["code"],
@@ -1454,6 +1489,11 @@ async fn serve(
         );
     }
     // Whatever can fail without the network fails before a tunnel opens.
+    let authorize = args
+        .authorize_url
+        .as_deref()
+        .map(authorize_url)
+        .transpose()?;
     let home = agentdocker_host::dirs::home();
     let _owner = claim_home(&home)?;
     let path = state_path();
@@ -1497,6 +1537,7 @@ async fn serve(
     let serving = service::Serving {
         pid,
         public_url: public.clone(),
+        authorize_url: authorize.clone(),
         bind: local.to_string(),
         default_project: default_project.as_ref().map(|p| p.root.clone()),
         pairing_code: pairing.clone(),
@@ -1518,6 +1559,7 @@ async fn serve(
             store,
             Some(path),
         )
+        .with_authorize_url(authorize.clone())
         .with_allowlist(allowlist)
         .with_client_ip_header(&args.client_ip_header())
         .with_status(home.clone(), serving),
@@ -1530,7 +1572,7 @@ async fn serve(
         "shown by `agentdocker connector status` and the desktop's Tools screen".to_owned()
     };
     eprintln!(
-        "AgentDocker connector{}\n  listening on http://{local}, published as {public}{}\n  MCP URL to add as a custom connector: {public}/mcp\n  pairing code: {shown}\n  admitted addresses: {}\n  Claude:  Settings › Connectors › Add custom connector › paste the URL › Connect\n  ChatGPT: Settings › Connectors › Advanced › Developer mode › Create › paste the URL, OAuth{}",
+        "AgentDocker connector{}\n  listening on http://{local}, published as {public}{}\n  MCP URL to add as a custom connector: {public}/mcp{}\n  pairing code: {shown}\n  admitted addresses: {}\n  Claude:  Settings › Connectors › Add custom connector › paste the URL › Connect\n  ChatGPT: Settings › Connectors › Advanced › Developer mode › Create › paste the URL, OAuth{}",
         match &default_project {
             Some(p) => format!(
                 ", proposing project {} ({}) at consent",
@@ -1544,6 +1586,10 @@ async fn serve(
                 Some(pid) => format!(" by {} (pid {pid})", t.provider),
                 None => format!(" by {} funnel", t.provider),
             },
+            None => String::new(),
+        },
+        match &authorize {
+            Some(url) => format!("\n  consent page (the browser's address): {url}/authorize"),
             None => String::new(),
         },
         if prefixes == 0 {
@@ -1783,6 +1829,11 @@ async fn status(client: &Client) -> Result<()> {
         }
     );
     println!("  MCP URL:      {}/mcp", serving.public_url);
+    if let Some(url) = &serving.authorize_url {
+        println!(
+            "  consent at:   {url}/authorize (the browser's address; the rest stays on the MCP URL's host)"
+        );
+    }
     println!("  listening on: http://{}", serving.bind);
     println!("  pairing code: {}", serving.pairing_code);
     match &serving.tunnel {
@@ -2294,6 +2345,14 @@ mod tests {
         );
         assert_eq!(server["issuer"], "https://x.trycloudflare.com");
         assert_eq!(
+            server["authorization_endpoint"], "https://x.trycloudflare.com/authorize",
+            "without --authorize-url every endpoint shares the public host"
+        );
+        assert_eq!(
+            server["token_endpoint"],
+            "https://x.trycloudflare.com/token"
+        );
+        assert_eq!(
             server["registration_endpoint"],
             "https://x.trycloudflare.com/register"
         );
@@ -2319,6 +2378,66 @@ mod tests {
         assert_eq!(connector.handle(get("/nothing")).await.status, 404);
         let front = connector.handle(get("/")).await;
         assert!(String::from_utf8_lossy(&front.body).contains("https://x.trycloudflare.com/mcp"));
+    }
+
+    /// `--authorize-url` moves the one endpoint the person's browser opens
+    /// and nothing the vendor's tunnel reaches: the issuer, the token and
+    /// registration endpoints, the resource and the `iss` on every
+    /// authorization response stay on the public URL.
+    #[tokio::test]
+    async fn an_authorize_url_moves_only_the_endpoint_the_browser_opens() {
+        let (connector, _) = connector(vec![
+            Response::error(ErrorCode::NotFound, "no such agent"), // Inspect: the typed name is free
+        ]);
+        let connector = connector.with_authorize_url(Some("http://127.0.0.1:8080".into()));
+        let server = json_body(
+            &connector
+                .handle(get("/.well-known/oauth-authorization-server/mcp"))
+                .await,
+        );
+        assert_eq!(
+            server["authorization_endpoint"],
+            "http://127.0.0.1:8080/authorize"
+        );
+        assert_eq!(server["issuer"], "https://x.trycloudflare.com");
+        assert_eq!(
+            server["token_endpoint"],
+            "https://x.trycloudflare.com/token"
+        );
+        assert_eq!(
+            server["registration_endpoint"],
+            "https://x.trycloudflare.com/register"
+        );
+        let resource = json_body(
+            &connector
+                .handle(get("/.well-known/oauth-protected-resource/mcp"))
+                .await,
+        );
+        assert_eq!(resource["resource"], "https://x.trycloudflare.com/mcp");
+        assert_eq!(
+            resource["authorization_servers"],
+            json!(["https://x.trycloudflare.com"])
+        );
+        // The consent the browser makes at the moved endpoint still names
+        // the public URL as its issuer (RFC 9207).
+        let request = pending_request(&connector, "s3").await;
+        let consent = consented(&connector, &request, "agent_name=claude-connector-split").await;
+        assert_eq!(
+            consent.status,
+            302,
+            "{}",
+            String::from_utf8_lossy(&consent.body)
+        );
+        let location = consent
+            .headers
+            .iter()
+            .find(|(n, _)| n == "Location")
+            .map(|(_, v)| v.clone())
+            .unwrap();
+        assert!(
+            location.ends_with("&state=s3&iss=https%3A%2F%2Fx.trycloudflare.com"),
+            "the issuer is the public URL, not the browser's: {location}"
+        );
     }
 
     /// Registration, consent with the pairing code, the code exchange
@@ -2359,6 +2478,7 @@ mod tests {
         let serving = service::Serving {
             pid: std::process::id(),
             public_url: "https://x.trycloudflare.com".into(),
+            authorize_url: None,
             bind: "127.0.0.1:1".into(),
             default_project: None,
             pairing_code: "ABCD-EFGH".into(),
@@ -3435,6 +3555,41 @@ mod tests {
         assert!(public_url("http://example.com").is_err());
         assert!(public_url("ftp://x").is_err());
         assert!(public_url("https://x/?a=1").is_err());
+    }
+
+    #[test]
+    fn the_authorize_url_is_checked_like_the_public_one() {
+        assert_eq!(
+            authorize_url("http://localhost:8080/").unwrap(),
+            "http://localhost:8080"
+        );
+        assert_eq!(
+            authorize_url("https://consent.example/").unwrap(),
+            "https://consent.example"
+        );
+        let refused = authorize_url("http://example.com").unwrap_err().to_string();
+        assert!(refused.starts_with("--authorize-url"), "{refused}");
+        assert!(authorize_url("https://x/#f").is_err());
+    }
+
+    #[test]
+    fn the_service_definition_keeps_the_authorize_url() {
+        let args = ServeArgs {
+            public_url: Some("https://node.example.ts.net".into()),
+            authorize_url: Some("http://127.0.0.1:8765".into()),
+            bind: "127.0.0.1:0".into(),
+            tunnel_port: 443,
+            ..ServeArgs::default()
+        };
+        assert_eq!(
+            args.to_argv(),
+            [
+                "--public-url",
+                "https://node.example.ts.net",
+                "--authorize-url",
+                "http://127.0.0.1:8765"
+            ]
+        );
     }
 
     #[test]

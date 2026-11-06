@@ -529,8 +529,8 @@ text; the words and any details still go to stderr as `Error: … (Code)`.
 | Status | Meaning | Daemon answers |
 | --- | --- | --- |
 | 0 | done | — |
-| 1 | something unexpected: an internal error, or a failure that is not the daemon's answer (no daemon, a broken connection) | `internal` |
-| 2 | a usage error, the argument parser's own; also an invalid request | `invalid` |
+| 1 | something unexpected: an internal error, a change made but not confirmed (look before retrying), or a failure that is not the daemon's answer (no daemon, a broken connection) | `internal`, `unconfirmed` |
+| 2 | a usage error, the argument parser's own; also an invalid request, or a command that could not be started | `invalid`, `launch_failed` |
 | 3 | nothing by that name, or too many | `not_found`, `ambiguous` |
 | 4 | held or taken by somebody else | `conflict`, `name_taken`, `deadlock` |
 | 5 | refused: not the caller's to do, the project is paused, or it acts as an agent, or registers a process, from inside another agent's session or from a sender that cannot be traced | `forbidden`, `paused`, `identity_mismatch` |
@@ -573,6 +573,7 @@ each one by pid.
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml`. An entry with `after = "build exits 0"` starts once `build` has exited 0; `up` stays while it waits (`waiting: build exits 0`), and if `build` exits otherwise, is stopped or fails to start, it and everything waiting on it are not started (`not started: build exited 1`) and `up` exits unsuccessfully. `up test` alone takes an earlier exit 0 of `build`, from another `up`, as success when it was `build`'s own: its record says no stop was asked of that run, and it is still the run of the entry as this file gives it now (the same command, runtime, working directory, environment and the rest of how it runs; not renamed). Edit `build` in any of those ways, or give it `isolate = true`, and bring it up again before `test`. An earlier `build` that was stopped does not count, whatever it exited with (`not started: build was stopped`), and neither does one whose record cannot show this (`not started: build ended before this run; …`); the record is kept, and the answer with it, across a daemon restart and until retention forgets it. For an agent `up` is watching, only an exit 0 whose event it received counts, so an exit 0 seen after `up` has said its event stream ended does not |
+| `reconnect <agent>` | Bring an ended Claude Code session back under its own record, with its conversation and live messages, as a process the daemon runs |
 | `heartbeat` | Report that an agent is alive |
 
 ### Talk
@@ -584,7 +585,7 @@ each one by pid.
 | `watch` | Stream messages for an agent or matching topics. Topics keep their messages: `watch --as <agent> 'repo/#'` first shows what each matching topic kept since the last topic message that agent acknowledged there (everything kept, the first time), then streams live; `inbox --as <agent> --ack <id>` on a topic message moves that topic on past it. A topic line shows its `seq:`; without an agent, topics are live only unless `--after-seq <n>` replays from that point. One watch replays at most a topic's newest 500, 5,000 in all, and says how many older ones it did not replay |
 | `inbox` | Messages queued while an agent was not watching |
 | `ask` | Ask an agent — or the human — and wait for the answer |
-| `answer` | Answer a question somebody is waiting on |
+| `answer` | Answer a question somebody is waiting on. A card for a remote sender's held message takes `Release` or `Drop` |
 | `questions` | Questions waiting for an answer |
 | `conversations` | What you can read: every conversation with its unread count, newest first |
 | `history <conversation>` | What was said in one conversation, oldest first; `--read` marks it read through the last line shown, for you or for `--as <agent>` (the agent's own shell, through `AGENTDOCKER_AGENT_ID`), never the other |
@@ -657,7 +658,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `blame <path>` | Who changed a file, oldest first |
 | `overlap` | Paths changed in more than one checkout: what will collide |
 | `observe` / `reads` / `stale` | Record what was read, and check it is still true |
-| `memory add <text>` / `search <words>` / `profile` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one, `add --standing` keeps a convention said first, `add --forget-after <when>` (an RFC 3339 time, or `90m`, `12h`, `7d`, `2w` from now) stops saying it after then, `add --role reviewer` says it only to that role's holders and you; `search` and `profile` read as the agent whose session runs them, or as you, who read every memory |
+| `memory add <text>` / `search <words>` / `profile` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one, `add --standing` keeps a convention said first, `add --forget-after <when>` (an RFC 3339 time, or `90m`, `12h`, `7d`, `2w` from now) stops saying it after then, `add --role reviewer` says it only to that role's holders and you, `add --valid-from <when>` (an RFC 3339 time, a date, or `3d` ago) records a fact that became true no later than now; `search --as-of <when>` and `profile --as-of <when>` read memory as it stood then, `search --history` lists replaced memories too with what replaced each; `search` and `profile` read as the agent whose session runs them, or as you, who read every memory |
 
 ### Work in isolation, then merge
 
@@ -665,7 +666,7 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]…` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
 | `worktree-diff` | Tracked changes in an agent's checkout |
-| `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged |
+| `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged. The worktree's build cache (`target/`) goes with it |
 | `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |
 | `merge-branch <agent> --head <sha>` | Merge that branch into the main checkout's branch with a merge commit, if its head is still the one `review-branch` printed and nothing stops it; refused with nothing changed otherwise. It does not push |
 | `commit` | Commit the agent's checkout, journaled and attributed to it |
@@ -686,11 +687,11 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one |
+| `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one; `channel prune --before <seconds>` forgets channels closed longer ago than that (two weeks by default) |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
 | `verdict <branch> --head <commit> --approve\|--changes\|--comment [--from <commit>] [--findings P1,P2,P3] [note]` | Give your verdict on a branch at the commit you read; it counts for the roles you hold, and only for that commit |
 | `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: approved at its head as it is now (exit 0), else changes asked, stale (commits since the approval) or unreviewed (exit 1). `--publish` sets the `agentdocker/review` commit status on GitHub |
-| `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first |
+| `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first; `contest close <id> [--winner <agent>]` declares the answer, by the ranking when the metric separated the entries |
 
 ### Containers
 
@@ -705,6 +706,8 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code |
+| `skill` | Print the portable coordination SKILL.md, without connecting to a daemon |
+| `provider` | Report a provider's availability (a limit, a sign-in), or resume delivery after checking one |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches. Only the agent's own output is shown while attached; dropped output or a replaced daemon is said once you detach or it ends |
 | `daemon` | Install, start, stop, reload, inspect or `vacuum` `agentd` |
@@ -714,7 +717,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `cancel-question` | Close a question you asked; messages and answers are retained |
 | `hook` | Handle a hook event, or install the hook configuration |
 | `mcp` | Serve our tools to an MCP host over stdio |
-| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let the clients of your Claude or ChatGPT account join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; see [the remote connector](REMOTE-CONNECTOR.md) |
+| `connector serve` / `status` / `install` / `enable` / `uninstall` / `grants` / `revoke` | Let the clients of your Claude or ChatGPT account join the messaging of any project on this machine (chosen at consent): served on loopback behind a tunnel you run or one it starts (`--tunnel tailscale` for a stable name, `--tunnel cloudflared`), as a login service with `install`, admitting only the vendors' addresses with `--allow-from`; `--authorize-url` moves only the consent page to an address your browser can open, for a tunnel whose host a browser cannot load; see [the remote connector](REMOTE-CONNECTOR.md) |
 
 On Windows, Ctrl-] also works when the nested console uses Win32 keyboard events; other keys keep their normal meaning.
 
@@ -762,10 +765,11 @@ be set.
 takes an MCP server. An agent then has these without knowing anything
 about us:
 
-`whoami` · `ping` · `list_agents` · `inspect_agent` · `activity` · `usage`
+`whoami` · `list_agents` · `inspect_agent` · `activity` · `usage`
 
 `send_message` · `read_inbox` · `wait_for_messages` · `acknowledge_messages` ·
-`ask_human` · `open_questions` · `answer_question` · `report_activity`
+`ask_human` · `open_questions` · `answer_question` · `report_activity` ·
+`report_provider_status`
 
 `claim` · `renew` · `release` · `list_leases`
 
@@ -834,7 +838,7 @@ when its conversation ends, giving back its leases — and `SubagentStart` and
 `SubagentStop`, which keep the conversation working while its subagents run.
 Hooks an earlier version installed are *outdated*: `agentdocker runtimes` shows
 `outdated (…)` with the events they lack, the Tools card says *Hooks outdated*,
-and `agentdocker setup claude-code` (or `codex`) adds them. They are what let the daemon see an agent's session
+and `agentdocker setup claude-code` (or `codex`) adds them. Codex runs a hook only once you trust it in its `/hooks`, and trust ends when the hook's definition changes: setup leaves AgentDocker's Codex hooks exactly as they are once they are current, says so when it must change one you may have trusted, and `agentdocker setup --health` says *Never run: trust them in Codex's /hooks* until Codex has run one of them (which one is not recorded, so a hook setup changed is flagged only by setup itself). They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, the
 project's memory, and anything it read that has gone stale. Codex's
@@ -1077,7 +1081,7 @@ to where the session now is. A herdr or tmux that stops answering for a moment d
 it; one that stays silent for four passes in a row, about twenty seconds,
 does.
 
-### Planned daemon replacement
+### Daemon replacement
 
 `agentdocker daemon reload` requires `[experimental] reload = true` in the running
 daemon's `agentd.toml` (or `AGENTDOCKER_EXPERIMENTAL_RELOAD=1` in its environment);
@@ -1087,7 +1091,7 @@ while session owners retain managed processes and I/O. The gate is experimental.
 Ordinary daemon stop/start is a separate operation: stopping terminates managed
 agents.
 
-### Temporary review administration
+### Secret review administration
 
 The local `agentdocker secret-review list` command lists pending temporary review
 metadata for the person. `secret-review cancel <id>` closes a route; it cannot
@@ -1288,7 +1292,10 @@ Current behaviour that the sections above do not already state, by area.
 - **Your own terminal's Codex can be the reviewer.** `agentdocker codex`
   starts Codex in the terminal you are in, through AgentDocker's launcher:
   messages wake it even while it is idle, and you can give it a role, such
-  as reviewer, like any agent. Codex's own options go after `--`. While
+  as reviewer, like any agent. Codex's own options go after `--`: those
+  that set its configuration (`-c`, `--model`, `-a`, `-s`, `--yolo`, the
+  last meaning no approvals and no sandbox); a prompt or a profile is
+  refused, so send the first message through AgentDocker. While
   Codex has the terminal AgentDocker writes nothing into it: the INPUT
   column of `agentdocker ps` and the app say when it can take messages, and
   the launcher's own words go to its launch log. A plain
@@ -1586,7 +1593,12 @@ Current behaviour that the sections above do not already state, by area.
   rarer ones counting for more and the newer memory first on a tie; an
   identifier such as `task_id` is one word, so `task` does not find it,
   while `-` and `:` separate words. A memory that is no longer true is
-  replaced (`--supersedes`) or forgotten. One kept for some roles only
+  replaced (`--supersedes`) or forgotten. Each prompt you type is also told
+  the few memories that answer it: each once a session in Claude Code and
+  Codex, and in OpenCode again with each prompt it answers, since OpenCode
+  keeps a prompt's context only for that prompt's turn. After a session is
+  compacted it is told again the memories that answer what you last asked.
+  One kept for some roles only
   (`--role reviewer`, `roles` on `add_memory`) is told to their holders and
   to you, and never copied off the machine. It stays on this machine; anything that
   looks like a secret is refused. To keep a copy in Supermemory as well,
@@ -1643,6 +1655,21 @@ Current behaviour that the sections above do not already state, by area.
 - Every MCP tool carries annotations (read-only, destructive, idempotent,
   open-world), so a host that asks before risky calls lets the reads through.
 
+- **What a connector's agent says can be held for you or refused.** An
+  `[inbound]` section in the project's `.agentdocker/policy.toml` (or your
+  `~/.agentdocker/policy.toml`; the project may narrow yours, never widen
+  it) sets `connector = "accept" | "hold" | "refuse"` for every connector
+  sender, and `[[inbound.sender]]` entries with `agent = "<name glob>"` or
+  `runtime = "claude-browser" | "chatgpt-browser"` and a `trust` for
+  particular ones. Refused sends fail at once, naming the setting. A held
+  message reaches nobody until you release it: it appears among your
+  questions — Needs you in the app, `agentdocker questions --me`, the
+  notification — as a card from the sender quoting the message, and
+  **Release** delivers it as sent while **Drop** discards it
+  (`agentdocker answer <card> Release`). Cards nobody answers in a week
+  drop their message. Nothing is written by default, and a session running
+  on this machine is never held or refused by it.
+
 ### Daemon
 
 - **An idle daemon rests.** With nothing watching — no app open, no
@@ -1654,9 +1681,9 @@ Current behaviour that the sections above do not already state, by area.
 
 - `agentdocker --help` lists the commands a person types. The ones only an
   adapter or an administrator runs (`heartbeat`, `report-activity`,
-  `report-adapter`, `report-input`, `identity-repair`, `secret-review`,
-  `usage-storage`, `usage-scan`, the `codex-*` controllers) are hidden from
-  the list and still work by name; the guide's reference still names them.
+  `report-adapter`, `report-input`, `report-commit`, `identity-repair`,
+  `secret-review`, `usage-storage`, `usage-scan`, the `codex-*` controllers)
+  are hidden from the list and still work by name; `--help` on each describes it.
 
 - The ledger entries for one batch of file changes are written in one
   transaction, so a branch switch does not stall claims and releases.
