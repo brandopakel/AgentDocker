@@ -1497,7 +1497,7 @@ mod tests {
             webhook: "team".into(),
             delivery: "0123456789abcdef0123456789abcdef".into(),
             seq: 41,
-            event: "question_asked".into(),
+            event: "question_opened".into(),
             attempt: 2,
             at,
             duration_ms: 87,
@@ -1512,7 +1512,7 @@ mod tests {
             row[1..],
             [
                 "41",
-                "question_asked",
+                "question_opened",
                 "2",
                 "retrying",
                 "503",
