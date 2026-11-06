@@ -159,7 +159,7 @@ impl Daemon {
         let version = match tokio::task::spawn_blocking(move || content::fingerprint(&root)).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return unreadable_checkout(e),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let mut state = lock(&self.state);
         if !state
@@ -258,7 +258,7 @@ impl Daemon {
         .await;
         let (stale, checkout_matches) = match checked {
             Ok(v) => v,
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let mut state = lock(&self.state);
         if !state
@@ -511,7 +511,7 @@ impl Daemon {
         {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return unreadable_checkout(e),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let id = MessageId::generate().to_string();
         let log = self.home.join("logs").join(format!("validation-{id}.log"));
@@ -618,7 +618,7 @@ impl Daemon {
                 .await
                 {
                     Ok(Ok(status)) => validation.exit_code = status.code(),
-                    Ok(Err(e)) => return internal(e),
+                    Ok(Err(e)) => return Response::internal(e),
                     Err(_) => {
                         validation.timed_out = true;
                         let _ = kill(group.0.unwrap(), Signal::SIGKILL);
@@ -640,7 +640,7 @@ impl Daemon {
                 .await
                 {
                     Ok(Ok(status)) => validation.exit_code = status.code(),
-                    Ok(Err(e)) => return internal(e),
+                    Ok(Err(e)) => return Response::internal(e),
                     Err(_) => {
                         validation.timed_out = true;
                         let _ = child.kill().await;
@@ -708,12 +708,6 @@ impl Drop for ValidationGroup {
         }
     }
 }
-/// A fault of the daemon's own: a worker task that panicked or was
-/// cancelled, a child that could not be waited for.
-pub(super) fn internal(error: impl std::fmt::Display) -> Response {
-    Response::error(ErrorCode::Internal, error.to_string())
-}
-
 /// The store, or a file under the daemon's home, could not be read or
 /// written.
 pub(super) fn storage(error: impl std::fmt::Display) -> Response {
