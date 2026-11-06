@@ -712,6 +712,34 @@ class PruneRun(unittest.TestCase):
                 self.assertTrue((base / "gone/target/debug/out").exists())
                 self.assertEqual(self.calls, [], "no build slot is taken for nothing")
 
+    def test_a_ps_that_fails_or_hangs_prunes_nothing(self):
+        for failure in (subprocess.CalledProcessError(1, "ps"), subprocess.TimeoutExpired("ps", 60)):
+            with tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary).resolve()
+                self.tree(base, ["gone"])
+                records = [record(base / "main", "main"), record(base / "gone", "feature/a")]
+                with patch.object(STORAGE.subprocess, "check_output", side_effect=failure):
+                    processes = STORAGE.process_table()
+                self.assertIsNone(processes)
+                code, out, err = self.run_main(["--prune"], records, {base / "gone/target": STORAGE.GIB},
+                                               set(), processes, "merged")
+                self.assertEqual(code, 0, err)
+                self.assertIn("pruning: nothing", out)
+                self.assertTrue((base / "gone/target/debug/out").exists())
+
+    def test_a_git_that_hangs_is_unknown_never_a_branch_that_is_gone(self):
+        hang = subprocess.TimeoutExpired("git", 60)
+        entry = {"branch": "feature/a", "head": "abc"}
+        with patch.object(STORAGE.subprocess, "check_output", side_effect=hang):
+            self.assertEqual(STORAGE.Branches().state(entry), "unknown", "no main tip")
+        branches = STORAGE.Branches.__new__(STORAGE.Branches)
+        branches.root, branches.main_tip = ".", "def"
+        with patch.object(STORAGE.subprocess, "check_output", side_effect=hang):
+            self.assertEqual(branches.state(entry), "unknown", "not absent")
+        with patch.object(STORAGE.subprocess, "check_output", return_value="abc\n"), \
+                patch.object(STORAGE.subprocess, "run", side_effect=hang):
+            self.assertEqual(branches.state(entry), "unknown")
+
     def test_no_daemon_prunes_nothing_and_says_so(self):
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary).resolve()
