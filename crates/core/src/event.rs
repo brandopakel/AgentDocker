@@ -83,7 +83,8 @@ pub enum EventKind {
         question: MessageId,
         expires_at: DateTime<Utc>,
     },
-    /// No answer means the question expired. The original inbox message remains.
+    /// No answer means the question expired, or was settled without one: a
+    /// held message released or dropped. The original inbox message remains.
     QuestionClosed {
         question: MessageId,
         answer: Option<MessageId>,
@@ -101,6 +102,32 @@ pub enum EventKind {
     QuestionCancelled {
         question: MessageId,
         agent: AgentId,
+    },
+    /// A remote sender's message the project's inbound trust holds for
+    /// the person: kept whole and delivered to nobody until they release
+    /// it from `question`, the card put to them. `rule` is the setting
+    /// that held it. Durable, with the question and the held copy.
+    MessageHeld {
+        message: MessageId,
+        question: MessageId,
+        from: String,
+        to: Destination,
+        rule: String,
+    },
+    /// The person released a held message: it goes out as sent, and its
+    /// `message_sent` follows in the same commit. `by` is who released it.
+    HeldMessageReleased {
+        message: MessageId,
+        question: MessageId,
+        by: String,
+    },
+    /// A held message was discarded, reaching nobody: by the person, by
+    /// its sender's cancellation of the question (`by` is their id), or
+    /// unanswered past its week (`by` is `expiry`).
+    HeldMessageDropped {
+        message: MessageId,
+        question: MessageId,
+        by: String,
     },
     AgentActivityReported {
         agent: AgentId,
@@ -847,6 +874,12 @@ pub enum EventKind {
         channel: crate::ChannelId,
         agent: AgentId,
     },
+    /// A member's record was forgotten while the channel stayed open: it
+    /// is out of the room, and what it said there stays.
+    ChannelLeft {
+        channel: crate::ChannelId,
+        agent: AgentId,
+    },
     /// The work is final, or everybody left: the channel is done and can
     /// be pruned.
     ChannelClosed {
@@ -984,6 +1017,9 @@ impl EventKind {
         "question_closed",
         "answer_routed",
         "question_cancelled",
+        "message_held",
+        "held_message_released",
+        "held_message_dropped",
         "agent_activity_reported",
         "agent_renamed",
         "agent_launched_by",
@@ -1100,6 +1136,7 @@ impl EventKind {
         "agents_pruned",
         "channel_invited",
         "channel_joined",
+        "channel_left",
         "channel_closed",
         "channels_pruned",
         "review_submitted",
