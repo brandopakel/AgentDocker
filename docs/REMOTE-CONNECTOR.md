@@ -197,7 +197,11 @@ on: `list_tasks`, `get_task`, `search_tasks`, `comment_task`, `list_plans`,
 leases, observations, worktrees, commits, hand-offs, pulling or moving cards, channels,
 `mark_journal_read`, `wait_for_messages` — is refused by name with the
 reason: the agent has no checkout here, and a long wait would hold an HTTP
-request. Each tool carries
+request. `ask_human` takes the same kind, options and stale rule as anywhere
+else, and `open_questions` gives each question's `prompt`: its words with the
+options numbered and an *Other* line, the same choices the desktop draws as
+buttons. The connector does not answer questions; the person answers them in
+the app or a terminal. Each tool carries
 its MCP annotations, the same ones the local server gives it, and the browser
 client reads them: ChatGPT's developer mode confirms every call that is not
 `readOnlyHint`, Claude's connectors read the same hints, so the listings and

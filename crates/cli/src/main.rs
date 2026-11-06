@@ -701,6 +701,27 @@ enum Command {
         /// Return the question ID immediately; its answer queues in your inbox.
         #[arg(long)]
         no_wait: bool,
+        /// What kind of decision this is: `question` (the default), `permission`
+        /// (one operation, once) or `access` (standing access to something).
+        #[arg(long, value_name = "KIND", default_value = "question")]
+        kind: String,
+        /// An option to choose from, as `Label` or `Label: what choosing it means`;
+        /// repeat for each. Without any, the answer is free text.
+        #[arg(long = "option", value_name = "LABEL[: DESCRIPTION]")]
+        options: Vec<String>,
+        /// Several options may be chosen at once.
+        #[arg(long, requires = "options")]
+        multi: bool,
+        /// Take only the options offered, not an answer in the recipient's own words.
+        #[arg(long = "no-other", requires = "options")]
+        no_other: bool,
+        /// Seconds after which the question goes stale (shorter than the timeout).
+        #[arg(long, value_name = "SECS")]
+        stale_after: Option<u64>,
+        /// What a stale question does: `keep_waiting` (the default), `withdraw`,
+        /// or `answer:<label>` to take that option as the default.
+        #[arg(long, value_name = "ACTION", requires = "stale_after")]
+        stale_action: Option<String>,
         /// The question.
         question: String,
     },
@@ -718,8 +739,23 @@ enum Command {
         agent: Option<String>,
         /// The question's message id, as `ask` and `questions` print it.
         message: String,
-        /// The answer.
-        text: String,
+        /// The answer in words, or one option by its label or number;
+        /// give `--choice` or `--other` instead to say which it is.
+        #[arg(
+            required_unless_present_any = ["choices", "other"],
+            conflicts_with_all = ["choices", "other"]
+        )]
+        text: Option<String>,
+        /// An option taken, by label or number; repeat for a multi-select question.
+        #[arg(long = "choice", value_name = "LABEL|N")]
+        choices: Vec<String>,
+        /// Your own answer for the question's Other, taken as written: never
+        /// read as an option's label or number.
+        #[arg(long, value_name = "WORDS")]
+        other: Option<String>,
+        /// Your own words beside a choice.
+        #[arg(long)]
+        note: Option<String>,
     },
     /// Inspect, cancel or submit a temporary secret review through local IPC.
     #[command(hide = true)]
@@ -4683,11 +4719,25 @@ async fn run() -> Result<()> {
             from,
             timeout,
             no_wait,
+            kind,
+            options,
+            multi,
+            no_other,
+            stale_after,
+            stale_action,
             question,
         } => {
             let from = sender::resolve(&client, from)
                 .await?
                 .unwrap_or_else(|| HUMAN.into());
+            let form = format::question_form(
+                &kind,
+                &options,
+                multi,
+                !no_other,
+                stale_after,
+                stale_action.as_deref(),
+            )?;
             let request = if no_wait {
                 Request::PostQuestion {
                     from,
@@ -4695,6 +4745,7 @@ async fn run() -> Result<()> {
                     question,
                     presentation: None,
                     timeout_secs: timeout,
+                    form,
                 }
             } else {
                 Request::Ask {
@@ -4702,10 +4753,25 @@ async fn run() -> Result<()> {
                     to,
                     question,
                     timeout_secs: timeout,
+                    form,
                 }
             };
             match client.call(&request).await? {
-                Response::Answer { from, text, .. } => println!("{}: {text}", format::short(&from)),
+                Response::Answer {
+                    from,
+                    text,
+                    default,
+                    ..
+                } => {
+                    if default {
+                        println!(
+                            "{}: {text} (the default: nobody answered in time)",
+                            format::short(&from)
+                        );
+                    } else {
+                        println!("{}: {text}", format::short(&from));
+                    }
+                }
                 Response::Sent { message, .. } => println!("{message}"),
                 Response::Held { message, question } => {
                     println!("{message}");
@@ -4730,11 +4796,17 @@ async fn run() -> Result<()> {
             agent,
             message,
             text,
+            choices,
+            other,
+            note,
         } => {
             let request = Request::Answer {
                 from: sender::resolve(&client, agent).await?,
                 message: MessageId::from(message),
-                text,
+                text: text.unwrap_or_default(),
+                choices,
+                other,
+                note,
             };
             if let Response::Sent { message, .. } = client.call(&request).await? {
                 println!("{message}");

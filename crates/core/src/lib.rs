@@ -67,9 +67,9 @@ pub use lease::{
 pub use link::{Link, LinkKind};
 pub use message::{
     ALLOW_FOR_SESSION, AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, HeldDecision,
-    HeldMessage, MessageId, Question, QuestionFileChange, QuestionFileChangeKind, QuestionOption,
-    QuestionPresentation, RELEASE_REQUEST_KIND, RELEASE_RESPONSE_KIND, mcp_url_authority,
-    topic_matches,
+    HeldMessage, MessageId, Question, QuestionAnswer, QuestionFileChange, QuestionFileChangeKind,
+    QuestionForm, QuestionKind, QuestionOption, QuestionPresentation, RELEASE_REQUEST_KIND,
+    RELEASE_RESPONSE_KIND, StaleAction, mcp_url_authority, topic_matches,
 };
 pub use notification::NotificationTarget;
 pub use permissions::{

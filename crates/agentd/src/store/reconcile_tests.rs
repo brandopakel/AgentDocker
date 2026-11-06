@@ -184,6 +184,8 @@ fn repair_keeps_fifo_payloads_history_and_before_images() {
         text: "retired".into(),
         asked_at: now(),
         expires_at: now() + Duration::days(1),
+        form: Default::default(),
+        stale_since: None,
     };
     store
         .put_document("question", "question", &question)
@@ -440,6 +442,8 @@ fn repair_refuses_conflicting_copies_capacity_and_unsupported_state() {
                     text: "review".into(),
                     asked_at: now(),
                     expires_at: now() + Duration::days(1),
+                    form: Default::default(),
+                    stale_since: None,
                 };
                 store.put_document("question", "q", &q).unwrap();
             }
@@ -830,6 +834,8 @@ fn a_resumed_session_folds_every_life_it_left_once_and_whole() {
         presentation: None,
         asked_at: now(),
         expires_at: now() + Duration::hours(1),
+        form: Default::default(),
+        stale_since: None,
     };
     store.put_document("question", "q-1", &question).unwrap();
     let mut canonical = last.clone();

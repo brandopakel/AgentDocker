@@ -2325,6 +2325,9 @@ mod tests {
                     from: None,
                     message: agentdocker_core::MessageId::from("m".to_owned()),
                     text: "Allow".into(),
+                    choices: Vec::new(),
+                    note: None,
+                    other: None,
                 },
             )
             .await;

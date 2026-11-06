@@ -103,6 +103,16 @@ pub enum EventKind {
         question: MessageId,
         agent: AgentId,
     },
+    /// A question's stale window passed with no answer. Emitted once per
+    /// question, with the action its asker chose for this moment: keep
+    /// waiting (the question stays open, marked stale), answer with the
+    /// default option (a `question_closed` with the daemon's answer
+    /// follows), or withdraw it (a `question_closed` without an answer
+    /// follows).
+    QuestionStale {
+        question: MessageId,
+        action: crate::StaleAction,
+    },
     /// A remote sender's message the project's inbound trust holds for
     /// the person: kept whole and delivered to nobody until they release
     /// it from `question`, the card put to them. `rule` is the setting

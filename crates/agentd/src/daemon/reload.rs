@@ -1950,6 +1950,7 @@ mod fence_tests {
                         to,
                         question: "is the offer held up?".into(),
                         timeout_secs: 30,
+                        form: Default::default(),
                     })
                     .await
             }

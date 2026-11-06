@@ -18,7 +18,10 @@
 use std::time::Duration as StdDuration;
 
 use super::*;
-use agentdocker_core::{AnswerRoute, HUMAN, HUMAN_RUNTIME, Question, QuestionPresentation};
+use agentdocker_core::{
+    AnswerRoute, HUMAN, HUMAN_RUNTIME, Question, QuestionAnswer, QuestionForm,
+    QuestionPresentation, StaleAction,
+};
 use agentdocker_host::notify::{self, Notification};
 
 /// Enough outstanding questions that a busy fleet is never refused, few
@@ -36,6 +39,46 @@ const NOTIFY_EVERY: StdDuration = StdDuration::from_secs(60);
 
 /// How much of a message a notification shows.
 const NOTICE_CHARS: usize = 180;
+
+/// Who a stale question's default answer is from. The daemon speaks
+/// without a record, as it does for its notices; an `ask` that gets an
+/// answer from this sender knows nobody chose it.
+pub const DEFAULT_ANSWERER: &str = "agentd";
+
+/// How many replies a waiting `ask` keeps while the closure that names its
+/// answer is awaited; the answer itself is never lost to this bound.
+const MAX_ANSWER_CANDIDATES: usize = 16;
+
+/// The replies a waiting `ask` has seen, by id, until the committed closure
+/// names its answer. Bounded: past [`MAX_ANSWER_CANDIDATES`] a reply is not
+/// kept unless the closure already names it, and an answer the closure names
+/// that was not kept is recovered from the asker's queue, where it is stored
+/// before the closure is published. Whichever arrives first, the closure or
+/// the reply, the answer is the one the closure names.
+#[derive(Default)]
+struct AnswerCandidates {
+    seen: HashMap<MessageId, Envelope>,
+    accepted: Option<MessageId>,
+}
+
+impl AnswerCandidates {
+    fn offer(&mut self, envelope: Envelope) {
+        if self.accepted.as_ref() == Some(&envelope.id) || self.seen.len() < MAX_ANSWER_CANDIDATES {
+            self.seen.entry(envelope.id.clone()).or_insert(envelope);
+        }
+    }
+
+    fn accept(&mut self, answer: MessageId) {
+        self.accepted = Some(answer);
+    }
+
+    /// The answer, once the closure has named it: as seen, else as
+    /// `recover` finds it.
+    fn take(&mut self, recover: impl FnOnce(&MessageId) -> Option<Envelope>) -> Option<Envelope> {
+        let id = self.accepted.as_ref()?;
+        self.seen.remove(id).or_else(|| recover(id))
+    }
+}
 
 /// A pending notification. Built under the state lock and handed off
 /// without blocking; posting it is another thread's problem.
@@ -55,6 +98,7 @@ impl State {
         text: String,
         presentation: Option<QuestionPresentation>,
         timeout: StdDuration,
+        form: QuestionForm,
     ) -> Response {
         if text.trim().is_empty() {
             return Response::error(ErrorCode::Invalid, "a question needs some text");
@@ -63,6 +107,15 @@ impl State {
             return Response::error(
                 ErrorCode::Invalid,
                 "question controls must match the complete question text",
+            );
+        }
+        if let Err(reason) = form.validate(timeout.as_secs()) {
+            return Response::error(ErrorCode::Invalid, reason);
+        }
+        if presentation.is_some() && !form.options.is_empty() {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a question offers its options once: as controls or as options, not both",
             );
         }
         if !matches!(
@@ -75,23 +128,29 @@ impl State {
             );
         }
         let asked_at = Utc::now();
-        let envelope = Envelope::new(
-            from.clone(),
-            to.clone(),
-            "question",
-            json!({"text":text}),
-            None,
-            asked_at,
-        );
         let question = Question {
-            id: envelope.id.clone(),
-            from,
-            to,
+            id: MessageId::generate(),
+            from: from.clone(),
+            to: to.clone(),
             text,
             presentation,
             asked_at,
             expires_at: asked_at + Duration::from_std(timeout).unwrap_or_else(|_| Duration::zero()),
+            form,
+            stale_since: None,
         };
+        // The message says what the question is in words a reader with no
+        // notion of options can act on: the numbered list under the text.
+        // The typed fields ride beside it for readers that have one.
+        let mut payload = json!({"text": question.prompt()});
+        if let (Some(payload), Some(Value::Object(typed))) = (
+            payload.as_object_mut(),
+            serde_json::to_value(&question.form).ok(),
+        ) {
+            payload.extend(typed);
+        }
+        let mut envelope = Envelope::new(from, to, "question", payload, None, asked_at);
+        envelope.id = question.id.clone();
         self.publish_question(envelope, Some(question))
     }
 
@@ -142,6 +201,11 @@ impl State {
     }
 
     pub(super) fn expire_questions(&mut self, now: DateTime<Utc>) {
+        self.close_expired_questions(now);
+        self.stale_questions(now);
+    }
+
+    fn close_expired_questions(&mut self, now: DateTime<Utc>) {
         let mut expired: Vec<_> = self
             .questions
             .values()
@@ -198,10 +262,172 @@ impl State {
             |state, _, ()| {
                 for question in &expired {
                     state.questions.remove(question);
+                    if state.blocked_defaults.remove(question) {
+                        info!(%question, "question expired before its refused stale default answer could be published");
+                    }
                     state.held_messages.remove(question);
                 }
             },
         );
+    }
+
+    /// What became of a stale default answer on this sweep, said so that
+    /// a default refused tick after tick is one warning rather than one a
+    /// second: the first refusal at warn with its reason, the rest at
+    /// debug, and the moment it goes through at info.
+    fn note_default(&mut self, question: &MessageId, outcome: Result<(), String>) {
+        match outcome {
+            Ok(()) => {
+                if self.blocked_defaults.remove(question) {
+                    info!(%question, "stale default answer published after it was refused");
+                }
+            }
+            Err(reason) => {
+                if self.blocked_defaults.insert(question.clone()) {
+                    warn!(%question, %reason, "stale default answer could not be published; the question stays open and the default is tried again on every sweep");
+                } else {
+                    debug!(%question, %reason, "stale default answer is still refused");
+                }
+            }
+        }
+    }
+
+    /// Questions whose stale window has passed unanswered go stale, once
+    /// each, in one commit with whatever their asker's stale action does:
+    /// keeping waiting stores the mark with its `question_stale` event;
+    /// the default answer goes through the publish path every answer
+    /// takes, from `agentd`, its stale event in the answer's transaction;
+    /// withdrawing closes the question as expiry does, both events in one
+    /// transaction. A refused or failed step leaves the question unmarked,
+    /// so the next sweep tries it again. Runs after expiry on every sweep,
+    /// so an expired question is never also made stale, and each question
+    /// is read afresh before it is acted on: publishing a default answer
+    /// does not run the sweep again, and nothing already stale or gone is
+    /// touched twice.
+    pub(super) fn stale_questions(&mut self, now: DateTime<Utc>) {
+        // A refused default whose question was answered or cancelled
+        // meanwhile is nobody's concern any more; say so once.
+        let questions = &self.questions;
+        self.blocked_defaults.retain(|question| {
+            let open = questions.contains_key(question);
+            if !open {
+                info!(%question, "question closed before its refused stale default answer could be published");
+            }
+            open
+        });
+        if self.storage_error.is_some() {
+            return;
+        }
+        let mut due: Vec<MessageId> = self
+            .questions
+            .values()
+            .filter(|question| {
+                question.stale_since.is_none()
+                    && !question.expired(now)
+                    && question.stale_at().is_some_and(|at| now >= at)
+            })
+            .map(|question| question.id.clone())
+            .collect();
+        due.sort();
+        for id in due {
+            let Some(question) = self
+                .questions
+                .get(&id)
+                .filter(|question| question.stale_since.is_none())
+                .cloned()
+            else {
+                continue;
+            };
+            match &question.form.stale_action {
+                StaleAction::KeepWaiting => {
+                    let mut marked = question.clone();
+                    marked.stale_since = Some(now);
+                    let event = Event::new(
+                        EventKind::QuestionStale {
+                            question: question.id.clone(),
+                            action: StaleAction::KeepWaiting,
+                        },
+                        now,
+                    );
+                    let _ = self.transition(
+                        "question stale",
+                        event,
+                        |store, event| {
+                            store.put_document_with_event(
+                                "question",
+                                question.id.as_str(),
+                                &marked,
+                                event,
+                            )
+                        },
+                        |state| {
+                            state.questions.insert(marked.id.clone(), marked.clone());
+                        },
+                    );
+                }
+                StaleAction::AnswerDefault { label } => {
+                    let outcome = match QuestionAnswer::resolve(
+                        &question.form,
+                        label,
+                        std::slice::from_ref(label),
+                        None,
+                        None,
+                    )
+                    .or_else(|_| QuestionAnswer::resolve(&question.form, label, &[], None, None))
+                    {
+                        Ok(mut answer) => {
+                            answer.default = true;
+                            let envelope = Envelope::new(
+                                DEFAULT_ANSWERER,
+                                Destination::Agent(AgentId::from(question.from.as_str())),
+                                "answer",
+                                answer.payload(),
+                                Some(question.id.clone()),
+                                now,
+                            );
+                            match self.publish_default_answer(envelope, &question.id) {
+                                Response::Error { message, .. } => Err(message),
+                                _ => Ok(()),
+                            }
+                        }
+                        Err(reason) => Err(format!(
+                            "{label:?} is not an answer the question takes: {reason}"
+                        )),
+                    };
+                    self.note_default(&question.id, outcome);
+                }
+                StaleAction::Withdraw => {
+                    let closed = vec![question.id.clone()];
+                    let events = vec![
+                        Event::new(
+                            EventKind::QuestionStale {
+                                question: question.id.clone(),
+                                action: StaleAction::Withdraw,
+                            },
+                            now,
+                        ),
+                        Event::new(
+                            EventKind::QuestionClosed {
+                                question: question.id.clone(),
+                                answer: None,
+                            },
+                            now,
+                        ),
+                    ];
+                    let _ = self.commit(
+                        "question withdrawal",
+                        events,
+                        |store, events| store.close_questions(&closed, events),
+                        |state, _, ()| {
+                            state.questions.remove(&question.id);
+                        },
+                    );
+                }
+            }
+            if self.storage_error.is_some() {
+                return;
+            }
+        }
     }
 
     /// The questions still waiting, newest first.
@@ -501,6 +727,7 @@ impl Daemon {
         to: String,
         question: String,
         timeout_secs: u64,
+        form: QuestionForm,
     ) -> Response {
         if question.trim().is_empty() {
             return Response::error(ErrorCode::Invalid, "a question needs some text");
@@ -534,7 +761,7 @@ impl Daemon {
         // published between the question and the wait for it.
         let (mut answers, mut events, sent) = {
             let mut state = lock(&self.state);
-            let sent = state.open_question(from.clone(), to.clone(), question, None, timeout);
+            let sent = state.open_question(from.clone(), to.clone(), question, None, timeout, form);
             if let Response::Sent { message, .. } = &sent {
                 state.question_waiters.insert(message.clone());
             }
@@ -552,12 +779,18 @@ impl Daemon {
         // its answer, and an offer must not wait with it.
         self.done_writing();
         let waited = tokio::time::timeout(timeout, async {
-            let mut candidate: Option<Envelope> = None;
-            let mut accepted: Option<MessageId> = None;
+            // Every reply that could be the answer, by id: the one the
+            // committed closure names is handed over, whichever arrived
+            // first, so a reply that closes nothing (one sent in the
+            // daemon's name, say) never stands in front of the answer.
+            let mut candidates = AnswerCandidates::default();
             loop {
-                if let Some(envelope) = &candidate
-                    && accepted.as_ref() == Some(&envelope.id)
-                {
+                if let Some(envelope) = candidates.take(|id| {
+                    lock(&self.state)
+                        .inboxes
+                        .get(&AgentId::from(from.as_str()))
+                        .and_then(|queue| queue.iter().find(|m| m.id == *id).cloned())
+                }) {
                     // Handed over here, and only here, once the offer is
                     // stored: an answer whose bookkeeping failed stays held
                     // and goes to the queue when this wait ends, so it is
@@ -568,16 +801,17 @@ impl Daemon {
                             "the answer could not be recorded as delivered; it remains queued",
                         );
                     }
-                    return Response::Answer { message: envelope.id.clone(), from: envelope.from.clone(), text: message_text(&envelope.payload) };
+                    let answer = QuestionAnswer::from_payload(&envelope.payload);
+                    return Response::Answer { message: envelope.id.clone(), from: envelope.from.clone(), text: answer.text, choices: answer.choices, other: answer.other, note: answer.note, default: answer.default };
                 }
                 tokio::select! {
                 answer = answers.recv() => match answer {
                     Ok(Posted { envelope, .. }) if envelope.reply_to.as_ref() == Some(&message)
                         && matches!(&envelope.to, Destination::Agent(id) if id.as_str() == from)
-                        && match &to { Destination::Agent(id) => id.as_str() == envelope.from, Destination::Project(_) | Destination::Broadcast => true, _ => false } => {
+                        && (envelope.from == DEFAULT_ANSWERER || match &to { Destination::Agent(id) => id.as_str() == envelope.from, Destination::Project(_) | Destination::Broadcast => true, _ => false }) => {
                         // A reply can arrive after cancellation. Only the
                         // exact committed question-closure event accepts it.
-                        if candidate.is_none() { candidate = Some(envelope); }
+                        candidates.offer(envelope);
                     }
                     Ok(_) => continue,
                     Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::EventHistoryLost, "answer stream lost messages; the answer remains in the inbox"),
@@ -586,9 +820,11 @@ impl Daemon {
                 event = events.recv() => match event {
                     Ok(Event { kind: EventKind::QuestionCancelled { question, .. }, .. }) if question == message =>
                         return Response::error(ErrorCode::Cancelled, "the asker cancelled this question"),
+                    Ok(Event { kind: EventKind::QuestionStale { question, action: StaleAction::Withdraw }, .. }) if question == message =>
+                        return Response::error(ErrorCode::Timeout, "the question went stale and was withdrawn"),
                     Ok(Event { kind: EventKind::QuestionClosed { question, answer }, .. }) if question == message => {
-                        if answer.is_none() { return Response::error(ErrorCode::Timeout, "the question expired"); }
-                        accepted = answer;
+                        let Some(answer) = answer else { return Response::error(ErrorCode::Timeout, "the question expired"); };
+                        candidates.accept(answer);
                     }
                     Ok(_) => continue,
                     Err(broadcast::error::RecvError::Lagged(_)) => return Response::error(ErrorCode::EventHistoryLost, "question stream lost events; no answer can be confirmed"),
@@ -619,6 +855,7 @@ impl Daemon {
         question: String,
         presentation: Option<QuestionPresentation>,
         timeout_secs: u64,
+        form: QuestionForm,
     ) -> Response {
         if question.trim().is_empty() {
             return Response::error(ErrorCode::Invalid, "a question needs some text");
@@ -657,6 +894,7 @@ impl Daemon {
             question,
             presentation,
             StdDuration::from_secs(timeout_secs.clamp(1, 24 * 60 * 60)),
+            form,
         )
     }
 
@@ -722,6 +960,9 @@ impl Daemon {
         from: Option<String>,
         message: MessageId,
         text: String,
+        choices: Vec<String>,
+        other: Option<String>,
+        note: Option<String>,
     ) -> Response {
         let question = lock(&self.state)
             .questions
@@ -766,13 +1007,26 @@ impl Daemon {
                 return state.refuse(&sender, &action, ruling);
             }
         }
+        // What was chosen, by label: a number becomes its option, a
+        // choice outside the options is refused unless Other is allowed,
+        // and a free-text question takes the words as they are.
+        let answer = match QuestionAnswer::resolve(
+            &question.form,
+            &text,
+            &choices,
+            other.as_deref(),
+            note.as_deref(),
+        ) {
+            Ok(answer) => answer,
+            Err(reason) => return Response::error(ErrorCode::Invalid, reason),
+        };
         // The route is chosen where the question closes, in the send path
         // shared with `send --reply-to`.
         state.send(
             from,
             to,
             "answer".to_owned(),
-            json!({ "text": text }),
+            answer.payload(),
             Some(message),
         )
     }
@@ -878,6 +1132,8 @@ mod tests {
             text: "?".to_owned(),
             asked_at: now,
             expires_at: now + Duration::seconds(seconds),
+            form: Default::default(),
+            stale_since: None,
         }
     }
 
@@ -976,7 +1232,8 @@ mod tests {
                     "all".into(),
                     "A different command".into(),
                     Some(presentation.clone()),
-                    300
+                    300,
+                    Default::default()
                 )
                 .await,
             Response::Error {
@@ -994,6 +1251,7 @@ mod tests {
                 presentation.text(),
                 Some(presentation.clone()),
                 300,
+                Default::default(),
             )
             .await
         else {
@@ -1014,6 +1272,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: message.clone(),
                 text: "Allow".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -1048,6 +1309,7 @@ mod tests {
                 presentation.text(),
                 Some(presentation.clone()),
                 300,
+                Default::default(),
             )
             .await
         else {
@@ -1092,6 +1354,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: message.clone(),
                 text: "Decline".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -1127,6 +1392,7 @@ mod tests {
                 presentation.text(),
                 Some(presentation.clone()),
                 300,
+                Default::default(),
             )
             .await
         else {
@@ -1173,6 +1439,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: message.clone(),
                 text: "{\"n\":2}".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -1197,11 +1466,24 @@ mod tests {
             let daemon = state(&dir);
             let response = if wait {
                 daemon
-                    .ask("user".into(), "all".into(), " \n ".into(), 1)
+                    .ask(
+                        "user".into(),
+                        "all".into(),
+                        " \n ".into(),
+                        1,
+                        Default::default(),
+                    )
                     .await
             } else {
                 daemon
-                    .post_question("user".into(), "all".into(), " \n ".into(), None, 1)
+                    .post_question(
+                        "user".into(),
+                        "all".into(),
+                        " \n ".into(),
+                        None,
+                        1,
+                        Default::default(),
+                    )
                     .await
             };
             assert!(matches!(
@@ -1232,6 +1514,7 @@ mod tests {
                 to: "recipient".into(),
                 question: "Continue?".into(),
                 timeout_secs: 300,
+                form: Default::default(),
             })
             .await
         else {
@@ -1243,6 +1526,9 @@ mod tests {
                     from: Some("peer".into()),
                     message: message.clone(),
                     text: "Allow".into(),
+                    choices: Vec::new(),
+                    note: None,
+                    other: None,
                 })
                 .await,
             Response::Error {
@@ -1271,6 +1557,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: message.clone(),
                 text: "Allow".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -1312,6 +1601,7 @@ mod tests {
                         to: "recipient".into(),
                         question: "Still needed?".into(),
                         timeout_secs: 300,
+                        form: Default::default(),
                     })
                     .await
             }
@@ -1366,7 +1656,10 @@ mod tests {
                 .handle(Request::Answer {
                     from: Some("recipient".into()),
                     message: pending.id.clone(),
-                    text: "Too late".into()
+                    text: "Too late".into(),
+                    choices: Vec::new(),
+                    note: None,
+                    other: None,
                 })
                 .await,
             Response::Error {
@@ -1432,6 +1725,7 @@ mod tests {
                         to: "recipient".into(),
                         question: "Which colour?".into(),
                         timeout_secs: 300,
+                        form: Default::default(),
                     })
                     .await
             }
@@ -1454,6 +1748,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: pending.id.clone(),
                 text: "Blue".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -1496,6 +1793,7 @@ mod tests {
                 question: "And the size?".into(),
                 presentation: None,
                 timeout_secs: 300,
+                form: Default::default(),
             })
             .await
         else {
@@ -1508,6 +1806,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: posted.clone(),
                 text: "Large".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -1532,6 +1833,7 @@ mod tests {
                         to: "recipient".into(),
                         question: "Which font?".into(),
                         timeout_secs: 300,
+                        form: Default::default(),
                     })
                     .await
             }
@@ -1596,6 +1898,7 @@ mod tests {
                 question: "Ship it?".into(),
                 presentation: None,
                 timeout_secs: 300,
+                form: Default::default(),
             })
             .await
         else {
@@ -1609,6 +1912,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: late_question.clone(),
                 text: "Yes".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -1729,6 +2035,7 @@ mod tests {
                         to: "recipient".into(),
                         question: "Which colour?".into(),
                         timeout_secs: 300,
+                        form: Default::default(),
                     })
                     .await
             }
@@ -1750,6 +2057,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: pending.id.clone(),
                 text: "Blue".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {
@@ -1798,8 +2108,13 @@ mod tests {
         let asker = register(&daemon, "asker").await;
         let recipient = register(&daemon, "recipient").await;
         for _ in 0..32 {
-            let mut asking =
-                Box::pin(daemon.ask("asker".into(), "recipient".into(), "Continue?".into(), 5));
+            let mut asking = Box::pin(daemon.ask(
+                "asker".into(),
+                "recipient".into(),
+                "Continue?".into(),
+                5,
+                Default::default(),
+            ));
             std::future::poll_fn(|cx| {
                 assert!(std::future::Future::poll(asking.as_mut(), cx).is_pending());
                 std::task::Poll::Ready(())
@@ -1850,6 +2165,7 @@ mod tests {
                 to: "recipient".into(),
                 question: "Continue?".into(),
                 timeout_secs: 300,
+                form: Default::default(),
             })
             .await
         else {
@@ -1891,6 +2207,7 @@ mod tests {
                         to: "recipient".into(),
                         question: "continue after restart?".into(),
                         timeout_secs: 300,
+                        form: Default::default(),
                     })
                     .await
             }
@@ -1918,6 +2235,9 @@ mod tests {
             from: Some("recipient".into()),
             message: pending.id.clone(),
             text: "continue".into(),
+            choices: Vec::new(),
+            note: None,
+            other: None,
         };
         let (first, second) = tokio::join!(daemon.handle(request()), daemon.handle(request()));
         assert_eq!(
@@ -2005,6 +2325,9 @@ mod tests {
                 from: None,
                 message: pending.id.clone(),
                 text: "reply".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await;
         assert!(matches!(
@@ -2107,6 +2430,1047 @@ mod tests {
         assert!(remember(&mut state, fresh.clone()));
         assert_eq!(state.questions.len(), 1);
         assert!(state.questions.contains_key(&fresh.id));
+    }
+
+    fn colours(stale_after_secs: Option<u64>, stale_action: StaleAction) -> QuestionForm {
+        QuestionForm {
+            options: vec![
+                agentdocker_core::QuestionOption {
+                    label: "Blue".into(),
+                    description: "the current theme".into(),
+                },
+                agentdocker_core::QuestionOption {
+                    label: "Green".into(),
+                    description: String::new(),
+                },
+            ],
+            stale_after_secs,
+            stale_action,
+            ..QuestionForm::default()
+        }
+    }
+
+    fn typed(seconds: i64, form: QuestionForm) -> Question {
+        Question {
+            form,
+            ..question(seconds)
+        }
+    }
+
+    fn stale_events(daemon: &Arc<Daemon>, id: &MessageId) -> usize {
+        daemon
+            .recent_events(50)
+            .iter()
+            .filter(|event| {
+                matches!(&event.kind, EventKind::QuestionStale { question, .. } if question == id)
+            })
+            .count()
+    }
+
+    /// Poll a blocking ask once, so its question is open and its waiter
+    /// registered, and hand back the question's id.
+    async fn open_ask(
+        asking: &mut std::pin::Pin<Box<impl std::future::Future<Output = Response>>>,
+        daemon: &Arc<Daemon>,
+    ) -> MessageId {
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(asking.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        lock(&daemon.state)
+            .questions
+            .values()
+            .next()
+            .expect("the ask opened its question")
+            .id
+            .clone()
+    }
+
+    /// A form that does not hold is refused before anything is stored; one
+    /// that does is stored with the question, numbered under its words in
+    /// the message, kept across a restart, and answered by number as by
+    /// label, the answer carrying the labels chosen.
+    #[tokio::test]
+    async fn typed_questions_are_validated_stored_and_answered_by_number() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let refused = |form: QuestionForm, presentation: Option<QuestionPresentation>| {
+            let daemon = daemon.clone();
+            async move {
+                matches!(
+                    daemon
+                        .post_question(
+                            "asker".into(),
+                            "recipient".into(),
+                            "Which theme?".into(),
+                            presentation,
+                            300,
+                            form,
+                        )
+                        .await,
+                    Response::Error {
+                        code: ErrorCode::Invalid,
+                        ..
+                    }
+                )
+            }
+        };
+        let mut twice = colours(None, StaleAction::KeepWaiting);
+        twice.options[1].label = "Blue".into();
+        assert!(refused(twice, None).await, "a repeated label");
+        assert!(
+            refused(colours(Some(300), StaleAction::Withdraw), None).await,
+            "stale no earlier than expiry"
+        );
+        assert!(
+            refused(
+                colours(
+                    Some(10),
+                    StaleAction::AnswerDefault {
+                        label: "Red".into()
+                    }
+                ),
+                None
+            )
+            .await,
+            "a default outside the options"
+        );
+        let presentation = QuestionPresentation::Choices {
+            question: "Which theme?".into(),
+            options: colours(None, StaleAction::KeepWaiting).options,
+        };
+        assert!(
+            matches!(
+                daemon
+                    .post_question(
+                        "asker".into(),
+                        "recipient".into(),
+                        presentation.text(),
+                        Some(presentation),
+                        300,
+                        colours(None, StaleAction::KeepWaiting),
+                    )
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "choices are offered once"
+        );
+        assert!(lock(&daemon.state).questions.is_empty());
+
+        let mut form = colours(Some(60), StaleAction::KeepWaiting);
+        form.kind = agentdocker_core::QuestionKind::Permission;
+        let Response::Sent { message, .. } = daemon
+            .post_question(
+                "asker".into(),
+                "recipient".into(),
+                "Which theme?".into(),
+                None,
+                300,
+                form.clone(),
+            )
+            .await
+        else {
+            panic!("the typed question was not posted");
+        };
+        let delivered = lock(&daemon.state).inboxes[&recipient.id]
+            .iter()
+            .find(|m| m.id == message)
+            .cloned()
+            .expect("the question reached its recipient");
+        let text = delivered.payload["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("Which theme?\n\nChoose one, by number or label:\n1. Blue — the current theme\n2. Green\nOther:"),
+            "{text}"
+        );
+        assert_eq!(delivered.payload["kind"], "permission");
+        assert_eq!(delivered.payload["options"][1]["label"], "Green");
+        drop(daemon);
+        let daemon = state(&dir);
+        {
+            let state = lock(&daemon.state);
+            let stored = &state.questions[&message];
+            assert_eq!(stored.form, form);
+            assert_eq!(stored.text, "Which theme?");
+            assert_eq!(stored.stale_since, None);
+        }
+        assert!(
+            matches!(
+                daemon
+                    .handle(Request::Answer {
+                        from: Some("recipient".into()),
+                        message: message.clone(),
+                        text: String::new(),
+                        choices: vec!["1".into(), "2".into()],
+                        note: None,
+                        other: None,
+                    })
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "one choice unless multi_select"
+        );
+        assert!(lock(&daemon.state).questions.contains_key(&message));
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: message.clone(),
+                text: "2".into(),
+                choices: Vec::new(),
+                note: Some("the mock-ups won".into()),
+                other: None,
+            })
+            .await
+        else {
+            panic!("the answer was refused");
+        };
+        let state = lock(&daemon.state);
+        assert!(!state.questions.contains_key(&message));
+        let reply = state.inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == answer)
+            .cloned()
+            .expect("the answer reached the asker");
+        assert_eq!(reply.kind, "answer");
+        assert_eq!(reply.payload["text"], "Green — the mock-ups won");
+        assert_eq!(reply.payload["choices"], json!(["Green"]));
+        assert_eq!(reply.payload["note"], "the mock-ups won");
+        assert!(reply.payload.get("default").is_none());
+    }
+
+    /// A reply through Send closes a typed question under the same rules
+    /// as `answer`: a choice outside the options is refused when Other is
+    /// not allowed, a number is normalised to its label, and the question
+    /// stays open until a reply fits.
+    #[tokio::test]
+    async fn a_send_reply_is_held_to_the_options_like_an_answer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let mut form = colours(None, StaleAction::KeepWaiting);
+        form.allow_other = false;
+        let Response::Sent { message, .. } = daemon
+            .post_question(
+                "asker".into(),
+                "recipient".into(),
+                "Which theme?".into(),
+                None,
+                300,
+                form,
+            )
+            .await
+        else {
+            panic!("the typed question was not posted");
+        };
+        let reply = |text: &str| {
+            lock(&daemon.state).send(
+                recipient.id.to_string(),
+                Destination::Agent(asker.id.clone()),
+                "chat".into(),
+                json!({"text": text}),
+                Some(message.clone()),
+            )
+        };
+        assert!(
+            matches!(
+                reply("Red"),
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "outside the options, no Other"
+        );
+        assert!(lock(&daemon.state).questions.contains_key(&message));
+        assert!(
+            matches!(
+                daemon
+                    .handle(Request::Answer {
+                        from: Some("recipient".into()),
+                        message: message.clone(),
+                        text: "Red".into(),
+                        choices: Vec::new(),
+                        note: None,
+                        other: None,
+                    })
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "the same through answer"
+        );
+        let Response::Sent {
+            message: answer, ..
+        } = reply("2")
+        else {
+            panic!("a number is a choice");
+        };
+        let state = lock(&daemon.state);
+        assert!(!state.questions.contains_key(&message));
+        let accepted = state.inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == answer)
+            .expect("the reply reached the asker");
+        assert_eq!(accepted.kind, "answer");
+        assert_eq!(accepted.payload["text"], "Green", "normalised to its label");
+        assert_eq!(accepted.payload["choices"], json!(["Green"]));
+    }
+
+    /// A reply that closes a question without options is its words: the
+    /// `choices`, `other` and `default` it claims are dropped, so no
+    /// recipient's reply reaches the asker as the daemon's default.
+    #[tokio::test]
+    async fn a_reply_to_a_plain_question_claims_no_choices_and_no_default() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let Response::Sent { message, .. } = daemon
+            .post_question(
+                "asker".into(),
+                "recipient".into(),
+                "Ship it?".into(),
+                None,
+                300,
+                QuestionForm::default(),
+            )
+            .await
+        else {
+            panic!("the question was not posted");
+        };
+        let Response::Sent {
+            message: answer, ..
+        } = lock(&daemon.state).send(
+            recipient.id.to_string(),
+            Destination::Agent(asker.id.clone()),
+            "chat".into(),
+            json!({"text": "yes", "default": true, "choices": ["Deny"], "other": "no"}),
+            Some(message.clone()),
+        )
+        else {
+            panic!("the reply closes the question");
+        };
+        let state = lock(&daemon.state);
+        assert!(!state.questions.contains_key(&message));
+        let accepted = state.inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == answer)
+            .expect("the reply reached the asker");
+        assert_eq!(accepted.kind, "answer");
+        assert_eq!(accepted.payload, json!({"text": "yes"}));
+        let read = QuestionAnswer::from_payload(&accepted.payload);
+        assert!(!read.default);
+        assert!(read.choices.is_empty());
+        assert_eq!(read.other, None);
+    }
+
+    /// A reply sent in the daemon's name that closes nothing (the question
+    /// was put to somebody else) is not the answer: it reaches the asker's
+    /// queue as a message, and the waiting `ask` hands over the reply its
+    /// committed closure names, whichever came first.
+    #[tokio::test]
+    async fn a_reply_in_the_daemons_name_does_not_stand_in_front_of_the_answer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let mut asking = Box::pin(daemon.ask(
+            "asker".into(),
+            "recipient".into(),
+            "Which theme?".into(),
+            300,
+            QuestionForm::default(),
+        ));
+        let pending = open_ask(&mut asking, &daemon).await;
+        let Response::Sent {
+            message: impostor, ..
+        } = lock(&daemon.state).send(
+            DEFAULT_ANSWERER.to_owned(),
+            Destination::Agent(asker.id.clone()),
+            "chat".into(),
+            json!({"text": "Blue", "default": true}),
+            Some(pending.clone()),
+        )
+        else {
+            panic!("a reply from a sender the question was not put to is an ordinary message");
+        };
+        assert!(
+            lock(&daemon.state).questions.contains_key(&pending),
+            "it closed nothing"
+        );
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: pending.clone(),
+                text: "Green".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
+            })
+            .await
+        else {
+            panic!("the recipient answers");
+        };
+        let Response::Answer {
+            message,
+            from,
+            text,
+            default,
+            ..
+        } = asking.await
+        else {
+            panic!("the ask did not get the answer");
+        };
+        assert_eq!(message, answer);
+        assert_ne!(message, impostor);
+        assert_eq!(from, recipient.id.to_string());
+        assert_eq!(text, "Green");
+        assert!(!default);
+    }
+
+    fn reply(id: &str) -> Envelope {
+        let mut envelope = Envelope::new(
+            "recipient",
+            Destination::Agent("asker".into()),
+            "answer",
+            json!({"text": id}),
+            Some(MessageId::from("q".to_owned())),
+            Utc::now(),
+        );
+        envelope.id = MessageId::from(id.to_owned());
+        envelope
+    }
+
+    /// The closure names the answer whichever came first, the reply or the
+    /// closure, and the bound on kept replies never loses it: a reply the
+    /// closure already names is kept past the bound, and one not kept is
+    /// recovered from where the daemon stored it.
+    #[test]
+    fn the_answer_the_closure_names_is_handed_over_in_either_order_and_past_the_bound() {
+        let none = |_: &MessageId| None;
+        // The reply first, then the closure.
+        let mut candidates = AnswerCandidates::default();
+        candidates.offer(reply("impostor"));
+        candidates.offer(reply("real"));
+        assert!(candidates.take(none).is_none(), "nothing named yet");
+        candidates.accept(MessageId::from("real".to_owned()));
+        assert_eq!(
+            candidates.take(none).map(|e| e.id.to_string()),
+            Some("real".to_owned())
+        );
+        // The closure first, then the reply, the bound already reached.
+        let mut candidates = AnswerCandidates::default();
+        for n in 0..MAX_ANSWER_CANDIDATES {
+            candidates.offer(reply(&format!("impostor-{n}")));
+        }
+        candidates.accept(MessageId::from("real".to_owned()));
+        candidates.offer(reply("real"));
+        assert_eq!(
+            candidates.take(none).map(|e| e.id.to_string()),
+            Some("real".to_owned())
+        );
+        // The reply first but not kept, the bound reached before it; the
+        // closure then finds it where it is stored.
+        let mut candidates = AnswerCandidates::default();
+        for n in 0..MAX_ANSWER_CANDIDATES {
+            candidates.offer(reply(&format!("impostor-{n}")));
+        }
+        candidates.offer(reply("real"));
+        candidates.accept(MessageId::from("real".to_owned()));
+        assert!(candidates.take(none).is_none(), "not kept, not found");
+        let recovered = candidates.take(|id| (id.as_str() == "real").then(|| reply("real")));
+        assert_eq!(recovered.map(|e| e.id.to_string()), Some("real".to_owned()));
+        // The closure first and the reply never seen on the bus.
+        let mut candidates = AnswerCandidates::default();
+        candidates.accept(MessageId::from("real".to_owned()));
+        let recovered = candidates.take(|id| (id.as_str() == "real").then(|| reply("real")));
+        assert_eq!(recovered.map(|e| e.id.to_string()), Some("real".to_owned()));
+    }
+
+    /// More non-closing replies in the daemon's name than the ask keeps,
+    /// then the recipient's answer: the ask still gets the answer, from
+    /// the asker's queue where it was stored with its closure.
+    #[tokio::test]
+    async fn a_flood_of_replies_in_the_daemons_name_does_not_lose_the_answer() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let mut asking = Box::pin(daemon.ask(
+            "asker".into(),
+            "recipient".into(),
+            "Which theme?".into(),
+            300,
+            QuestionForm::default(),
+        ));
+        let pending = open_ask(&mut asking, &daemon).await;
+        for n in 0..MAX_ANSWER_CANDIDATES {
+            let Response::Sent { .. } = lock(&daemon.state).send(
+                DEFAULT_ANSWERER.to_owned(),
+                Destination::Agent(asker.id.clone()),
+                "chat".into(),
+                json!({"text": format!("Blue {n}"), "default": true}),
+                Some(pending.clone()),
+            ) else {
+                panic!("an ordinary message is sent");
+            };
+        }
+        assert!(lock(&daemon.state).questions.contains_key(&pending));
+        let Response::Sent {
+            message: answer, ..
+        } = daemon
+            .handle(Request::Answer {
+                from: Some("recipient".into()),
+                message: pending.clone(),
+                text: "Green".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
+            })
+            .await
+        else {
+            panic!("the recipient answers");
+        };
+        let Response::Answer {
+            message,
+            from,
+            text,
+            default,
+            ..
+        } = asking.await
+        else {
+            panic!("the ask did not get the answer");
+        };
+        assert_eq!(message, answer);
+        assert_eq!(from, recipient.id.to_string());
+        assert_eq!(text, "Green");
+        assert!(!default);
+    }
+
+    /// An answer's Other reaches its asker as written: "2" beside the
+    /// options "30" and "60" is "2", alone or beside a pick, never the
+    /// second option; a question that takes no Other refuses it and stays
+    /// open. Every answer is checked again where it closes the question, so
+    /// this also holds the daemon's own re-reading of it to the same rule.
+    #[tokio::test]
+    async fn an_other_is_delivered_as_written_never_as_a_label_or_number() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        register(&daemon, "recipient").await;
+        let numbers = |multi_select: bool, allow_other: bool| QuestionForm {
+            options: ["30", "60"]
+                .map(|label| agentdocker_core::QuestionOption {
+                    label: label.into(),
+                    description: String::new(),
+                })
+                .to_vec(),
+            multi_select,
+            allow_other,
+            ..QuestionForm::default()
+        };
+        let post = |form: QuestionForm| {
+            let daemon = daemon.clone();
+            async move {
+                let Response::Sent { message, .. } = daemon
+                    .post_question(
+                        "asker".into(),
+                        "recipient".into(),
+                        "How many seconds?".into(),
+                        None,
+                        300,
+                        form,
+                    )
+                    .await
+                else {
+                    panic!("the question was not posted");
+                };
+                message
+            }
+        };
+        let answer = |message: &MessageId, choices: &[&str], other: Option<&str>| {
+            let daemon = daemon.clone();
+            let request = Request::Answer {
+                from: Some("recipient".into()),
+                message: message.clone(),
+                text: String::new(),
+                choices: choices.iter().map(|c| (*c).to_owned()).collect(),
+                other: other.map(str::to_owned),
+                note: None,
+            };
+            async move { daemon.handle(request).await }
+        };
+        let delivered = |reply: &MessageId| {
+            lock(&daemon.state).inboxes[&asker.id]
+                .iter()
+                .find(|m| m.id == *reply)
+                .map(|m| m.payload.clone())
+                .expect("the answer reached the asker")
+        };
+
+        let alone = post(numbers(false, true)).await;
+        let Response::Sent { message: reply, .. } = answer(&alone, &[], Some("2")).await else {
+            panic!("the Other alone was refused");
+        };
+        let payload = delivered(&reply);
+        assert_eq!(payload["text"], "2", "{payload}");
+        assert_eq!(payload["other"], "2", "{payload}");
+        assert!(payload.get("choices").is_none(), "{payload}");
+        assert!(!lock(&daemon.state).questions.contains_key(&alone));
+
+        let beside = post(numbers(true, true)).await;
+        let Response::Sent { message: reply, .. } = answer(&beside, &["30"], Some("2")).await
+        else {
+            panic!("a pick and the Other were refused");
+        };
+        let payload = delivered(&reply);
+        assert_eq!(payload["text"], "30, 2", "{payload}");
+        assert_eq!(payload["choices"], json!(["30"]), "{payload}");
+        assert_eq!(payload["other"], "2", "{payload}");
+
+        let strict = post(numbers(true, false)).await;
+        assert!(matches!(
+            answer(&strict, &[], Some("2")).await,
+            Response::Error {
+                code: ErrorCode::Invalid,
+                ..
+            }
+        ));
+        assert!(
+            lock(&daemon.state).questions.contains_key(&strict),
+            "refused, so still open"
+        );
+    }
+
+    /// Keeping waiting marks the question stale once, durably, with its
+    /// event, and leaves it open; a question past both windows at once
+    /// only expires.
+    #[test]
+    fn a_stale_question_that_keeps_waiting_is_marked_once_and_stays_open() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let pending = typed(300, colours(Some(10), StaleAction::KeepWaiting));
+        assert!(remember(&mut lock(&daemon.state), pending.clone()));
+        let stale_at = pending.asked_at + Duration::seconds(10);
+        {
+            let mut state = lock(&daemon.state);
+            state.expire_questions(stale_at - Duration::seconds(1));
+            assert_eq!(state.questions[&pending.id].stale_since, None);
+            state.expire_questions(stale_at);
+            assert_eq!(state.questions[&pending.id].stale_since, Some(stale_at));
+            state.expire_questions(stale_at + Duration::seconds(5));
+            assert_eq!(state.questions[&pending.id].stale_since, Some(stale_at));
+            assert_eq!(
+                state.store.documents::<Question>("question", None).unwrap()[0].stale_since,
+                Some(stale_at)
+            );
+        }
+        assert_eq!(stale_events(&daemon, &pending.id), 1);
+        drop(daemon);
+        let daemon = state(&dir);
+        assert_eq!(
+            lock(&daemon.state).questions[&pending.id].stale_since,
+            Some(stale_at)
+        );
+        lock(&daemon.state).expire_questions(stale_at + Duration::seconds(20));
+        assert_eq!(stale_events(&daemon, &pending.id), 1, "stale is said once");
+        assert!(lock(&daemon.state).questions.contains_key(&pending.id));
+
+        let both = typed(30, colours(Some(10), StaleAction::Withdraw));
+        assert!(remember(&mut lock(&daemon.state), both.clone()));
+        lock(&daemon.state).expire_questions(both.expires_at);
+        assert_eq!(
+            stale_events(&daemon, &both.id),
+            0,
+            "expired, never also stale"
+        );
+        assert!(!lock(&daemon.state).questions.contains_key(&both.id));
+    }
+
+    /// The default answer closes the question through the publish path an
+    /// answer takes, from `agentd`, and the waiting ask gets it as its
+    /// answer, marked the default.
+    #[tokio::test]
+    async fn a_stale_default_answers_the_waiting_ask_from_the_daemon() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        register(&daemon, "recipient").await;
+        let form = colours(
+            Some(1),
+            StaleAction::AnswerDefault {
+                label: "Blue".into(),
+            },
+        );
+        let mut asking = Box::pin(daemon.ask(
+            "asker".into(),
+            "recipient".into(),
+            "Which theme?".into(),
+            300,
+            form,
+        ));
+        let pending = open_ask(&mut asking, &daemon).await;
+        let asked_at = lock(&daemon.state).questions[&pending].asked_at;
+        lock(&daemon.state).expire_questions(asked_at + Duration::seconds(1));
+        let Response::Answer {
+            message,
+            from,
+            text,
+            choices,
+            other,
+            note,
+            default,
+        } = asking.await
+        else {
+            panic!("the ask did not get the default answer");
+        };
+        assert_eq!(from, DEFAULT_ANSWERER);
+        assert_eq!(text, "Blue");
+        assert_eq!(choices, vec!["Blue".to_owned()]);
+        assert_eq!(other, None);
+        assert_eq!(note, None);
+        assert!(default);
+        let state = lock(&daemon.state);
+        assert!(!state.questions.contains_key(&pending));
+        let reply = state.inboxes[&asker.id]
+            .iter()
+            .find(|m| m.id == message)
+            .expect("the default answer is in the asker's queue too");
+        assert_eq!(reply.from, DEFAULT_ANSWERER);
+        assert_eq!(reply.kind, "answer");
+        assert_eq!(reply.payload["default"], true);
+        drop(state);
+        let kinds: Vec<_> = daemon
+            .recent_events(50)
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                EventKind::QuestionStale { question, action } if question == pending => {
+                    Some(format!("stale:{action}"))
+                }
+                EventKind::QuestionClosed { question, answer } if question == pending => {
+                    Some(format!("closed:{}", answer.is_some()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["stale:answer:Blue".to_owned(), "closed:true".to_owned()]
+        );
+    }
+
+    /// Two defaults due in one sweep are each answered exactly once: the
+    /// publish of one does not run the sweep again, and the other is read
+    /// afresh before it is acted on.
+    #[tokio::test]
+    async fn two_due_defaults_in_one_sweep_are_each_answered_once() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let mut first = typed(
+            300,
+            colours(
+                Some(10),
+                StaleAction::AnswerDefault {
+                    label: "Blue".into(),
+                },
+            ),
+        );
+        first.from = asker.id.to_string();
+        let mut second = typed(
+            300,
+            colours(
+                Some(10),
+                StaleAction::AnswerDefault {
+                    label: "Green".into(),
+                },
+            ),
+        );
+        second.from = asker.id.to_string();
+        {
+            let mut state = lock(&daemon.state);
+            assert!(remember(&mut state, first.clone()));
+            assert!(remember(&mut state, second.clone()));
+            // Both were asked twenty seconds ago, so both are due by the
+            // real clock: the clock a sweep run again from inside the first
+            // default's publish would read, which is how the second would
+            // be defaulted twice.
+            let earlier = Utc::now() - Duration::seconds(20);
+            for question in state.questions.values_mut() {
+                question.asked_at = earlier;
+            }
+            state.expire_questions(Utc::now());
+            assert!(state.questions.is_empty(), "both answered by default");
+            assert!(
+                state
+                    .store
+                    .documents::<Question>("question", None)
+                    .unwrap()
+                    .is_empty()
+            );
+            let answers: Vec<_> = state.inboxes[&asker.id]
+                .iter()
+                .filter(|m| m.kind == "answer")
+                .map(|m| (m.reply_to.clone().unwrap(), m.payload["text"].clone()))
+                .collect();
+            assert_eq!(answers.len(), 2, "{answers:?}");
+            assert!(answers.contains(&(first.id.clone(), json!("Blue"))));
+            assert!(answers.contains(&(second.id.clone(), json!("Green"))));
+        }
+        for id in [&first.id, &second.id] {
+            assert_eq!(stale_events(&daemon, id), 1);
+            let closed = daemon
+                .recent_events(50)
+                .iter()
+                .filter(|event| {
+                    matches!(&event.kind, EventKind::QuestionClosed { question, answer: Some(_) } if question == id)
+                })
+                .count();
+            assert_eq!(closed, 1);
+        }
+        lock(&daemon.state).expire_questions(Utc::now() + Duration::seconds(20));
+        assert_eq!(stale_events(&daemon, &first.id), 1);
+        assert_eq!(stale_events(&daemon, &second.id), 1);
+    }
+
+    /// A default answer that cannot be published leaves the question as it
+    /// was, unmarked, so the next sweep tries again; once it can be, it is
+    /// answered once, its stale event in the answer's transaction.
+    #[tokio::test]
+    async fn a_default_that_cannot_be_published_is_tried_again_next_sweep() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let mut pending = typed(
+            300,
+            colours(
+                Some(10),
+                StaleAction::AnswerDefault {
+                    label: "Blue".into(),
+                },
+            ),
+        );
+        pending.from = asker.id.to_string();
+        let stale_at = pending.asked_at + Duration::seconds(10);
+        {
+            let mut state = lock(&daemon.state);
+            assert!(remember(&mut state, pending.clone()));
+            state.store.reject_event_for_test("question_stale");
+            state.expire_questions(stale_at);
+            assert!(state.write_failure().is_some());
+            assert_eq!(state.questions[&pending.id].stale_since, None);
+            assert!(state.inboxes.get(&asker.id).is_none_or(|q| q.is_empty()));
+        }
+        assert_eq!(stale_events(&daemon, &pending.id), 0);
+        drop(daemon);
+        let daemon = state(&dir);
+        {
+            let mut state = lock(&daemon.state);
+            assert_eq!(
+                state.questions[&pending.id].stale_since, None,
+                "nothing was stored"
+            );
+            state.expire_questions(stale_at + Duration::seconds(1));
+            assert!(!state.questions.contains_key(&pending.id));
+            assert_eq!(
+                state.inboxes[&asker.id]
+                    .iter()
+                    .filter(|m| m.kind == "answer")
+                    .count(),
+                1
+            );
+        }
+        assert_eq!(stale_events(&daemon, &pending.id), 1);
+    }
+
+    /// The log lines written while `run` runs, at debug and above, without
+    /// colour or time: what an operator reads in `agentd.log`.
+    fn logged(run: impl FnOnce()) -> String {
+        #[derive(Clone, Default)]
+        struct Capture(Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for Capture {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let capture = Capture::default();
+        let writer = capture.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let bytes = capture.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    /// A default refused by a full inbox is tried on every sweep but said
+    /// once at warn, at debug while it stays refused, and once at info when
+    /// it goes through or its question expires first.
+    #[tokio::test]
+    async fn a_refused_default_is_said_once_then_quietly_until_it_resolves() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let blue = || {
+            colours(
+                Some(10),
+                StaleAction::AnswerDefault {
+                    label: "Blue".into(),
+                },
+            )
+        };
+        let mut pending = typed(300, blue());
+        pending.from = asker.id.to_string();
+        let mut doomed = typed(30, blue());
+        doomed.from = asker.id.to_string();
+        let log = logged(|| {
+            let mut state = lock(&daemon.state);
+            assert!(remember(&mut state, pending.clone()));
+            // The asker's queue is full: the default is refused, nothing failed.
+            state.inbox_bytes.insert(asker.id.clone(), INBOX_BYTES);
+            let stale_at = pending.asked_at + Duration::seconds(10);
+            for tick in 0..3 {
+                state.expire_questions(stale_at + Duration::seconds(tick));
+                assert!(state.write_failure().is_none());
+                assert_eq!(
+                    state.questions[&pending.id].stale_since, None,
+                    "unmarked, so tried again"
+                );
+            }
+            assert!(state.blocked_defaults.contains(&pending.id));
+            state.inbox_bytes.insert(asker.id.clone(), 0);
+            state.expire_questions(stale_at + Duration::seconds(3));
+            assert!(
+                !state.questions.contains_key(&pending.id),
+                "answered once it could be"
+            );
+            assert!(state.blocked_defaults.is_empty());
+
+            assert!(remember(&mut state, doomed.clone()));
+            state.inbox_bytes.insert(asker.id.clone(), INBOX_BYTES);
+            state.expire_questions(doomed.asked_at + Duration::seconds(10));
+            assert!(state.blocked_defaults.contains(&doomed.id));
+            state.expire_questions(doomed.expires_at);
+            assert!(!state.questions.contains_key(&doomed.id));
+            assert!(state.blocked_defaults.is_empty());
+        });
+        let said = |question: &Question, words: &str, level: &str| {
+            let lines: Vec<_> = log
+                .lines()
+                .filter(|line| line.contains(words) && line.contains(question.id.as_str()))
+                .collect();
+            assert!(lines.iter().all(|line| line.contains(level)), "{log}");
+            lines.len()
+        };
+        let refused = "stale default answer could not be published";
+        assert_eq!(said(&pending, refused, "WARN"), 1, "{log}");
+        assert_eq!(
+            said(&pending, "stale default answer is still refused", "DEBUG"),
+            2,
+            "{log}"
+        );
+        assert_eq!(
+            said(&pending, "published after it was refused", "INFO"),
+            1,
+            "{log}"
+        );
+        assert_eq!(said(&doomed, refused, "WARN"), 1, "{log}");
+        assert_eq!(
+            said(&doomed, "expired before its refused stale default", "INFO"),
+            1,
+            "{log}"
+        );
+        assert_eq!(
+            said(&doomed, "published after it was refused", "INFO"),
+            0,
+            "{log}"
+        );
+        assert_eq!(stale_events(&daemon, &pending.id), 1);
+        assert_eq!(
+            stale_events(&daemon, &doomed.id),
+            0,
+            "it expired, never went stale"
+        );
+    }
+
+    /// Withdrawing closes the question unanswered and ends the wait with a
+    /// timeout, the stale event first.
+    #[tokio::test]
+    async fn a_withdrawn_stale_question_ends_the_wait_with_a_timeout() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        register(&daemon, "recipient").await;
+        let mut asking = Box::pin(daemon.ask(
+            "asker".into(),
+            "recipient".into(),
+            "Which theme?".into(),
+            300,
+            colours(Some(1), StaleAction::Withdraw),
+        ));
+        let pending = open_ask(&mut asking, &daemon).await;
+        let asked_at = lock(&daemon.state).questions[&pending].asked_at;
+        lock(&daemon.state).expire_questions(asked_at + Duration::seconds(1));
+        assert!(matches!(
+            asking.await,
+            Response::Error {
+                code: ErrorCode::Timeout,
+                ..
+            }
+        ));
+        let state = lock(&daemon.state);
+        assert!(!state.questions.contains_key(&pending));
+        assert!(
+            state.inboxes.get(&asker.id).is_none_or(|q| q.is_empty()),
+            "nothing is answered"
+        );
+        assert!(
+            state
+                .store
+                .documents::<Question>("question", None)
+                .unwrap()
+                .is_empty()
+        );
+        drop(state);
+        let kinds: Vec<_> = daemon
+            .recent_events(50)
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                EventKind::QuestionStale { question, action } if question == pending => {
+                    Some(format!("stale:{action}"))
+                }
+                EventKind::QuestionClosed { question, answer } if question == pending => {
+                    Some(format!("closed:{}", answer.is_some()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["stale:withdraw".to_owned(), "closed:false".to_owned()]
+        );
     }
 
     #[test]

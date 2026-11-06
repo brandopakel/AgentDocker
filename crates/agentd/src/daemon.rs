@@ -569,6 +569,12 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// Open questions whose stale default answer was refused (a full
+    /// inbox, say) and is tried again on every sweep. Kept so the refusal
+    /// is said once at warn, then at debug while it lasts, and once at
+    /// info when it goes through or the question closes. In memory only:
+    /// a daemon that restarts says it once more.
+    blocked_defaults: HashSet<MessageId>,
     /// Remote senders' messages held for the person, by the id of the
     /// question that carries each; kept as `held_message` documents in
     /// the same transaction as their questions.
@@ -1726,6 +1732,7 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions,
+                blocked_defaults: HashSet::new(),
                 held_messages,
                 secret_reviews: HashMap::new(),
                 pauses,
@@ -2425,15 +2432,17 @@ impl Daemon {
                 to,
                 question,
                 timeout_secs,
-            } => self.ask(from, to, question, timeout_secs).await,
+                form,
+            } => self.ask(from, to, question, timeout_secs, form).await,
             Request::PostQuestion {
                 from,
                 to,
                 question,
                 presentation,
                 timeout_secs,
+                form,
             } => {
-                self.post_question(from, to, question, presentation, timeout_secs)
+                self.post_question(from, to, question, presentation, timeout_secs, form)
                     .await
             }
             Request::CancelQuestion { agent, message } => self.cancel_question(&agent, &message),
@@ -2441,7 +2450,10 @@ impl Daemon {
                 from,
                 message,
                 text,
-            } => self.answer(from, message, text).await,
+                choices,
+                other,
+                note,
+            } => self.answer(from, message, text, choices, other, note).await,
             Request::Questions { agent } => self.questions(agent),
             Request::Activity {
                 agent,
@@ -5217,6 +5229,19 @@ impl State {
         self.publish_with_channel(envelope, question, None, None)
     }
 
+    /// The daemon's own answer to a question whose stale window passed:
+    /// it closes `question` although no recipient sent it, and is
+    /// attributed to `agentd` as the default. The `question_stale` event
+    /// lands in the same transaction as the answer, so a refused or failed
+    /// publish leaves the question unmarked and the next sweep tries again.
+    pub(super) fn publish_default_answer(
+        &mut self,
+        envelope: Envelope,
+        question: &MessageId,
+    ) -> Response {
+        self.publish_routed(envelope, None, None, None, Some(question.clone()))
+    }
+
     /// Prepare channel state and ancillary effects without changing live state;
     /// publish the complete transition only after the message transaction commits.
     /// `document` is one more thing that lands with the message or not at
@@ -5228,6 +5253,23 @@ impl State {
         question: Option<agentdocker_core::Question>,
         channel: Option<(Channel, Vec<EventKind>, Option<JournalEntry>)>,
         document: Option<DocumentTransition>,
+    ) -> Response {
+        self.publish_routed(envelope, question, channel, document, None)
+    }
+
+    /// [`State::publish_with_channel`], with `default_for` naming the open
+    /// question this envelope closes as the daemon's default answer: the
+    /// one closure that no addressed recipient sent. That call comes from
+    /// the question sweep itself, which has just expired and staled what
+    /// was due, so it does not run the sweep again: doing so would re-enter
+    /// it and default the other due questions twice.
+    fn publish_routed(
+        &mut self,
+        envelope: Envelope,
+        question: Option<agentdocker_core::Question>,
+        channel: Option<(Channel, Vec<EventKind>, Option<JournalEntry>)>,
+        document: Option<DocumentTransition>,
+        default_for: Option<MessageId>,
     ) -> Response {
         let (channel, transition, mut journal) = match channel {
             Some((channel, events, journal)) => (Some(channel), events, journal),
@@ -5253,9 +5295,11 @@ impl State {
         if let Some(error) = self.write_failure() {
             return error;
         }
-        self.expire_questions(Utc::now());
-        if let Some(error) = self.write_failure() {
-            return error;
+        if default_for.is_none() {
+            self.expire_questions(Utc::now());
+            if let Some(error) = self.write_failure() {
+                return error;
+            }
         }
         if question.is_some() && self.questions.len() >= humans::MAX_QUESTIONS {
             return Response::error(
@@ -5307,10 +5351,21 @@ impl State {
         // kind says so before it is sized, stored or routed, and the route
         // is chosen here for both. With an `ask` waiting the answer is held
         // for it; otherwise the queue is its route, said at once.
-        let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
-            .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
-            .filter(|pending| self.put_to(pending, &AgentId::from(envelope.from.as_str())))
-            .map(|pending| pending.id.clone());
+        let stale = default_for.as_ref().and_then(|id| {
+            self.questions
+                .get(id)
+                .map(|pending| EventKind::QuestionStale {
+                    question: pending.id.clone(),
+                    action: pending.form.stale_action.clone(),
+                })
+        });
+        let closed = match &default_for {
+            Some(question) => self.questions.contains_key(question).then(|| question.clone()),
+            None => envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
+                .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
+                .filter(|pending| self.put_to(pending, &AgentId::from(envelope.from.as_str())))
+                .map(|pending| pending.id.clone()),
+        };
         if let Some(
             presentation @ (agentdocker_core::QuestionPresentation::McpUrl { .. }
             | agentdocker_core::QuestionPresentation::McpForm { .. }),
@@ -5332,6 +5387,42 @@ impl State {
             );
         }
         let mut envelope = envelope;
+        // A reply that closes a typed question answers it as `answer` does,
+        // whichever request carried it: a number becomes its label, a
+        // choice outside the options is refused unless Other is allowed,
+        // and the accepted payload is the resolved one. The daemon's own
+        // default answer arrives resolved and marked, so it is left alone.
+        if default_for.is_none()
+            && let Some(pending) = closed.as_ref().and_then(|id| self.questions.get(id))
+            && !pending.form.options.is_empty()
+        {
+            let given = agentdocker_core::QuestionAnswer::from_payload(&envelope.payload);
+            match agentdocker_core::QuestionAnswer::resolve(
+                &pending.form,
+                &given.text,
+                &given.choices,
+                given.other.as_deref(),
+                given.note.as_deref(),
+            ) {
+                Ok(answer) => envelope.payload = answer.payload(),
+                Err(reason) => {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        format!("answer does not fit the question's options: {reason}"),
+                    );
+                }
+            }
+        } else if default_for.is_none()
+            && closed.is_some()
+            && let Some(payload) = envelope.payload.as_object_mut()
+        {
+            // A question without options has no choices and no Other, and
+            // only the daemon's own answer is a default: a reply that
+            // claims any of them is read as the words it carries.
+            for claim in ["choices", "other", "default"] {
+                payload.remove(claim);
+            }
+        }
         if closed.is_some() {
             envelope.kind = "answer".to_owned();
         }
@@ -5386,6 +5477,8 @@ impl State {
         if let Some(document) = &document {
             kinds.push(document.event.clone());
         }
+        // Said before the answer that follows from it, in one commit.
+        kinds.extend(stale);
         // A question the document settles without an answer: a held
         // message's card, closed as its message goes out.
         let settled = document
