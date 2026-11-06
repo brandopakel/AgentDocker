@@ -308,14 +308,9 @@ impl Daemon {
                     spawned.control.send_replace(Some(true));
                 }
                 let supervision = supervisor::supervise(self.clone(), record.id, spawned);
-                if let Some(error) = failed.or_else(|| {
-                    activation_error.map(|error| {
-                        Response::error(
-                            ErrorCode::Internal,
-                            format!("failed to execute command: {error:#}"),
-                        )
-                    })
-                }) {
+                if let Some(error) =
+                    failed.or_else(|| activation_error.as_ref().map(activation_refusal))
+                {
                     let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
                     return error;
                 }
@@ -716,7 +711,7 @@ impl Daemon {
         let dir = paths::worktree_dir(&self.home).join(base.id().short());
         if let Err(err) = std::fs::create_dir_all(&dir) {
             return Err(Box::new(Response::error(
-                ErrorCode::Internal,
+                ErrorCode::StorageUnavailable,
                 format!("cannot create {}: {err}", dir.display()),
             )));
         }
@@ -758,5 +753,47 @@ impl Daemon {
             }
         }
         Err(last.unwrap_or_else(|| invalid("no free worktree path for the agent")))
+    }
+}
+
+/// What a launch whose activation failed answers: `launch_failed` only
+/// when the command is known never to have run (it ended before the owner
+/// reported it running, its program not executable), `cancelled` when it
+/// was stopped before it was let go, and `unconfirmed` otherwise, since a
+/// session that failed after letting the command go may have run it.
+fn activation_refusal(error: &anyhow::Error) -> Response {
+    use crate::supervisor::NotActivated;
+    let code = match error.downcast_ref::<NotActivated>() {
+        Some(NotActivated::Exited(_)) => ErrorCode::LaunchFailed,
+        Some(NotActivated::Stopped) => ErrorCode::Cancelled,
+        None => ErrorCode::Unconfirmed,
+    };
+    Response::error(code, format!("failed to execute command: {error:#}"))
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+
+    /// Only a command known never to have run is `launch_failed`; one whose
+    /// session failed after it was let go (an attach that could not be
+    /// sent, an owner that closed) may have run, and is `unconfirmed`.
+    #[test]
+    fn only_a_command_that_never_ran_is_launch_failed() {
+        use crate::supervisor::NotActivated;
+        let code = |error: anyhow::Error| match activation_refusal(&error) {
+            Response::Error { code, .. } => code,
+            other => panic!("{other:?}"),
+        };
+        let exited = anyhow::Error::from(NotActivated::Exited("exit status 127".into()))
+            .context("command could not be launched");
+        assert_eq!(code(exited), ErrorCode::LaunchFailed);
+        assert_eq!(code(NotActivated::Stopped.into()), ErrorCode::Cancelled);
+        let attach = anyhow::anyhow!("broken pipe").context("command could not be launched");
+        assert_eq!(code(attach), ErrorCode::Unconfirmed);
+        assert_eq!(
+            code(anyhow::anyhow!("session owner closed during activation")),
+            ErrorCode::Unconfirmed
+        );
     }
 }
