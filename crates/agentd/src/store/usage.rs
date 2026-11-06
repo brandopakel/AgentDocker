@@ -1,5 +1,6 @@
 //! Atomic token accounting. File bytes never enter these tables.
 use super::*;
+use agentdocker_core::LeaseMode;
 use agentdocker_core::usage::{self, Aggregate, Baseline, Counters, Range, report::*};
 use agentdocker_host::usage::{Sample, Semantics, reader};
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,14 @@ pub(super) use tracking::init as tracking_init;
 pub(crate) struct Attribution {
     pub agent: Option<String>,
     pub project: Option<String>,
+    /// The card (`task:<id>` lease) the agent held when the sample was
+    /// recorded, by task id. Left out of the bucket key when absent, so
+    /// buckets written before cards were stamped keep their keys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub card: Option<String>,
+    /// The agent's roles then, as its `role` label (`reviewer,tester`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +40,41 @@ struct Contribution {
     bucket: Bucket,
     session: String,
     counters: Counters,
+    /// The price the sample carried, in micro-dollars, once known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cost_usd_micros: Option<u64>,
+}
+
+/// The fingerprint of a `usage_samples` row that is another row's name
+/// for the same response: `alias:` and the row it stands for. Such a row
+/// has no contribution of its own; a sample met under its id is a replay.
+const ALIAS: &str = "alias:";
+
+/// `usage_holdings` kinds: a card held (`task:` lease on a board card)
+/// and the roles held, each over the interval it was held.
+const HELD_CARD: &str = "card";
+pub(super) const HELD_ROLE: &str = "role";
+
+/// What ingesting samples did, for the events that say so.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Ingested {
+    /// New samples counted.
+    accepted: u64,
+    /// New source gaps kept.
+    gaps: u64,
+    /// Counted responses that learnt their provider-reported cost.
+    priced: u64,
+    /// Responses counted once from each source that now count once.
+    folded: u64,
+}
+
+impl std::ops::AddAssign for Ingested {
+    fn add_assign(&mut self, other: Self) {
+        self.accepted += other.accepted;
+        self.gaps += other.gaps;
+        self.priced += other.priced;
+        self.folded += other.folded;
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -65,7 +109,7 @@ fn fingerprint<T: Serialize>(value: &T) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 
-fn text(at: DateTime<Utc>) -> String {
+pub(super) fn text(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
 }
 
@@ -78,6 +122,19 @@ pub(crate) struct UsageReconcile<'a> {
     pub attribution: Option<&'a Attribution>,
     pub window: (Option<DateTime<Utc>>, Option<DateTime<Utc>>),
     pub retained_since: DateTime<Utc>,
+}
+
+/// One report row from a merged bucket: its counters, its price and the
+/// cache share the counters give.
+fn row(key: Option<String>, value: &Aggregate, complete: bool) -> Row {
+    let counters = CounterReports::new(value, complete);
+    Row {
+        key,
+        samples: value.samples(),
+        cache_read_share_percent: Row::cache_read_share(value.samples(), &counters),
+        counters,
+        cost_usd_micros: value.cost(complete),
+    }
 }
 
 impl Store {
@@ -181,14 +238,17 @@ impl Store {
             let mut contribution: Contribution = serde_json::from_str(&value)?;
             let mut destination = contribution.bucket.clone();
             destination.attribution = attribution.clone();
-            let Ok(next) = self.usage_bucket(&destination)?.add(&contribution.counters) else {
+            let Ok(next) = self
+                .usage_bucket(&destination)?
+                .add_priced(&contribution.counters, contribution.cost_usd_micros)
+            else {
                 // An unrepresentable merge stays visibly unattributed. It must
                 // not disable unrelated coordination or lose the old total.
                 continue;
             };
             let previous = self
                 .usage_bucket(&contribution.bucket)?
-                .remove(&contribution.counters)
+                .remove_priced(&contribution.counters, contribution.cost_usd_micros)
                 .map_err(anyhow::Error::msg)?;
             if self
                 .usage_bounded_write(|| {
@@ -238,15 +298,14 @@ impl Store {
         Ok(event)
     }
 
-    pub(crate) fn usage_ingest(&self, batch: Ingest<'_>) -> Result<Event> {
+    pub(crate) fn usage_ingest(&self, batch: Ingest<'_>) -> Result<Vec<Event>> {
         anyhow::ensure!(
             batch.samples.len() <= 4096 && batch.gaps.len() <= 4096,
             "usage batch exceeds bounds"
         );
         let tx = write_transaction(&self.conn)?;
         let retained_since = self.usage_retained_since(batch.retained_since)?;
-        let mut accepted = 0;
-        let mut gaps = 0;
+        let mut done = Ingested::default();
         // Reader records normally arrive in source order. Sorting this bounded
         // batch also handles per-response logs whose records were interleaved.
         let mut samples: Vec<_> = batch.samples.iter().collect();
@@ -255,40 +314,73 @@ impl Store {
             match self.usage_bounded_write(|| {
                 self.usage_ingest_sample(sample, attribution, retained_since)
             })? {
-                Some((count, missing)) => {
-                    accepted += count;
-                    gaps += missing;
-                }
-                None => gaps += self.usage_tracking_gap(batch.now.max(sample.at))?,
+                Some(sample) => done += sample,
+                None => done.gaps += self.usage_tracking_gap(batch.now.max(sample.at))?,
             }
         }
         for gap in batch.gaps {
             let key = fingerprint(&(batch.key, &batch.progress.cursor, gap.offset, &gap.reason))?;
-            gaps += self.usage_gap(&key, None, batch.now, None, &gap.reason)?;
+            done.gaps += self.usage_gap(&key, None, batch.now, None, &gap.reason)?;
         }
         if self.usage_bounded_write(|| {
             Ok(self.conn.execute("INSERT INTO usage_files VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET json=excluded.json",
                 params![batch.key, serde_json::to_string(batch.progress)?])?)
         })?.is_none() {
-            gaps += self.usage_tracking_gap(batch.now)?;
+            done.gaps += self.usage_tracking_gap(batch.now)?;
         }
         self.put_document("usage", "collection", batch.collection)?;
         if let Some(id) = batch.finished_job {
             self.usage_discovery_change(discovery::Change::FinishedJob(id))?;
         }
         self.prune_usage(batch.retained_since)?;
-        let mut event = Event::new(
-            EventKind::UsageRecorded {
-                generation: batch.collection.discovery_generation.unwrap_or(0),
-                samples: accepted,
-                gaps,
-            },
+        let events = self.usage_events(
+            true,
+            batch.collection.discovery_generation.unwrap_or(0),
+            done,
             batch.now,
-        );
-        event.seq = batch.event_seq;
-        self.append_event(&event)?;
+            batch.event_seq,
+        )?;
         tx.commit()?;
-        Ok(event)
+        Ok(events)
+    }
+
+    /// The events one ingestion commits, numbered from `seq`:
+    /// `usage_recorded` when `recorded` (a collected batch always says it,
+    /// since it carries scan progress), and `usage_joined` when counted
+    /// responses learnt their cost or were folded into one.
+    fn usage_events(
+        &self,
+        recorded: bool,
+        generation: u64,
+        done: Ingested,
+        now: DateTime<Utc>,
+        seq: u64,
+    ) -> Result<Vec<Event>> {
+        let mut events = Vec::new();
+        if recorded {
+            events.push(Event::new(
+                EventKind::UsageRecorded {
+                    generation,
+                    samples: done.accepted,
+                    gaps: done.gaps,
+                },
+                now,
+            ));
+        }
+        if done.priced > 0 || done.folded > 0 {
+            events.push(Event::new(
+                EventKind::UsageJoined {
+                    priced: done.priced,
+                    folded: done.folded,
+                },
+                now,
+            ));
+        }
+        for (offset, event) in events.iter_mut().enumerate() {
+            event.seq = seq + offset as u64;
+            self.append_event(event)?;
+        }
+        Ok(events)
     }
 
     /// Normalize sorted standalone metadata with the same dedupe and baseline
@@ -306,29 +398,214 @@ impl Store {
             "standalone ingestion batch exceeds bounds"
         );
         let tx = write_transaction(&self.conn)?;
-        let mut accepted = 0;
-        let mut gaps = 0;
+        let mut done = Ingested::default();
         for (sample, attribution) in samples {
-            let (count, missing) = self
+            done += self
                 .usage_bounded_write(|| {
                     self.usage_ingest_sample(sample, attribution, retained_since)
                 })?
                 .context("standalone accounting capacity exceeded; select fewer inputs")?;
-            accepted += count;
-            gaps += missing;
         }
-        let mut event = Event::new(
-            EventKind::UsageRecorded {
-                generation: 1,
-                samples: accepted,
-                gaps,
-            },
-            now,
-        );
-        event.seq = seq;
-        self.append_event(&event)?;
+        self.usage_events(true, 1, done, now, seq)?;
         tx.commit()?;
-        Ok(accepted)
+        Ok(done.accepted)
+    }
+
+    /// One received telemetry export: its samples through the same dedupe,
+    /// baseline and bucket rules as a collected batch, under the tracking
+    /// budget, and its accounting events that could not be read (`rejected`,
+    /// each a reason) as source gaps, so coverage never claims what was
+    /// lost. One `usage_recorded` event when anything was counted or a new
+    /// gap kept; an export that changes nothing (a replay, a rejection
+    /// already on record this hour) appends none, so a noisy exporter does
+    /// not crowd the event history. No file cursor moves: the events came
+    /// over the wire, not from a file.
+    pub(crate) fn usage_ingest_telemetry(
+        &self,
+        samples: &[(Sample, Attribution)],
+        rejected: &[String],
+        retained_since: DateTime<Utc>,
+        now: DateTime<Utc>,
+        seq: u64,
+    ) -> Result<Vec<Event>> {
+        anyhow::ensure!(
+            samples.len() + rejected.len() <= agentdocker_host::usage::otlp::MAX_RECORDS,
+            "telemetry batch exceeds bounds"
+        );
+        let tx = write_transaction(&self.conn)?;
+        let retained_since = self.usage_retained_since(retained_since)?;
+        let mut done = Ingested::default();
+        let mut samples: Vec<_> = samples.iter().collect();
+        samples.sort_by_key(|(sample, _)| sample.at);
+        for (sample, attribution) in samples {
+            match self.usage_bounded_write(|| {
+                self.usage_ingest_sample(sample, attribution, retained_since)
+            })? {
+                Some(sample) => done += sample,
+                None => done.gaps += self.usage_tracking_gap(now.max(sample.at))?,
+            }
+        }
+        // One gap per reason per hour, however many events give it: the
+        // reasons are the decoder's, a short fixed set.
+        let hour = usage::hour(now);
+        let until = hour + chrono::Duration::hours(1) - chrono::Duration::nanoseconds(1);
+        let mut reasons: Vec<&str> = rejected.iter().map(String::as_str).collect();
+        reasons.sort_unstable();
+        reasons.dedup();
+        for reason in reasons.into_iter().take(16) {
+            let reason: String = reason.chars().take(200).collect();
+            done.gaps += self.usage_gap(
+                &format!("telemetry:{}:{reason}", text(hour)),
+                Some(hour),
+                until,
+                None,
+                &format!("telemetry event not accounted: {reason}"),
+            )?;
+        }
+        self.prune_usage(retained_since)?;
+        let generation = self
+            .usage_collection()?
+            .and_then(|c| c.discovery_generation)
+            .unwrap_or(0);
+        let events = self.usage_events(
+            done.accepted > 0 || done.gaps > 0,
+            generation,
+            done,
+            now,
+            seq,
+        )?;
+        tx.commit()?;
+        Ok(events)
+    }
+
+    /// A response already counted under another of its names: the row
+    /// the alias stands for, with its contribution when still retained.
+    fn usage_aliased(&self, ids: &[String]) -> Result<Option<(String, Option<String>)>> {
+        for id in ids {
+            if let Some(found) = self.usage_resolve(id)? {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The row that holds the accounting for `id`: its own, or the one its
+    /// alias row names, followed a few steps (a row folded into another
+    /// after something already named it). None when no row has the name.
+    fn usage_resolve(&self, id: &str) -> Result<Option<(String, Option<String>)>> {
+        let mut id = id.to_owned();
+        for _ in 0..4 {
+            let found: Option<(String, Option<String>)> = self
+                .conn
+                .query_row(
+                    "SELECT fingerprint,contribution FROM usage_samples WHERE source_id=?1",
+                    [&id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let Some((fingerprint, contribution)) = found else {
+                return Ok(None);
+            };
+            match fingerprint.strip_prefix(ALIAS) {
+                Some(target) => id = target.to_owned(),
+                None => return Ok(Some((id, contribution))),
+            }
+        }
+        Ok(None)
+    }
+
+    /// A response counted under its own name, met again with names it did
+    /// not carry when first counted (a transcript record read before
+    /// request ids were kept, read again): each becomes its alias, so the
+    /// other source's record is its replay; and a response already counted
+    /// under one of them (its telemetry event, which nothing tied to it
+    /// then) is folded into it, so it counts once.
+    fn usage_learn_aliases(
+        &self,
+        source_id: &str,
+        aliases: &[String],
+        at: DateTime<Utc>,
+    ) -> Result<u64> {
+        let mut folded = 0;
+        for alias in aliases.iter().filter(|alias| alias.as_str() != source_id) {
+            let found: Option<(String, Option<String>)> = self
+                .conn
+                .query_row(
+                    "SELECT fingerprint,contribution FROM usage_samples WHERE source_id=?1",
+                    [alias],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            match found {
+                None => {
+                    self.conn.execute(
+                        "INSERT INTO usage_samples VALUES (?1,?2,?3,NULL)",
+                        params![alias, format!("{ALIAS}{source_id}"), text(at)],
+                    )?;
+                }
+                Some((fingerprint, _)) if fingerprint.starts_with(ALIAS) => {}
+                Some((_, contribution)) => {
+                    folded +=
+                        u64::from(self.usage_fold(alias, contribution.as_deref(), source_id)?);
+                }
+            }
+        }
+        Ok(folded)
+    }
+
+    /// One response counted twice, under `duplicate` and under `keep`
+    /// (each source's record, counted before anything tied them):
+    /// `duplicate`'s contribution leaves its bucket, its price joins
+    /// `keep` when `keep` has none, and `duplicate` becomes `keep`'s alias.
+    /// Sums, sample counts and price move together; a bucket that cannot
+    /// give the contribution back leaves both as they were, visible, rather
+    /// than inventing a total.
+    fn usage_fold(&self, duplicate: &str, contribution: Option<&str>, keep: &str) -> Result<bool> {
+        let mut cost = None;
+        if let Some(text) = contribution {
+            let contribution: Contribution = serde_json::from_str(text)?;
+            let Ok(remaining) = self
+                .usage_bucket(&contribution.bucket)?
+                .remove_priced(&contribution.counters, contribution.cost_usd_micros)
+            else {
+                return Ok(false);
+            };
+            self.write_usage_bucket(&contribution.bucket, &remaining)?;
+            cost = contribution.cost_usd_micros;
+        }
+        self.conn.execute(
+            "UPDATE usage_samples SET fingerprint=?1, contribution=NULL WHERE source_id=?2",
+            params![format!("{ALIAS}{keep}"), duplicate],
+        )?;
+        if let Some(cost) = cost
+            && let Some((keep, kept)) = self.usage_resolve(keep)?
+        {
+            self.usage_price(&keep, kept.as_deref(), cost)?;
+        }
+        Ok(true)
+    }
+
+    /// A price learnt for a response counted without one (its telemetry
+    /// event arrived after its transcript record): the bucket takes it,
+    /// the contribution remembers it, tokens unchanged.
+    fn usage_price(&self, source_id: &str, contribution: Option<&str>, cost: u64) -> Result<bool> {
+        let Some(text) = contribution else {
+            return Ok(false);
+        };
+        let mut contribution: Contribution = serde_json::from_str(text)?;
+        if contribution.cost_usd_micros.is_some() {
+            return Ok(false);
+        }
+        let Ok(priced) = self.usage_bucket(&contribution.bucket)?.price(cost) else {
+            return Ok(false);
+        };
+        self.write_usage_bucket(&contribution.bucket, &priced)?;
+        contribution.cost_usd_micros = Some(cost);
+        self.conn.execute(
+            "UPDATE usage_samples SET contribution=?1 WHERE source_id=?2",
+            params![serde_json::to_string(&contribution)?, source_id],
+        )?;
+        Ok(true)
     }
 
     fn usage_ingest_sample(
@@ -336,14 +613,17 @@ impl Store {
         sample: &Sample,
         attribution: &Attribution,
         retained_since: DateTime<Utc>,
-    ) -> Result<(u64, u64)> {
-        let mut gaps = 0;
+    ) -> Result<Ingested> {
+        let mut done = Ingested::default();
         // The same provider record can be encountered with or without
         // proof of the preceding file prefix. That evidence controls its
         // first accounting decision; it is not different accounting on
         // a replay. Keep compatibility with draft stores that hashed it.
         let mut accounting = sample.clone();
         accounting.proves_zero_baseline = false;
+        // The other names a response goes by are dedupe evidence, not
+        // accounting: a record first met without them is the same record.
+        accounting.aliases = Vec::new();
         if sample.semantics == Semantics::Response {
             // Claude emits several content records for one response, each
             // with its own observation time. The first accepted record
@@ -360,6 +640,22 @@ impl Store {
             )
             .optional()?;
         if let Some((old, first_at)) = old {
+            // Met before under another source's name: a replay of that,
+            // whatever this source says, except that a price it brings
+            // joins the counted response.
+            if let Some(target) = old.strip_prefix(ALIAS) {
+                if let Some(cost) = sample.cost_usd_micros
+                    && let Some((target, contribution)) =
+                        self.usage_aliased(&[target.to_owned()])?
+                {
+                    done.priced +=
+                        u64::from(self.usage_price(&target, contribution.as_deref(), cost)?);
+                }
+                return Ok(done);
+            }
+            // Its own row: a replay that may carry names it did not before.
+            done.folded +=
+                self.usage_learn_aliases(&sample.source_id, &sample.aliases, sample.at)?;
             if old != hash {
                 let mut legacy = sample.clone();
                 if sample.semantics == Semantics::Response {
@@ -369,7 +665,7 @@ impl Store {
                 let without_proof = fingerprint(&legacy)?;
                 legacy.proves_zero_baseline = true;
                 if old != without_proof && old != fingerprint(&legacy)? {
-                    gaps += self.usage_gap(
+                    done.gaps += self.usage_gap(
                         &format!("conflict:{}", sample.source_id),
                         None,
                         sample.at,
@@ -378,7 +674,25 @@ impl Store {
                     )?;
                 }
             }
-            return Ok((0, gaps));
+            return Ok(done);
+        }
+        // The same response already counted by another of its names: this
+        // record is its replay from the other source. Remember this name
+        // for it, take a price the first source did not have, count nothing.
+        if let Some((target, contribution)) = self.usage_aliased(&sample.aliases)? {
+            self.conn.execute(
+                "INSERT INTO usage_samples VALUES (?1,?2,?3,NULL)",
+                params![
+                    sample.source_id,
+                    format!("{ALIAS}{target}"),
+                    text(sample.at)
+                ],
+            )?;
+            if let Some(cost) = sample.cost_usd_micros {
+                done.priced +=
+                    u64::from(self.usage_price(&target, contribution.as_deref(), cost)?);
+            }
+            return Ok(done);
         }
         let contribution = match sample.semantics {
             Semantics::Response => Some(sample.counters.clone()),
@@ -402,7 +716,7 @@ impl Store {
                 ) {
                     Ok(Some(observed)) => {
                         if let Some(gap) = observed.gap {
-                            gaps += self.usage_gap(
+                            done.gaps += self.usage_gap(
                                 &format!("baseline:{}", sample.source_id),
                                 gap.since,
                                 gap.until,
@@ -416,7 +730,7 @@ impl Store {
                     }
                     Ok(None) => None,
                     Err(_) => {
-                        gaps += self.usage_gap(
+                        done.gaps += self.usage_gap(
                             &format!("order:{}", sample.source_id),
                             None,
                             sample.at,
@@ -440,18 +754,19 @@ impl Store {
                 },
                 session: sample.session_id.clone(),
                 counters,
+                cost_usd_micros: sample.cost_usd_micros,
             });
         let counted = if let Some(contribution) = &contribution {
             match self
                 .usage_bucket(&contribution.bucket)?
-                .add(&contribution.counters)
+                .add_priced(&contribution.counters, contribution.cost_usd_micros)
             {
                 Ok(aggregate) => {
                     self.write_usage_bucket(&contribution.bucket, &aggregate)?;
                     true
                 }
                 Err(_) => {
-                    gaps += self.usage_gap(
+                    done.gaps += self.usage_gap(
                         &format!("overflow:{}", sample.source_id),
                         None,
                         sample.at,
@@ -479,7 +794,48 @@ impl Store {
                     .transpose()?,
             ],
         )?;
-        Ok((1, gaps))
+        // Its other names, so the other source's record is its replay.
+        for alias in &sample.aliases {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO usage_samples VALUES (?1,?2,?3,NULL)",
+                params![
+                    alias,
+                    format!("{ALIAS}{}", sample.source_id),
+                    text(sample.at)
+                ],
+            )?;
+        }
+        done.accepted = 1;
+        Ok(done)
+    }
+
+    /// Everything stamped with one card over the retained window, as one
+    /// report row keyed by the card: what it has cost to date. None when
+    /// no retained sample was made while the card was held.
+    pub(crate) fn usage_card_row(&self, card: &str) -> Result<Option<Row>> {
+        let retained_since = self.usage_retained_since(DateTime::<Utc>::UNIX_EPOCH)?;
+        let mut statement = self.conn.prepare(
+            "SELECT json FROM usage_buckets WHERE hour>=?1 AND json_extract(key,'$.attribution.card')=?2 LIMIT 10001",
+        )?;
+        let mut total = Aggregate::default();
+        let mut any = false;
+        for (index, record) in statement
+            .query_map(params![text(retained_since), card], |r| {
+                r.get::<_, String>(0)
+            })?
+            .enumerate()
+        {
+            if index >= 10_000 {
+                return Ok(None);
+            }
+            let value: Aggregate = serde_json::from_str(&record?)?;
+            total = total.merge(&value).map_err(anyhow::Error::msg)?;
+            any = true;
+        }
+        if !any {
+            return Ok(None);
+        }
+        Ok(Some(row(Some(card.to_owned()), &total, false)))
     }
 
     fn usage_gap(
@@ -534,6 +890,133 @@ impl Store {
         Ok(())
     }
 
+    /// A lease ends for its holder (released, lapsed, its agent gone, taken
+    /// over or passed to another): when it was an exclusive hold on a board
+    /// card, the interval that holder held it is kept — from the moment it
+    /// took it (`Lease::held_since`, the hand-over for a lease passed on),
+    /// never from the sender's claim — so usage made then is charged to the
+    /// card however late its record arrives. A lapsed lease ends at its
+    /// expiry, not at the sweep that removes it.
+    pub(crate) fn usage_holding_ended(&self, lease: &Lease, now: DateTime<Utc>) -> Result<()> {
+        if lease.mode != LeaseMode::Exclusive {
+            return Ok(());
+        }
+        let Some(card) = lease.resource.as_str().strip_prefix("task:") else {
+            return Ok(());
+        };
+        if !self.usage_is_card(card)? {
+            return Ok(());
+        }
+        let since = lease.held_since();
+        let until = now.min(lease.expires_at).max(since);
+        self.conn.execute(
+            "INSERT OR REPLACE INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,?2,?3,?4,?5)",
+            params![lease.holder.as_str(), HELD_CARD, text(since), text(until), card],
+        )?;
+        Ok(())
+    }
+
+    /// An agent's roles changed from `before` to `after` at `now`: the
+    /// interval it held `before` closes and one for `after` opens. The
+    /// first change kept for an agent also keeps what it held since it was
+    /// registered. No role is kept as the empty label.
+    pub(crate) fn usage_role_changed(
+        &self,
+        agent: &str,
+        registered: DateTime<Utc>,
+        before: Option<&str>,
+        after: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        let closed = self.conn.execute(
+            "UPDATE usage_holdings SET until=?3 WHERE agent=?1 AND kind=?2 AND until IS NULL",
+            params![agent, HELD_ROLE, text(now)],
+        )?;
+        if closed == 0 && registered < now {
+            self.conn.execute(
+                "INSERT OR REPLACE INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,?2,?3,?4,?5)",
+                params![
+                    agent,
+                    HELD_ROLE,
+                    text(registered),
+                    text(now),
+                    before.unwrap_or_default()
+                ],
+            )?;
+        }
+        self.conn.execute(
+            "INSERT OR REPLACE INTO usage_holdings (agent,kind,since,until,value) VALUES (?1,?2,?3,NULL,?4)",
+            params![agent, HELD_ROLE, text(now), after.unwrap_or_default()],
+        )?;
+        Ok(())
+    }
+
+    /// A card `agent` held at `at` and holds no longer, with when it took
+    /// it; the latest taken when it held several.
+    pub(crate) fn usage_card_held(
+        &self,
+        agent: &str,
+        at: DateTime<Utc>,
+    ) -> Result<Option<(DateTime<Utc>, String)>> {
+        self.conn
+            .query_row(
+                "SELECT since,value FROM usage_holdings WHERE agent=?1 AND kind=?2 AND since<=?3 AND until>?3 ORDER BY since DESC LIMIT 1",
+                params![agent, HELD_CARD, text(at)],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .map(|(since, card)| {
+                Ok((
+                    DateTime::parse_from_rfc3339(&since)?.with_timezone(&Utc),
+                    card,
+                ))
+            })
+            .transpose()
+    }
+
+    /// The roles `agent` held at `at` by its kept history: `Some(label)`
+    /// (`None` inside for no role) once a change has been kept, `None` when
+    /// its roles have never changed here, so the current ones are the ones
+    /// it has always held. A time before the history begins (a transcript
+    /// older than the registration) takes the first roles kept.
+    pub(crate) fn usage_role_held(
+        &self,
+        agent: &str,
+        at: DateTime<Utc>,
+    ) -> Result<Option<Option<String>>> {
+        let label = |value: String| (!value.is_empty()).then_some(value);
+        let covering = self
+            .conn
+            .query_row(
+                "SELECT value FROM usage_holdings WHERE agent=?1 AND kind=?2 AND since<=?3 AND (until IS NULL OR until>?3) ORDER BY since DESC LIMIT 1",
+                params![agent, HELD_ROLE, text(at)],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(value) = covering {
+            return Ok(Some(label(value)));
+        }
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT value FROM usage_holdings WHERE agent=?1 AND kind=?2 ORDER BY since ASC LIMIT 1",
+                params![agent, HELD_ROLE],
+                |r| r.get::<_, String>(0),
+            )
+            .optional()?
+            .map(label))
+    }
+
+    /// Whether `id` names a card on a board: a `task:` lease on anything
+    /// else (a build campaign, say) is not a card held.
+    pub(crate) fn usage_is_card(&self, id: &str) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM documents WHERE kind=?1 AND id=?2)",
+            params![super::TASK_DOCUMENT, id],
+            |r| r.get(0),
+        )?)
+    }
+
     /// Dedupe fingerprints and baselines outlive retained contributions. Old
     /// logs cannot resurrect expired totals after their file cursor changes.
     fn prune_usage(&self, since: DateTime<Utc>) -> Result<()> {
@@ -543,6 +1026,8 @@ impl Store {
         self.conn.execute("DELETE FROM usage_buckets WHERE key IN (SELECT key FROM usage_buckets WHERE hour<?1 LIMIT 1000)", [&since])?;
         self.conn.execute("UPDATE usage_samples SET contribution=NULL WHERE source_id IN (SELECT source_id FROM usage_samples WHERE at<?1 AND contribution IS NOT NULL LIMIT 1000)", [&since])?;
         self.conn.execute("DELETE FROM usage_gaps WHERE key IN (SELECT key FROM usage_gaps WHERE until<?1 LIMIT 1000)", [&since])?;
+        // Holdings that ended before the retained window can charge nothing.
+        self.conn.execute("DELETE FROM usage_holdings WHERE rowid IN (SELECT rowid FROM usage_holdings WHERE until IS NOT NULL AND until<?1 LIMIT 1000)", [&since])?;
         Ok(())
     }
 
@@ -582,6 +1067,8 @@ impl Store {
                 Group::Model => key.model,
                 Group::Provider => key.provider,
                 Group::Hour => Some(text(key.hour)),
+                Group::Card => key.attribution.card,
+                Group::Role => key.attribution.role,
             };
             let aggregate = grouped.entry(group).or_default();
             let Ok(merged) = aggregate.merge(&value) else {
@@ -605,11 +1092,7 @@ impl Store {
                 .is_some_and(|at| range.effective_until <= at);
         let rows = grouped
             .into_iter()
-            .map(|(key, value)| Row {
-                key,
-                samples: value.samples(),
-                counters: CounterReports::new(&value, complete),
-            })
+            .map(|(key, value)| row(key, &value, complete))
             .collect();
         Ok(Some(Report {
             rows,
@@ -668,6 +1151,8 @@ mod tests {
                 Semantics::Response
             },
             proves_zero_baseline: false,
+            cost_usd_micros: None,
+            aliases: Vec::new(),
         }
     }
 
@@ -688,20 +1173,27 @@ mod tests {
         samples: Vec<(Sample, Attribution)>,
         cutoff: DateTime<Utc>,
     ) -> Result<Event> {
-        store.usage_ingest(Ingest {
-            key,
-            progress,
-            samples: &samples,
-            gaps: &[],
-            collection: &Collection {
-                discovery_generation: Some(1),
-                ..Collection::default()
-            },
-            retained_since: cutoff,
-            now: at(20),
-            event_seq: store.max_event_seq()? + 1,
-            finished_job: None,
-        })
+        store
+            .usage_ingest(Ingest {
+                key,
+                progress,
+                samples: &samples,
+                gaps: &[],
+                collection: &Collection {
+                    discovery_generation: Some(1),
+                    ..Collection::default()
+                },
+                retained_since: cutoff,
+                now: at(20),
+                event_seq: store.max_event_seq()? + 1,
+                finished_job: None,
+            })
+            .map(|events| {
+                events
+                    .into_iter()
+                    .next()
+                    .expect("a collected batch records")
+            })
     }
 
     fn report(store: &Store, since: u32, until: u32) -> Report {
@@ -728,6 +1220,357 @@ mod tests {
             .conn
             .execute("UPDATE usage_tracking SET capacity=?1", [capacity])
             .unwrap();
+    }
+
+    /// One response, two sources: the transcript record (by message id,
+    /// with the request id as an alias) and the telemetry event (by request
+    /// id, with the price). Whichever comes first counts it; the other adds
+    /// only a price the first lacked; replays of either add nothing; and
+    /// the card and role stamped at ingestion group the usage.
+    #[test]
+    fn a_response_reported_by_transcript_and_telemetry_counts_once_with_its_price() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let held = Attribution {
+            agent: Some("agent-a".into()),
+            project: Some("project-p".into()),
+            card: Some("card-1".into()),
+            role: Some("reviewer".into()),
+        };
+        let transcript = |message: &str, request: &str| {
+            let mut sample = sample(message, 3, 100, false);
+            sample.runtime = "claude-code".into();
+            sample.aliases = vec![request.to_owned()];
+            sample
+        };
+        let telemetry = |request: &str, cost: u64| {
+            let mut sample = sample(request, 3, 100, false);
+            sample.runtime = "claude-code".into();
+            sample.cost_usd_micros = Some(cost);
+            sample
+        };
+        // Transcript first, then the event: the price joins the counted response.
+        ingest(
+            &store,
+            &progress,
+            "transcript",
+            vec![(transcript("msg-1", "req-1"), held.clone())],
+            at(0),
+        )
+        .unwrap();
+        let events = store
+            .usage_ingest_telemetry(
+                &[(telemetry("req-1", 2_500), held.clone())],
+                &[],
+                at(0),
+                at(20),
+                store.max_event_seq().unwrap() + 1,
+            )
+            .unwrap();
+        assert_eq!(
+            events.iter().map(|e| e.kind.clone()).collect::<Vec<_>>(),
+            [EventKind::UsageJoined {
+                priced: 1,
+                folded: 0
+            }],
+            "nothing new is counted; the counted response takes its cost"
+        );
+        let rows = report(&store, 0, 20).rows;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].samples, 1, "one response, not two");
+        assert_eq!(rows[0].counters.input_tokens.sum, Some(100));
+        assert_eq!(rows[0].cost_usd_micros.sum, Some(2_500));
+        assert_eq!(rows[0].cost_usd_micros.known_samples, 1);
+        // The event first, then the transcript record: counted once, priced.
+        store
+            .usage_ingest_telemetry(
+                &[(telemetry("req-2", 1_000), held.clone())],
+                &[],
+                at(0),
+                at(20),
+                store.max_event_seq().unwrap() + 1,
+            )
+            .unwrap();
+        ingest(
+            &store,
+            &progress,
+            "transcript",
+            vec![(transcript("msg-2", "req-2"), held.clone())],
+            at(0),
+        )
+        .unwrap();
+        let rows = report(&store, 0, 20).rows;
+        assert_eq!(rows[0].samples, 2);
+        assert_eq!(rows[0].cost_usd_micros.sum, Some(3_500));
+        assert_eq!(
+            rows[0].cost_usd_micros.coverage,
+            usage::Coverage::Partial,
+            "collection unfinished"
+        );
+        // Replays from both sources, in both orders, change nothing.
+        for _ in 0..2 {
+            ingest(
+                &store,
+                &progress,
+                "transcript",
+                vec![
+                    (transcript("msg-1", "req-1"), held.clone()),
+                    (transcript("msg-2", "req-2"), held.clone()),
+                ],
+                at(0),
+            )
+            .unwrap();
+            let replayed = store
+                .usage_ingest_telemetry(
+                    &[
+                        (telemetry("req-1", 2_500), held.clone()),
+                        (telemetry("req-2", 1_000), held.clone()),
+                    ],
+                    &[],
+                    at(0),
+                    at(20),
+                    store.max_event_seq().unwrap() + 1,
+                )
+                .unwrap();
+            assert!(replayed.is_empty(), "a replay changes nothing to say");
+        }
+        let after = report(&store, 0, 20);
+        assert_eq!(after.rows[0].samples, 2);
+        assert_eq!(after.rows[0].cost_usd_micros.sum, Some(3_500));
+        assert_eq!(after.coverage.source_gaps, 0, "a replay is not a conflict");
+        // An unpriced response beside them keeps the price partial, and the
+        // card and role group the same usage.
+        ingest(
+            &store,
+            &progress,
+            "transcript",
+            vec![(
+                transcript("msg-3", "req-3"),
+                Attribution {
+                    card: None,
+                    ..held.clone()
+                },
+            )],
+            at(0),
+        )
+        .unwrap();
+        let by_card = store
+            .usage_report(
+                Range::new(Some(at(0)), Some(at(20)), at(23), at(0)).unwrap(),
+                Group::Card,
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        let keys: Vec<_> = by_card.rows.iter().map(|r| r.key.clone()).collect();
+        assert_eq!(keys, [None, Some("card-1".to_owned())]);
+        assert_eq!(by_card.rows[1].samples, 2);
+        assert_eq!(by_card.rows[1].cost_usd_micros.sum, Some(3_500));
+        let by_role = store
+            .usage_report(
+                Range::new(Some(at(0)), Some(at(20)), at(23), at(0)).unwrap(),
+                Group::Role,
+                None,
+                None,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(by_role.rows[0].key.as_deref(), Some("reviewer"));
+        assert_eq!(by_role.rows[0].samples, 3);
+        assert_eq!(by_role.rows[0].cost_usd_micros.known_samples, 2);
+        let card = store.usage_card_row("card-1").unwrap().unwrap();
+        assert_eq!(card.key.as_deref(), Some("card-1"));
+        assert_eq!(card.samples, 2);
+        assert_eq!(card.cost_usd_micros.sum, Some(3_500));
+        assert_eq!(card.counters.input_tokens.sum, Some(200));
+        assert_eq!(
+            card.cache_read_share_percent, None,
+            "no cache counter reported"
+        );
+        assert!(store.usage_card_row("card-9").unwrap().is_none());
+    }
+
+    /// A transcript record counted before it carried the request id learns
+    /// it when it is read again, in either order: read again before the
+    /// telemetry event, the event is its replay and brings only its cost;
+    /// read again after the event was counted apart (nothing tied them
+    /// then), the two counts fold into one that keeps the event's cost.
+    /// Replays of everything afterwards change nothing.
+    #[test]
+    fn a_transcript_read_again_learns_its_request_id_and_counts_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let held = Attribution {
+            agent: Some("agent-a".into()),
+            project: Some("project-p".into()),
+            ..Attribution::default()
+        };
+        let transcript = |message: &str, request: Option<&str>| {
+            let mut sample = sample(message, 3, 100, false);
+            sample.runtime = "claude-code".into();
+            sample.aliases = request.map(|r| vec![r.to_owned()]).unwrap_or_default();
+            sample
+        };
+        let telemetry = |request: &str, cost: u64| {
+            let mut sample = sample(request, 3, 100, false);
+            sample.runtime = "claude-code".into();
+            sample.cost_usd_micros = Some(cost);
+            sample
+        };
+        let read = |samples: Vec<Sample>| {
+            ingest(
+                &store,
+                &progress,
+                "transcript",
+                samples.into_iter().map(|s| (s, held.clone())).collect(),
+                at(0),
+            )
+            .unwrap();
+        };
+        let receive = |samples: Vec<Sample>| {
+            store
+                .usage_ingest_telemetry(
+                    &samples
+                        .into_iter()
+                        .map(|s| (s, held.clone()))
+                        .collect::<Vec<_>>(),
+                    &[],
+                    at(0),
+                    at(20),
+                    store.max_event_seq().unwrap() + 1,
+                )
+                .unwrap()
+        };
+        let totals = || {
+            let rows = report(&store, 0, 20).rows;
+            assert_eq!(rows.len(), 1);
+            (
+                rows[0].samples,
+                rows[0].counters.input_tokens.sum,
+                rows[0].cost_usd_micros.sum,
+            )
+        };
+
+        let kinds = |events: Vec<Event>| events.into_iter().map(|e| e.kind).collect::<Vec<_>>();
+
+        // Read without the id, read again with it, then the event.
+        read(vec![transcript("msg-1", None)]);
+        read(vec![transcript("msg-1", Some("req-1"))]);
+        assert_eq!(
+            kinds(receive(vec![telemetry("req-1", 700)])),
+            [EventKind::UsageJoined {
+                priced: 1,
+                folded: 0
+            }],
+            "the event is the record's replay and brings only its cost"
+        );
+        assert_eq!(totals(), (1, Some(100), Some(700)));
+
+        // Read without the id, the event counted apart, then read again.
+        read(vec![transcript("msg-2", None)]);
+        assert!(matches!(
+            kinds(receive(vec![telemetry("req-2", 300)])).as_slice(),
+            [EventKind::UsageRecorded { samples: 1, .. }]
+        ));
+        assert_eq!(
+            totals(),
+            (3, Some(300), Some(1_000)),
+            "counted twice while nothing ties them"
+        );
+        let refolded = store
+            .usage_ingest(Ingest {
+                key: "transcript",
+                progress: &progress,
+                samples: &[(transcript("msg-2", Some("req-2")), held.clone())],
+                gaps: &[],
+                collection: &Collection {
+                    discovery_generation: Some(1),
+                    ..Collection::default()
+                },
+                retained_since: at(0),
+                now: at(20),
+                event_seq: store.max_event_seq().unwrap() + 1,
+                finished_job: None,
+            })
+            .unwrap();
+        assert!(
+            kinds(refolded).contains(&EventKind::UsageJoined {
+                priced: 0,
+                folded: 1
+            }),
+            "the fold says so"
+        );
+        assert_eq!(
+            totals(),
+            (2, Some(200), Some(1_000)),
+            "folded into one, keeping the event's cost"
+        );
+
+        // Replays of every record from both sources change nothing.
+        for _ in 0..2 {
+            read(vec![
+                transcript("msg-1", Some("req-1")),
+                transcript("msg-2", Some("req-2")),
+                transcript("msg-1", None),
+            ]);
+            assert!(receive(vec![telemetry("req-1", 700), telemetry("req-2", 300)]).is_empty());
+        }
+        assert_eq!(totals(), (2, Some(200), Some(1_000)));
+        assert_eq!(report(&store, 0, 20).coverage.source_gaps, 0);
+    }
+
+    /// An accounting event that cannot be read is a source gap for its
+    /// hour, one per reason however many events give it, and an export
+    /// that changes nothing appends no event.
+    #[test]
+    fn rejected_telemetry_is_a_bounded_gap_and_changes_nothing_else() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let reasons = vec![
+            "api_request without request_id".to_owned(),
+            "api_request without request_id".to_owned(),
+            "api_request without session.id".to_owned(),
+        ];
+        let first = store
+            .usage_ingest_telemetry(
+                &[],
+                &reasons,
+                at(0),
+                at(5),
+                store.max_event_seq().unwrap() + 1,
+            )
+            .unwrap();
+        assert!(matches!(
+            first.as_slice(),
+            [Event {
+                kind: EventKind::UsageRecorded {
+                    samples: 0,
+                    gaps: 2,
+                    ..
+                },
+                ..
+            }]
+        ));
+        let again = store
+            .usage_ingest_telemetry(
+                &[],
+                &reasons,
+                at(0),
+                at(5),
+                store.max_event_seq().unwrap() + 1,
+            )
+            .unwrap();
+        assert!(again.is_empty(), "the same reasons this hour add nothing");
+        assert_eq!(report(&store, 0, 20).coverage.source_gaps, 2);
+        assert_eq!(
+            report(&store, 6, 20).coverage.source_gaps,
+            0,
+            "only its hour"
+        );
+        assert_eq!(report(&store, 5, 6).coverage.source_gaps, 2);
     }
 
     #[test]
@@ -825,6 +1668,7 @@ mod tests {
         let attribution = Attribution {
             agent: Some("new-agent".repeat(100)),
             project: Some("project".into()),
+            ..Attribution::default()
         };
         let event = store
             .usage_reconcile(
@@ -1170,6 +2014,7 @@ mod tests {
         let to = |agent: &str| Attribution {
             agent: Some(agent.into()),
             project: Some("project".into()),
+            ..Attribution::default()
         };
         for (agent, window) in [
             ("ended", (None, Some(at(3)))),
@@ -1217,6 +2062,7 @@ mod tests {
         let attribution = Attribution {
             agent: Some("agent".into()),
             project: Some("project".into()),
+            ..Attribution::default()
         };
         let before = store.max_event_seq().unwrap();
         store.conn.execute_batch("CREATE TRIGGER fail_usage_reconcile BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'event refused'); END;").unwrap();
@@ -1398,6 +2244,7 @@ mod tests {
         let attribution = Attribution {
             agent: Some("agent".into()),
             project: Some("project".into()),
+            ..Attribution::default()
         };
         let event = store
             .usage_reconcile(

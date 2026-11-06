@@ -13,6 +13,41 @@ pub enum Group {
     Provider,
     Project,
     Hour,
+    /// The board card (`task:<id>` lease) the agent held when the sample
+    /// was recorded; null for samples made while it held none.
+    Card,
+    /// The agent's roles when the sample was recorded, as one label
+    /// (`reviewer`, or `reviewer,tester` for several); null for none.
+    Role,
+}
+
+impl Group {
+    pub const ALL: [Group; 7] = [
+        Group::Agent,
+        Group::Model,
+        Group::Provider,
+        Group::Project,
+        Group::Hour,
+        Group::Card,
+        Group::Role,
+    ];
+
+    /// The wire and command-line name: `agent`, `model`, … `card`, `role`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Group::Agent => "agent",
+            Group::Model => "model",
+            Group::Provider => "provider",
+            Group::Project => "project",
+            Group::Hour => "hour",
+            Group::Card => "card",
+            Group::Role => "role",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|group| group.as_str() == text)
+    }
 }
 
 /// References are resolved by the daemon before querying historical buckets.
@@ -66,6 +101,43 @@ pub struct Row {
     pub key: Option<String>,
     pub samples: u64,
     pub counters: CounterReports,
+    /// The provider-reported estimated cost of the samples, in micro-dollars (USD ×
+    /// 10⁶), with the same coverage terms as a counter: a sum only over the
+    /// samples that carried a price (Claude Code's telemetry events do;
+    /// transcripts do not). Unknown on an older daemon's report.
+    #[serde(default)]
+    pub cost_usd_micros: CounterReport,
+    /// Of the input tokens the samples reported, the share read from the
+    /// cache, in whole percent; null when either count is unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_read_share_percent: Option<u8>,
+}
+
+impl Row {
+    /// The cache-read share this row's `counters` give over its `samples`:
+    /// cache reads over total input (both totals include their cache
+    /// components), clamped to 100 against a source that reports
+    /// otherwise. Given only when every sample of the row reported both,
+    /// so the two sums cover the same responses: a record that reports
+    /// its cache read without its cache write has a known read and no
+    /// total input, a Codex record may lack either, and two such records
+    /// would otherwise give one counter's sum over the other's samples.
+    /// None otherwise, and when no input was reported at all.
+    pub fn cache_read_share(samples: u64, counters: &CounterReports) -> Option<u8> {
+        if samples == 0
+            || counters.input_tokens.known_samples != samples
+            || counters.cache_read_input_tokens.known_samples != samples
+        {
+            return None;
+        }
+        let input = counters.input_tokens.sum?;
+        let read = counters.cache_read_input_tokens.sum?;
+        if input == 0 {
+            return None;
+        }
+        // In u128: a hundred times a large u64 count does not fit a u64.
+        Some((u128::from(read.min(input)) * 100 / u128::from(input)) as u8)
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +169,15 @@ pub struct Collection {
     pub pending_files: Option<u64>,
     pub pending_tail_files: Option<u64>,
     pub scope: Scope,
+    /// Where the daemon is taking Claude Code's OpenTelemetry events: the
+    /// address its receiver is listening on, absent when none is (off,
+    /// not yet bound, or a daemon that predates it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otlp_listen: Option<String>,
+    /// Why a configured receiver is not listening (an address another
+    /// program holds, say); absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub otlp_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,5 +301,95 @@ impl Report {
             sum: tokens.values().map(|t| t.sum).fold(0, u64::saturating_add),
             partial: tokens.values().any(|t| t.partial),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every group has one name, read back as itself; the two newer ones
+    /// are among them, and a stranger is nobody.
+    #[test]
+    fn groups_round_trip_through_their_names() {
+        for group in Group::ALL {
+            assert_eq!(Group::parse(group.as_str()), Some(group));
+            let wire = serde_json::to_value(group).unwrap();
+            assert_eq!(wire, serde_json::Value::String(group.as_str().to_owned()));
+        }
+        assert_eq!(Group::parse("card"), Some(Group::Card));
+        assert_eq!(Group::parse("role"), Some(Group::Role));
+        assert_eq!(Group::parse("lease"), None);
+    }
+
+    /// The cache share is cache reads over input, whole percent, only when
+    /// every sample reported both, never over a hundred, and absent for
+    /// no input.
+    #[test]
+    fn cache_read_share_needs_both_sums_and_stays_within_a_hundred() {
+        let counter = |sum: Option<u64>| CounterReport {
+            sum,
+            known_samples: sum.map_or(0, |_| 1),
+            coverage: Coverage::Partial,
+        };
+        let counters = |input: Option<u64>, read: Option<u64>| CounterReports {
+            input_tokens: counter(input),
+            cache_read_input_tokens: counter(read),
+            cache_write_input_tokens: counter(None),
+            output_tokens: counter(None),
+            reasoning_output_tokens: counter(None),
+        };
+        assert_eq!(
+            Row::cache_read_share(1, &counters(Some(400), Some(300))),
+            Some(75)
+        );
+        assert_eq!(
+            Row::cache_read_share(1, &counters(Some(3), Some(1))),
+            Some(33)
+        );
+        // Two samples that each reported one counter: both counts are one,
+        // yet no sample reported both, and no share is made of them.
+        assert_eq!(
+            Row::cache_read_share(2, &counters(Some(100), Some(50))),
+            None
+        );
+        // A read known on a sample whose total input is not, beside one
+        // that reported both: no share either.
+        let mut uneven = counters(Some(400), Some(300));
+        uneven.cache_read_input_tokens.known_samples = 2;
+        uneven.cache_read_input_tokens.sum = Some(500);
+        assert_eq!(Row::cache_read_share(2, &uneven), None);
+        // Both known on every sample: the share.
+        let mut paired = counters(Some(400), Some(300));
+        paired.input_tokens.known_samples = 2;
+        paired.cache_read_input_tokens.known_samples = 2;
+        assert_eq!(Row::cache_read_share(2, &paired), Some(75));
+        assert_eq!(
+            Row::cache_read_share(1, &counters(Some(10), Some(20))),
+            Some(100)
+        );
+        assert_eq!(Row::cache_read_share(1, &counters(Some(0), Some(0))), None);
+        // Counts whose hundredfold overflows a u64 keep their share.
+        assert_eq!(
+            Row::cache_read_share(1, &counters(Some(10_u64.pow(19)), Some(10_u64.pow(18)))),
+            Some(10)
+        );
+        assert_eq!(
+            Row::cache_read_share(1, &counters(Some(u64::MAX), Some(u64::MAX / 2))),
+            Some(49)
+        );
+        assert_eq!(
+            Row::cache_read_share(1, &counters(Some(u64::MAX), Some(u64::MAX))),
+            Some(100)
+        );
+        assert_eq!(Row::cache_read_share(1, &counters(None, Some(5))), None);
+        assert_eq!(Row::cache_read_share(1, &counters(Some(5), None)), None);
+        let older: Row = serde_json::from_value(serde_json::json!({
+            "key": null, "samples": 1,
+            "counters": serde_json::to_value(counters(Some(5), None)).unwrap()
+        }))
+        .unwrap();
+        assert_eq!(older.cost_usd_micros, CounterReport::default());
+        assert_eq!(older.cache_read_share_percent, None);
     }
 }

@@ -8,6 +8,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub mod discovery;
+pub mod otlp;
 pub mod reader;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +30,19 @@ pub struct Sample {
     pub counters: Counters,
     pub semantics: Semantics,
     pub proves_zero_baseline: bool,
+    /// The provider-reported estimated cost of this response, in micro-dollars (USD ×
+    /// 10⁶), when its record said: Claude Code's telemetry events carry a
+    /// price, transcripts do not. Absent from samples made before cost
+    /// was collected, and left out of the wire form so their fingerprints
+    /// stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_usd_micros: Option<u64>,
+    /// Other source identities the same response is known by, so two
+    /// sources that both report it (a transcript record by its message id,
+    /// a telemetry event by its request id) count it once. Not part of
+    /// the sample's fingerprint.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 /// A parser cursor is persisted only together with accepted samples. It keeps
@@ -147,7 +161,13 @@ fn codex_counters(value: &Value) -> Result<Counters, String> {
     })
 }
 
-fn identity(runtime: &str, session: &str, key: &str) -> String {
+/// The identity a response has by its API request id, apart from the one
+/// its message id gives, so the two cannot collide.
+pub(crate) fn request_identity(runtime: &str, session: &str, request: &str) -> String {
+    identity(runtime, session, &format!("request:{request}"))
+}
+
+pub(crate) fn identity(runtime: &str, session: &str, key: &str) -> String {
     let mut hash = Sha256::new();
     for part in [runtime, session, key] {
         hash.update(part.as_bytes());
@@ -208,6 +228,8 @@ impl Codex {
                 // independently of its file path, including copied rollouts.
                 let key = serde_json::to_string(&(at, &counters)).map_err(|e| e.to_string())?;
                 Ok(Some(Sample {
+                    cost_usd_micros: None,
+                    aliases: Vec::new(),
                     source_id: identity("codex", session, &key),
                     runtime: "codex".into(),
                     format: match self.version.as_deref() {
@@ -276,6 +298,13 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
     })?;
     Ok(Some(Sample {
         source_id: identity("claude-code", &session, &id),
+        // The API request id names the same response in Claude Code's
+        // telemetry event, which carries its price; either source first,
+        // the response counts once.
+        aliases: label(&record["requestId"])
+            .map(|request| vec![request_identity("claude-code", &session, &request)])
+            .unwrap_or_default(),
+        cost_usd_micros: None,
         runtime: "claude-code".into(),
         // Keep the original accounting-family identity as compatible patch
         // versions are verified; changing it would conflict with saved samples.
