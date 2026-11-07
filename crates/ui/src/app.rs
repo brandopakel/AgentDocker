@@ -975,6 +975,8 @@ impl App {
                     if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
                         self.shell.pending_answer_reveal = None;
                     }
+                    // The card says why, after the toast has gone.
+                    self.shell.answer_errors.insert(id, reason.to_owned());
                 }
                 Cmd::DismissMessages(ids) => {
                     self.dismissing.retain(|id| !ids.contains(id));

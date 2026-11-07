@@ -2690,6 +2690,31 @@ mod tests {
         );
     }
 
+    /// An answer the window's own queue refuses is told on its card, not
+    /// only in the toast: the card is sendable again and carries the reason.
+    #[test]
+    fn a_queue_rejection_stays_on_the_card() {
+        let (mut app, _commands) = app();
+        let question = typed(
+            &mut app,
+            "refused",
+            agentdocker_core::QuestionForm::default(),
+        );
+        let id = question.id.clone();
+        app.sending.insert(id.clone());
+        app.shell.pending_answer_reveal = Some(id.clone());
+        app.rejected(
+            Cmd::Answer(id.clone(), "yes".into()),
+            "The daemon request queue is full; try again when it catches up.",
+        );
+        assert!(!app.sending.contains(&id));
+        assert!(app.shell.pending_answer_reveal.is_none());
+        assert_eq!(
+            app.shell.answer_errors.get(&id).map(String::as_str),
+            Some("The daemon request queue is full; try again when it catches up.")
+        );
+    }
+
     /// Needs you holds questions only, each naming its project while every
     /// project is on view; a session that ended with messages queued says
     /// so on its own row, not here.
