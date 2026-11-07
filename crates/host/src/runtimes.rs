@@ -3,6 +3,7 @@
 //! table of what to look for lives in core; this module only consults the
 //! filesystem, `PATH`, and each tool's own configuration.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -16,7 +17,7 @@ pub mod health;
 pub mod shell;
 
 /// Where to look: injectable so tests can build a machine in a temp dir.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Roots {
     pub home: PathBuf,
     /// Explicit Codex host configuration root, when set by the caller.
@@ -74,8 +75,21 @@ pub fn hook_ran_in(home: &Path, runtime: &str) {
 
 impl Roots {
     pub fn from_env() -> Self {
-        let home = std::env::home_dir().unwrap_or_else(|| PathBuf::from("/"));
-        let path = std::env::var_os("PATH")
+        Self::from_vars(&|name| std::env::var_os(name))
+    }
+
+    /// The roots a process whose environment `vars` answers would see:
+    /// its `PATH`, its home, the profiles `CODEX_HOME` and
+    /// `CLAUDE_CONFIG_DIR` name. A launch with an environment of its own
+    /// is looked for under these rather than this process's.
+    pub fn from_vars(vars: &dyn Fn(&str) -> Option<OsString>) -> Self {
+        let set = |name: &str| vars(name).filter(|value| !value.is_empty());
+        // As `std::env::home_dir` reads it, from the given environment.
+        let home = set(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+            .map(PathBuf::from)
+            .or_else(std::env::home_dir)
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let path = vars("PATH")
             .map(|p| {
                 std::env::split_paths(&p)
                     .filter(|p| p.is_absolute())
@@ -88,18 +102,15 @@ impl Roots {
             Vec::new()
         };
         Self {
-            codex_home: std::env::var_os("CODEX_HOME")
-                .filter(|p| !p.is_empty())
-                .map(PathBuf::from),
-            claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
-                .filter(|p| !p.is_empty())
+            codex_home: set("CODEX_HOME").map(PathBuf::from),
+            claude_config_dir: set("CLAUDE_CONFIG_DIR")
                 .map(|path| crate::project::canonical(&PathBuf::from(path))),
             install_dirs: desktop::install_dirs(&home, std::env::consts::OS),
             desktop_dirs: if cfg!(target_os = "linux") {
                 desktop::xdg_dirs(
                     &home,
-                    std::env::var_os("XDG_DATA_HOME").as_deref(),
-                    std::env::var_os("XDG_DATA_DIRS").as_deref(),
+                    vars("XDG_DATA_HOME").as_deref(),
+                    vars("XDG_DATA_DIRS").as_deref(),
                 )
             } else {
                 Vec::new()
@@ -107,11 +118,9 @@ impl Roots {
             browser_dirs: browser::browser_dirs(
                 &home,
                 std::env::consts::OS,
-                std::env::var_os("LOCALAPPDATA")
-                    .map(PathBuf::from)
-                    .as_deref(),
+                vars("LOCALAPPDATA").map(PathBuf::from).as_deref(),
             ),
-            shell: shell::login_shell(),
+            shell: shell::login_shell_of(vars("SHELL")),
             home,
             path,
             app_dirs,
@@ -150,10 +159,7 @@ pub fn inventory(roots: &Roots, marker: &str) -> std::io::Result<Vec<RuntimeInfo
 
 /// Inspect one selected runtime without consulting unrelated desktop entries.
 pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Result<RuntimeInfo> {
-    let cli = spec
-        .clis
-        .iter()
-        .find_map(|name| which(roots, name).or_else(|| which_in(&roots.install_dirs, name)));
+    let cli = find_cli(spec, roots);
     let version = cli
         .as_deref()
         .filter(|_| roots.versions)
@@ -219,6 +225,14 @@ fn hooks_missing_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Vec<Stri
         .into_iter()
         .map(str::to_owned)
         .collect()
+}
+
+/// The runtime's command-line tool as the inventory finds it: the first of
+/// its names on `PATH`, else in a standard installation directory.
+pub fn find_cli(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
+    spec.clis
+        .iter()
+        .find_map(|name| which(roots, name).or_else(|| which_in(&roots.install_dirs, name)))
 }
 
 fn which(roots: &Roots, name: &str) -> Option<PathBuf> {
@@ -505,6 +519,23 @@ fn hooks_wiring_file(spec: &RuntimeSpec, file: &Path, marker: &str) -> Wiring {
     }
 }
 
+/// Whether one Claude Code settings document runs every one of our hooks,
+/// judged as the inventory judges the user's settings file: well formed,
+/// hooks not disabled, every required event covered by our command with
+/// its full matcher. For a document read from anywhere: a project's
+/// settings, or the version of them a commit holds.
+pub fn claude_settings_run_hooks(text: &str, marker: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(text)
+        .is_ok_and(|value| hooks_configuration_matches_for(&value, marker, "claude-code"))
+}
+
+/// [`claude_settings_run_hooks`] for a file, opened as the inventory opens
+/// configuration (never blocking on a FIFO, bounded); a file that is not
+/// there or cannot be read runs none.
+pub fn claude_settings_file_runs_hooks(file: &Path, marker: &str) -> bool {
+    health::read_configuration(file).is_ok_and(|text| claude_settings_run_hooks(&text, marker))
+}
+
 /// Every required event must include our command with the full matcher.
 fn hooks_configuration_matches_for(value: &serde_json::Value, marker: &str, runtime: &str) -> bool {
     if !hook_configuration_shape_valid(value) || value["disableAllHooks"] == true {
@@ -651,6 +682,84 @@ mod tests {
                 "claude-code"
             ));
         }
+    }
+
+    /// The roots of another environment are its own: its `PATH`, home and
+    /// profiles, the empty value read as unset, as for this process's.
+    #[test]
+    fn roots_are_read_from_the_environment_given() {
+        let vars = std::collections::BTreeMap::from([
+            (
+                if cfg!(windows) { "USERPROFILE" } else { "HOME" },
+                "/x/home",
+            ),
+            (
+                "PATH",
+                if cfg!(windows) {
+                    "C:\\a;C:\\b"
+                } else {
+                    "/a:/b:relative"
+                },
+            ),
+            ("CODEX_HOME", "/x/codex"),
+            ("CLAUDE_CONFIG_DIR", ""),
+            ("SHELL", "/bin/zsh"),
+        ]);
+        let roots = Roots::from_vars(&|name| vars.get(name).map(OsString::from));
+        assert_eq!(roots.home, PathBuf::from("/x/home"));
+        if cfg!(not(windows)) {
+            assert_eq!(roots.path, [PathBuf::from("/a"), PathBuf::from("/b")]);
+            assert_eq!(roots.shell.as_deref(), Some("/bin/zsh"));
+        }
+        assert_eq!(roots.codex_home, Some(PathBuf::from("/x/codex")));
+        assert_eq!(roots.claude_config_dir, None, "empty is unset");
+        assert_eq!(
+            Roots::from_env(),
+            Roots::from_vars(&|name| std::env::var_os(name)),
+            "this process's roots are the same reading of its own environment"
+        );
+    }
+
+    /// A settings document runs our hooks only when it is well formed,
+    /// covers every required event and does not disable hooks; a file is
+    /// judged the same way, and one that is not there runs none.
+    #[test]
+    fn a_settings_document_runs_our_hooks_only_when_wired_for_every_event() {
+        let exe = Path::new("/opt/agentdocker");
+        let command = claude_hook_command(exe).unwrap();
+        let mut hooks = serde_json::Map::new();
+        for (event, matcher) in hook_events("claude-code") {
+            let mut entry = serde_json::json!({"hooks": [{"type": "command", "command": command}]});
+            if let Some(matcher) = matcher {
+                entry["matcher"] = serde_json::Value::String((*matcher).to_owned());
+            }
+            hooks.insert((*event).to_owned(), serde_json::json!([entry]));
+        }
+        let wired = serde_json::json!({"hooks": hooks}).to_string();
+        assert!(claude_settings_run_hooks(&wired, "agentdocker"));
+        let mut disabled: serde_json::Value = serde_json::from_str(&wired).unwrap();
+        disabled["disableAllHooks"] = true.into();
+        assert!(!claude_settings_run_hooks(
+            &disabled.to_string(),
+            "agentdocker"
+        ));
+        let mut partial: serde_json::Value = serde_json::from_str(&wired).unwrap();
+        partial["hooks"]
+            .as_object_mut()
+            .unwrap()
+            .remove("PreToolUse");
+        assert!(!claude_settings_run_hooks(
+            &partial.to_string(),
+            "agentdocker"
+        ));
+        for other in ["{}", "{broken", r#"{"hooks":"x"}"#, "null"] {
+            assert!(!claude_settings_run_hooks(other, "agentdocker"), "{other}");
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let file = temp.path().join("settings.json");
+        assert!(!claude_settings_file_runs_hooks(&file, "agentdocker"));
+        std::fs::write(&file, &wired).unwrap();
+        assert!(claude_settings_file_runs_hooks(&file, "agentdocker"));
     }
 
     #[test]

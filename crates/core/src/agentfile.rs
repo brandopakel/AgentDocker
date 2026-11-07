@@ -8,7 +8,10 @@
 //! down. Checking a file ([`check`]), ordering it ([`order`]), telling when
 //! an agent has ended for good ([`Ending::of`]) and deciding whether an
 //! entry starts, waits or never will ([`readiness`]) are all here, so each
-//! rule is a unit test; `agentdocker up` does the I/O.
+//! rule is a unit test; `agentdocker up` does the I/O. So is reading
+//! `${VAR}` in a value ([`expand`]), through a lookup the CLI supplies.
+
+pub mod expand;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
