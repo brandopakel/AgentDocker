@@ -639,6 +639,7 @@ mod tests {
                     wait_secs: 0,
                     priority: 0,
                     automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Lease { .. }
