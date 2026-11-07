@@ -567,13 +567,14 @@ each one by pid.
 | `adopt <pid>` | Register one of them; `--all` for all. Its pid is checked as `register --pid`'s is: from inside an agent's session only a process that session may name, else refused `identity_mismatch` (exit 5); from your own terminal or the app, any |
 | `stop <agent>` | Signal an agent to stop. Its record says so from then on (`"stop_requested": true` in `inspect`), even if it exits 0, until it next starts under the same id |
 | `restart <agent>` | Replace a managed container after confirming it exited |
+| `reconnect <agent> [--claude <path>]` | Bring an ended Claude Code session back under its own record, with its conversation and live messages, as a process the daemon runs; `--claude` names the executable when it is not on PATH. Refuses, with the reason, while its process still runs, in another checkout, or with somebody attached |
+| `provider report <agent> --kind <kind>` / `resume <agent>` / `retry <agent>` | What an adapter says about a session's provider: `report` a limit or interruption (`usage`, `rate`, `budget`, `billing`, `concurrency`, `context`, `authentication`, `transport` or `unknown`; `--reset-at`, `--quota-group` and `--model` only when the provider said so), `resume` queued delivery after checking the limit (received input is not replayed), `retry` the session's bound input receiver after the daemon gave up restarting it |
 | `deregister` / `rm` | Mark an external agent finished / forget a finished one |
 | `role <name>…` | Give an agent (`--as`) roles from its project's palette (`roles`) — `role --as codex-1 reviewer tester` — in place of what it held; `--add reviewer` and `--remove tester` change one at a time, `--clear` takes them all away. Roles are yours to give: run from an agent's own shell it is refused. A command that names no sender speaks as you only from a terminal outside every agent: where a provider's own variables are set (`CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CODEX_THREAD_ID`) it asks for `--as` instead, even when the provider's process cannot be found. An agent's `send --to role:reviewer` reaches every reviewer in the project, in the role's room (one thread, where the sender hears the answers); `handoff role:reviewer` needs the role's one holder |
 | `roles` | A project's roles, each with its colour: the five every project offers (lead, implementer, reviewer, explorer, tester) and your own. `roles add "Security reviewer" --color red --description "…"` makes one, `roles set reviewer --name "Code review" --color pink` changes one (its address stays), `roles rm tester` takes one out. `roles set reviewer --tools review_verdict,review_gate,get_task` offers its holders only those MCP tools and the few every agent keeps (`--tools` works on `roles add` too), `roles set reviewer --all-tools` offers every tool again; the list shows a limited role's tools. Only you change them, and nothing holds a role until you give it; run from an agent's shell, including a Codex conversation's shared server, they are refused. `--project` names another project |
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml`. An entry with `after = "build exits 0"` starts once `build` has exited 0; `up` stays while it waits (`waiting: build exits 0`), and if `build` exits otherwise, is stopped or fails to start, it and everything waiting on it are not started (`not started: build exited 1`) and `up` exits unsuccessfully. `up test` alone takes an earlier exit 0 of `build`, from another `up`, as success when it was `build`'s own: its record says no stop was asked of that run, and it is still the run of the entry as this file gives it now (the same command, runtime, working directory, environment and the rest of how it runs; not renamed). Edit `build` in any of those ways, or give it `isolate = true`, and bring it up again before `test`. An earlier `build` that was stopped does not count, whatever it exited with (`not started: build was stopped`), and neither does one whose record cannot show this (`not started: build ended before this run; …`); the record is kept, and the answer with it, across a daemon restart and until retention forgets it. For an agent `up` is watching, only an exit 0 whose event it received counts, so an exit 0 seen after `up` has said its event stream ended does not |
-| `reconnect <agent>` | Bring an ended Claude Code session back under its own record, with its conversation and live messages, as a process the daemon runs |
 | `heartbeat` | Report that an agent is alive |
 
 ### Talk
@@ -708,8 +709,7 @@ turn. A copied instruction is not executed by AgentDocker.
 |---|---|
 | `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code. Docker Agent keeps its MCP servers in each agent's YAML, so `setup docker-agent --agent <file>` adds the toolset to that file's default agent (`root`, else the first) and `setup --remove docker-agent --agent <file>` takes it out; `--git-hook` plans the pre-commit backstop for this repository (below) |
-| `skill` | Print the portable coordination SKILL.md, without connecting to a daemon |
-| `provider` | Report a provider's availability (a limit, a sign-in), or resume delivery after checking one |
+| `skill` | Print the portable coordination `SKILL.md`, the one `setup` installs for the providers that take one, without connecting to a daemon |
 | `ui` | Open the desktop app |
 | `attach <agent>` | Connect this terminal to an agent's; Ctrl-] detaches. Only the agent's own output is shown while attached; dropped output or a replaced daemon is said once you detach or it ends |
 | `daemon` | Install, start, stop, reload, inspect or `vacuum` `agentd` |
@@ -789,7 +789,7 @@ choices the desktop draws as buttons. See
 
 `read_journal` shows what changed since the agent's cursor and leaves the
 cursor where it is; `mark_journal_read` moves it past what `read_journal`
-shows, so the next read starts after it; `since` reads from a sequence
+shows, so the next read starts after it; the since argument reads from a sequence
 number instead.
 
 `create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
@@ -1850,7 +1850,8 @@ Current behaviour that the sections above do not already state, by area.
   adapter or an administrator runs (`heartbeat`, `report-activity`,
   `report-adapter`, `report-input`, `report-commit`, `identity-repair`,
   `secret-review`, `usage-storage`, `usage-scan`, the `codex-*` controllers)
-  are hidden from the list and still work by name; `--help` on each describes it.
+  are hidden from the list and still work by name; each one's own help
+  describes it, and the guide's reference still names them.
 
 - The ledger entries for one batch of file changes are written in one
   transaction, so a branch switch does not stall claims and releases.
