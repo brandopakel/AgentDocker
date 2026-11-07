@@ -1038,6 +1038,19 @@ pub struct Observed {
     pub kind: ChangeKind,
 }
 
+/// A send as the request spells it: who sends and to whom, the kind and
+/// payload, the message it answers, the links beside it, and the sender's
+/// key for this one send.
+struct SendArgs {
+    from: String,
+    to: String,
+    kind: String,
+    payload: Value,
+    reply_to: Option<MessageId>,
+    links: Vec<agentdocker_core::Link>,
+    idempotency_key: Option<String>,
+}
+
 impl Daemon {
     pub fn emit(&self, kind: EventKind) {
         lock(&self.state).emit(kind);
@@ -2084,12 +2097,14 @@ impl Daemon {
             } => {
                 self.checkpoint(
                     &agent,
-                    key,
-                    task,
-                    assumptions,
-                    next_steps,
-                    links,
-                    release_leases,
+                    recovery::CheckpointArgs {
+                        key,
+                        task,
+                        assumptions,
+                        next_steps,
+                        links,
+                        release: release_leases,
+                    },
                 )
                 .await
             }
@@ -2110,12 +2125,14 @@ impl Daemon {
             } => {
                 self.handoff(
                     &agent,
-                    to.as_deref(),
-                    task,
-                    note,
-                    links,
-                    transfer_leases,
-                    key,
+                    handoff::HandoffArgs {
+                        to,
+                        task,
+                        note,
+                        links,
+                        transfer_leases,
+                        key,
+                    },
                 )
                 .await
             }
@@ -2405,8 +2422,16 @@ impl Daemon {
                 links,
                 idempotency_key,
             } => {
-                self.send(from, &to, kind, payload, reply_to, links, idempotency_key)
-                    .await
+                self.send(SendArgs {
+                    from,
+                    to,
+                    kind,
+                    payload,
+                    reply_to,
+                    links,
+                    idempotency_key,
+                })
+                .await
             }
             Request::Me { workdir } => self.me(workdir).await,
             Request::OpenSecretReview {
@@ -2573,11 +2598,13 @@ impl Daemon {
             } => self.task_move(
                 &agent,
                 &task,
-                column,
-                to.as_deref(),
-                after.as_deref(),
-                before.as_deref(),
-                comment.as_deref(),
+                tasks::TaskMoveArgs {
+                    column,
+                    to: to.as_deref(),
+                    after: after.as_deref(),
+                    before: before.as_deref(),
+                    comment: comment.as_deref(),
+                },
             ),
             Request::TaskUpdate {
                 agent,
@@ -2668,8 +2695,18 @@ impl Daemon {
                 description,
                 tools,
             } => {
-                self.role_save(&from, project, role, &name, color, description, tools)
-                    .await
+                self.role_save(
+                    &from,
+                    project,
+                    tasks::RoleSaveArgs {
+                        existing: role,
+                        name,
+                        color,
+                        description,
+                        tools,
+                    },
+                )
+                .await
             }
             Request::RoleDelete {
                 from,
@@ -2728,15 +2765,15 @@ impl Daemon {
                 include_superseded,
                 min_score,
             } => {
-                self.memory_search(
+                self.memory_search(tasks::MemorySearchArgs {
                     from,
                     project,
-                    &query,
+                    query,
                     limit,
                     as_of,
                     include_superseded,
                     min_score,
-                )
+                })
                 .await
             }
             Request::MemoryProfile {
@@ -2756,8 +2793,18 @@ impl Daemon {
                 base64,
                 task,
             } => {
-                self.file_put(&from, project, &name, media_type, text, base64, task)
-                    .await
+                self.file_put(
+                    &from,
+                    project,
+                    tasks::FilePutArgs {
+                        name,
+                        media_type,
+                        text,
+                        base64,
+                        task,
+                    },
+                )
+                .await
             }
             Request::FileGet { file } => self.file_get(&file),
             Request::FileLink {
@@ -2814,10 +2861,12 @@ impl Daemon {
                     &from,
                     project.as_deref(),
                     &board,
-                    name,
-                    lanes,
-                    pull_source,
-                    pull_target,
+                    tasks::BoardChange {
+                        name,
+                        lanes,
+                        pull_source,
+                        pull_target,
+                    },
                 )
                 .await
             }
@@ -3008,7 +3057,17 @@ impl Daemon {
                 automatic,
             } => {
                 self.claim(
-                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, priority, automatic,
+                    &agent,
+                    leases::ClaimArgs {
+                        resource,
+                        mode,
+                        amount,
+                        ttl_secs,
+                        note,
+                        wait_secs,
+                        priority,
+                        automatic,
+                    },
                 )
                 .await
             }
@@ -3062,7 +3121,18 @@ impl Daemon {
                 digest,
             } => {
                 self.journal(
-                    &project, since_seq, until_seq, agent, branch, kind, path, grep, limit, digest,
+                    &project,
+                    journal::JournalArgs {
+                        since_seq,
+                        until_seq,
+                        agent,
+                        branch,
+                        kind,
+                        path,
+                        grep,
+                        limit,
+                        digest,
+                    },
                 )
                 .await
             }
@@ -3406,17 +3476,17 @@ impl Daemon {
         Response::Agents { agents, aliases }
     }
 
-    #[allow(clippy::too_many_arguments)] // one per field of `Request::Send`
-    async fn send(
-        &self,
-        from: String,
-        to: &str,
-        kind: String,
-        payload: Value,
-        reply_to: Option<MessageId>,
-        links: Vec<agentdocker_core::Link>,
-        idempotency_key: Option<String>,
-    ) -> Response {
+    async fn send(&self, args: SendArgs) -> Response {
+        let SendArgs {
+            from,
+            to,
+            kind,
+            payload,
+            reply_to,
+            links,
+            idempotency_key,
+        } = args;
+        let to = to.as_str();
         if let Err(reason) = agentdocker_core::link::check(&links) {
             return Response::error(ErrorCode::Invalid, reason);
         }
@@ -5603,30 +5673,28 @@ impl State {
         // answers and the card it rode on. The store deletes every one it
         // is given, so memory and disk agree after a restart.
         let closing: Vec<MessageId> = closed.iter().chain(settled.iter()).cloned().collect();
+        let released_ids: Vec<_> = released.iter().map(|lease| lease.id.clone()).collect();
         let mut post = None;
         let _ = self.commit(
             "message",
             events,
             |store, events| {
-                store.publish_message_with_channel(
-                    &envelope,
-                    &recipients,
-                    INBOX_CAPACITY,
-                    sender.as_ref(),
-                    question.as_ref(),
-                    &closing,
+                store.publish_message_with_channel(crate::store::Publication {
+                    message: &envelope,
+                    recipients: &recipients,
+                    capacity: INBOX_CAPACITY,
+                    sender: sender.as_ref(),
+                    question: question.as_ref(),
+                    closed: &closing,
                     events,
-                    channel.as_ref(),
-                    journal.as_ref(),
-                    &released
-                        .iter()
-                        .map(|lease| lease.id.clone())
-                        .collect::<Vec<_>>(),
-                    document
+                    channel: channel.as_ref(),
+                    journal: journal.as_ref(),
+                    released: &released_ids,
+                    document: document
                         .as_ref()
                         .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
                     tracked,
-                )
+                })
             },
             |state, _, kept| {
                 post = kept;

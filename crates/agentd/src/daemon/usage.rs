@@ -2,7 +2,7 @@
 //! proposals enter a fenced SQLite transaction; rejected proposals move nothing.
 use super::*;
 use crate::store::usage::discovery::{Change, Job, Progress};
-use crate::store::usage::{Attribution as UsageAttribution, FileProgress, Ingest};
+use crate::store::usage::{Attribution as UsageAttribution, FileProgress, Ingest, UsageReconcile};
 use agentdocker_core::config::{DaemonConfig, UsageConfig};
 use agentdocker_core::usage::{self, Range, report::*};
 use agentdocker_host::usage::{
@@ -172,11 +172,13 @@ impl Daemon {
                     "usage attribution",
                     |store, seq| {
                         let event = store.usage_reconcile(
-                            &runtime,
-                            &session,
-                            Some(&attribution),
-                            (from, until),
-                            retained(now, config),
+                            UsageReconcile {
+                                runtime: &runtime,
+                                session: &session,
+                                attribution: Some(&attribution),
+                                window: (from, until),
+                                retained_since: retained(now, config),
+                            },
                             now,
                             seq,
                         )?;

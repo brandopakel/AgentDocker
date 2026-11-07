@@ -90,6 +90,7 @@ impl Daemon {
         own.ok_or_else(|| Box::new(Response::invalid("name a project")))
     }
 
+    // Kept as the request spells it while the review work in flight changes this signature.
     #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn code_verdict(
         self: &Arc<Self>,

@@ -506,6 +506,16 @@ fn waiting_words<'a>(
     }
 }
 
+/// How a question may be answered as its card is drawn: whether its
+/// controls take input, the choice on its way (shown as the receipt), the
+/// moment the time left is measured from, and the palette.
+struct Answering {
+    enabled: bool,
+    chosen: Option<String>,
+    now: chrono::DateTime<Utc>,
+    c: Colors,
+}
+
 impl App {
     /// Who is waiting on the person, in one card with one action each:
     /// unanswered questions and paused delivery. Nothing here is new
@@ -861,7 +871,18 @@ impl App {
                 server,
                 message,
                 schema,
-            }) => self.form_card(question, server, message, schema, enabled, chosen, c),
+            }) => self.form_card(
+                question,
+                server,
+                message,
+                schema,
+                Answering {
+                    enabled,
+                    chosen,
+                    now,
+                    c,
+                },
+            ),
             Some(QuestionPresentation::McpUrl {
                 server,
                 message,
@@ -966,10 +987,12 @@ impl App {
                 Request::Command(command),
                 cwd,
                 (!reason.trim().is_empty()).then_some(reason.as_str()),
-                enabled,
-                chosen,
-                now,
-                c,
+                Answering {
+                    enabled,
+                    chosen,
+                    now,
+                    c,
+                },
             ),
             Some(QuestionPresentation::CodexFiles {
                 cwd,
@@ -982,10 +1005,12 @@ impl App {
                 cwd,
                 (!reason.trim().is_empty() && reason != "Requested by Codex")
                     .then_some(reason.as_str()),
-                enabled,
-                chosen,
-                now,
-                c,
+                Answering {
+                    enabled,
+                    chosen,
+                    now,
+                    c,
+                },
             ),
             Some(QuestionPresentation::CodexPermissions {
                 cwd,
@@ -998,25 +1023,39 @@ impl App {
                 cwd,
                 (!reason.trim().is_empty() && reason != "Requested by Codex")
                     .then_some(reason.as_str()),
-                enabled,
-                chosen,
-                now,
-                c,
+                Answering {
+                    enabled,
+                    chosen,
+                    now,
+                    c,
+                },
             ),
             Some(QuestionPresentation::Choices {
                 question: prompt,
                 options,
-            }) => self.ask_card(question, Some(prompt), options, enabled, chosen, now, c),
+            }) => self.ask_card(
+                question,
+                Some(prompt),
+                options,
+                Answering {
+                    enabled,
+                    chosen,
+                    now,
+                    c,
+                },
+            ),
             // An agent's own options render as a choice does: the same
             // rows, the same receipt.
             None => self.ask_card(
                 question,
                 None,
                 &question.form.options,
-                enabled,
-                chosen,
-                now,
-                c,
+                Answering {
+                    enabled,
+                    chosen,
+                    now,
+                    c,
+                },
             ),
         };
         container(card)
@@ -1024,17 +1063,17 @@ impl App {
             .into()
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn form_card(
         &self,
         question: &Question,
         server: &str,
         message: &str,
         schema: &serde_json::Value,
-        enabled: bool,
-        chosen: Option<String>,
-        c: Colors,
+        answering: Answering,
     ) -> Element<'_, Message> {
+        let Answering {
+            enabled, chosen, c, ..
+        } = answering;
         use super::super::forms::Draft;
         use agentdocker_core::{FormKind, McpForm};
         let id = question.id.clone();
@@ -1181,17 +1220,19 @@ impl App {
     /// A question card: the tile, the question and how long is left; the
     /// options as rows, or the chosen one as the receipt; then a written
     /// answer.
-    #[allow(clippy::too_many_arguments)]
     fn ask_card(
         &self,
         question: &Question,
         prompt: Option<&str>,
         options: &[QuestionOption],
-        enabled: bool,
-        chosen: Option<String>,
-        now: chrono::DateTime<Utc>,
-        c: Colors,
+        answering: Answering,
     ) -> Element<'_, Message> {
+        let Answering {
+            enabled,
+            chosen,
+            now,
+            c,
+        } = answering;
         let id = question.id.clone();
         let draft_id = id.clone();
         let busy = self.sending.contains(&id);
@@ -1334,18 +1375,20 @@ impl App {
     /// A Codex request as a framed card: who wants what and the time left
     /// in a strip, the request in a darker well, the folder and reason as
     /// detail lines, and the footer's actions in three weights.
-    #[allow(clippy::too_many_arguments)]
     fn approval_card(
         &self,
         question: &Question,
         request: Request<'_>,
         cwd: &str,
         reason: Option<&str>,
-        enabled: bool,
-        chosen: Option<String>,
-        now: chrono::DateTime<Utc>,
-        c: Colors,
+        answering: Answering,
     ) -> Element<'_, Message> {
+        let Answering {
+            enabled,
+            chosen,
+            now,
+            c,
+        } = answering;
         let id = question.id.clone();
         let busy = self.sending.contains(&id);
         let expired = question.expired(now);

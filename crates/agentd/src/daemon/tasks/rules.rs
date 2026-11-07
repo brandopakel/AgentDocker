@@ -412,7 +412,6 @@ impl Daemon {
         Response::Rules { rules }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn rule_create(
         self: &Arc<Self>,
         from: &str,

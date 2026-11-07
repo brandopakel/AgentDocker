@@ -410,6 +410,29 @@ pub struct ChangesQuery {
     pub before_seq: Option<u64>,
 }
 
+/// One message and everything written with it, in one transaction: its
+/// inboxes (`capacity` each), the sender's activity, the question it
+/// asks or `closed` answers, the events, the channel it opens or closes
+/// with the journal entry for that, the leases an accepted release
+/// request lets go of, a document put or deleted beside it, and whether
+/// its deliveries are followed (`tracked`).
+pub struct Publication<'a> {
+    pub message: &'a Envelope,
+    pub recipients: &'a [AgentId],
+    pub capacity: usize,
+    pub sender: Option<&'a AgentRecord>,
+    pub question: Option<&'a agentdocker_core::Question>,
+    /// Every question this message closes: the one it answers, and
+    /// the card a released message rode on. Both go, or neither.
+    pub closed: &'a [agentdocker_core::MessageId],
+    pub events: &'a [Event],
+    pub channel: Option<&'a Channel>,
+    pub journal: Option<&'a JournalEntry>,
+    pub released: &'a [LeaseId],
+    pub document: Option<(&'a str, &'a str, Option<&'a serde_json::Value>)>,
+    pub tracked: bool,
+}
+
 impl Store {
     /// Restore intent, replacement protection and its replay evidence are one
     /// recoverable transition. Keep the point until the new process is recorded.
@@ -1565,32 +1588,26 @@ impl Store {
     /// transition. Nothing may reach memory, live subscribers or notifications
     /// before this commits, including a broadcast's partially written inboxes.
     #[cfg(test)]
-    #[allow(clippy::too_many_arguments)]
     pub fn publish_message(
         &self,
         message: &Envelope,
         recipients: &[AgentId],
-        capacity: usize,
-        sender: Option<&AgentRecord>,
-        question: Option<&agentdocker_core::Question>,
-        closed: Option<&agentdocker_core::MessageId>,
         events: &[Event],
     ) -> Result<()> {
-        let closed: Vec<agentdocker_core::MessageId> = closed.into_iter().cloned().collect();
-        self.publish_message_with_channel(
+        self.publish_message_with_channel(Publication {
             message,
             recipients,
-            capacity,
-            sender,
-            question,
-            &closed,
+            capacity: 1000,
+            sender: None,
+            question: None,
+            closed: &[],
             events,
-            None,
-            None,
-            &[],
-            None,
-            false,
-        )
+            channel: None,
+            journal: None,
+            released: &[],
+            document: None,
+            tracked: false,
+        })
         .map(drop)
     }
 
@@ -1601,24 +1618,24 @@ impl Store {
     /// A topic message is kept in the topic log in the same transaction, for
     /// its sender's project ([`agentdocker_core::topic::scope`]), and its
     /// place there is returned.
-    #[allow(clippy::too_many_arguments)]
     pub fn publish_message_with_channel(
         &self,
-        message: &Envelope,
-        recipients: &[AgentId],
-        capacity: usize,
-        sender: Option<&AgentRecord>,
-        question: Option<&agentdocker_core::Question>,
-        // Every question this message closes: the one it answers, and
-        // the card a released message rode on. Both go, or neither.
-        closed: &[agentdocker_core::MessageId],
-        events: &[Event],
-        channel: Option<&Channel>,
-        journal: Option<&JournalEntry>,
-        released: &[LeaseId],
-        document: Option<(&str, &str, Option<&serde_json::Value>)>,
-        tracked: bool,
+        publication: Publication<'_>,
     ) -> Result<Option<agentdocker_core::TopicPost>> {
+        let Publication {
+            message,
+            recipients,
+            capacity,
+            sender,
+            question,
+            closed,
+            events,
+            channel,
+            journal,
+            released,
+            document,
+            tracked,
+        } = publication;
         let tx = write_transaction(&self.conn)?;
         // Let go of as the holder's own release does: a card hold's
         // interval is kept before the lease goes, so delayed usage from
@@ -3809,15 +3826,7 @@ mod tests {
                 at,
             );
             store
-                .publish_message(
-                    &envelope,
-                    std::slice::from_ref(&b.id),
-                    1000,
-                    None,
-                    None,
-                    None,
-                    &[],
-                )
+                .publish_message(&envelope, std::slice::from_ref(&b.id), &[])
                 .unwrap();
             sent.push(envelope);
         }
@@ -3831,15 +3840,7 @@ mod tests {
                 Utc::now(),
             );
             store
-                .publish_message(
-                    &envelope,
-                    std::slice::from_ref(&a.id),
-                    1000,
-                    None,
-                    None,
-                    None,
-                    &[],
-                )
+                .publish_message(&envelope, std::slice::from_ref(&a.id), &[])
                 .unwrap();
             sent.push(envelope);
         }
@@ -3932,9 +3933,7 @@ mod tests {
                 None,
                 Utc::now(),
             );
-            store
-                .publish_message(&extra, &[], 1000, None, None, None, &[])
-                .unwrap();
+            store.publish_message(&extra, &[], &[]).unwrap();
             assert_eq!(
                 store
                     .search_messages("lantern", None, None, 50)
@@ -3969,9 +3968,7 @@ mod tests {
             "a \"quoted\" word",
             "plain words",
         ] {
-            store
-                .publish_message(&said(text), &[], 1000, None, None, None, &[])
-                .unwrap();
+            store.publish_message(&said(text), &[], &[]).unwrap();
         }
         for (term, expected) in [
             ("%", 1),
@@ -4017,7 +4014,7 @@ mod tests {
             )
         };
         store
-            .publish_message(&said("first lantern"), &[], 1000, None, None, None, &[])
+            .publish_message(&said("first lantern"), &[], &[])
             .unwrap();
         // A query fails while the table is out of reach. Search disables
         // the index in memory without writing during a coordinator fence;
@@ -4060,7 +4057,7 @@ mod tests {
             "a read changes no durable state"
         );
         store
-            .publish_message(&said("second lantern"), &[], 1000, None, None, None, &[])
+            .publish_message(&said("second lantern"), &[], &[])
             .unwrap();
         let marker: Option<String> = store
             .conn
@@ -4124,9 +4121,7 @@ mod tests {
             )
         };
         let old = said("oldsearchtoken");
-        store
-            .publish_message(&old, &[], 1000, None, None, None, &[])
-            .unwrap();
+        store.publish_message(&old, &[], &[]).unwrap();
         let old_seq = store.archived(&old.id).unwrap().unwrap().seq;
         // The index failure disables it in memory, while rollback restores
         // its table, archive rows and the old durable completeness marker.
@@ -4153,9 +4148,7 @@ mod tests {
         // A successful append and deletion have the same final row count
         // as before the failure. Counts alone cannot establish completeness.
         let new = said("newsearchtoken");
-        store
-            .publish_message(&new, &[], 1000, None, None, None, &[])
-            .unwrap();
+        store.publish_message(&new, &[], &[]).unwrap();
         let tx = write_transaction(&store.conn).unwrap();
         store
             .delete_archived(&[i64::try_from(old_seq).unwrap()])
@@ -4205,9 +4198,7 @@ mod tests {
             None,
             Utc::now(),
         );
-        store
-            .publish_message(&root, &[], 1000, None, None, None, &[])
-            .unwrap();
+        store.publish_message(&root, &[], &[]).unwrap();
         let mut replies = Vec::new();
         for n in 0..7 {
             let reply = Envelope::new(
@@ -4218,9 +4209,7 @@ mod tests {
                 Some(root.id.clone()),
                 Utc::now(),
             );
-            store
-                .publish_message(&reply, &[], 1000, None, None, None, &[])
-                .unwrap();
+            store.publish_message(&reply, &[], &[]).unwrap();
             replies.push(reply.id.clone());
         }
         // A reply from another conversation naming the same root.
@@ -4232,9 +4221,7 @@ mod tests {
             Some(root.id.clone()),
             Utc::now(),
         );
-        store
-            .publish_message(&elsewhere, &[], 1000, None, None, None, &[])
-            .unwrap();
+        store.publish_message(&elsewhere, &[], &[]).unwrap();
         let all = ConversationId::all();
         let mut seen = Vec::new();
         let mut after = None;
