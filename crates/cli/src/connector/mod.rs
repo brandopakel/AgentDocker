@@ -2863,8 +2863,28 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn a_vendor_connects_an_agent_end_to_end() {
+    /// The connector's whole serve future, as the binary runs it: on a
+    /// thread with the binary's stack. Every record it carries has the
+    /// session's team and every claim its owner, and the future wants more
+    /// than the 2 MiB a test thread has; the binary gives it `MAIN_STACK`,
+    /// so the test does too (as `parse_cli` does for clap's parser).
+    #[test]
+    fn a_vendor_connects_an_agent_end_to_end() {
+        std::thread::Builder::new()
+            .stack_size(crate::MAIN_STACK)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("a runtime")
+                    .block_on(a_vendor_connects_an_agent_end_to_end_body())
+            })
+            .expect("a thread with the binary's stack")
+            .join()
+            .expect("the test does not panic");
+    }
+
+    async fn a_vendor_connects_an_agent_end_to_end_body() {
         let (connector, mock) = connector(vec![
             Response::Agents {
                 agents: vec![],

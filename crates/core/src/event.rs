@@ -1214,6 +1214,7 @@ impl EventKind {
         "agent_owner_lost",
         "checkpoints_pruned",
         "agent_vcs_changed",
+        "agent_team_changed",
         "daemon_stopping",
         "daemon_transfer_offered",
         "daemon_transfer_readdressed",
