@@ -161,6 +161,7 @@ pub(super) fn moved(message: &Message) -> Moved {
         | Message::ProjectLocation(..)
         | Message::NoticeDone
         | Message::WaitGrace
+        | Message::StatusItemClicked
         | Message::Window(_)
         | Message::WindowScale(_)
         | Message::NativeAccessibility(_)

@@ -954,7 +954,7 @@ failure retains the last snapshot and clearly pauses daemon actions.
 ## Settings and installation
 
 Settings is a column of names beside their controls: Appearance (Theme, Text
-size, Notifications, Roomy rows), Terminal (Terminal text, Terminal colours)
+size, Notifications, Roomy rows and, on macOS, Menu bar item), Terminal (Terminal text, Terminal colours)
 and Installation (Update checks, Installation), with no line of explanation
 under any of them. Preferences are stored privately in the AgentDocker state directory.
 A malformed preference file is preserved and reported rather than silently reset.
@@ -1047,6 +1047,14 @@ and notarization; locally signed builds are explicit previews.
 
 On macOS the dock icon shows how many questions and prompts are waiting on you,
 in every project: the rows Needs you holds. It shows nothing when none are waiting.
+A menu-bar item shows the mark and, beside it as text, the same number, nothing at
+zero; its tooltip says it in words (*AgentDocker · 3 waiting on you*). With the item
+on (Settings → Appearance → **Menu bar item**, on by default), closing the window
+keeps the app running with the item as its one presence, and a click on the item
+brings the window back; clicked while the window is open, it brings the window to
+the front. The item has no menu and opens no panel. Quit is the app menu's or the
+Dock's **Quit** as before. With the item off, closing the window quits, as it does
+on Linux and Windows, which have no menu-bar item.
 
 Text inputs and the terminal support native input methods. Focus indicators,
 and the words every state chip prints and carries as its accessible name,
