@@ -17,6 +17,8 @@ mod emission;
 mod format;
 mod gate;
 mod git_hook;
+#[cfg(test)]
+mod guide_lists;
 mod hooks;
 mod input_status;
 mod mcp;
