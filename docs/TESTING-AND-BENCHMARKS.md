@@ -75,7 +75,7 @@ References: [nextest configuration](https://nexte.st/docs/configuring-nextest/),
 
 ## Repository commands and installation
 
-`bash scripts/verify.sh check` runs the PR gate. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. Retained `socket_claim_release` results are not comparable with `socket_v2`: the older series mixed successes and conflicts, which `socket_v2` splits into different request counts. Stale detection/restart scenarios are correctness integration tests, not latency workloads. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
+`bash scripts/verify.sh check` runs the full local gate: the documentation checks, formatting, strict Clippy, nextest (zero retries), doctests and the Python suite under `tests/`. `quick` runs the same on the packages a change touches: `scripts/touched_crates.py` reads the files that differ from the merge base with `origin/main` (the previous commit without a remote; a clone too shallow to hold that merge base is refused until its history is fetched), committed or not, plus untracked files that are not ignored, and names each changed workspace package and every package that depends on it, from `cargo metadata`; a moved file counts at both its old and its new place; when Git or Cargo cannot answer, the run stops rather than test nothing; a file every package depends on (the root manifest, the lockfile, the toolchain file, Cargo and nextest configuration) selects the whole workspace, and a change outside every package runs no Cargo step. `package` runs crate packaging and the release build, which CI runs on every pull request and which a local `check` no longer includes. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. Retained `socket_claim_release` results are not comparable with `socket_v2`: the older series mixed successes and conflicts, which `socket_v2` splits into different request counts. Stale detection/restart scenarios are correctness integration tests, not latency workloads. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
 
 Install tools with `cargo install --locked cargo-nextest --version 0.9.143`, `cargo install --locked cargo-llvm-cov --version 0.9.0`, and `cargo install --locked cargo-fuzz --version 0.13.2`. Add `rustup component add llvm-tools-preview` and `rustup toolchain install nightly --profile minimal`. Criterion and Proptest are workspace development dependencies, pinned transitively by Cargo.lock. Benchmarks use a stable MSRV-compatible Criterion 0.5 harness. Keep workspace and fuzz lockfiles checked in. Fuzz campaigns first require locked dependency resolution and retain before/after source, lockfile, nightly compiler and cargo-fuzz manifests, including when a target fails. A campaign fails if these change during execution. Tools are development-only and do not ship in the release binaries.
 
@@ -162,13 +162,14 @@ fix/test/docs branches. A skipped or rate-limited review remains pending even
 when its status context is green. Draft PRs can run preliminary CI; final review
 and all applicable checks on the published head are required before integration.
 A pull request's desktop packaging and CLI archives are built on Linux only;
-the macOS ones run for main, for a `batch/**` branch (main with the approved
-pull requests merged in, which also runs the CI suite) and on demand, since
-macOS runners are few. A pull request merged from a batch needs its own
-checks and the batch's green at the head the batch merged; one whose head moved
-since goes in a new batch. A new push to a pull request cancels the runs
-of its earlier heads; runs on main and batch branches are never cancelled by
-another.
+the macOS ones run for main, for a `batch/**` branch (main with several
+approved pull requests merged in, which also runs the CI suite) and on demand,
+since macOS runners are few. A pull request merges on its own once it is
+approved at its head, its checks are green and no review thread is open; a
+batch branch is for wanting the macOS packages of several changes at once,
+and a pull request merged from one needs the batch green at the head the
+batch merged. A new push to a pull request cancels the runs of its earlier
+heads; runs on main and batch branches are never cancelled by another.
 
 Controller-binding fixtures resolve the intended `sleep` executable before
 spawning, then wait at most five seconds for the child's kernel executable path

@@ -55,7 +55,7 @@ FORGET = if [ -x "$(LSREGISTER)" ]; then for app in $(1); do \
     "$(LSREGISTER)" -u "$$app" >/dev/null 2>&1 || true; \
   fi; done; fi
 
-.PHONY: help build check test clippy fmt app install install-preview status rollback run smoke restart-daemon clean-artifacts migrate-artifacts
+.PHONY: help build check quick package test clippy fmt app install install-preview status rollback run smoke restart-daemon clean-artifacts migrate-artifacts
 
 help: ## Show this help
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  \033[1m%-16s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -77,8 +77,14 @@ clippy: ## Strict lint
 fmt: ## Format everything
 	cargo fmt --all
 
-check: ## The standard verification gate used before a PR
+check: ## The full local gate, before a pull request's first push
 	bash scripts/verify.sh check
+
+quick: ## The short gate for a later push: the packages the change touches
+	bash scripts/verify.sh quick
+
+package: ## Crate packaging and the release build (CI runs this on every PR)
+	bash scripts/verify.sh package
 
 app: migrate-artifacts ## Release build + native package for this machine (no signing)
 	$(PREFLIGHT)
