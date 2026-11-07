@@ -350,6 +350,7 @@ async fn one_identity_survives_both_halves_and_keeps_what_it_was_given() {
             payload: json!({"text": "still here?"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(matches!(delivered, Response::Sent { .. }), "{delivered:?}");
@@ -699,6 +700,7 @@ async fn a_session_that_comes_back_takes_up_its_ended_record() {
             question: "still there?".to_owned(),
             presentation: None,
             timeout_secs: 600,
+            form: Default::default(),
         })
         .await
     else {
@@ -2417,6 +2419,9 @@ async fn ask_returns_the_answer_that_names_it() {
                     from: None,
                     message: id,
                     text: "yes".to_owned(),
+                    choices: Vec::new(),
+                    note: None,
+                    other: None,
                 })
                 .await
         })
@@ -2428,6 +2433,7 @@ async fn ask_returns_the_answer_that_names_it() {
             to: "user".to_owned(),
             question: "ship it?".to_owned(),
             timeout_secs: 10,
+            form: Default::default(),
         })
         .await;
     let Response::Answer { from, text, .. } = response else {
@@ -2464,6 +2470,7 @@ async fn ask_times_out_rather_than_waiting_forever() {
             to: "user".to_owned(),
             question: "anyone there?".to_owned(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -2501,6 +2508,7 @@ async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
             to: "user".to_owned(),
             question: "   ".to_owned(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -2519,6 +2527,9 @@ async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
             from: None,
             message: MessageId::from("nosuchquestion".to_owned()),
             text: "hello?".to_owned(),
+            choices: Vec::new(),
+            note: None,
+            other: None,
         })
         .await;
     assert!(
@@ -2553,6 +2564,7 @@ async fn questions_are_listed_only_for_whoever_was_asked() {
                     to: "user".to_owned(),
                     question: "for the human".to_owned(),
                     timeout_secs: 30,
+                    form: Default::default(),
                 })
                 .await
         })
@@ -2568,6 +2580,7 @@ async fn questions_are_listed_only_for_whoever_was_asked() {
                     to: beta,
                     question: "for beta".to_owned(),
                     timeout_secs: 30,
+                    form: Default::default(),
                 })
                 .await
         })
@@ -2619,6 +2632,7 @@ async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does
             payload: json!({ "text": "look at this" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     let notice = notices.try_recv().expect("a person is worth interrupting");
@@ -2646,12 +2660,158 @@ async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does
             payload: json!({ "text": "carry on" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(
         notices.try_recv().is_err(),
         "a program has no desktop to interrupt"
     );
+}
+
+/// A sender whose answer was lost sends again with the same key: the
+/// daemon answers as it first did, with the same message id, and the
+/// recipient has the message once. Another sender's same key is its own
+/// send, and a refused key is refused before anything is queued.
+#[tokio::test]
+async fn a_repeated_idempotency_key_replays_the_first_answer_and_queues_nothing() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sender = register(&daemon, "sender", distinct_pid()).await;
+    let other = register(&daemon, "other", distinct_pid()).await;
+    let reader = register(&daemon, "reader", distinct_pid()).await;
+    let send = |from: &AgentRecord, key: &str| Request::Send {
+        from: from.id.to_string(),
+        to: reader.id.to_string(),
+        kind: "chat".to_owned(),
+        payload: json!({ "text": "once" }),
+        reply_to: None,
+        links: Vec::new(),
+        idempotency_key: Some(key.to_owned()),
+    };
+
+    // The first answer is dropped on the way back; the retry carries the
+    // same key.
+    let first = daemon.handle(send(&sender, "send-1")).await;
+    let Response::Sent { message, .. } = &first else {
+        panic!("{first:?}");
+    };
+    let again = daemon.handle(send(&sender, "send-1")).await;
+    assert_eq!(again, first, "the first answer, unchanged");
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(
+        messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        vec![message],
+        "queued once"
+    );
+
+    // The same key from another sender is another send.
+    let theirs = daemon.handle(send(&other, "send-1")).await;
+    assert!(matches!(&theirs, Response::Sent { message: id, .. } if id != message));
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(messages.len(), 2);
+
+    // A refusal is not remembered: the retry is judged afresh.
+    let mut refused = send(&sender, "send-2");
+    if let Request::Send { to, .. } = &mut refused {
+        *to = "nobody-here".to_owned();
+    }
+    assert!(matches!(
+        daemon.handle(refused).await,
+        Response::Error { .. }
+    ));
+    assert!(
+        lock(&daemon.state)
+            .keyed_sends
+            .lookup(&sender.id.to_string(), "send-2", Utc::now())
+            .is_none()
+    );
+
+    // A key that is not one bounded line is refused before routing.
+    assert!(matches!(
+        daemon.handle(send(&sender, " padded")).await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+}
+
+/// A keyed retry is answered before its destination is resolved again:
+/// after a lost answer the recipient may have been renamed, or removed,
+/// and the message the retry repeats is queued all the same.
+#[tokio::test]
+async fn a_keyed_retry_is_answered_after_its_recipient_is_renamed_or_removed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sender = register(&daemon, "sender", distinct_pid()).await;
+    let reader = register(&daemon, "reader", distinct_pid()).await;
+    let send = |key: &str| Request::Send {
+        from: sender.id.to_string(),
+        to: "reader".to_owned(),
+        kind: "chat".to_owned(),
+        payload: json!({ "text": "once" }),
+        reply_to: None,
+        links: Vec::new(),
+        idempotency_key: Some(key.to_owned()),
+    };
+
+    // The answer is lost on the way back, and the recipient is renamed
+    // before the retry: its old name no longer reaches it.
+    let first = daemon.handle(send("send-1")).await;
+    let Response::Sent { message, .. } = &first else {
+        panic!("{first:?}");
+    };
+    let renamed = daemon
+        .handle(Request::Rename {
+            agent: reader.id.to_string(),
+            name: "renamed-reader".to_owned(),
+        })
+        .await;
+    assert!(matches!(renamed, Response::Agent { .. }), "{renamed:?}");
+    let fresh = daemon.handle(send("send-2")).await;
+    assert!(
+        matches!(fresh, Response::Error { .. }),
+        "a new send by the old name is refused: {fresh:?}"
+    );
+
+    let again = daemon.handle(send("send-1")).await;
+    assert_eq!(again, first, "the first answer, unchanged");
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(
+        messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        vec![message],
+        "queued once"
+    );
+
+    // And once the recipient is gone altogether.
+    let ended = lock(&daemon.state).deregister(&reader.id.to_string());
+    assert!(matches!(ended, Response::Agent { .. }), "{ended:?}");
+    assert_eq!(daemon.handle(send("send-1")).await, first);
 }
 
 // ----- snapshot restore ----------------------------------------------
@@ -2712,6 +2872,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             question: "still there?".to_owned(),
             presentation: None,
             timeout_secs: 600,
+            form: Default::default(),
         })
         .await
     else {
@@ -2763,6 +2924,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             payload: json!({"text": "still for you"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
     else {
@@ -3196,6 +3358,7 @@ async fn a_relaunch_that_cannot_start_answers_and_leaves_the_record_ended() {
             payload: json!({"text": "waiting"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
     else {
@@ -3837,6 +4000,7 @@ async fn a_question_has_to_reach_somebody_who_can_answer_it() {
             to: "topic:reviews".into(),
             question: "anyone?".into(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -3883,6 +4047,9 @@ async fn an_answer_that_races_the_question_still_lands() {
                                 from: Some(human.id.to_string()),
                                 message: envelope.id,
                                 text: "at once".to_owned(),
+                                choices: Vec::new(),
+                                note: None,
+                                other: None,
                             })
                             .await,
                     );
@@ -3897,6 +4064,7 @@ async fn an_answer_that_races_the_question_still_lands() {
             to: "user".into(),
             question: "now?".into(),
             timeout_secs: 10,
+            form: Default::default(),
         })
         .await;
     let answered = racing.await.unwrap().expect("the question was published");
@@ -6941,6 +7109,7 @@ deny = ["send:all"]
             payload: json!({ "text": "everyone!" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(matches!(
@@ -6964,6 +7133,7 @@ deny = ["send:all"]
                 payload: json!({ "text": "just you" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7732,6 +7902,7 @@ async fn failed_removal_retains_memory_and_never_reports_success() {
                 payload: json!({"text":"retain if removal fails"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7793,6 +7964,7 @@ async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing
                     payload: json!({"text":"retain after failed drain"}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None
                 })
                 .await,
             Response::Sent { .. }
@@ -7856,6 +8028,7 @@ async fn failed_inbox_touch_does_not_acknowledge_messages() {
                 payload: json!({"text":"retain after failed touch"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7901,6 +8074,7 @@ async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery()
                     payload: json!({"text":text}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None
                 })
                 .await,
             Response::Sent { .. }
@@ -8073,6 +8247,7 @@ async fn inbox_byte_pressure_survives_restart_and_acknowledgement_releases_capac
         payload,
         reply_to: None,
         links: Vec::new(),
+        idempotency_key: None,
     };
     for _ in 0..7 {
         assert!(matches!(
@@ -8325,6 +8500,7 @@ async fn inbox_ack_is_idempotent_and_preserves_new_arrivals() {
                 payload: json!({"text": text}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
     }
@@ -8384,6 +8560,7 @@ async fn state_survives_restart() {
             payload: json!({ "text": "hello" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     drop(daemon);
@@ -8460,6 +8637,7 @@ async fn remove_forgets_agent_and_inbox() {
             payload: json!({ "text": "late" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     daemon
@@ -8674,6 +8852,7 @@ async fn restore_retires_half_spawned_agents_and_orphaned_leases() {
             holder,
             mode: LeaseMode::Exclusive,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + Duration::hours(1),
             note: None,
@@ -8766,6 +8945,7 @@ fn ambiguous_live_names_refuse_before_recovery_changes_any_record_or_lease() {
         holder: second.id.clone(),
         mode: LeaseMode::Exclusive,
         acquired_at: now,
+        held_since: None,
         change_seq: None,
         expires_at: now + Duration::hours(1),
         note: None,
@@ -8837,9 +9017,9 @@ async fn recycled_pid_is_not_mistaken_for_the_agent() {
 
 #[test]
 fn invalid_pids_are_never_alive() {
-    assert!(!process_exists(0));
-    assert!(!process_exists(u32::MAX));
-    assert!(process_exists(std::process::id()));
+    assert!(!procinfo::alive(0));
+    assert!(!procinfo::alive(u32::MAX));
+    assert!(procinfo::alive(std::process::id()));
 }
 
 #[tokio::test]
@@ -9123,6 +9303,7 @@ async fn send(daemon: &Arc<Daemon>, from: &str, to: &str) -> Response {
             payload: json!({ "text": "hi" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
 }
@@ -9284,6 +9465,337 @@ async fn send_readiness_reports_only_queued_recipients_and_never_receipts() {
     );
 }
 
+/// A channel's recipients are its live members. One that exits is no
+/// recipient and is not listed, so a send into the room is not told to
+/// get a dead session ready; it stays in the stored membership, since a
+/// session that comes back takes up its record, and what it said there
+/// stays in the channel's history.
+#[tokio::test]
+async fn an_ended_member_is_neither_recipient_nor_listed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let workdir = dir.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let opener = register_in(&daemon, "opener", &workdir).await;
+    let stays = register_in(&daemon, "stays", &workdir).await;
+    let leaves = register_in(&daemon, "leaves", &workdir).await;
+    let Response::Channel { channel } = daemon
+        .handle(Request::ChannelOpen {
+            agent: opener.id.to_string(),
+            task: "membership".into(),
+            members: vec![stays.id.to_string(), leaves.id.to_string()],
+            name: None,
+            project: None,
+        })
+        .await
+    else {
+        panic!("channel failed")
+    };
+    assert_eq!(channel.members.len(), 3);
+    let destination = format!("channel:{}", channel.id);
+    // Said while live: the message outlives the session.
+    let Response::Sent { message: said, .. } =
+        send(&daemon, leaves.id.as_str(), &destination).await
+    else {
+        panic!("send failed")
+    };
+    let Response::Sent {
+        recipient_readiness: Some(before),
+        ..
+    } = send(&daemon, opener.id.as_str(), &destination).await
+    else {
+        panic!("send failed")
+    };
+    assert_eq!(before.recipients, 2, "{before:?}");
+
+    daemon
+        .handle(Request::Deregister {
+            agent: leaves.id.to_string(),
+        })
+        .await;
+
+    // Listed to clients without it; stored with it, for its return.
+    let Response::Channels { channels } = daemon
+        .handle(Request::Channels {
+            project: String::new(),
+            all: true,
+            agent: Some(opener.id.to_string()),
+        })
+        .await
+    else {
+        panic!("channels failed")
+    };
+    assert_eq!(channels.len(), 1, "{channels:?}");
+    assert!(channels[0].is_open(), "two live members keep the room open");
+    assert_eq!(
+        channels[0].members,
+        vec![opener.id.clone(), stays.id.clone()]
+    );
+    let Response::Conversations { conversations } = daemon
+        .handle(Request::Conversations {
+            project: None,
+            reader: Some(opener.id.to_string()),
+        })
+        .await
+    else {
+        panic!("conversations failed")
+    };
+    let room = conversations
+        .iter()
+        .find(|c| c.conversation == agentdocker_core::ConversationId::channel(&channel.id))
+        .expect("the room is among the reader's conversations");
+    assert_eq!(room.members, vec![opener.id.clone(), stays.id.clone()]);
+    let stored: agentdocker_core::Channel = lock(&daemon.state)
+        .store
+        .document("channel", channel.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.members.len(), 3, "{stored:?}");
+    assert!(
+        !daemon
+            .recent_events(50)
+            .iter()
+            .any(|e| matches!(&e.kind, EventKind::ChannelClosed { .. })),
+        "a room with live members left in it does not close"
+    );
+
+    // A send now fans out to the live members only: nobody is told to
+    // bring a dead session back.
+    let Response::Sent {
+        message,
+        recipient_readiness: Some(after),
+        ..
+    } = send(&daemon, opener.id.as_str(), &destination).await
+    else {
+        panic!("send failed")
+    };
+    assert_eq!(after.recipients, 1, "{after:?}");
+    assert!(
+        after.details.iter().all(|d| d.agent != leaves.id),
+        "{after:?}"
+    );
+    assert!(
+        inbox(&daemon, stays.id.as_str(), false)
+            .await
+            .iter()
+            .any(|m| m.id == message)
+    );
+    assert!(
+        !inbox(&daemon, leaves.id.as_str(), false)
+            .await
+            .iter()
+            .any(|m| m.id == message)
+    );
+    // What the ended member said is still the channel's history.
+    let Response::History { messages, .. } = daemon
+        .handle(Request::History {
+            conversation: agentdocker_core::ConversationId::channel(&channel.id),
+            before_seq: None,
+            limit: 50,
+        })
+        .await
+    else {
+        panic!("history failed")
+    };
+    assert!(
+        messages.iter().any(|m| m.envelope.id == said),
+        "{messages:?}"
+    );
+}
+
+/// The notices an invitation, a review request, a review and a close
+/// send go to the room's live members too: each stages the stored room,
+/// which keeps an ended member for its return, and routes to the live
+/// ones, so a dead session's full queue can never block them.
+#[tokio::test]
+async fn channel_actions_notify_live_members_only() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let workdir = dir.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let opener = register_in(&daemon, "opener", &workdir).await;
+    let stays = register_in(&daemon, "stays", &workdir).await;
+    let leaves = register_in(&daemon, "leaves", &workdir).await;
+    let latecomer = register_in(&daemon, "latecomer", &workdir).await;
+    let Response::Channel { channel } = daemon
+        .handle(Request::ChannelOpen {
+            agent: opener.id.to_string(),
+            task: "notices".into(),
+            members: vec![stays.id.to_string(), leaves.id.to_string()],
+            name: None,
+            project: None,
+        })
+        .await
+    else {
+        panic!("channel failed")
+    };
+    daemon
+        .handle(Request::Deregister {
+            agent: leaves.id.to_string(),
+        })
+        .await;
+    // Its queue is full: a notice routed to it would be refused.
+    {
+        let mut state = lock(&daemon.state);
+        let queue = state.inboxes.entry(leaves.id.clone()).or_default();
+        for n in 0..INBOX_CAPACITY {
+            queue.push_back(Envelope::new(
+                "agentd",
+                Destination::Agent(leaves.id.clone()),
+                "chat",
+                json!({"text": format!("filler {n}")}),
+                None,
+                Utc::now(),
+            ));
+        }
+    }
+    let queued = |daemon: Arc<Daemon>, id: AgentId| async move {
+        lock(&daemon.state)
+            .inboxes
+            .get(&id)
+            .map_or(0, VecDeque::len)
+    };
+    let dead_before = queued(daemon.clone(), leaves.id.clone()).await;
+    let live_before = queued(daemon.clone(), stays.id.clone()).await;
+
+    let expect_channel = |response: Response| match response {
+        Response::Channel { channel } => channel,
+        other => panic!("{other:?}"),
+    };
+    expect_channel(
+        daemon
+            .handle(Request::ChannelInvite {
+                agent: opener.id.to_string(),
+                channel: channel.id.to_string(),
+                member: latecomer.id.to_string(),
+            })
+            .await,
+    );
+    expect_channel(
+        daemon
+            .handle(Request::ReviewRequest {
+                agent: opener.id.to_string(),
+                channel: channel.id.to_string(),
+                note: Some("ready".into()),
+            })
+            .await,
+    );
+    expect_channel(
+        daemon
+            .handle(Request::Review {
+                agent: stays.id.to_string(),
+                channel: channel.id.to_string(),
+                of: Some(opener.id.to_string()),
+                verdict: "approve".into(),
+                note: None,
+            })
+            .await,
+    );
+    let Response::Channel { channel: closed } = daemon
+        .handle(Request::ChannelClose {
+            agent: opener.id.to_string(),
+            channel: channel.id.to_string(),
+            resolution: Some("landed".into()),
+        })
+        .await
+    else {
+        panic!("close failed")
+    };
+    assert!(!closed.is_open());
+    // The invitation, the review request and the close reached a live
+    // member (the review is its own word, not queued back to it); none
+    // reached the ended one, whose membership the stored room kept.
+    assert_eq!(
+        queued(daemon.clone(), stays.id.clone()).await,
+        live_before + 3
+    );
+    assert_eq!(queued(daemon.clone(), leaves.id.clone()).await, dead_before);
+    let stored: agentdocker_core::Channel = lock(&daemon.state)
+        .store
+        .document("channel", channel.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert!(stored.has(&leaves.id));
+    assert!(stored.has(&latecomer.id));
+}
+
+/// A room that still lists records the daemon has forgotten is cleared
+/// on the tick: each leaves with `channel_left`, an ended record whose
+/// session may still come back stays, and a room left with nobody
+/// closes.
+#[tokio::test]
+async fn the_tick_takes_forgotten_records_out_of_open_channels() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let workdir = dir.path().join("work");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let opener = register_in(&daemon, "opener", &workdir).await;
+    let ended = register_in(&daemon, "ended", &workdir).await;
+    let forgotten = register_in(&daemon, "forgotten", &workdir).await;
+    let Response::Channel { channel } = daemon
+        .handle(Request::ChannelOpen {
+            agent: opener.id.to_string(),
+            task: "ghosts".into(),
+            members: vec![ended.id.to_string(), forgotten.id.to_string()],
+            name: None,
+            project: None,
+        })
+        .await
+    else {
+        panic!("channel failed")
+    };
+    // Behind the room's back: one record ended, one gone entirely.
+    {
+        let mut state = lock(&daemon.state);
+        state.registry.get_mut(&ended.id).unwrap().status = AgentStatus::Exited { code: Some(0) };
+        state.registry.remove(&forgotten.id);
+    }
+    daemon.flush_notices();
+    let stored = lock(&daemon.state).channels[&channel.id].clone();
+    assert!(stored.is_open());
+    assert_eq!(
+        stored.members,
+        vec![opener.id.clone(), ended.id.clone()],
+        "the forgotten record is out, the ended one still a member"
+    );
+    let left: Vec<AgentId> = daemon
+        .recent_events(50)
+        .iter()
+        .filter_map(|e| match &e.kind {
+            EventKind::ChannelLeft { channel: c, agent } if c == &channel.id => Some(agent.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(left, vec![forgotten.id.clone()]);
+    // Durable: the store says the same.
+    let on_disk: agentdocker_core::Channel = lock(&daemon.state)
+        .store
+        .document("channel", channel.id.as_str())
+        .unwrap()
+        .unwrap();
+    assert_eq!(on_disk.members, stored.members);
+    // Swept again, nothing more is said.
+    let seen = daemon.recent_events(100).len();
+    daemon.flush_notices();
+    assert_eq!(daemon.recent_events(100).len(), seen);
+
+    // With every member forgotten, the sweep closes the room instead.
+    {
+        let mut state = lock(&daemon.state);
+        for id in [&opener.id, &ended.id] {
+            state.registry.remove(id);
+        }
+    }
+    daemon.flush_notices();
+    let closed = lock(&daemon.state).channels[&channel.id].clone();
+    assert!(!closed.is_open());
+    assert!(closed.members.is_empty());
+    assert_eq!(closed.resolution.as_deref(), Some("everyone left"));
+    assert!(daemon.recent_events(50).iter().any(
+        |e| matches!(&e.kind, EventKind::ChannelClosed { channel: c, .. } if c == &channel.id)
+    ));
+}
+
 /// The person can see where their message stands with each agent it
 /// was queued for: one that took it and answered says so, one nothing
 /// woke waits for its next prompt, and a session caught up after the
@@ -9351,6 +9863,7 @@ async fn the_person_sees_where_their_message_stands_with_each_agent() {
                 payload: json!({"text": "on it"}),
                 reply_to: Some(message.clone()),
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -9583,6 +10096,7 @@ async fn an_agent_reaches_only_its_own_project_and_the_person() {
                 to: "far".into(),
                 question: "?".into(),
                 timeout_secs: 1,
+                form: Default::default(),
             })
             .await,
     );
@@ -10089,7 +10603,7 @@ async fn discover_finds_known_runtimes_and_adopt_registers_them() {
         adopted.project.as_ref().map(|p| p.root.clone()),
         Some(project.canonicalize().unwrap())
     );
-    assert!(process_exists(pid));
+    assert!(procinfo::alive(pid));
 
     // Registered pids disappear from discovery, and cannot be adopted twice.
     let found = match daemon.handle(Request::Discover).await {
@@ -10218,7 +10732,7 @@ async fn a_runtime_helper_is_not_discovered_and_cannot_be_adopted() {
     };
     assert!(agents.iter().all(|a| a.pid != Some(pid)));
     drop(child);
-    assert!(!process_exists(pid), "the guard reaps the fake");
+    assert!(!procinfo::alive(pid), "the guard reaps the fake");
 }
 
 fn drain_vcs(events: &mut broadcast::Receiver<Event>) -> Vec<Option<String>> {
@@ -10623,6 +11137,7 @@ async fn claim_expiration_removes_storage_and_emits_once() {
         holder: owner.id,
         mode: LeaseMode::Exclusive,
         acquired_at: now - Duration::seconds(5),
+        held_since: None,
         change_seq: None,
         expires_at: now - Duration::seconds(1),
         note: None,
@@ -14536,4 +15051,28 @@ async fn a_team_of_one_name_under_two_directories_is_two_rosters() {
             other => panic!("{relative}: {other:?}"),
         }
     }
+}
+
+#[test]
+fn concurrent_state_timing_samples_stop_at_the_limit() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let samples = AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    (0..100)
+                        .filter(|_| claim_state_timing_sample(&samples))
+                        .count()
+                })
+            })
+            .collect();
+        let accepted: usize = workers
+            .into_iter()
+            .map(|worker| worker.join().unwrap())
+            .sum();
+        assert_eq!(accepted, 256);
+    });
+    assert_eq!(samples.load(Ordering::Relaxed), 256);
+    assert!(!claim_state_timing_sample(&samples));
 }

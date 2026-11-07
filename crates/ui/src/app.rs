@@ -277,6 +277,9 @@ enum Cmd {
     Me,
     Questions,
     Answer(MessageId, String),
+    /// The options picked on a question, by label, and the person's own
+    /// words for its Other, sent as written.
+    AnswerChoices(MessageId, Vec<String>, Option<String>),
     SecretReviews,
     SecretAnswer(String, agentdocker_core::secret::SecretAnswers),
     SecretCancel(String),
@@ -967,7 +970,7 @@ impl App {
                     self.say("Temporary input action was not queued. Edits were cleared; cancel this request rather than submitting it again.");
                     return;
                 }
-                Cmd::Answer(id, _) => {
+                Cmd::Answer(id, _) | Cmd::AnswerChoices(id, ..) => {
                     self.sending.remove(&id);
                     if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
                         self.shell.pending_answer_reveal = None;
@@ -1668,6 +1671,7 @@ impl App {
                                     Some(Cmd::DenyNote(id.clone(), question.from.clone(), text));
                             }
                             self.shell.forms.remove(&id);
+                            self.shell.picked.remove(&id);
                             if self.shell.answers.remove(&id).is_some() {
                                 self.shell.drafts.changed();
                             }
@@ -2160,6 +2164,7 @@ impl App {
             // while it is on view.
             EventKind::UsageRecorded { .. }
             | EventKind::UsageReconciled { .. }
+            | EventKind::UsageJoined { .. }
             | EventKind::UsageEmissionRecorded { .. } => {
                 if self.screen == Screen::Usage {
                     self.request_usage();
@@ -2217,6 +2222,7 @@ impl App {
             | EventKind::ChannelInvited { .. }
             | EventKind::ChannelOpened { .. }
             | EventKind::ChannelJoined { .. }
+            | EventKind::ChannelLeft { .. }
             | EventKind::ChannelClosed { .. } => self.on_conversation_activity(),
             // What the daemon pruned must not live on here: the archives
             // are dropped and the open one read again.
@@ -2233,9 +2239,9 @@ impl App {
                 self.on_conversation_activity();
             }
             EventKind::SecretReviewChanged { .. } => self.send(Cmd::SecretReviews),
-            EventKind::QuestionClosed { .. } | EventKind::QuestionCancelled { .. } => {
-                self.send(Cmd::Questions)
-            }
+            EventKind::QuestionClosed { .. }
+            | EventKind::QuestionCancelled { .. }
+            | EventKind::QuestionStale { .. } => self.send(Cmd::Questions),
             EventKind::JournalAppended { entry }
                 if self.journal_project.as_deref() == Some(entry.project.as_str())
                     && self.journal.last().is_none_or(|last| last.seq < entry.seq) =>
@@ -3198,7 +3204,7 @@ fn spawn_worker(
                 }
                 daemon => {
                     let answer = match &daemon {
-                        Cmd::Answer(id, _) => Some(id.clone()),
+                        Cmd::Answer(id, _) | Cmd::AnswerChoices(id, ..) => Some(id.clone()),
                         _ => None,
                     };
                     let launch = matches!(&daemon, Cmd::Launch(_) | Cmd::Resume(..));
@@ -3328,6 +3334,9 @@ fn memory_search(project: &str, query: &str) -> Request {
         project: Some(project.to_owned()),
         query: query.to_owned(),
         limit: Some(MEMORY_PAGE),
+        as_of: None,
+        include_superseded: false,
+        min_score: None,
     }
 }
 
@@ -3800,6 +3809,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 standing: false,
                 forget_after: None,
                 roles: Vec::new(),
+                valid_from: None,
             }) {
                 Ok(Response::Memory { .. }) => Ok(()),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
@@ -4090,6 +4100,20 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 from: None,
                 message: message.clone(),
                 text,
+                choices: Vec::new(),
+                other: None,
+                note: None,
+            })?;
+            Some(Msg::Answered(message, Ok(())))
+        }
+        Cmd::AnswerChoices(message, choices, other) => {
+            client.call(&Request::Answer {
+                from: None,
+                message: message.clone(),
+                text: String::new(),
+                choices,
+                other,
+                note: None,
             })?;
             Some(Msg::Answered(message, Ok(())))
         }
@@ -4270,6 +4294,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::json!({ "text": text }),
                 reply_to,
                 links: Vec::new(),
+                idempotency_key: None,
             })?;
             let result = match response {
                 Response::Sent {
@@ -4292,6 +4317,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::Value::String(text),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             }) {
                 Ok(Response::Sent { .. }) => Ok(()),
                 Ok(other) => Err(shell::NoteFailure {
@@ -4321,6 +4347,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::Value::String(text),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })?;
             let result = match response {
                 Response::Sent {
@@ -4343,6 +4370,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::Value::String(text),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })?;
             let result = match response {
                 Response::Sent {
@@ -5393,6 +5421,7 @@ pub(crate) mod tests {
         let serving = agentdocker_host::connector::Serving {
             pid: 1,
             public_url: "https://node.example.ts.net".into(),
+            authorize_url: None,
             bind: "127.0.0.1:1".into(),
             default_project: None,
             pairing_code: "ABCD-EFGH".into(),
@@ -5872,6 +5901,8 @@ pub(crate) mod tests {
             text: "Keep this question".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(1),
+            form: Default::default(),
+            stale_since: None,
         });
         app.shell
             .answers
@@ -8080,6 +8111,8 @@ pub(crate) mod tests {
             presentation: None,
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         let first = agentdocker_host::notify::question_tag("first");
         let second = agentdocker_host::notify::question_tag("second");

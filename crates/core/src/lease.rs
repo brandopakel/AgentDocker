@@ -13,7 +13,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{AgentId, ProjectId};
+use crate::{AgentId, MessageId, ProjectId};
 
 /// Something agents coordinate over. Keys are `kind:value`, for example
 /// `path:/repo/src/main.rs`, `file:<project id>/src/main.rs`,
@@ -149,6 +149,14 @@ pub struct Lease {
     pub holder: AgentId,
     pub mode: LeaseMode,
     pub acquired_at: DateTime<Utc>,
+    /// When its current holder took it, when that is not `acquired_at`:
+    /// the moment a handoff passed it on, which keeps `acquired_at`, so
+    /// the recipient is never taken to have held it before it accepted.
+    /// Absent from a lease its holder claimed, and from leases written
+    /// before it was kept; [`Lease::held_since`] reads either as
+    /// `acquired_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_since: Option<DateTime<Utc>>,
     /// Last ledger sequence at acquisition; absent for legacy leases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_seq: Option<u64>,
@@ -180,6 +188,64 @@ fn is_zero(n: &u64) -> bool {
     *n == 0
 }
 
+/// How long a release request waits for the holder's answer before the
+/// daemon drops it: a day, so a holder that never answers does not keep
+/// the request on the books for ever.
+pub const RELEASE_REQUEST_TTL_SECS: i64 = 24 * 60 * 60;
+
+/// How long a reason or summary on a release request may be: enough to
+/// say why, not a document.
+pub const RELEASE_REQUEST_TEXT_CHARS: usize = 400;
+
+/// An agent asking another to let go of a resource it holds.
+///
+/// The hooks adapters and the git pre-commit hook refuse an edit or a
+/// commit over a path somebody else holds; this is how the refused agent
+/// asks for the path instead of waiting the lease out. The daemon sends
+/// the holder a `release_request` message, keeps the request as a
+/// document until it is answered or [`RELEASE_REQUEST_TTL_SECS`] pass,
+/// and on an accept releases the named leases on the holder's behalf,
+/// journaled with the summary they give.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseRequest {
+    /// The `release_request` message's id, which the answer names.
+    pub message: MessageId,
+    pub requester: AgentId,
+    pub holder: AgentId,
+    /// What was asked for, as the requester named it (canonical).
+    pub resource: ResourceKey,
+    /// The holder's leases overlapping it when the request was made.
+    pub leases: Vec<LeaseId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// Filled when the holder has answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<ReleaseAnswer>,
+}
+
+impl ReleaseRequest {
+    pub fn expired(&self, now: DateTime<Utc>) -> bool {
+        self.answer.is_none() && self.expires_at <= now
+    }
+}
+
+/// The holder's answer to a [`ReleaseRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseAnswer {
+    pub accepted: bool,
+    /// The summary that went to the journal on an accept; the reason on a
+    /// decline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub at: DateTime<Utc>,
+    /// The leases the daemon released on the holder's behalf: those of
+    /// the request's that were still held when it was accepted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released: Vec<LeaseId>,
+}
+
 impl LeaseTable {
     /// How much of a quota is currently spoken for, across every live
     /// holder of it.
@@ -199,6 +265,12 @@ impl LeaseTable {
 impl Lease {
     pub fn is_expired(&self, now: DateTime<Utc>) -> bool {
         self.expires_at <= now
+    }
+
+    /// When its current holder took it: at the claim, or when it was
+    /// handed over to it.
+    pub fn held_since(&self) -> DateTime<Utc> {
+        self.held_since.unwrap_or(self.acquired_at)
     }
 
     /// Whether `holder`, acting as `actor` inside its session, owns this
@@ -360,6 +432,7 @@ impl LeaseTable {
             holder,
             mode,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + ttl,
             note,
@@ -427,6 +500,7 @@ impl LeaseTable {
             .map(|l| {
                 l.holder = to.clone();
                 l.actor = None;
+                l.held_since = Some(now);
                 l.clone()
             })
             .collect();
@@ -456,6 +530,7 @@ impl LeaseTable {
             .map(|lease| {
                 lease.holder = to.clone();
                 lease.actor = None;
+                lease.held_since = Some(now);
                 lease.clone()
             })
             .collect();
@@ -632,6 +707,35 @@ mod tests {
 
     fn key(s: &str) -> ResourceKey {
         ResourceKey::new(s)
+    }
+
+    /// A request expires only unanswered, and at its deadline, not before.
+    #[test]
+    fn a_release_request_expires_only_unanswered_and_at_its_deadline() {
+        let now = Utc::now();
+        let mut request = ReleaseRequest {
+            message: MessageId::from("m1".to_owned()),
+            requester: agent("a"),
+            holder: agent("b"),
+            resource: key("branch:main"),
+            leases: Vec::new(),
+            reason: None,
+            at: now - Duration::hours(1),
+            expires_at: now + Duration::seconds(1),
+            answer: None,
+        };
+        assert!(!request.expired(now), "not yet due");
+        request.expires_at = now;
+        assert!(request.expired(now), "due at its deadline");
+        request.expires_at = now - Duration::seconds(1);
+        assert!(request.expired(now), "past due");
+        request.answer = Some(ReleaseAnswer {
+            accepted: false,
+            text: None,
+            at: now,
+            released: Vec::new(),
+        });
+        assert!(!request.expired(now), "answered: nothing to drop");
     }
 
     #[test]
@@ -966,6 +1070,7 @@ mod tests {
             holder: agent("a"),
             mode: LeaseMode::Exclusive,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + ttl(),
             note: None,
@@ -1203,11 +1308,37 @@ mod tests {
         assert_eq!(
             moved[0].note.as_deref(),
             Some("x"),
-            "everything but the holder survives"
+            "everything but the holder and its start survives"
         );
+        assert_eq!(moved[0].acquired_at, kept.acquired_at);
+        assert_eq!(
+            kept.held_since(),
+            kept.acquired_at,
+            "a claim holds from its acquisition"
+        );
+        assert_eq!(
+            moved[0].held_since(),
+            later,
+            "the recipient holds it from the hand-over"
+        );
+        let selected = t.transfer_selected(
+            &agent("b"),
+            &agent("a"),
+            &[kept.id.clone()].into_iter().collect(),
+            later + Duration::seconds(1),
+        );
+        assert_eq!(selected[0].held_since(), later + Duration::seconds(1));
+        assert_eq!(selected[0].acquired_at, kept.acquired_at);
+        let back = t.transfer(&agent("a"), &agent("b"), later);
+        assert_eq!(back.len(), 1);
         assert!(t.by_holder(&agent("a")).is_empty());
         assert_eq!(t.by_holder(&agent("b")).len(), 1);
         assert_eq!(t.by_holder(&agent("c")).len(), 1);
+        // Absent from the stored form until a hand-over sets it.
+        let stored = serde_json::to_value(&kept).unwrap();
+        assert!(stored.get("held_since").is_none());
+        let read: Lease = serde_json::from_value(stored).unwrap();
+        assert_eq!(read.held_since(), kept.acquired_at);
         assert!(
             t.release(&kept.id, &agent("a")).is_err(),
             "the old holder no longer may"

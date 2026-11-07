@@ -406,6 +406,33 @@ streamed output notifications, never answers a server request (one asked of it
 ends the connection), and asks nothing but `initialize`, `thread/loaded/list` and
 `thread/read`. The watch ends when no live record names the profile.
 
+**Threads.** Codex can spawn threads from a thread (`spawn_agent` and the
+other multi-agent tools), each with a role and a nickname the spawning agent
+gives it, run in the same shared server with no process of its own. For every
+bound Codex thread, AgentDocker reads what Codex says of the thread itself and
+puts it on the record as `thread` (`agentdocker inspect`, `list_agents`, the
+THREAD column of `ps`): the role, the nickname and the parent thread of a
+spawned thread, with the parent's agent where a live record is bound to that
+thread, and nothing but the fact of the reading for a root thread. Two sources,
+both read only: the first record of the thread's rollout file under its
+profile (`<profile>/sessions/<year>/<month>/<day>/rollout-<time>-<thread>.jsonl`,
+or `archived_sessions`; its `session_meta` carries
+`source.subagent.thread_spawn` with `parent_thread_id`, `depth`,
+`agent_nickname` and `agent_role` for a spawned thread, and a word such as
+`cli` for a root one), and the shared server's `thread/read`, whose
+`parentThreadId` names a child's parent. Only that first record is read, by
+the thread id in the file's name; no prompt, output or tool text is read, the
+server is asked nothing more than the status watch asks, and nothing is
+written to the profile. A rollout not there yet is looked for again a minute
+later. Each thing learned is announced once as `agent_thread_learned`. A
+spawned thread's tokens, in the same rollout, are counted to its parent's
+record while the thread has no record of its own (those counted before the
+parent's record existed included), and to the thread's own record once it
+has one, from Codex's own count for each response
+([Architecture](ARCHITECTURE.md#codex-threads-role-parent-and-usage)).
+What this does not do: spawn, name, steer or close a thread, read a thread's
+turns for this, or make a record for a spawned thread that has none.
+
 **Delivery.** A terminal proven to run the conversation (`codex resume <thread>`
 in its checkout, see [Architecture](ARCHITECTURE.md)) has a record with that
 terminal's process. When such a terminal's hook runs in a shared server whose

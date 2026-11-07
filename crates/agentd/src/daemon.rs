@@ -11,7 +11,7 @@
 use std::collections::hash_map::Entry;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use agentdocker_core::journal::{Reader, cursor_donor, digest as render_digest, initial_cursor};
@@ -60,11 +60,13 @@ mod handoff;
 pub(crate) mod herdr;
 pub mod humans;
 mod images;
+mod inbound;
 mod inbox;
 mod journal;
 mod judge;
 mod launch;
 mod leases;
+pub(crate) mod otlp;
 mod panes;
 mod pause;
 mod person;
@@ -73,6 +75,7 @@ mod provider;
 mod read_content;
 mod recovery;
 mod relay;
+mod release_requests;
 pub mod reload;
 mod restarts;
 mod restore;
@@ -172,6 +175,16 @@ pub(crate) struct DocumentTransition {
     /// The document to put, or none to delete it.
     pub value: Option<serde_json::Value>,
     pub event: EventKind,
+    /// Leases released in the same transaction, each with its
+    /// `lease_released`: an accepted release request lets go of them with
+    /// its answer, or not at all.
+    pub released: Vec<Lease>,
+    /// The journal entry that records them; its sequence is given here.
+    pub journal: Option<JournalEntry>,
+    /// A question settled without an answer in the same commit — the card
+    /// a held message rode on, once the message goes out — closed with
+    /// `question_closed {answer: None}`.
+    pub closes: Option<MessageId>,
 }
 
 /// What became of a write.
@@ -187,6 +200,13 @@ enum Persisted {
 
 /// One admitted mutation in progress; dropping it, however the request
 /// ends, releases its place.
+///
+/// Dropping it takes the state lock, so it must never be dropped by a
+/// holder of a state guard. It holds: the place lives in the `ADMISSION`
+/// scope and goes with the handler's future, after every guard the
+/// handler took; `done_writing` takes it outside any hold; and
+/// `readmit_locked` hands a place out of the hold that made it, never
+/// dropping one inside it.
 pub(crate) struct InFlight(Arc<Daemon>);
 
 impl Drop for InFlight {
@@ -230,8 +250,10 @@ enum Coordination {
 /// everything else answers `transferring` until a coordinator owns the
 /// database again. `Shutdown` and `Reload` steer the daemon itself
 /// rather than its data: neither is fenced, and neither counts as a
-/// mutation in flight, or a reload would refuse itself.
-fn mutates(request: &Request) -> bool {
+/// mutation in flight, or a reload would refuse itself. A journal digest
+/// writes only when it advances the reader's cursor. Public because the
+/// MCP server's tests check each tool's `readOnlyHint` against it.
+pub fn mutates(request: &Request) -> bool {
     !matches!(
         request,
         Request::Shutdown
@@ -257,6 +279,10 @@ fn mutates(request: &Request) -> bool {
             | Request::Pauses
             | Request::Contests { .. }
             | Request::Journal { digest: None, .. }
+            | Request::Journal {
+                digest: Some(DigestRequest { advance: false, .. }),
+                ..
+            }
             | Request::Channels { .. }
             | Request::Conversations { .. }
             | Request::History { .. }
@@ -462,6 +488,9 @@ struct State {
     inboxes: HashMap<AgentId, VecDeque<Envelope>>,
     inbox_bytes: HashMap<AgentId, usize>,
     live_subscribers: HashMap<AgentId, usize>,
+    /// Answers to keyed sends, in memory only: a restarted daemon takes a
+    /// repeated key as new.
+    keyed_sends: agentdocker_core::idempotency::IdempotencyLedger<Response>,
     supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
     pending_restarts: HashSet<AgentId>,
     container_busy: HashSet<AgentId>,
@@ -477,6 +506,9 @@ struct State {
     /// The last `agentd.toml` problem reported, so a broken file is logged
     /// once when it breaks and once when it is fixed, not every minute.
     config_notice: Option<String>,
+    /// What the telemetry receiver is doing: off, listening on an address,
+    /// or why it is not; the usage report says it.
+    otlp_status: otlp::Status,
     /// The agent-retention notice, kept apart from `config_notice`: the
     /// journal-retention tick clears that one, and would otherwise re-warn
     /// here every minute for a problem that has not changed.
@@ -561,9 +593,22 @@ struct State {
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
+    /// Open questions whose stale default answer was refused (a full
+    /// inbox, say) and is tried again on every sweep. Kept so the refusal
+    /// is said once at warn, then at debug while it lasts, and once at
+    /// info when it goes through or the question closes. In memory only:
+    /// a daemon that restarts says it once more.
+    blocked_defaults: HashSet<MessageId>,
+    /// Remote senders' messages held for the person, by the id of the
+    /// question that carries each; kept as `held_message` documents in
+    /// the same transaction as their questions.
+    held_messages: HashMap<MessageId, agentdocker_core::HeldMessage>,
     secret_reviews: HashMap<String, secret_reviews::Entry>,
     /// The projects told to hold, and why; kept as documents.
     pauses: HashMap<ProjectId, agentdocker_core::Pause>,
+    /// Requests to let go of a resource that wait for the holder's answer,
+    /// by the request message's id; kept as documents.
+    release_requests: HashMap<MessageId, agentdocker_core::ReleaseRequest>,
     /// Claims waiting for a resource, in arrival order. Connection-scoped
     /// and never persisted: a restart drops every waiting client, which
     /// reconnects and takes a new place.
@@ -593,7 +638,7 @@ struct JournalRing {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     let started = state_timing_start();
-    let guard = mutex.lock().unwrap_or_else(PoisonError::into_inner);
+    let guard = crate::sync::lock(mutex);
     state_timing_finish("lock_wait", started);
     guard
 }
@@ -627,30 +672,6 @@ fn claim_state_timing_sample(samples: &std::sync::atomic::AtomicUsize) -> bool {
         }
     }
     false
-}
-
-#[test]
-fn concurrent_state_timing_samples_stop_at_the_limit() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    let samples = AtomicUsize::new(0);
-    std::thread::scope(|scope| {
-        let workers: Vec<_> = (0..8)
-            .map(|_| {
-                scope.spawn(|| {
-                    (0..100)
-                        .filter(|_| claim_state_timing_sample(&samples))
-                        .count()
-                })
-            })
-            .collect();
-        let accepted: usize = workers
-            .into_iter()
-            .map(|worker| worker.join().unwrap())
-            .sum();
-        assert_eq!(accepted, 256);
-    });
-    assert_eq!(samples.load(Ordering::Relaxed), 256);
-    assert!(!claim_state_timing_sample(&samples));
 }
 
 /// Whether a name can be the last component of `agent/<name>` as a git
@@ -768,7 +789,7 @@ fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
                 }
             };
             if !wait_until(10, &mut || {
-                !(process_exists(pid) && same_process(pid, Some(started)))
+                !(procinfo::alive(pid) && same_process(pid, Some(started)))
             }) {
                 return;
             }
@@ -786,11 +807,10 @@ fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
         });
 }
 
-/// Is there a process with this pid? `EPERM` means it exists but belongs to
-/// someone else, which still counts as alive. Zero and out-of-range values
-/// would address process groups, so they are never alive.
 /// A pid a signal could address: positive, and within the range the OS
-/// uses. Unix keeps the typed pid; Windows only needs the check.
+/// uses (zero and out-of-range values would address process groups). Unix
+/// keeps the typed pid; Windows only needs the check. Whether such a
+/// process exists is `procinfo::alive`'s question.
 #[cfg(unix)]
 fn signal_pid(pid: u32) -> Option<Pid> {
     let raw = i32::try_from(pid).ok()?;
@@ -922,10 +942,13 @@ fn trim_in_place(path: &Path, what: &str) {
     }
 }
 
-/// Whether a process with this pid exists — ours or not; an access
-/// refusal is a yes. Both platforms answer through the host crate.
-fn process_exists(pid: u32) -> bool {
-    signal_pid(pid).is_some_and(|_| procinfo::alive(pid))
+/// The physical form of a path, resolved off the runtime: as much of it
+/// canonical as exists, the missing tail kept. A path the host cannot
+/// resolve is an error, never a guess.
+async fn physical(path: PathBuf) -> anyhow::Result<PathBuf> {
+    tokio::task::spawn_blocking(move || project::try_canonical(&path))
+        .await?
+        .map_err(Into::into)
 }
 
 /// Does the pid still belong to the process that registered it? Compared by
@@ -1073,7 +1096,9 @@ impl Daemon {
         };
         for candidate in candidates {
             let alive = match candidate.pid {
-                Some(pid) => process_exists(pid) && same_process(pid, candidate.process_started_at),
+                Some(pid) => {
+                    procinfo::alive(pid) && same_process(pid, candidate.process_started_at)
+                }
                 None => !candidate.managed,
             };
             if alive {
@@ -1214,7 +1239,7 @@ impl Daemon {
             return Response::error(ErrorCode::Invalid, "invalid signal target");
         };
         // Host inspection and signaling never hold the global coordination guard.
-        let alive = process_exists(pid);
+        let alive = procinfo::alive(pid);
         let current_started_at = procinfo::start_time(pid);
         let group_alive = record.process_group.is_some_and(supervisor::group_exists);
         if !alive && group_alive {
@@ -1348,6 +1373,7 @@ impl Daemon {
         let mut state = lock(&self.state);
         state.expire_leases();
         state.expire_questions(Utc::now());
+        state.expire_release_requests(Utc::now());
         state.expire_secret_reviews();
     }
     /// Send the stale and contested notices that accumulated since the
@@ -1581,6 +1607,11 @@ impl Daemon {
             .into_iter()
             .map(|pause| (pause.project.clone(), pause))
             .collect();
+        let release_requests: HashMap<MessageId, agentdocker_core::ReleaseRequest> = store
+            .documents::<agentdocker_core::ReleaseRequest>("release_request", None)?
+            .into_iter()
+            .map(|request| (request.message.clone(), request))
+            .collect();
         let mut questions: HashMap<_, _> = store
             .documents::<agentdocker_core::Question>("question", None)?
             .into_iter()
@@ -1627,6 +1658,46 @@ impl Daemon {
             questions.len() <= humans::MAX_QUESTIONS,
             "too many stored pending questions"
         );
+        // A held message rides on its question: one whose question has
+        // gone (expired at this start, above) is dropped as expired too,
+        // when writes are open; while fenced it is left for the tick.
+        let mut held_messages: HashMap<MessageId, agentdocker_core::HeldMessage> = store
+            .documents::<agentdocker_core::HeldMessage>(inbound::DOCUMENT, None)?
+            .into_iter()
+            .map(|held| (held.question.clone(), held))
+            .collect();
+        let orphaned: Vec<_> = held_messages
+            .values()
+            .filter(|held| !questions.contains_key(&held.question))
+            .map(|held| (held.question.clone(), held.envelope.id.clone()))
+            .collect();
+        if !fenced && !orphaned.is_empty() {
+            let mut events: Vec<_> = orphaned
+                .iter()
+                .map(|(question, message)| {
+                    Event::new(
+                        EventKind::HeldMessageDropped {
+                            message: message.clone(),
+                            question: question.clone(),
+                            by: inbound::EXPIRY.to_owned(),
+                        },
+                        now,
+                    )
+                })
+                .collect();
+            for (index, event) in events.iter_mut().enumerate() {
+                event.seq = next_seq + index as u64;
+            }
+            next_seq += events.len() as u64;
+            let delete: Vec<(&str, String)> = orphaned
+                .iter()
+                .map(|(question, _)| (inbound::DOCUMENT, question.as_str().to_owned()))
+                .collect();
+            store.documents_change(&[], &delete, &events)?;
+            for (question, _) in &orphaned {
+                held_messages.remove(question);
+            }
+        }
 
         let (bus, _) = broadcast::channel(1024);
         let (events, _) = broadcast::channel(1024);
@@ -1656,6 +1727,7 @@ impl Daemon {
                 inboxes,
                 inbox_bytes,
                 live_subscribers: HashMap::new(),
+                keyed_sends: agentdocker_core::idempotency::IdempotencyLedger::default(),
                 supervised: HashMap::new(),
                 pending_restarts: HashSet::new(),
                 container_busy: HashSet::new(),
@@ -1667,6 +1739,7 @@ impl Daemon {
                 journal_seq: HashMap::new(),
                 journal_rings: HashMap::new(),
                 config_notice: None,
+                otlp_status: otlp::Status::default(),
                 agent_config_notice: None,
                 read_set_notice: None,
                 topic_config_notice: None,
@@ -1688,8 +1761,11 @@ impl Daemon {
                 channels,
                 contested: HashMap::new(),
                 questions,
+                blocked_defaults: HashSet::new(),
+                held_messages,
                 secret_reviews: HashMap::new(),
                 pauses,
+                release_requests,
                 waiting: agentdocker_core::WaitQueue::new(),
                 notifier: None,
                 host_policy: policies::Loaded::default(),
@@ -2349,7 +2425,11 @@ impl Daemon {
                 payload,
                 reply_to,
                 links,
-            } => self.send(from, &to, kind, payload, reply_to, links).await,
+                idempotency_key,
+            } => {
+                self.send(from, &to, kind, payload, reply_to, links, idempotency_key)
+                    .await
+            }
             Request::Me { workdir } => self.me(workdir).await,
             Request::OpenSecretReview {
                 agent,
@@ -2387,15 +2467,17 @@ impl Daemon {
                 to,
                 question,
                 timeout_secs,
-            } => self.ask(from, to, question, timeout_secs).await,
+                form,
+            } => self.ask(from, to, question, timeout_secs, form).await,
             Request::PostQuestion {
                 from,
                 to,
                 question,
                 presentation,
                 timeout_secs,
+                form,
             } => {
-                self.post_question(from, to, question, presentation, timeout_secs)
+                self.post_question(from, to, question, presentation, timeout_secs, form)
                     .await
             }
             Request::CancelQuestion { agent, message } => self.cancel_question(&agent, &message),
@@ -2403,7 +2485,10 @@ impl Daemon {
                 from,
                 message,
                 text,
-            } => self.answer(from, message, text).await,
+                choices,
+                other,
+                note,
+            } => self.answer(from, message, text, choices, other, note).await,
             Request::Questions { agent } => self.questions(agent),
             Request::Activity {
                 agent,
@@ -2641,6 +2726,7 @@ impl Daemon {
                 standing,
                 forget_after,
                 roles,
+                valid_from,
             } => {
                 self.memory_add(
                     &from,
@@ -2651,6 +2737,7 @@ impl Daemon {
                     standing,
                     forget_after,
                     roles,
+                    valid_from,
                 )
                 .await
             }
@@ -2659,12 +2746,27 @@ impl Daemon {
                 project,
                 query,
                 limit,
-            } => self.memory_search(from, project, &query, limit).await,
+                as_of,
+                include_superseded,
+                min_score,
+            } => {
+                self.memory_search(
+                    from,
+                    project,
+                    &query,
+                    limit,
+                    as_of,
+                    include_superseded,
+                    min_score,
+                )
+                .await
+            }
             Request::MemoryProfile {
                 from,
                 project,
                 max_chars,
-            } => self.memory_profile(from, project, max_chars).await,
+                as_of,
+            } => self.memory_profile(from, project, max_chars, as_of).await,
             Request::MemoryForget { from, memory } => self.memory_forget(&from, &memory),
             Request::Files { project, task } => self.files(project, task).await,
             Request::FilePut {
@@ -2964,6 +3066,17 @@ impl Daemon {
                     actor.as_deref(),
                 )
             }
+            Request::RequestRelease {
+                from,
+                resource,
+                reason,
+            } => self.request_release(from, resource, reason).await,
+            Request::RespondRelease {
+                from,
+                request,
+                accept,
+                text,
+            } => self.respond_release(from, request, accept, text).await,
             Request::JournalAdd { agent, summary } => {
                 lock(&self.state).journal_add(&agent, summary)
             }
@@ -3324,6 +3437,7 @@ impl Daemon {
         Response::Agents { agents, aliases }
     }
 
+    #[allow(clippy::too_many_arguments)] // one per field of `Request::Send`
     async fn send(
         &self,
         from: String,
@@ -3332,8 +3446,14 @@ impl Daemon {
         payload: Value,
         reply_to: Option<MessageId>,
         links: Vec<agentdocker_core::Link>,
+        idempotency_key: Option<String>,
     ) -> Response {
         if let Err(reason) = agentdocker_core::link::check(&links) {
+            return Response::error(ErrorCode::Invalid, reason);
+        }
+        if let Some(key) = &idempotency_key
+            && let Err(reason) = agentdocker_core::idempotency::check_key(key)
+        {
             return Response::error(ErrorCode::Invalid, reason);
         }
         if pause::reserved_message_kind(&kind) {
@@ -3342,24 +3462,54 @@ impl Daemon {
                 "pause and resume notices require a project lifecycle request",
             );
         }
+        // A repeat of a keyed send is answered as the first was before its
+        // destination is resolved again: since the first, the recipient may
+        // have been renamed or removed, a prefix grown ambiguous or a
+        // project's scope changed, and the message is queued all the same.
+        // The look-ups under the locks that publish, below, catch a repeat
+        // racing its first.
+        let replayed = lock(&self.state).replayed_send(&from, idempotency_key.as_deref());
+        if let Some(answer) = replayed {
+            return answer;
+        }
+        // What the project does with a remote sender's word, decided
+        // before anything is routed: refused here, or held whole once the
+        // destination is known. A held word to a role goes to the role's
+        // holder rather than its room, as an `ask` to a role does.
+        let inbound = match self.inbound_ruling(&from, to).await {
+            Ok(ruling) => ruling,
+            Err(response) => return *response,
+        };
         // An agent's word to a role goes to that role's room in its project.
-        if let Some(role) = to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX)
-            && let Some(response) = lock(&self.state).send_to_role(
+        if inbound.is_none()
+            && let Some(role) = to.strip_prefix(agentdocker_core::agent::ROLE_PREFIX)
+        {
+            let mut state = lock(&self.state);
+            if let Some(answer) = state.replayed_send(&from, idempotency_key.as_deref()) {
+                return answer;
+            }
+            if let Some(response) = state.send_to_role(
                 &from,
                 role,
                 kind.clone(),
                 payload.clone(),
                 reply_to.clone(),
                 links.clone(),
-            )
-        {
-            return response;
+            ) {
+                state.keep_keyed_send(&from, idempotency_key, &response);
+                return response;
+            }
         }
         let (from, to) = match self.endpoints(from, to).await {
             Ok(pair) => pair,
             Err(response) => return *response,
         };
         let mut state = lock(&self.state);
+        // The look-up and the publication happen under one lock: two
+        // retries racing each other cannot both miss.
+        if let Some(answer) = state.replayed_send(&from, idempotency_key.as_deref()) {
+            return answer;
+        }
         // `agentd` and a bare `user` speak without a record, and a rule
         // has nothing to match them against; the daemon's own notices
         // are not the thing a policy is for.
@@ -3382,9 +3532,16 @@ impl Daemon {
                 }
             }
         }
-        let mut envelope = Envelope::new(from, to, kind, payload, reply_to, Utc::now());
+        let mut envelope = Envelope::new(from.clone(), to, kind, payload, reply_to, Utc::now());
         envelope.links = links;
-        state.publish(envelope)
+        // A held send is remembered as a sent one is: its message and
+        // card are kept, so a retry must not hold a second copy.
+        let response = match inbound {
+            Some(ruling) => state.hold_message(envelope, ruling),
+            None => state.publish(envelope),
+        };
+        state.keep_keyed_send(&from, idempotency_key, &response);
+        response
     }
 
     /// Turn a sender name and a destination shorthand into what the bus
@@ -4095,7 +4252,7 @@ impl State {
             .unwrap_or(Response::Agent { agent: record })
     }
 
-    pub fn is_live(&mut self, id: &AgentId) -> bool {
+    pub fn is_live(&self, id: &AgentId) -> bool {
         self.registry.get(id).is_some_and(|a| a.status.is_live())
     }
 
@@ -4442,7 +4599,7 @@ impl State {
                 };
                 let mut record = (*latest).clone();
                 if record.pid.is_some_and(|pid| {
-                    process_exists(pid) && same_process(pid, record.process_started_at)
+                    procinfo::alive(pid) && same_process(pid, record.process_started_at)
                 }) {
                     return Some(Response::error(
                         ErrorCode::Conflict,
@@ -5140,12 +5297,58 @@ impl State {
         self.publish_question(envelope, None)
     }
 
+    /// Who a keyed send is remembered under, as `endpoints` resolves the
+    /// sender: its id when it has a record, the name it gave when it has
+    /// none (`agentd`, a bare `user`). A sender that resolves to neither
+    /// (an ambiguous name) is refused there, and is remembered nowhere.
+    fn keyed_sender(&self, from: &str) -> Option<String> {
+        match self.registry.resolve(from) {
+            Ok(id) => Some(id.to_string()),
+            Err(RegistryError::NotFound(_)) => Some(from.to_owned()),
+            Err(_) => None,
+        }
+    }
+
+    /// The answer already given to this sender for this key, if any: the
+    /// send it repeats was queued then, and nothing is queued again.
+    fn replayed_send(&mut self, from: &str, key: Option<&str>) -> Option<Response> {
+        let key = key?;
+        let sender = self.keyed_sender(from)?;
+        self.keyed_sends.lookup(&sender, key, Utc::now()).cloned()
+    }
+
+    /// Remember a keyed send's answer, once it kept something: a message
+    /// queued (`sent`) or held with its card (`held`). A refusal kept
+    /// nothing, so repeating it is harmless and may now succeed.
+    fn keep_keyed_send(&mut self, from: &str, key: Option<String>, response: &Response) {
+        if let Some(key) = key
+            && matches!(response, Response::Sent { .. } | Response::Held { .. })
+            && let Some(sender) = self.keyed_sender(from)
+        {
+            self.keyed_sends
+                .record(&sender, &key, response.clone(), Utc::now());
+        }
+    }
+
     fn publish_question(
         &mut self,
         envelope: Envelope,
         question: Option<agentdocker_core::Question>,
     ) -> Response {
         self.publish_with_channel(envelope, question, None, None)
+    }
+
+    /// The daemon's own answer to a question whose stale window passed:
+    /// it closes `question` although no recipient sent it, and is
+    /// attributed to `agentd` as the default. The `question_stale` event
+    /// lands in the same transaction as the answer, so a refused or failed
+    /// publish leaves the question unmarked and the next sweep tries again.
+    pub(super) fn publish_default_answer(
+        &mut self,
+        envelope: Envelope,
+        question: &MessageId,
+    ) -> Response {
+        self.publish_routed(envelope, None, None, None, Some(question.clone()))
     }
 
     /// Prepare channel state and ancillary effects without changing live state;
@@ -5160,16 +5363,52 @@ impl State {
         channel: Option<(Channel, Vec<EventKind>, Option<JournalEntry>)>,
         document: Option<DocumentTransition>,
     ) -> Response {
+        self.publish_routed(envelope, question, channel, document, None)
+    }
+
+    /// [`State::publish_with_channel`], with `default_for` naming the open
+    /// question this envelope closes as the daemon's default answer: the
+    /// one closure that no addressed recipient sent. That call comes from
+    /// the question sweep itself, which has just expired and staled what
+    /// was due, so it does not run the sweep again: doing so would re-enter
+    /// it and default the other due questions twice.
+    fn publish_routed(
+        &mut self,
+        envelope: Envelope,
+        question: Option<agentdocker_core::Question>,
+        channel: Option<(Channel, Vec<EventKind>, Option<JournalEntry>)>,
+        document: Option<DocumentTransition>,
+        default_for: Option<MessageId>,
+    ) -> Response {
         let (channel, transition, mut journal) = match channel {
             Some((channel, events, journal)) => (Some(channel), events, journal),
             None => (None, Vec::new(), None),
         };
+        let mut document = document;
+        let released = document
+            .as_mut()
+            .map(|document| std::mem::take(&mut document.released))
+            .unwrap_or_default();
+        if let Some(entry) = document
+            .as_mut()
+            .and_then(|document| document.journal.take())
+        {
+            if journal.is_some() {
+                return Response::error(
+                    ErrorCode::Internal,
+                    "a message carries at most one journal entry",
+                );
+            }
+            journal = Some(entry);
+        }
         if let Some(error) = self.write_failure() {
             return error;
         }
-        self.expire_questions(Utc::now());
-        if let Some(error) = self.write_failure() {
-            return error;
+        if default_for.is_none() {
+            self.expire_questions(Utc::now());
+            if let Some(error) = self.write_failure() {
+                return error;
+            }
         }
         if question.is_some() && self.questions.len() >= humans::MAX_QUESTIONS {
             return Response::error(
@@ -5192,10 +5431,20 @@ impl State {
                 .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == *project))
                 .map(|a| a.id.clone())
                 .collect(),
+            // A staged room is persisted with its whole membership, an
+            // ended record included for its session's return; it is
+            // routed, like a stored one, to the members that are live.
             Destination::Channel(id) => channel
                 .as_ref()
                 .filter(|staged| staged.id == *id)
-                .map(|staged| staged.members.clone())
+                .map(|staged| {
+                    staged
+                        .members
+                        .iter()
+                        .filter(|member| self.is_live(member))
+                        .cloned()
+                        .collect()
+                })
                 .unwrap_or_else(|| self.channel_members(id))
                 .into_iter()
                 .filter(|id| id.as_str() != envelope.from)
@@ -5211,10 +5460,21 @@ impl State {
         // kind says so before it is sized, stored or routed, and the route
         // is chosen here for both. With an `ask` waiting the answer is held
         // for it; otherwise the queue is its route, said at once.
-        let closed = envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
-            .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
-            .filter(|pending| self.put_to(pending, &AgentId::from(envelope.from.as_str())))
-            .map(|pending| pending.id.clone());
+        let stale = default_for.as_ref().and_then(|id| {
+            self.questions
+                .get(id)
+                .map(|pending| EventKind::QuestionStale {
+                    question: pending.id.clone(),
+                    action: pending.form.stale_action.clone(),
+                })
+        });
+        let closed = match &default_for {
+            Some(question) => self.questions.contains_key(question).then(|| question.clone()),
+            None => envelope.reply_to.as_ref().and_then(|id| self.questions.get(id))
+                .filter(|pending| matches!(&envelope.to, Destination::Agent(id) if id.as_str() == pending.from))
+                .filter(|pending| self.put_to(pending, &AgentId::from(envelope.from.as_str())))
+                .map(|pending| pending.id.clone()),
+        };
         if let Some(
             presentation @ (agentdocker_core::QuestionPresentation::McpUrl { .. }
             | agentdocker_core::QuestionPresentation::McpForm { .. }),
@@ -5236,6 +5496,42 @@ impl State {
             );
         }
         let mut envelope = envelope;
+        // A reply that closes a typed question answers it as `answer` does,
+        // whichever request carried it: a number becomes its label, a
+        // choice outside the options is refused unless Other is allowed,
+        // and the accepted payload is the resolved one. The daemon's own
+        // default answer arrives resolved and marked, so it is left alone.
+        if default_for.is_none()
+            && let Some(pending) = closed.as_ref().and_then(|id| self.questions.get(id))
+            && !pending.form.options.is_empty()
+        {
+            let given = agentdocker_core::QuestionAnswer::from_payload(&envelope.payload);
+            match agentdocker_core::QuestionAnswer::resolve(
+                &pending.form,
+                &given.text,
+                &given.choices,
+                given.other.as_deref(),
+                given.note.as_deref(),
+            ) {
+                Ok(answer) => envelope.payload = answer.payload(),
+                Err(reason) => {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        format!("answer does not fit the question's options: {reason}"),
+                    );
+                }
+            }
+        } else if default_for.is_none()
+            && closed.is_some()
+            && let Some(payload) = envelope.payload.as_object_mut()
+        {
+            // A question without options has no choices and no Other, and
+            // only the daemon's own answer is a default: a reply that
+            // claims any of them is read as the words it carries.
+            for claim in ["choices", "other", "default"] {
+                payload.remove(claim);
+            }
+        }
         if closed.is_some() {
             envelope.kind = "answer".to_owned();
         }
@@ -5284,8 +5580,25 @@ impl State {
             };
         }
         let mut kinds: Vec<_> = transition.into_iter().collect();
+        kinds.extend(released.iter().map(|lease| EventKind::LeaseReleased {
+            lease: lease.clone(),
+        }));
         if let Some(document) = &document {
             kinds.push(document.event.clone());
+        }
+        // Said before the answer that follows from it, in one commit.
+        kinds.extend(stale);
+        // A question the document settles without an answer: a held
+        // message's card, closed as its message goes out.
+        let settled = document
+            .as_ref()
+            .and_then(|d| d.closes.clone())
+            .filter(|id| self.questions.contains_key(id));
+        if let Some(settled) = &settled {
+            kinds.push(EventKind::QuestionClosed {
+                question: settled.clone(),
+                answer: None,
+            });
         }
         kinds.push(EventKind::MessageSent {
             message: envelope.id.clone(),
@@ -5317,6 +5630,10 @@ impl State {
         // The person's own messages are followed per recipient, so they can
         // see where each stands; agents' traffic is not.
         let tracked = self.is_human_id(&AgentId::from(envelope.from.as_str()));
+        // A released reply to a question closes two: the question it
+        // answers and the card it rode on. The store deletes every one it
+        // is given, so memory and disk agree after a restart.
+        let closing: Vec<MessageId> = closed.iter().chain(settled.iter()).cloned().collect();
         let mut post = None;
         let _ = self.commit(
             "message",
@@ -5328,9 +5645,14 @@ impl State {
                     INBOX_CAPACITY,
                     sender.as_ref(),
                     question.as_ref(),
-                    closed.as_ref(),
+                    &closing,
                     events,
-                    channel.as_ref().map(|channel| (channel, journal.as_ref())),
+                    channel.as_ref(),
+                    journal.as_ref(),
+                    &released
+                        .iter()
+                        .map(|lease| lease.id.clone())
+                        .collect::<Vec<_>>(),
                     document
                         .as_ref()
                         .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
@@ -5341,6 +5663,12 @@ impl State {
                 post = kept;
                 if let Some(channel) = &channel {
                     state.channels.insert(channel.id.clone(), channel.clone());
+                }
+                for lease in &released {
+                    state
+                        .leases
+                        .release(&lease.id, &lease.holder)
+                        .expect("release protection retained until commit");
                 }
                 if let Some(entry) = &journal {
                     state
@@ -5367,6 +5695,9 @@ impl State {
                 }
                 if let Some(closed) = &closed {
                     state.questions.remove(closed);
+                }
+                if let Some(settled) = &settled {
+                    state.questions.remove(settled);
                 }
             },
         );
@@ -5935,7 +6266,7 @@ impl State {
         // gone, or this is two lives of one session at once.
         for record in earlier.iter().chain(std::iter::once(prior)) {
             if record.pid.is_some_and(|old| {
-                process_exists(old) && same_process(old, record.process_started_at)
+                procinfo::alive(old) && same_process(old, record.process_started_at)
             }) {
                 return fresh;
             }

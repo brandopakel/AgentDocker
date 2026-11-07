@@ -1499,6 +1499,8 @@ mod tests {
             presentation: None,
             asked_at: now,
             expires_at: now + chrono::Duration::minutes(10),
+            form: Default::default(),
+            stale_since: None,
         });
         let agents = |app: &App| -> Vec<String> {
             app.palette_rows()
@@ -1588,6 +1590,8 @@ mod tests {
                     presentation: None,
                     asked_at: now,
                     expires_at: now + chrono::Duration::minutes(10),
+                    form: Default::default(),
+                    stale_since: None,
                 });
             }
         }
