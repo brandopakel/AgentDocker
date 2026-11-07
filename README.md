@@ -457,8 +457,10 @@ Use `make install` to build and install the desktop locally. The
 hand-copied launchers, rollback and switching after active sessions finish.
 
 ```sh
-bash scripts/verify.sh check     # the PR gate: fmt, clippy, nextest, doctests, installer tests, packaging, release build
-cargo test --workspace
+bash scripts/verify.sh check     # before a pull request's first push: docs, fmt, clippy, nextest, doctests, installer tests
+bash scripts/verify.sh quick     # before each later push: the same, on the packages the change touches
+bash scripts/verify.sh package   # for a packaging or release change: crate packaging and the release build (CI runs it on every PR)
+cargo test --workspace           # the plain test run, apart from the gates
 ```
 
 Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons; a home whose path is too long for a Unix socket name gets its sockets in a short private directory automatically — `agentdocker daemon status` shows where). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml); see the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md).
