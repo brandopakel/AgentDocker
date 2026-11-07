@@ -44,7 +44,7 @@ budget fails cleanup. The report keeps probe errors/timings, the rescue PID/exit
 and up to 16 KiB of its startup log. Functional assertion failures remain failed
 even when cleanup succeeds; no trial is replayed.
 
-The scheduled workflow runs bounded protocol, resource-key, engine-metadata and token-filter fuzz campaigns. Docker/Podman protocol jobs run on PRs and main pushes. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. CodeRabbit reviews implementation and test changes; green automated checks and disposition of valid review findings are required before integration.
+The scheduled workflow runs bounded protocol, resource-key, engine-metadata and token-filter fuzz campaigns. Docker/Podman protocol jobs run on PRs and main pushes. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. The reviewer agent reviews implementation and test changes; its approval at the head, a green local gate there and the disposition of every valid finding are what a merge needs.
 
 ## Measurements and thresholds
 

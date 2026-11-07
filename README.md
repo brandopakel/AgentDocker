@@ -463,7 +463,7 @@ bash scripts/verify.sh package   # for a packaging or release change: crate pack
 cargo test --workspace           # the plain test run, apart from the gates
 ```
 
-Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons; a home whose path is too long for a Unix socket name gets its sockets in a short private directory automatically — `agentdocker daemon status` shows where). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml); see the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md).
+Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons; a home whose path is too long for a Unix socket name gets its sockets in a short private directory automatically — `agentdocker daemon status` shows where). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. A pull request is reviewed by the project's reviewer agent and merges on that approval and the local gate; CI checks main afterwards. See the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md).
 
 ## License
 
