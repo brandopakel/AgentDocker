@@ -183,6 +183,7 @@ pub fn reply_request(to: String, message: &agentdocker_core::MessageId, text: &s
         payload: serde_json::json!({ "text": text }),
         reply_to: Some(message.clone()),
         links: Vec::new(),
+        idempotency_key: None,
     }
 }
 

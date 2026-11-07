@@ -531,6 +531,13 @@ pub enum Request {
         /// the shape its kind requires.
         #[serde(default)]
         links: Vec<crate::Link>,
+        /// The sender's own token for this one send (a UUID, say): a
+        /// repeat with the same key from the same sender is answered as
+        /// the first was and queues nothing, for a day or until the
+        /// ledger of 4,096 keyed sends turns over, or the daemon
+        /// restarts. See [`crate::idempotency`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idempotency_key: Option<String>,
     },
     /// Stream messages for `agent` and/or matching `topics` until the
     /// connection closes. Queued messages are replayed first and retained
@@ -631,12 +638,18 @@ pub enum Request {
     /// Answers with `answer {…}`, or `error(timeout)` when nobody replies
     /// in time. The question is delivered as an ordinary `question`
     /// message, so an agent that is only watching still sees it.
+    ///
+    /// The typed part is optional and flattened: `kind`, `options`,
+    /// `multi_select`, `allow_other`, `stale_after_secs` and `stale_action`
+    /// (see `QuestionForm`); none of them changes a plain question.
     Ask {
         from: String,
         to: String,
         question: String,
         #[serde(default = "default_ask_timeout")]
         timeout_secs: u64,
+        #[serde(flatten)]
+        form: crate::QuestionForm,
     },
     /// Create the same durable question as Ask, returning its message ID
     /// immediately. Answers remain in the ordinary inbox until acknowledged.
@@ -648,6 +661,8 @@ pub enum Request {
         presentation: Option<crate::QuestionPresentation>,
         #[serde(default = "default_ask_timeout")]
         timeout_secs: u64,
+        #[serde(flatten)]
+        form: crate::QuestionForm,
     },
     /// The asker may close its question. Already closed IDs are a no-op;
     /// accepted answers and the original question message are retained.
@@ -656,11 +671,24 @@ pub enum Request {
         message: MessageId,
     },
     /// Answer a question by its message id. The daemon knows who asked.
+    /// `choices` name the options taken, each by label or 1-based number.
+    /// `other` is the answerer's own words for the question's Other, taken
+    /// as written: never read as a label or a number, and refused where
+    /// the question takes no Other. With neither, `text` is the answer (one
+    /// choice, for a question with options); beside either it is not read.
+    /// `note` is the answerer's own words beside a choice.
     Answer {
         #[serde(default)]
         from: Option<String>,
         message: MessageId,
+        #[serde(default)]
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        choices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        other: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
     },
     /// Questions still waiting for an answer, newest first; `agent`
     /// narrows them to the ones put to that agent.
@@ -1097,10 +1125,15 @@ pub enum Request {
         forget_after: Option<chrono::DateTime<chrono::Utc>>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         roles: Vec<String>,
+        /// When its fact became true, if before now.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        valid_from: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// A project's current memories that answer `query`, the best first;
-    /// `from` names the project when `project` does not. Answers
-    /// `memories`.
+    /// `from` names the project when `project` does not; `as_of` reads
+    /// them as they stood then. Answers `memories`, or with
+    /// `include_superseded` `memory_history`, the superseded ones that
+    /// answer too, each with what replaced it.
     MemorySearch {
         #[serde(default)]
         from: Option<String>,
@@ -1110,10 +1143,18 @@ pub enum Request {
         query: String,
         #[serde(default)]
         limit: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<chrono::DateTime<chrono::Utc>>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        include_superseded: bool,
+        /// Only memories whose words score at least this (the sum of their
+        /// inverse document frequencies); none below it is answered.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_score: Option<f64>,
     },
     /// What a project's agents should know first, within `max_chars`: its
-    /// standing memories, the oldest first, then the others, newest first.
-    /// Answers `memories`.
+    /// standing memories, the oldest first, then the others, newest first;
+    /// `as_of` as they stood then. Answers `memories`.
     MemoryProfile {
         #[serde(default)]
         from: Option<String>,
@@ -1121,6 +1162,8 @@ pub enum Request {
         project: Option<String>,
         #[serde(default)]
         max_chars: Option<usize>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        as_of: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// Forget a memory for good: its author's or the person's to do.
     /// Answers `ok`.
@@ -1344,6 +1387,32 @@ pub enum Request {
         #[serde(default)]
         only_automatic: bool,
     },
+    /// Ask whoever holds leases overlapping `resource` to let go of them:
+    /// each holder gets a `release_request` message naming the resource,
+    /// the leases and the reason, and the request is kept until it is
+    /// answered or a day passes. A pending request from the same agent to
+    /// the same holder for the same resource is answered again rather
+    /// than sent twice. Answers `release_requests`, one per holder;
+    /// `not_found` when nobody else holds it.
+    RequestRelease {
+        from: String,
+        resource: String,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    /// The holder answers a release request by its message id. `accept`
+    /// releases the request's leases the holder still has, on its behalf,
+    /// journaled with `text` as the summary; a decline sends `text` as the
+    /// reason. Either way the requester gets a `release_response` message
+    /// in reply to its request. Answers `release_request`, with the
+    /// answer filled in; `forbidden` for anyone but the holder.
+    RespondRelease {
+        from: String,
+        request: MessageId,
+        accept: bool,
+        #[serde(default)]
+        text: Option<String>,
+    },
     /// Append a free-text note to the journal of the agent's project.
     JournalAdd {
         agent: String,
@@ -1521,9 +1590,11 @@ pub enum Request {
         #[serde(default)]
         note: Option<String>,
     },
-    /// A reviewer's word on a branch at the commit it read: `approve`,
-    /// `changes` or `comment`, with how many findings of each priority it
-    /// raised. Given by an agent holding a role in the project, or by the
+    /// A reviewer's word on a branch at the commit it read: `pass`,
+    /// `changes` or `none` (the older `approve` and `comment` are still
+    /// read), with how many findings of each severity it raised
+    /// (`important`, `nit`, `pre_existing`; none given means zero of
+    /// each). Given by an agent holding a role in the project, or by the
     /// person. Answers `code_verdict`.
     CodeVerdict {
         agent: String,
@@ -1985,6 +2056,17 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         recipient_readiness: Option<crate::SendReadiness>,
     },
+    /// A `send`, `ask` or `post_question` the recipients' project holds for
+    /// the person (inbound trust `hold`): `message` is the sender's
+    /// message, kept whole and delivered to nobody yet; `question` is the
+    /// card put to the person, whose answer `Release` delivers it as sent
+    /// and `Drop` discards it. No answer comes back to an `ask` held this
+    /// way: its question reaches its recipient as an ordinary message if
+    /// released.
+    Held {
+        message: MessageId,
+        question: MessageId,
+    },
     Message {
         message: Envelope,
         /// A topic message's sequence in the topic log, for a later
@@ -2047,11 +2129,21 @@ pub enum Response {
         availability: crate::ProviderAvailability,
         queued: usize,
     },
-    /// The reply to an `ask`: what was said, and who said it.
+    /// The reply to an `ask`: what was said, and who said it. `from` is
+    /// `agentd` and `default` true when nobody answered and the question's
+    /// stale rule chose its default option.
     Answer {
         message: MessageId,
         from: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        choices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        other: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        default: bool,
     },
     Questions {
         questions: Vec<crate::Question>,
@@ -2099,6 +2191,12 @@ pub enum Response {
         /// The project's files linked to it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<crate::ProjectFile>,
+        /// What the card has cost to date: the retained usage recorded
+        /// while an agent held it, as one usage row keyed by the card
+        /// (tokens with coverage, the provider-reported estimated cost where it said one).
+        /// Absent when no retained sample was made under the card.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<crate::usage::report::Row>,
     },
     /// A pull with no card named found none to take: what is in the pull
     /// source, how many are held by others and how many wait on
@@ -2157,6 +2255,12 @@ pub enum Response {
     Memories {
         memories: Vec<crate::memory::Memory>,
     },
+    /// Memories with their history: `replaced` names, for each superseded
+    /// one, what replaced it.
+    MemoryHistory {
+        memories: Vec<crate::memory::Memory>,
+        replaced: std::collections::BTreeMap<String, crate::memory::Replaced>,
+    },
     /// A plan in full, and the cards that carry it out.
     Plan {
         plan: crate::Plan,
@@ -2202,6 +2306,14 @@ pub enum Response {
     },
     Leases {
         leases: Vec<Lease>,
+    },
+    /// The requests `request_release` made, one per holder.
+    ReleaseRequests {
+        requests: Vec<crate::ReleaseRequest>,
+    },
+    /// One release request, answered.
+    ReleaseRequest {
+        request: crate::ReleaseRequest,
     },
     WebhookDeliveries {
         webhook: String,
@@ -2302,6 +2414,26 @@ impl Response {
             message: message.into(),
             details: None,
         }
+    }
+
+    /// An [`ErrorCode::Invalid`] refusal: the request itself is wrong.
+    pub fn invalid(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::Invalid, message.to_string())
+    }
+
+    /// An [`ErrorCode::NotFound`] refusal: nothing is what the request names.
+    pub fn not_found(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::NotFound, message.to_string())
+    }
+
+    /// An [`ErrorCode::Internal`] failure: the daemon's own side went wrong.
+    pub fn internal(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::Internal, message.to_string())
+    }
+
+    /// An [`ErrorCode::Unavailable`] refusal: not now, for the reason given.
+    pub fn unavailable(message: impl std::fmt::Display) -> Self {
+        Self::error(ErrorCode::Unavailable, message.to_string())
     }
 }
 
@@ -2439,6 +2571,46 @@ mod tests {
             Request::Claim {
                 wait_secs: 30,
                 priority: -4,
+                ..
+            }
+        ));
+    }
+
+    /// The two sides of a release negotiation on the wire: a request with
+    /// its optional reason, an answer by message id with its optional text.
+    #[test]
+    fn release_negotiation_round_trips() {
+        let ask: Request = serde_json::from_str(
+            r#"{"op":"request_release","from":"asker","resource":"path:/repo/src/lib.rs"}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            ask,
+            Request::RequestRelease {
+                from: "asker".into(),
+                resource: "path:/repo/src/lib.rs".into(),
+                reason: None,
+            }
+        );
+        let answer = Request::RespondRelease {
+            from: "holder".into(),
+            request: MessageId::from("m1".to_owned()),
+            accept: true,
+            text: Some("renamed the module".into()),
+        };
+        let json = serde_json::to_value(&answer).unwrap();
+        assert_eq!(json["op"], "respond_release");
+        assert_eq!(json["accept"], true);
+        assert_eq!(serde_json::from_value::<Request>(json).unwrap(), answer);
+        let declined: Request = serde_json::from_str(
+            r#"{"op":"respond_release","from":"holder","request":"m1","accept":false}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            declined,
+            Request::RespondRelease {
+                accept: false,
+                text: None,
                 ..
             }
         ));

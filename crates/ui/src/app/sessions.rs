@@ -632,6 +632,8 @@ mod tests {
                 text: "Continue?".into(),
                 asked_at: now,
                 expires_at: now + chrono::Duration::minutes(1),
+                form: Default::default(),
+                stale_since: None,
             });
         }
         app.agents = vec![quiet, first.clone(), finished, elsewhere];

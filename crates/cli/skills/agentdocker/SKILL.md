@@ -12,8 +12,11 @@ of an existing session or guess its identity from a display name.
 Before reading or searching shared files, record their paths with `observe_paths`.
 Before editing, `claim` the absolute file or directory (`path:/absolute/path`),
 then `check_stale` and reread any changed content. A conflicting lease means
-coordinate with its holder or work elsewhere. Use `release` with a short
-change summary when done. Use `commit` for attributed commits in your registered
+coordinate with its holder or work elsewhere: `request_release` asks the holder
+to let go (they answer with `respond_release`; the answer reaches your inbox as a
+`release_response`), and a `release_request` put to you is answered the same
+way, accepting with a summary of what you changed or declining with a reason.
+Use `release` with a short change summary when done. Use `commit` for attributed commits in your registered
 checkout so the journal attributes the change to you rather than `external`;
 use `journal_note` for decisions that have no commit.
 
@@ -114,6 +117,8 @@ agentdocker send --from SESSION_ID --to role:reviewer 'Message'   # the one agen
 agentdocker inbox --as SESSION_ID
 agentdocker inbox --as SESSION_ID --ack RECEIVED_MESSAGE_ID
 agentdocker release --as SESSION_ID LEASE_ID --summary 'What changed and why'
+agentdocker request-release --as SESSION_ID path:/absolute/path --reason 'Why'
+agentdocker respond-release --as SESSION_ID REQUEST_MESSAGE_ID --accept --summary 'What changed'
 ```
 
 The inbox commands apply only to manual delivery. Use `agentdocker setup --preview`

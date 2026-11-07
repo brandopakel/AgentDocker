@@ -159,7 +159,7 @@ impl Daemon {
         let version = match tokio::task::spawn_blocking(move || content::fingerprint(&root)).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return unreadable_checkout(e),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let mut state = lock(&self.state);
         if !state
@@ -258,7 +258,7 @@ impl Daemon {
         .await;
         let (stale, checkout_matches) = match checked {
             Ok(v) => v,
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let mut state = lock(&self.state);
         if !state
@@ -348,6 +348,15 @@ impl Daemon {
                 let now = Utc::now();
                 // Ownership moves with acceptance, in the same transaction:
                 // a bundle that asked for it hands its leases over here.
+                // What they were before, to put back exactly if the write
+                // fails: the holder and when it took each.
+                let before: std::collections::HashMap<LeaseId, Lease> = bundle
+                    .iter()
+                    .filter(|b| b.transfer_leases)
+                    .flat_map(|b| b.leases.iter())
+                    .filter_map(|lease| state.leases.get(&lease.id).cloned())
+                    .map(|lease| (lease.id.clone(), lease))
+                    .collect();
                 let transferred = match &bundle {
                     Some(b) if b.transfer_leases => state.leases.transfer_selected(
                         &b.from,
@@ -425,8 +434,11 @@ impl Daemon {
                     // them back so memory matches what was (not) written.
                     if let Some(b) = &bundle {
                         for lease in &transferred {
-                            let mut back = lease.clone();
-                            back.holder = b.from.clone();
+                            let back = before.get(&lease.id).cloned().unwrap_or_else(|| {
+                                let mut back = lease.clone();
+                                back.holder = b.from.clone();
+                                back
+                            });
                             state.leases.restore(back);
                         }
                     }
@@ -511,7 +523,7 @@ impl Daemon {
         {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return unreadable_checkout(e),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let id = MessageId::generate().to_string();
         let log = self.home.join("logs").join(format!("validation-{id}.log"));
@@ -618,7 +630,7 @@ impl Daemon {
                 .await
                 {
                     Ok(Ok(status)) => validation.exit_code = status.code(),
-                    Ok(Err(e)) => return internal(e),
+                    Ok(Err(e)) => return Response::internal(e),
                     Err(_) => {
                         validation.timed_out = true;
                         let _ = kill(group.0.unwrap(), Signal::SIGKILL);
@@ -640,7 +652,7 @@ impl Daemon {
                 .await
                 {
                     Ok(Ok(status)) => validation.exit_code = status.code(),
-                    Ok(Err(e)) => return internal(e),
+                    Ok(Err(e)) => return Response::internal(e),
                     Err(_) => {
                         validation.timed_out = true;
                         let _ = child.kill().await;
@@ -708,12 +720,6 @@ impl Drop for ValidationGroup {
         }
     }
 }
-/// A fault of the daemon's own: a worker task that panicked or was
-/// cancelled, a child that could not be waited for.
-pub(super) fn internal(error: impl std::fmt::Display) -> Response {
-    Response::error(ErrorCode::Internal, error.to_string())
-}
-
 /// The store, or a file under the daemon's home, could not be read or
 /// written.
 pub(super) fn storage(error: impl std::fmt::Display) -> Response {

@@ -280,15 +280,15 @@ fn scan_bounded(
         agentdocker_host::dirs::ensure_private_dir(&home)?;
         let store = Store::open(&home.join("state.db"))?;
         let mut unique = 0u64;
-        let mut seq = 1u64;
         for batch in samples.chunks(256) {
             within(started, deadline)?;
             let batch: Vec<_> = batch
                 .iter()
                 .map(|(sample, _)| (sample.clone(), Attribution::default()))
                 .collect();
+            // A batch may commit more than one event; number from the store.
+            let seq = store.max_event_seq()? + 1;
             unique += store.usage_scan_ingest(&batch, retained_since, as_of, seq)?;
-            seq += 1;
         }
         let scan_complete = files.iter().all(|f| f.stop == Stop::Complete);
         let supported_formats: Vec<_> = formats.into_iter().collect();
@@ -316,6 +316,7 @@ fn scan_bounded(
             .iter()
             .map(|(key, reason)| (key.as_str(), reason.as_str()))
             .collect();
+        let seq = store.max_event_seq()? + 1;
         store.usage_snapshot(&collection, &gap_refs, as_of, seq, None)?;
         let mut report = store.usage_report(range, query.by, None, None)?.context(
             "standalone report exceeds its bucket or counter limit; narrow its time range",

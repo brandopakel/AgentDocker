@@ -22,7 +22,7 @@ Bencher credentials and configuration stay outside the repository and GitHub. Lo
 
 ## Behavioral gates
 
-Every PR runs formatting, strict Clippy, unit/integration tests and installer/package checks. New tests target: no overlapping exclusive physical leases; no post-cancellation/exit acquisition; stopping writers retain protection; durable effects have correct event ordering; checksum failure preserves installation; observed stale input requires reread; accepted recovery survives restart; source or image changes invalidate matching validation evidence. Exercise crash points before/after SQLite commits, full/slow output pipes, lost watchers, expired/revoked credentials and engine unavailability using test-owned processes and fixtures. The Codex input loops run end to end in `crates/cli/tests/codex_bridge.rs` (`cargo test -p agentdocker --test codex_bridge`), which is its own harness so the test binary can also be the mock app-server the bridge and the receiver spawn: a fixture daemon, a managed bridge whose message becomes a turn with a receipt proved from the user item, a refused turn, an app-server older than the floor, and an existing session the receiver feeds through the native queue. It is a contract test against the protocol subset the loops use, not a trial on Codex.
+Every PR runs formatting, strict Clippy, unit/integration tests and installer/package checks. New tests target: no overlapping exclusive physical leases; no post-cancellation/exit acquisition; stopping writers retain protection; durable effects have correct event ordering; checksum failure preserves installation; observed stale input requires reread; accepted recovery survives restart; source or image changes invalidate matching validation evidence. Exercise crash points before/after SQLite commits, full/slow output pipes, lost watchers, expired/revoked credentials and engine unavailability using test-owned processes and fixtures. The Codex input loops run end to end in `crates/cli/tests/codex_bridge.rs` (`cargo test -p agentdocker --test codex_bridge`), which is its own harness so the test binary can also be the mock app-server the bridge and the receiver spawn: a fixture daemon, a managed bridge whose message becomes a turn with a receipt proved from the user item, a refused turn, an app-server older than the floor, and an existing session the receiver feeds through the native queue. It is a contract test against the protocol subset the loops use, not a trial on Codex. The guide's hand-kept name lists are checked against the code by `crates/cli/src/guide_lists.rs` (`cargo test -p agentdocker --bin agentdocker guide_lists`): the MCP tools in `docs/GUIDE.md` against the server's tool definitions, the tools every agent keeps against `ALWAYS_TOOLS`, the connector's tools in `docs/REMOTE-CONNECTOR.md` against `REMOTE_TOOLS`, and the command reference rows and the hidden-command bullet against the clap command tree at its first level; a name missing from a document, or named there without existing, fails by name.
 
 The terminal writer-failure regression prints test-only phase markers around
 socket setup, injected write failure, reader completion and cleanup/join.
@@ -75,7 +75,7 @@ References: [nextest configuration](https://nexte.st/docs/configuring-nextest/),
 
 ## Repository commands and installation
 
-`bash scripts/verify.sh check` runs the PR gate. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. Retained `socket_claim_release` results are not comparable with `socket_v2`: the older series mixed successes and conflicts, which `socket_v2` splits into different request counts. Stale detection/restart scenarios are correctness integration tests, not latency workloads. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
+`bash scripts/verify.sh check` runs the full local gate: the documentation checks, formatting, strict Clippy, nextest (zero retries), doctests and the Python suite under `tests/`. `quick` runs the same on the packages a change touches: `scripts/touched_crates.py` reads the files that differ from the merge base with `origin/main` (the previous commit without a remote; a clone too shallow to hold that merge base is refused until its history is fetched), committed or not, plus untracked files that are not ignored, and names each changed workspace package and every package that depends on it, from `cargo metadata`; a moved file counts at both its old and its new place; when Git or Cargo cannot answer, the run stops rather than test nothing; a file every package depends on (the root manifest, the lockfile, the toolchain file, Cargo and nextest configuration) selects the whole workspace, and a change outside every package runs no Cargo step. `package` runs crate packaging and the release build, which CI runs on every pull request and which a local `check` no longer includes. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. Retained `socket_claim_release` results are not comparable with `socket_v2`: the older series mixed successes and conflicts, which `socket_v2` splits into different request counts. Stale detection/restart scenarios are correctness integration tests, not latency workloads. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
 
 Install tools with `cargo install --locked cargo-nextest --version 0.9.143`, `cargo install --locked cargo-llvm-cov --version 0.9.0`, and `cargo install --locked cargo-fuzz --version 0.13.2`. Add `rustup component add llvm-tools-preview` and `rustup toolchain install nightly --profile minimal`. Criterion and Proptest are workspace development dependencies, pinned transitively by Cargo.lock. Benchmarks use a stable MSRV-compatible Criterion 0.5 harness. Keep workspace and fuzz lockfiles checked in. Fuzz campaigns first require locked dependency resolution and retain before/after source, lockfile, nightly compiler and cargo-fuzz manifests, including when a target fails. A campaign fails if these change during execution. Tools are development-only and do not ship in the release binaries.
 
@@ -162,12 +162,14 @@ fix/test/docs branches. A skipped or rate-limited review remains pending even
 when its status context is green. Draft PRs can run preliminary CI; final review
 and all applicable checks on the published head are required before integration.
 A pull request's desktop packaging and CLI archives are built on Linux only;
-the macOS ones run for main, for a `batch/**` branch (main with the approved
-pull requests merged in, which also runs the CI suite) and on demand, since
-macOS runners are few. A pull request merged from a batch needs its own
-checks and the batch's green. A new push to a pull request cancels the runs
-of its earlier heads; runs on main and batch branches are never cancelled by
-another.
+the macOS ones run for main, for a `batch/**` branch (main with several
+approved pull requests merged in, which also runs the CI suite) and on demand,
+since macOS runners are few. A pull request merges on its own once it is
+approved at its head, its checks are green and no review thread is open; a
+batch branch is for wanting the macOS packages of several changes at once,
+and a pull request merged from one needs the batch green at the head the
+batch merged. A new push to a pull request cancels the runs of its earlier
+heads; runs on main and batch branches are never cancelled by another.
 
 Controller-binding fixtures resolve the intended `sleep` executable before
 spawning, then wait at most five seconds for the child's kernel executable path
@@ -208,7 +210,49 @@ JUnit, coverage, benchmark manifests/results and failure logs before clearing
 inactive caches with [Cargo clean](https://doc.rust-lang.org/cargo/commands/cargo-clean.html).
 `cargo clean --profile dev` removes generated development output; inspect
 `--dry-run` first. Do not clean an active build/test directory, running binaries,
-or another session's cache. Each worktree keeps its own target directory.
+or another session's cache. Each worktree keeps its own target directory, inside
+the worktree (`target/`, and `fuzz/target/`), so `agentdocker worktree-remove`
+takes a worktree's cache away with the worktree: `git worktree remove` deletes
+the directory, ignored files included.
+
+`python3 scripts/build_storage.py --prune` removes the caches of the registered
+worktrees that are inactive, and only those: no live AgentDocker lease covers
+the worktree (a `path:` lease on it, on a file in it or on a folder above it, or
+a `branch:` lease on its branch), its branch is merged into `origin/main` or no
+longer exists (a detached checkout counts as merged when its commit is in
+`origin/main`; a checkout at `origin/main`'s tip, branch or detached, is current
+with nothing of its own merged, and stays), no running process names the worktree on its
+command line, works in it or runs a file from it (every process's working
+directory and executable, from `/proc` on Linux and `lsof` elsewhere, where the
+files a process maps count too; a command started as `target/debug/app` or
+`python3 server.py` names no worktree, and an absolute interpreter such as
+`/usr/bin/python3 server.py` says where the interpreter is, not where its script
+runs). Another user's processes and zombies do not build in this user's
+worktrees and are left out, and so is a pid that has exited by the time it is
+read. `lsof` scans every process one at a time while processes start and end,
+so a pid the scan passed without both a working-directory and an executable
+record is asked about again on its own. A live process of this user whose
+working directory or executable still cannot be read is blind, whatever its
+command line names, and one blind process keeps every worktree: the report names
+it, and nothing is pruned while it runs. When no process or place can be read at
+all, every worktree counts as busy. The last condition is that no Cargo build
+holds the cache's `.cargo-lock`. The current worktree (the checkout the script runs from, and
+whatever Cargo reports as its target directory), the project's main checkout
+and a `target` that is a symbolic link are never touched; only the cache goes,
+never the worktree. The leases are the machine's own daemon's, asked without
+starting one; when no daemon answers, every worktree may be active and nothing
+is pruned. A real prune holds `task:local-cargo-campaign` while it removes,
+as `verify.sh` holds it for a run (as the session when the daemon knows it,
+otherwise as a transient agent of its own; `AGENTDOCKER_CAMPAIGN_LEASE=off`
+when the caller already holds it), so no build starts under a cache on its way
+out, and a slot it cannot hold means nothing is pruned; nothing is held between
+the plan and the removals, so each worktree is judged again on fresh leases and
+processes right before its own caches go, and one that changed since the plan
+is skipped and said so. `--prune --dry-run` lists what would go, with sizes and
+the reason, and what stays and why, and holds no slot. `verify.sh`
+prints that report at the end of every run that started a step — the cache
+totals and the prunable candidates — and never prunes on its own; a report that
+cannot be produced is noted and does not fail the run.
 Workspace development builds disable incremental compilation, while keeping
 line-table debug information. Release builds optimize the complete linked
 dependency graph for size, use one codegen unit with full LTO and strip symbols.

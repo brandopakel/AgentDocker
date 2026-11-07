@@ -1,19 +1,47 @@
 #!/usr/bin/env python3
-"""Read-only disk budget check before starting local build campaigns."""
+"""Disk budget for local build campaigns.
+
+Without flags: a read-only preflight that refuses a build when the caches
+are over budget. With `--prune`: remove the Cargo caches of worktrees that
+are inactive — no live AgentDocker lease on them, a branch already merged
+into origin/main (or gone), and no build running in them. `--prune
+--dry-run` only says what would go, with sizes; verify.sh prints that at the
+end of every run and never prunes on its own.
+"""
 import argparse
+from collections import namedtuple
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
 
 GIB = 1024 ** 3
 ROOT = Path(__file__).resolve().parents[1]
+# Where a worktree keeps its build output, relative to its root.
+CACHE_NAMES = ("target", "fuzz/target")
+# The slot one local build campaign holds at a time; a real prune holds it
+# too, so no build starts under a cache while it goes.
+CAMPAIGN = "task:local-cargo-campaign"
+
+# One running process as the prune sees it: `places` are the paths the kernel
+# knows it by (working directory, executable); `blind` says one of the two
+# could not be read, so nothing can rule the process out of any worktree.
+Process = namedtuple("Process", "pid command places blind", defaults=(False,))
+# What must be known of a process before it is ruled out of a worktree, as
+# lsof names them: where it works, and what it runs.
+REQUIRED_PLACES = ("cwd", "txt")
 
 
 class BudgetError(Exception):
     """A storage refusal whose message contains no private paths."""
+
+
+class PruneRefused(Exception):
+    """A prune that cannot be made safe; nothing was removed."""
 
 
 def positive(value):
@@ -51,16 +79,34 @@ def existing_parent(path):
     return path
 
 
-def inspect(args):
-    # Refuse known low space before even invoking Cargo metadata.
-    if shutil.disk_usage(ROOT).free < args.minimum_free_gib * GIB:
-        raise BudgetError(f"less than {args.minimum_free_gib} GiB free; clean inactive build output before compiling")
+def parse_worktrees(porcelain):
+    """Records of `git worktree list --porcelain -z`: path, head, branch (None when detached)."""
+    records, record = [], None
+    for field in porcelain.split(b"\0"):
+        if field.startswith(b"worktree "):
+            record = {"path": Path(os.fsdecode(field[9:])), "head": None, "branch": None}
+            records.append(record)
+        elif record is None:
+            continue
+        elif field.startswith(b"HEAD "):
+            record["head"] = os.fsdecode(field[5:])
+        elif field.startswith(b"branch refs/heads/"):
+            record["branch"] = os.fsdecode(field[18:])
+    return records
+
+
+def measure(minimum_free_gib=None):
+    """The current target directory, the registered worktrees and every cache's size.
+
+    With a minimum, a filesystem below it is refused before anything is measured.
+    """
+    if minimum_free_gib is not None and shutil.disk_usage(ROOT).free < minimum_free_gib * GIB:
+        raise BudgetError(f"less than {minimum_free_gib} GiB free; clean inactive build output before compiling")
     metadata = json.loads(subprocess.check_output(
         ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], cwd=ROOT, text=True, stderr=subprocess.PIPE))
     current = Path(metadata["target_directory"]).resolve()
-    worktrees = subprocess.check_output(["git", "worktree", "list", "--porcelain", "-z"], cwd=ROOT, stderr=subprocess.PIPE)
-    roots = [Path(os.fsdecode(field[9:])) for field in worktrees.split(b"\0") if field.startswith(b"worktree ")]
-    candidates = {current, *(root / name for root in roots for name in ["target", "fuzz/target"])}
+    records = parse_worktrees(subprocess.check_output(["git", "worktree", "list", "--porcelain", "-z"], cwd=ROOT, stderr=subprocess.PIPE))
+    candidates = {current, *(record["path"] / name for record in records for name in CACHE_NAMES)}
     caches, devices = {}, set()
     for candidate in sorted(candidates):
         path = candidate.resolve()
@@ -69,11 +115,17 @@ def inspect(args):
         parent = existing_parent(path)
         device = parent.stat().st_dev
         if device not in devices:
-            if shutil.disk_usage(parent).free < args.minimum_free_gib * GIB:
-                raise BudgetError(f"a cache filesystem has less than {args.minimum_free_gib} GiB free")
+            if minimum_free_gib is not None and shutil.disk_usage(parent).free < minimum_free_gib * GIB:
+                raise BudgetError(f"a cache filesystem has less than {minimum_free_gib} GiB free")
             devices.add(device)
         if path.is_dir():
             caches[path] = allocated(path)
+    return current, records, caches
+
+
+def inspect(args):
+    # Refuse known low space before even invoking Cargo metadata.
+    current, _, caches = measure(args.minimum_free_gib)
     current_bytes = caches.get(current, 0)
     total = sum(caches.values())
     if current_bytes > args.max_current_gib * GIB:
@@ -85,17 +137,503 @@ def inspect(args):
             "max_current_gib": args.max_current_gib, "max_total_gib": args.max_total_gib}
 
 
+# --- pruning -----------------------------------------------------------------
+
+def parse_lease_resources(table):
+    """The RESOURCE column of `agentdocker leases`, spaces in a resource included."""
+    lines = table.splitlines()
+    if not lines:
+        return set()
+    header = lines[0]
+    start, end = header.find("RESOURCE"), header.find("HOLDER")
+    resources = set()
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        if start >= 0 and end > start:
+            resources.add(line[start:end].strip())
+        else:
+            fields = line.split()
+            if len(fields) >= 2:
+                resources.add(fields[1])
+    return resources
+
+
+def cli_environment():
+    """The environment the machine's own daemon is asked in, as verify.sh asks
+    it: a session's private or test daemon knows nothing of the worktrees
+    other sessions hold, and no daemon is ever started for this."""
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("AGENTDOCKER_HOME", "AGENTDOCKER_SOCKET", "AGENTDOCKER_AGENT_ID")}
+    env["AGENTDOCKER_NO_AUTOSTART"] = "1"
+    return env
+
+
+def cli(*args, timeout=60):
+    """One agentdocker call's stdout; raises CalledProcessError with its stderr."""
+    return subprocess.check_output(["agentdocker", *args], text=True, stderr=subprocess.PIPE,
+                                   env=cli_environment(), timeout=timeout)
+
+
+def lease_resources():
+    """Every live lease's resource, or None when no daemon answers."""
+    try:
+        return parse_lease_resources(cli("leases"))
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def process_table():
+    """This user's live processes as `Process` records: the places are the
+    paths the kernel knows a process by — its working directory and the
+    files it executes — since a command started as `target/debug/app` or
+    `python3 server.py` names no worktree on its command line, and an
+    absolute interpreter (`/usr/bin/python3 server.py`) says where the
+    interpreter is, not where its script runs. A live process whose working
+    directory or executable cannot be read is `blind`, whatever its command
+    line names. Another user's processes and zombies do not build in this
+    user's worktrees and are left out; so is a pid that has exited by the
+    time its places are read. None when the processes or their places
+    cannot be read at all: then every worktree may be busy.
+    """
+    try:
+        listing = subprocess.check_output(["ps", "-e", "-ww", "-o", "pid=,uid=,stat=,command="],
+                                          text=True, stderr=subprocess.PIPE, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    processes = []
+    for line in listing.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 3 or not parts[0].isdigit() or not parts[1].isdigit():
+            continue
+        pid, uid, stat = int(parts[0]), int(parts[1]), parts[2]
+        if pid == os.getpid() or uid != os.getuid() or "Z" in stat:
+            continue
+        processes.append((pid, parts[3] if len(parts) > 3 else ""))
+    read = process_places([pid for pid, _ in processes])
+    if read is None:
+        return None
+    places, unread, exited = read
+    return [Process(pid, command, tuple(places.get(pid, ())), pid in unread)
+            for pid, command in processes if pid not in exited]
+
+
+def chunked(items, size=100):
+    return [items[start:start + size] for start in range(0, len(items), size)]
+
+
+def process_places(pids, proc=Path("/proc")):
+    """What the kernel says of each pid's places: (places, unread, exited) —
+    pid -> the paths it works in and executes; the live pids whose working
+    directory or executable could not be read; the pids that have exited or
+    are zombies. /proc on Linux. Elsewhere one `lsof -d cwd,txt` scan of
+    every process; a pid it passed without both a cwd and a txt record is
+    asked about again on its own, since the scan reads processes one at a
+    time while they start and end, and a pid still missing one then is
+    unread unless it has ended. None when neither /proc nor lsof can be
+    asked at all."""
+    places, unread, exited = {}, set(), set()
+    if proc.is_dir():
+        for pid in pids:
+            missing = False
+            for name in ("cwd", "exe"):
+                try:
+                    target = os.readlink(proc / str(pid) / name)
+                except OSError:
+                    missing = True
+                    continue
+                if target.endswith(" (deleted)"):
+                    target = target[:-len(" (deleted)")]
+                places.setdefault(pid, []).append(Path(target))
+            if missing:
+                (exited if proc_ended(proc, pid) else unread).add(pid)
+        return places, unread, exited
+    if not shutil.which("lsof"):
+        return None
+    listing = lsof_records()
+    if listing is None:
+        return None
+    seen = {}
+    read_lsof(listing, places, seen)
+    incomplete = [pid for pid in pids if not set(REQUIRED_PLACES) <= seen.get(pid, set())]
+    for chunk in chunked(incomplete):
+        again = lsof_records("-a", "-p", ",".join(str(pid) for pid in chunk))
+        if again is not None:
+            read_lsof(again, places, seen)
+    missing = [pid for pid in incomplete if not set(REQUIRED_PLACES) <= seen.get(pid, set())]
+    gone = ended(missing)
+    for pid in missing:
+        (exited if pid in gone else unread).add(pid)
+    return {pid: list(dict.fromkeys(found)) for pid, found in places.items()}, unread, exited
+
+
+def proc_ended(proc, pid):
+    """The pid is gone from /proc, or is a zombie there: nothing left of it
+    works anywhere. A pid whose state cannot be read is taken as alive."""
+    try:
+        stat = (proc / str(pid) / "stat").read_text()
+    except OSError:
+        return not (proc / str(pid)).exists()
+    # The command name is in parentheses and may hold either; the state follows the last.
+    fields = stat.rpartition(")")[2].split()
+    return bool(fields) and fields[0] in ("Z", "X", "x")
+
+
+def lsof_records(*selection):
+    """`lsof -F pfn` records of the working directories and executables of
+    the processes `selection` names (every process when empty), or None
+    when lsof cannot be run. lsof exits 1 when it could not read some
+    process; what it read is listed all the same, and a process it cannot
+    read at all gets no record."""
+    try:
+        return subprocess.check_output(["lsof", *selection, "-d", ",".join(REQUIRED_PLACES), "-F", "pfn"],
+                                       text=True, stderr=subprocess.DEVNULL, timeout=120)
+    except subprocess.CalledProcessError as error:
+        return error.output or ""
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def read_lsof(listing, places, seen):
+    """Fold `lsof -F pfn` records into places (pid -> paths) and seen (pid ->
+    the descriptors read, cwd and txt told apart by their `f` record). A
+    name that is not a path, or one under no descriptor, reads nothing."""
+    pid = descriptor = None
+    for line in listing.splitlines():
+        tag, value = line[:1], line[1:]
+        if tag == "p":
+            pid, descriptor = (int(value) if value.isdigit() else None), None
+        elif tag == "f":
+            descriptor = value
+        elif tag == "n":
+            # One name per descriptor: a second one belongs to none.
+            if pid is not None and descriptor in REQUIRED_PLACES and value.startswith("/"):
+                seen.setdefault(pid, set()).add(descriptor)
+                places.setdefault(pid, []).append(Path(value))
+            descriptor = None
+
+
+def ended(pids):
+    """The pids among these that have exited, or are zombies: nothing left of
+    them works anywhere. Existence is the kernel's answer to signal 0; ps is
+    asked only whether a pid that exists is a zombie, since a `ps -p` list
+    with one pid it refuses answers for none. A pid that cannot be told is
+    taken as alive."""
+    gone, present = set(), []
+    for pid in pids:
+        if pid <= 0:
+            present.append(pid)
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            gone.add(pid)
+            continue
+        except OSError:
+            pass
+        present.append(pid)
+    for chunk in chunked([pid for pid in present if pid > 0]):
+        try:
+            answer = subprocess.run(["ps", "-o", "pid=,stat=", "-p", ",".join(str(pid) for pid in chunk)],
+                                    capture_output=True, text=True, timeout=60).stdout
+        except (OSError, subprocess.SubprocessError):
+            continue
+        for line in answer.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].isdigit() and "Z" in parts[1]:
+                gone.add(int(parts[0]))
+    return gone
+
+
+def within(path, base):
+    """path is base or under it."""
+    try:
+        Path(path).relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
+def mentions(command, path):
+    """The command line names the path or something under it, never a longer sibling."""
+    return re.search(re.escape(str(path)) + r"(?=$|[/\s\"'=:,;])", command) is not None
+
+
+def build_lock_held(cache):
+    """Cargo holds `<profile>/.cargo-lock` while it builds there."""
+    try:
+        import fcntl
+    except ImportError:
+        return False
+    for lock in [*cache.glob("*/.cargo-lock"), *cache.glob("*/*/.cargo-lock")]:
+        try:
+            with open(lock, "rb") as handle:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    return True
+                fcntl.flock(handle, fcntl.LOCK_UN)
+        except OSError:
+            continue
+    return False
+
+
+class Branches:
+    """What git says about a worktree's branch against origin/main."""
+
+    def __init__(self, root=ROOT):
+        self.root = root
+        try:
+            self.main_tip = self.rev_parse("origin/main")
+        except subprocess.TimeoutExpired:
+            self.main_tip = None
+
+    def rev_parse(self, ref):
+        """The commit `ref` names, or None when there is none. A git that
+        does not answer raises: it says nothing about the ref."""
+        try:
+            return subprocess.check_output(["git", "rev-parse", "--verify", "--quiet", ref + "^{commit}"],
+                                           cwd=self.root, text=True, stderr=subprocess.DEVNULL, timeout=60).strip() or None
+        except subprocess.CalledProcessError:
+            return None
+
+    def state(self, record):
+        """merged, current (at origin/main's tip), unmerged, absent or
+        unknown; unknown too when git does not answer, so a hung git never
+        reads as a branch that is gone."""
+        if self.main_tip is None:
+            return "unknown"
+        try:
+            if record["branch"] is not None:
+                tip = self.rev_parse("refs/heads/" + record["branch"])
+                if tip is None:
+                    return "absent"
+            else:
+                tip = record["head"]
+            if tip is None:
+                return "unknown"
+            if tip == self.main_tip:
+                return "current"
+            result = subprocess.run(["git", "merge-base", "--is-ancestor", tip, self.main_tip],
+                                    cwd=self.root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        except subprocess.TimeoutExpired:
+            return "unknown"
+        return "merged" if result.returncode == 0 else "unmerged"
+
+
+def owned_caches(record, caches):
+    root = record["path"].resolve()
+    return [(cache, caches.get(cache, 0)) for cache in (root / name for name in CACHE_NAMES)
+            if cache in caches or cache.is_symlink()]
+
+
+def decide(record, owned, *, current_root, current_target, main_root, leases, processes, branch_state, lock_held):
+    """Why this worktree's caches stay, or (None, why they may go).
+
+    `leases` is the set of live lease resources, or None when no daemon
+    answers — then every worktree may be active. `processes` is a `Process`
+    (pid, command line, places, blind) per running process, or None when
+    they cannot be listed — then every worktree may be busy; a blind
+    process keeps every worktree. `branch_state(record)` and
+    `lock_held(cache)` are asked only once the cheaper checks pass.
+    """
+    root = record["path"].resolve()
+    label = record["branch"] or (record["head"] or "detached")[:12]
+    if root == current_root or any(cache == current_target for cache, _ in owned):
+        return "the current worktree", None
+    if root == main_root:
+        return "the project's main checkout", None
+    if leases is None:
+        return "no daemon answers; every worktree may be active", None
+    if processes is None:
+        return "processes cannot be listed; every worktree may be busy", None
+    held = sorted(resource for resource in leases
+                  if (resource.startswith("path:") and (within(resource[5:], root) or within(root, resource[5:])))
+                  or (record["branch"] is not None and resource == "branch:" + record["branch"]))
+    if held:
+        return f"lease {held[0]} is live", None
+    for entry in processes:
+        pid, command, places, blind = Process(*entry)
+        name = os.path.basename(command.split(None, 1)[0]) if command.strip() else "?"
+        if mentions(command, root) or any(within(place, root) for place in places):
+            return f"process {pid} ({name}) runs in it", None
+        if blind:
+            return f"process {pid} ({name}) runs somewhere that cannot be read; it may be here", None
+    state = branch_state(record)
+    if state == "unmerged":
+        return f"branch {label} is not merged into origin/main", None
+    if state == "current":
+        return f"{label} is at origin/main's tip: current, not a leftover", None
+    if state == "unknown":
+        return "origin/main is unknown here; nothing counts as merged", None
+    links = [cache for cache, _ in owned if cache.is_symlink()]
+    if links:
+        return f"{links[0].name} is a symbolic link; its target may be shared", None
+    if any(lock_held(cache) for cache, _ in owned):
+        return "a Cargo build holds its lock", None
+    return None, ({"merged": f"branch {label} is merged into origin/main",
+                   "absent": f"branch {label} no longer exists"}[state] + "; no lease; no build running")
+
+
+def plan_prune(records, caches, *, current_root, current_target, leases, processes, branch_state, lock_held):
+    """Decide each worktree's caches: (prunable, kept), both lists of
+    (worktree path, [(cache path, bytes)], reason). See `decide`."""
+    prunable, kept = [], []
+    main_root = records[0]["path"].resolve() if records else None
+    for record in records:
+        owned = owned_caches(record, caches)
+        if not owned:
+            continue
+        reason, why = decide(record, owned, current_root=current_root, current_target=current_target, main_root=main_root,
+                             leases=leases, processes=processes, branch_state=branch_state, lock_held=lock_held)
+        if reason is not None:
+            kept.append((record["path"].resolve(), owned, reason))
+        else:
+            prunable.append((record["path"].resolve(), owned, why))
+    return prunable, kept
+
+
+class Campaign:
+    """The build slot, held for a real prune as verify.sh holds it for a run:
+    as the session when the daemon knows it, as a transient agent of this
+    run otherwise, and released on the way out. A lease the caller already
+    holds (AGENTDOCKER_CAMPAIGN_LEASE=off) is not taken again. A daemon that
+    will not give the slot gives no prune."""
+
+    def __init__(self, note):
+        self.note = note
+        self.lease = None
+        self.agent = os.environ.get("AGENTDOCKER_AGENT_ID") or None
+        self.transient = None
+
+    def __enter__(self):
+        if os.environ.get("AGENTDOCKER_CAMPAIGN_LEASE", "on") == "off":
+            return self
+        wait = os.environ.get("AGENTDOCKER_CAMPAIGN_WAIT", "600")
+        try:
+            self.lease = self.claim(wait)
+        except subprocess.CalledProcessError as error:
+            text = (error.stderr or error.output or "").strip()
+            if not any(mark in text for mark in ("give --as", "specify the sender", "--as <AGENT>", "no agent matches")):
+                raise PruneRefused(f"{CAMPAIGN} is held by another campaign; nothing pruned ({text.splitlines()[0] if text else error})")
+            try:
+                self.agent = self.transient = cli("register", "--name", f"prune-{os.getpid()}", "--runtime", "custom",
+                                                  "--pid", str(os.getpid()), "--workdir", str(ROOT),
+                                                  "--label", "campaign=build_storage.py").strip()
+                self.lease = self.claim(wait)
+            except subprocess.CalledProcessError as again:
+                detail = (again.stderr or again.output or "").strip().splitlines()
+                self.__exit__(None, None, None)
+                raise PruneRefused(f"cannot hold {CAMPAIGN}; nothing pruned ({detail[0] if detail else again})")
+        except (OSError, subprocess.SubprocessError) as error:
+            raise PruneRefused(f"no daemon answers for {CAMPAIGN}; nothing pruned ({type(error).__name__})")
+        return self
+
+    def claim(self, wait):
+        return cli("claim", CAMPAIGN, *(["--as", self.agent] if self.agent else []), "--ttl", "1800",
+                   "--wait", wait, "--note", self.note, timeout=int(wait) + 60).strip()
+
+    def __exit__(self, *_):
+        as_agent = ["--as", self.agent] if self.agent else []
+        if self.lease:
+            try:
+                cli("release", self.lease, *as_agent, "--summary", "build_storage.py --prune finished")
+            except (OSError, subprocess.SubprocessError):
+                pass
+        if self.transient:
+            try:
+                cli("deregister", "--as", self.transient)
+            except (OSError, subprocess.SubprocessError):
+                pass
+        self.lease = self.transient = None
+
+
+def describe(entries, verb):
+    lines = []
+    for root, owned, reason in entries:
+        size = sum(size for _, size in owned)
+        names = ", ".join(str(cache.relative_to(root)) for cache, _ in owned)
+        lines.append(f"  {verb} {size / GIB:6.2f} GiB  {root}  ({names}): {reason}")
+    return lines
+
+
+def prune(args):
+    current, records, caches = measure()
+    total = sum(caches.values())
+    print(f"build storage: registered worktree caches use {total / GIB:.1f} GiB "
+          f"(current {caches.get(current, 0) / GIB:.1f} GiB; limit {args.max_total_gib})")
+    leases = lease_resources()
+    processes = process_table()
+    for pid, command, _, blind in (Process(*entry) for entry in processes or ()):
+        if blind:
+            name = os.path.basename(command.split(None, 1)[0]) if command.strip() else "?"
+            print(f"process {pid} ({name}) cannot be placed: its working directory or executable cannot be read, "
+                  "so it may be in any worktree; nothing is prunable while it runs")
+    branches = Branches()
+    prunable, kept = plan_prune(records, caches, current_root=ROOT.resolve(), current_target=current,
+                                leases=leases, processes=processes, branch_state=branches.state, lock_held=build_lock_held)
+    if leases is None:
+        print("no daemon answers: every worktree may be active; nothing is prunable")
+    if args.dry_run:
+        print("prunable (dry run; nothing removed):" if prunable else "prunable: nothing")
+        print("\n".join(describe(prunable, "would remove")))
+    else:
+        print("pruning:" if prunable else "pruning: nothing")
+        failed, freed = 0, 0
+        by_root = {record["path"].resolve(): record for record in records}
+        main_root = records[0]["path"].resolve() if records else None
+        # Nothing is held between the plan and the removals, so each worktree
+        # is judged again, on fresh leases and processes, right before its
+        # own caches go; a build slot is held meanwhile so no verify.sh run
+        # starts under a cache on its way out.
+        with (Campaign(f"build_storage.py --prune in {ROOT}") if prunable else nullcontext()):
+            for root, owned, reason in prunable:
+                kept_now, _ = decide(by_root[root], owned, current_root=ROOT.resolve(), current_target=current, main_root=main_root,
+                                     leases=lease_resources(), processes=process_table(), branch_state=branches.state,
+                                     lock_held=build_lock_held)
+                if kept_now is not None:
+                    print(f"  skipped {sum(size for _, size in owned) / GIB:6.2f} GiB  {root}: {kept_now} (changed since the plan)")
+                    kept.append((root, owned, kept_now))
+                    continue
+                for cache, size in owned:
+                    try:
+                        shutil.rmtree(cache)
+                    except OSError as error:
+                        failed += 1
+                        print(f"  cannot remove {cache}: {type(error).__name__}", file=sys.stderr)
+                        continue
+                    freed += size
+                    print(f"  removed {size / GIB:6.2f} GiB  {cache}: {reason}")
+        print(f"freed {freed / GIB:.1f} GiB" + (f"; {failed} cache(s) could not be removed" if failed else ""))
+        if failed:
+            return 1
+    if kept:
+        print("kept:")
+        print("\n".join(describe(kept, "keeping     ")))
+    return 0
+
+
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--minimum-free-gib", type=positive,
                         default=os.environ.get("AGENTDOCKER_BUILD_MIN_FREE_GIB", "5" if os.environ.get("CI") == "true" else "20"))
     parser.add_argument("--max-current-gib", type=positive, default=os.environ.get("AGENTDOCKER_BUILD_MAX_CURRENT_GIB", "12"))
     parser.add_argument("--max-total-gib", type=positive, default=os.environ.get("AGENTDOCKER_BUILD_MAX_TOTAL_GIB", "40"))
+    parser.add_argument("--prune", action="store_true",
+                        help="remove the caches of inactive worktrees (not this one's): no live lease, branch merged into origin/main or gone, no build running")
+    parser.add_argument("--dry-run", action="store_true", help="with --prune: list what would go, with sizes, and remove nothing")
     args = parser.parse_args()
+    if args.dry_run and not args.prune:
+        parser.error("--dry-run goes with --prune")
     try:
+        if args.prune:
+            return prune(args)
         print(json.dumps(inspect(args), sort_keys=True))
     except BudgetError as error:
         print(f"build storage: {error}; no build started", file=sys.stderr)
+        return 1
+    except PruneRefused as error:
+        print(f"build storage: {error}", file=sys.stderr)
         return 1
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
         # OS exceptions and subprocess diagnostics can contain private checkout

@@ -73,6 +73,15 @@ pub enum EventKind {
         agent: AgentId,
         samples: u64,
     },
+    /// Responses already counted took what a second source said of them:
+    /// `priced` learnt their provider-reported cost from a telemetry event
+    /// that arrived after their transcript record; `folded` had been
+    /// counted twice, once from each source before anything tied them, and
+    /// now count once.
+    UsageJoined {
+        priced: u64,
+        folded: u64,
+    },
     /// Volatile review metadata changed. Live-only seq:0, no prompt, answer or capability.
     SecretReviewChanged {
         review: String,
@@ -83,7 +92,8 @@ pub enum EventKind {
         question: MessageId,
         expires_at: DateTime<Utc>,
     },
-    /// No answer means the question expired. The original inbox message remains.
+    /// No answer means the question expired, or was settled without one: a
+    /// held message released or dropped. The original inbox message remains.
     QuestionClosed {
         question: MessageId,
         answer: Option<MessageId>,
@@ -101,6 +111,42 @@ pub enum EventKind {
     QuestionCancelled {
         question: MessageId,
         agent: AgentId,
+    },
+    /// A question's stale window passed with no answer. Emitted once per
+    /// question, with the action its asker chose for this moment: keep
+    /// waiting (the question stays open, marked stale), answer with the
+    /// default option (a `question_closed` with the daemon's answer
+    /// follows), or withdraw it (a `question_closed` without an answer
+    /// follows).
+    QuestionStale {
+        question: MessageId,
+        action: crate::StaleAction,
+    },
+    /// A remote sender's message the project's inbound trust holds for
+    /// the person: kept whole and delivered to nobody until they release
+    /// it from `question`, the card put to them. `rule` is the setting
+    /// that held it. Durable, with the question and the held copy.
+    MessageHeld {
+        message: MessageId,
+        question: MessageId,
+        from: String,
+        to: Destination,
+        rule: String,
+    },
+    /// The person released a held message: it goes out as sent, and its
+    /// `message_sent` follows in the same commit. `by` is who released it.
+    HeldMessageReleased {
+        message: MessageId,
+        question: MessageId,
+        by: String,
+    },
+    /// A held message was discarded, reaching nobody: by the person, by
+    /// its sender's cancellation of the question (`by` is their id), or
+    /// unanswered past its week (`by` is `expiry`).
+    HeldMessageDropped {
+        message: MessageId,
+        question: MessageId,
+        by: String,
     },
     AgentActivityReported {
         agent: AgentId,
@@ -435,6 +481,18 @@ pub enum EventKind {
     AgentSessionBound {
         agent: AgentId,
         session: String,
+    },
+    /// A record has learned what its provider says of its conversation:
+    /// the role the provider gave the thread and the thread that spawned
+    /// it (Codex's multi-agent threads), from the rollout's first record or
+    /// from the shared server. Published again only when something new is
+    /// learned, a parent's agent included.
+    AgentThreadLearned {
+        agent: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        parent: Option<crate::ThreadRef>,
     },
     /// Maintenance committed an exact-ID redirect and all operational moves.
     /// Original history and before-images remain available in the repair archive.
@@ -792,6 +850,20 @@ pub enum EventKind {
         requester: AgentId,
         held_by: Vec<AgentId>,
     },
+    /// An agent asked a holder to let go of a resource; the holder has
+    /// the `release_request` message.
+    ReleaseRequested {
+        request: crate::ReleaseRequest,
+    },
+    /// The holder answered: `request.answer` says whether it accepted,
+    /// what it said, and which leases the daemon released for it.
+    ReleaseAnswered {
+        request: crate::ReleaseRequest,
+    },
+    /// A release request waited a day without an answer and was dropped.
+    ReleaseRequestExpired {
+        request: crate::ReleaseRequest,
+    },
     /// A repository was seen for the first time on this host.
     ProjectDiscovered {
         project: ProjectRef,
@@ -847,6 +919,12 @@ pub enum EventKind {
         channel: crate::ChannelId,
         agent: AgentId,
     },
+    /// A member's record was forgotten while the channel stayed open: it
+    /// is out of the room, and what it said there stays.
+    ChannelLeft {
+        channel: crate::ChannelId,
+        agent: AgentId,
+    },
     /// The work is final, or everybody left: the channel is done and can
     /// be pruned.
     ChannelClosed {
@@ -865,13 +943,20 @@ pub enum EventKind {
         of: AgentId,
         verdict: crate::Verdict,
     },
-    /// A reviewer gave its word on a branch at the commit it read.
+    /// A reviewer gave its word on a branch at the commit it read:
+    /// `pass`, `changes` or `none`, with its findings by severity and the
+    /// runtime the reviewer ran in (empty on one recorded before it was
+    /// kept).
     CodeVerdictGiven {
         project: ProjectId,
         branch: String,
         head: String,
         by: AgentId,
-        verdict: crate::Verdict,
+        verdict: crate::gate::Word,
+        #[serde(default)]
+        findings: crate::gate::Findings,
+        #[serde(default)]
+        runtime: String,
     },
     /// A journal entry was appended to a project.
     JournalAppended {
@@ -967,6 +1052,174 @@ pub enum EventKind {
     Unknown,
 }
 
+impl EventKind {
+    /// Every kind's wire name — the `event` tag serde writes, the
+    /// variant in snake_case — in the enum's order, once, so a place
+    /// that takes kinds by name (`[[webhooks]] events`) can refuse a
+    /// name that is not one instead of waiting for an event that never
+    /// comes. `unknown` is left out: it is the reader's catch-all for a
+    /// newer daemon's kinds and is never emitted. A test holds this list
+    /// to the enum in both directions.
+    pub const WIRE_NAMES: &'static [&'static str] = &[
+        "usage_emission_recorded",
+        "usage_recorded",
+        "usage_reconciled",
+        "usage_joined",
+        "secret_review_changed",
+        "question_opened",
+        "question_closed",
+        "answer_routed",
+        "question_cancelled",
+        "question_stale",
+        "message_held",
+        "held_message_released",
+        "held_message_dropped",
+        "agent_activity_reported",
+        "agent_renamed",
+        "agent_launched_by",
+        "role_set",
+        "adapter_contact_reported",
+        "input_delivery_reported",
+        "input_held_for_typing",
+        "input_bound",
+        "input_unbound",
+        "input_controller_ended",
+        "input_controller_launched",
+        "input_controller_launch_failed",
+        "input_restarts_exhausted",
+        "input_restarts_reset",
+        "input_controller_upgraded",
+        "input_resumed",
+        "session_resumed",
+        "session_duplicates_folded",
+        "session_relaunched",
+        "provider_availability_reported",
+        "container_updated",
+        "image_built",
+        "worktree_created",
+        "worktree_witnessed",
+        "authorship_recorded",
+        "committed",
+        "branch_merged",
+        "worktree_cleanup",
+        "integration_prepared",
+        "access_granted",
+        "access_revoked",
+        "checkpoint_saved",
+        "handoff_accepted",
+        "handoff_sent",
+        "handoff_imported",
+        "lease_transferred",
+        "validation_started",
+        "validation_finished",
+        "watcher_gap",
+        "watcher_starting",
+        "watcher_started",
+        "watcher_unavailable",
+        "restricted_endpoint_listening",
+        "restricted_endpoint_unavailable",
+        "reads_observed",
+        "agent_stale",
+        "inbox_acknowledged",
+        "messages_caught_up",
+        "agent_discovered",
+        "agent_vanished",
+        "discovery_unavailable",
+        "discovery_available",
+        "agent_created",
+        "human_location_changed",
+        "agent_started",
+        "agent_session_bound",
+        "agent_thread_learned",
+        "agent_reconciled",
+        "contest_opened",
+        "contest_entered",
+        "contest_submitted",
+        "contest_closed",
+        "lease_waiting",
+        "lease_wait_ended",
+        "lease_deadlock",
+        "task_created",
+        "task_pulled",
+        "task_moved",
+        "task_updated",
+        "task_archived",
+        "task_unarchived",
+        "task_commented",
+        "task_comment_changed",
+        "board_changed",
+        "rule_changed",
+        "rule_fired",
+        "tag_changed",
+        "role_changed",
+        "memory_added",
+        "memory_forgotten",
+        "memory_mirrored",
+        "plan_changed",
+        "project_file_changed",
+        "webhook_failed",
+        "agent_judged_needs_you",
+        "agent_judgment_cleared",
+        "judge_status_changed",
+        "judge_failed",
+        "project_paused",
+        "project_resumed",
+        "policy_denied",
+        "policy_updated",
+        "agent_restarted",
+        "agent_restart_cleared",
+        "agent_restore_cleared",
+        "agent_restoring",
+        "agent_restored",
+        "agent_stopping",
+        "agent_exited",
+        "agent_output_failed",
+        "agent_removed",
+        "message_sent",
+        "lease_claimed",
+        "lease_renewed",
+        "lease_released",
+        "lease_expired",
+        "lease_conflict",
+        "release_requested",
+        "release_answered",
+        "release_request_expired",
+        "project_discovered",
+        "file_changed",
+        "channel_opened",
+        "conversation_read",
+        "messages_pruned",
+        "topic_messages_pruned",
+        "topic_cursors_advanced",
+        "agents_pruned",
+        "channel_invited",
+        "channel_joined",
+        "channel_left",
+        "channel_closed",
+        "channels_pruned",
+        "review_submitted",
+        "code_verdict_given",
+        "journal_appended",
+        "journal_read",
+        "journal_pruned",
+        "agent_owner_reattached",
+        "agent_input_dropped",
+        "agent_owner_lost",
+        "checkpoints_pruned",
+        "agent_vcs_changed",
+        "daemon_stopping",
+        "daemon_transfer_offered",
+        "daemon_transfer_readdressed",
+        "daemon_transfer_accepted",
+        "daemon_transfer_aborted",
+    ];
+
+    /// Whether `name` is the wire name of a kind the daemon emits.
+    pub fn is_wire_name(name: &str) -> bool {
+        Self::WIRE_NAMES.contains(&name)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Event {
     /// Position in the daemon's event log: strictly increasing, assigned by
@@ -1046,5 +1299,106 @@ mod tests {
         let kind: EventKind = serde_json::from_value(omitted.clone()).unwrap();
         assert_eq!(serde_json::from_value::<EventKind>(legacy).unwrap(), kind);
         assert_eq!(serde_json::to_value(kind).unwrap(), omitted);
+    }
+
+    /// The wire names the enum's source declares: each variant of
+    /// `EventKind`, in order, in serde's snake_case, without the
+    /// catch-all. Line endings are normalised first, since a checkout on
+    /// Windows may carry `\r\n` and the markers are matched by line.
+    fn wire_names_in(source: &str) -> Vec<String> {
+        let source = source.replace("\r\n", "\n");
+        let body = source
+            .split_once("pub enum EventKind {\n")
+            .expect("the enum")
+            .1
+            .split_once("\n}\n")
+            .expect("its end")
+            .0;
+        body.lines()
+            .filter_map(|line| {
+                let rest = line.strip_prefix("    ")?;
+                if rest.starts_with(' ') || !rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    return None;
+                }
+                let variant: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect();
+                let mut snake = String::new();
+                for (i, c) in variant.chars().enumerate() {
+                    if c.is_ascii_uppercase() && i > 0 {
+                        snake.push('_');
+                    }
+                    snake.push(c.to_ascii_lowercase());
+                }
+                Some(snake)
+            })
+            .filter(|name| name != "unknown")
+            .collect()
+    }
+
+    /// The failure seen on a Windows runner: Git checked the source out
+    /// with `\r\n`, the enum's markers were not found, and the test that
+    /// guards the list could not run. The scan reads either ending alike.
+    #[test]
+    fn the_enum_scan_reads_a_crlf_checkout_the_same() {
+        let source = include_str!("event.rs");
+        let unix = wire_names_in(source);
+        let crlf = source.replace("\r\n", "\n").replace('\n', "\r\n");
+        assert!(crlf.contains("\r\n"));
+        assert_eq!(wire_names_in(&crlf), unix);
+        assert_eq!(unix, EventKind::WIRE_NAMES);
+    }
+
+    /// `WIRE_NAMES` is the enum, by name: every variant's snake_case tag
+    /// is listed, nothing else is, and nothing twice. The enum's source
+    /// is the authority, so the test reads it rather than keeping a
+    /// second list.
+    #[test]
+    fn wire_names_are_the_enum_in_snake_case() {
+        let from_source = wire_names_in(include_str!("event.rs"));
+        assert!(
+            from_source.len() > 100,
+            "the enum was found: {}",
+            from_source.len()
+        );
+        assert_eq!(
+            EventKind::WIRE_NAMES,
+            from_source,
+            "WIRE_NAMES follows the enum, variant for variant"
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for name in EventKind::WIRE_NAMES {
+            assert!(seen.insert(*name), "{name} is listed twice");
+            // Serde knows each name as a kind: a tag it recognises is read
+            // as that variant (or fails on its missing fields), never as
+            // the catch-all.
+            let probe = format!(r#"{{"event":"{name}"}}"#);
+            let parsed = serde_json::from_str::<EventKind>(&probe);
+            assert!(
+                !matches!(parsed, Ok(EventKind::Unknown)),
+                "serde does not know `{name}`"
+            );
+        }
+        assert!(EventKind::is_wire_name("question_opened"));
+        assert!(!EventKind::is_wire_name("question_asked"));
+        assert!(!EventKind::is_wire_name("unknown"));
+        for kind in [
+            EventKind::DaemonStopping {
+                reason: "signal".to_owned(),
+            },
+            EventKind::WebhookFailed {
+                name: "team".to_owned(),
+                kind: "question_opened".to_owned(),
+                reason: String::new(),
+                dropped: 0,
+            },
+        ] {
+            let tag = serde_json::to_value(&kind).unwrap()["event"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            assert!(EventKind::is_wire_name(&tag), "{tag}");
+        }
     }
 }
