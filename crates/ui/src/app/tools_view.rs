@@ -17,6 +17,7 @@ use super::*;
 use crate::controls::{Kind, button as action, custom, ghost, input, primary, segment};
 use agentdocker_core::readiness::State;
 use agentdocker_core::runtime::{McpWiring, Wiring};
+use agentdocker_core::setup::{self, Phase};
 use iced::{
     Border, Center, Element, Fill, Font, Length, Padding,
     widget::{Space, column, container, row, scrollable, text},
@@ -30,6 +31,12 @@ type ButtonStatus = iced::widget::button::Status;
 /// A string field of a CLI report, or "unknown".
 fn field(json: &serde_json::Value, key: &str) -> String {
     json[key].as_str().unwrap_or("unknown").to_owned()
+}
+
+/// A saved setup plan's phase as the CLI printed it; none for a word this
+/// build does not know, which is shown as printed and offers no move.
+fn phase_of(plan: &serde_json::Value) -> Option<Phase> {
+    plan["phase"].as_str()?.parse().ok()
 }
 
 /// A path with the home folder as `~`.
@@ -718,21 +725,26 @@ impl App {
                 .iter()
                 .map(|plan| -> Element<'_, Message> {
                     let id = field(plan, "id");
-                    let phase = field(plan, "phase");
-                    let (glyph, tone) = match phase.as_str() {
-                        "applied" => (Some(Icon::Check), Tone::Positive),
-                        "prepared" | "applying" => (None, Tone::Info),
-                        _ => (None, Tone::Neutral),
+                    let word = field(plan, "phase");
+                    let phase = phase_of(plan);
+                    // A plan says its phase, or which move stopped part-way.
+                    let stopped = self.setup_interrupted(phase);
+                    let (glyph, tone) = match phase {
+                        _ if stopped.is_some() => (Some(Icon::Alert), Tone::Attention),
+                        Some(Phase::Applied) => (Some(Icon::Check), Tone::Positive),
+                        Some(Phase::Prepared | Phase::Applying) => (None, Tone::Info),
+                        Some(Phase::Undoing | Phase::Undone) | None => (None, Tone::Neutral),
                     };
+                    let label = stopped.map_or_else(|| word.clone(), str::to_lowercase);
                     container(custom(
                         format!("saved-setup-{id}"),
-                        format!("{phase} · {id}"),
+                        format!("{label} · {id}"),
                         row![
                             mono(agentdocker_core::short(&id).to_owned(), 12, c.text).width(Fill),
                             chip(
                                 format!("saved-setup-phase-{id}"),
                                 glyph,
-                                sentence(&phase),
+                                stopped.map_or_else(|| sentence(&word), str::to_owned),
                                 tone,
                                 c
                             ),
@@ -752,6 +764,20 @@ impl App {
             page = page.push(section("Setup history", None, column(rows), c));
         }
         page.into()
+    }
+
+    /// The words for a saved plan that was interrupted, or none when it was
+    /// not: its receipt recorded the start of an apply or an undo and not
+    /// the end, and this window is running no setup operation that could be
+    /// the one writing it. Such a plan is at rest part-way, so it gets no
+    /// progress mark, only what stopped.
+    fn setup_interrupted(&self, phase: Option<Phase>) -> Option<&'static str> {
+        match phase? {
+            _ if self.setup_busy => None,
+            Phase::Applying => Some("Apply interrupted"),
+            Phase::Undoing => Some("Undo interrupted"),
+            Phase::Prepared | Phase::Applied | Phase::Undone => None,
+        }
     }
 
     /// Whether a tool's row offers Set up.
@@ -1173,7 +1199,7 @@ impl App {
     pub(super) fn setup_view(&self, plan: &serde_json::Value, c: Colors) -> Element<'_, Message> {
         let plan_id = plan["id"].as_str().filter(|id| !id.is_empty());
         let id = plan_id.unwrap_or("unknown").to_owned();
-        let phase = field(plan, "phase");
+        let phase = phase_of(plan);
         let changes: Vec<&serde_json::Value> =
             plan["changes"].as_array().into_iter().flatten().collect();
         let tool = changes
@@ -1191,8 +1217,9 @@ impl App {
             Some(tool) => tool.clone(),
             None => "Setup".to_owned(),
         };
-        let applied = phase == "applied";
-        let undone = phase == "undone";
+        let applied = phase == Some(Phase::Applied);
+        let undone = phase == Some(Phase::Undone);
+        let stopped = self.setup_interrupted(phase);
         let any = !changes.is_empty();
         // The files, in the plan's order, each with the entries it gains.
         let mut files: Vec<(String, Vec<String>)> = Vec::new();
@@ -1230,29 +1257,53 @@ impl App {
                 body = body.push(diff_block(path, lines, undone, c));
             }
         }
+        // Connect is there where an apply has work to do: a plan not yet
+        // applied, or one whose apply stopped part-way (whatever it holds).
         let applicable = !self.setup_busy
-            && matches!(phase.as_str(), "prepared" | "applying")
-            && any
+            && matches!(
+                phase.map(|phase| phase.next(false)),
+                Some(Ok(setup::Step::Work { .. }))
+            )
+            && (any || stopped.is_some())
             && plan_id.is_some();
         // The state is the chip's word; what loads a saved change is its
         // detail.
-        let (state_word, glyph, tone, next) = match phase.as_str() {
-            "applied" if shell_plan => (
+        let (state_word, glyph, tone, next) = match (phase, stopped) {
+            (Some(Phase::Applied), _) if shell_plan => (
                 "Saved",
                 Some(Icon::Check),
                 Tone::Positive,
                 Some("Open a new terminal to load it"),
             ),
-            "applied" => (
+            (Some(Phase::Applied), _) => (
                 "Saved",
                 Some(Icon::Check),
                 Tone::Positive,
                 Some("Start a fresh session to load it"),
             ),
-            "undone" => ("Undone", None, Tone::Neutral, None),
-            "applying" => ("Applying…", Some(Icon::Ring), Tone::Info, None),
-            _ if !any => ("Nothing to change", None, Tone::Neutral, None),
-            _ => ("Waiting for you", Some(Icon::Alert), Tone::Attention, None),
+            (Some(Phase::Undone), _) => ("Undone", None, Tone::Neutral, None),
+            // At rest part-way: what stopped and the button that finishes
+            // it, with no progress mark for work nothing is doing.
+            (Some(Phase::Applying), Some(stopped)) => (
+                stopped,
+                Some(Icon::Alert),
+                Tone::Attention,
+                Some("Connect again to finish it"),
+            ),
+            (Some(Phase::Undoing), Some(stopped)) => (
+                stopped,
+                Some(Icon::Alert),
+                Tone::Attention,
+                Some("Undo again to finish it"),
+            ),
+            (Some(Phase::Applying), None) => ("Applying…", Some(Icon::Ring), Tone::Info, None),
+            (Some(Phase::Undoing), None) => ("Undoing…", Some(Icon::Ring), Tone::Info, None),
+            (Some(Phase::Prepared) | None, _) if !any => {
+                ("Nothing to change", None, Tone::Neutral, None)
+            }
+            (Some(Phase::Prepared) | None, _) => {
+                ("Waiting for you", Some(Icon::Alert), Tone::Attention, None)
+            }
         };
         let mut state_chip = Chip::new("setup-state", glyph, state_word, tone);
         if let Some(next) = next {
@@ -1265,7 +1316,8 @@ impl App {
         )]
         .spacing(4)
         .align_y(Center);
-        if applied && plan_id.is_some() {
+        // Undo takes back an applied plan, and finishes an undo that began.
+        if (applied || phase == Some(Phase::Undoing)) && plan_id.is_some() {
             buttons = buttons.push(action(
                 "undo-setup",
                 "Undo",
@@ -2915,6 +2967,101 @@ mod tests {
             ("Hooks · none", None)
         );
         assert!(!view.reads("recent contact"));
+    }
+
+    /// A receipt left part-way through an apply or an undo, with nothing
+    /// of this window's running, was interrupted: the chip says which move
+    /// stopped, with no progress word, its detail says what finishes it,
+    /// the button that does is there, and the history says the same. While
+    /// this window runs a setup operation it is the progress word.
+    #[test]
+    fn an_interrupted_setup_says_so_and_offers_what_finishes_it() {
+        use crate::app::view::testing::seen;
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        app.connected = Ok(());
+        let c = Colors::new(false);
+        let plan = |phase: &str| {
+            serde_json::json!({
+                "id": "plan-fixture",
+                "phase": phase,
+                "changes": [{
+                    "runtime": "codex",
+                    "channel": "mcp",
+                    "action": "add",
+                    "path": "/fixture/config.toml",
+                }],
+            })
+        };
+        for (phase, stopped, finish, button, other, running) in [
+            (
+                "applying",
+                "Apply interrupted",
+                "Connect again to finish it",
+                "apply-setup",
+                "undo-setup",
+                "Applying…",
+            ),
+            (
+                "undoing",
+                "Undo interrupted",
+                "Undo again to finish it",
+                "undo-setup",
+                "apply-setup",
+                "Undoing…",
+            ),
+        ] {
+            app.setup_busy = false;
+            let view = seen(app.setup_view(&plan(phase), c));
+            let state = view.control("setup-state").expect("the state chip");
+            assert_eq!(
+                (state.1.as_str(), state.2.as_deref()),
+                (stopped, Some(finish))
+            );
+            assert!(view.control(button).is_some_and(|b| b.3), "{phase}");
+            assert!(view.control(other).is_none(), "{phase}");
+            assert!(!view.reads(running) && !view.reads("Waiting for you"));
+
+            app.setup_history = vec![plan(phase)];
+            let view = seen(app.connections(c));
+            let row = view.control("saved-setup-plan-fixture").expect("its row");
+            assert_eq!(row.1, format!("{} · plan-fixture", stopped.to_lowercase()));
+            let chip = view.control("saved-setup-phase-plan-fixture");
+            assert_eq!(chip.expect("its chip").1, stopped);
+
+            app.setup_busy = true;
+            let view = seen(app.setup_view(&plan(phase), c));
+            let state = view.control("setup-state").expect("the state chip");
+            assert_eq!((state.1.as_str(), state.2.as_deref()), (running, None));
+            assert!(!view.reads("interrupted"));
+            let view = seen(app.connections(c));
+            let row = view.control("saved-setup-plan-fixture").expect("its row");
+            assert_eq!(row.1, format!("{phase} · plan-fixture"));
+        }
+
+        // A settled plan, and a word this build does not know, read as
+        // they did: the phase as printed, and no move offered for the
+        // unknown one.
+        app.setup_busy = false;
+        for (phase, word) in [
+            ("prepared", "Waiting for you"),
+            ("undone", "Undone"),
+            ("paused", "Waiting for you"),
+        ] {
+            let view = seen(app.setup_view(&plan(phase), c));
+            assert_eq!(view.control("setup-state").unwrap().1, word, "{phase}");
+            assert_eq!(
+                view.control("apply-setup").is_some(),
+                phase == "prepared",
+                "{phase}"
+            );
+            assert!(view.control("undo-setup").is_none(), "{phase}");
+            app.setup_history = vec![plan(phase)];
+            let view = seen(app.connections(c));
+            let row = view.control("saved-setup-plan-fixture").expect("its row");
+            assert_eq!(row.1, format!("{phase} · plan-fixture"));
+        }
     }
 
     /// Settings says each name once: the Installation group heads its
