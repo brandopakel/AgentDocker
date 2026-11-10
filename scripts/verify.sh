@@ -231,16 +231,21 @@ step() {
 # The tools a mode needs beyond cargo itself, looked for before the build
 # slot is taken and before anything compiles: a machine without one would
 # otherwise hold the slot through a whole Clippy build and stop at the
-# first `cargo nextest`. Cargo finds a subcommand on PATH or in its own
-# bin directory, so both are looked in. The version each is pinned at is
-# in scripts/tool_pins.txt, the one place the workflows and the testing
-# standard are checked against (tests/test_tool_pins.py).
+# first `cargo nextest`. A subcommand on PATH or in Cargo's own bin
+# directory is found without starting Cargo; anything else is Cargo's to
+# say, since it also dispatches through aliases in its configuration, so
+# the subcommand is asked for its version, which builds nothing. The
+# version each is pinned at is in scripts/tool_pins.txt, the one place the
+# workflows and the testing standard are checked against
+# (tests/test_tool_pins.py).
 tool_pin() {
   [ -f scripts/tool_pins.txt ] || return 0
   awk -v tool="$1" '$1 == tool { print $2 }' scripts/tool_pins.txt
 }
 have_tool() {
-  command -v "$1" >/dev/null 2>&1 || [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/$1" ]
+  command -v "$1" >/dev/null 2>&1 && return 0
+  [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/$1" ] && return 0
+  cargo "${1#cargo-}" --version >/dev/null 2>&1
 }
 require_tools() {
   local mode="$1" missing="" tool pin

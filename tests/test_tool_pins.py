@@ -1,7 +1,7 @@
 """The development tools are pinned in one place, scripts/tool_pins.txt.
 Every other statement of a tool's version (a workflow's install step, the
 testing standard) must say the same, and verify.sh stops before the build
-slot and before any cargo step when a tool its mode needs is missing."""
+slot and before anything is built when a tool its mode needs is missing."""
 import os
 import re
 import shutil
@@ -11,7 +11,21 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-INSTALL = re.compile(r"cargo install --locked (cargo-[a-z-]+) --version ([0-9][0-9A-Za-z.+-]*)")
+TOOL = re.compile(r"\bcargo-[a-z][a-z-]*[a-z]\b")
+VERSION = re.compile(r"--version[ =]([0-9][0-9A-Za-z.+-]*)")
+
+
+def installs(text):
+    """Every `cargo install` in a text, however its options are ordered:
+    the tool it names and the version it gives, None when it gives none."""
+    found = []
+    for line in text.splitlines():
+        for command in line.split("cargo install")[1:]:
+            tool = TOOL.search(command)
+            if tool:
+                version = VERSION.search(command)
+                found.append((tool.group(0), version.group(1) if version else None))
+    return found
 
 
 def pins():
@@ -30,13 +44,19 @@ class ToolPins(unittest.TestCase):
         places = sorted((ROOT / ".github/workflows").glob("*.yml")) + [ROOT / "docs/TESTING-AND-BENCHMARKS.md"]
         stated = set()
         for place in places:
-            for tool, version in INSTALL.findall(place.read_text()):
+            for tool, version in installs(place.read_text()):
                 stated.add(tool)
                 self.assertIn(tool, pinned, f"{place.relative_to(ROOT)} installs {tool}, which scripts/tool_pins.txt does not pin")
-                self.assertEqual(version, pinned[tool], f"{place.relative_to(ROOT)} installs {tool} {version}; scripts/tool_pins.txt pins {pinned[tool]}")
+                self.assertEqual(version, pinned[tool], f"{place.relative_to(ROOT)} installs {tool} at {version}; scripts/tool_pins.txt pins {pinned[tool]}")
         self.assertEqual(stated, set(pinned), "a pinned tool that nothing installs, or the reverse")
 
-    def run_verify(self, mode, tools):
+    def test_an_install_is_found_however_its_options_are_ordered(self):
+        self.assertEqual(installs("run: cargo install cargo-nextest --locked --version 0.9.142"),
+                         [("cargo-nextest", "0.9.142")])
+        self.assertEqual(installs("`cargo install --locked cargo-fuzz --version=0.13.2`, and `cargo install cargo-llvm-cov`"),
+                         [("cargo-fuzz", "0.13.2"), ("cargo-llvm-cov", None)])
+
+    def run_verify(self, mode, tools, aliased=""):
         """verify.sh in a folder of its own, with a stand-in cargo that
         records being run and only the named tools beside it."""
         with tempfile.TemporaryDirectory() as folder:
@@ -48,7 +68,11 @@ class ToolPins(unittest.TestCase):
             binary = root / "bin"; binary.mkdir()
             ran = root / "cargo-ran"
             cargo = binary / "cargo"
-            cargo.write_text(f"#!/bin/sh\necho \"$@\" >> '{ran}'\n")
+            # As Cargo does: a subcommand it cannot find fails when asked
+            # for its version (unless this fixture says an alias reaches it).
+            cargo.write_text("#!/bin/sh\n"
+                             "if [ \"$2\" = --version ]; then [ \"$1\" = \"$CARGO_ALIASED\" ] && exit 0; exit 101; fi\n"
+                             f"echo \"$@\" >> '{ran}'\n")
             cargo.chmod(0o700)
             claimed = root / "slot-asked"
             cli = binary / "agentdocker"
@@ -59,12 +83,21 @@ class ToolPins(unittest.TestCase):
                 stub.write_text("#!/bin/sh\n"); stub.chmod(0o700)
             # Only the stand-ins and the system's own tools: a cargo-nextest
             # installed on this machine must not be found.
-            env = {"PATH": f"{binary}:/usr/bin:/bin", "HOME": str(root), "CARGO_HOME": str(root / "no-cargo-home")}
+            env = {"PATH": f"{binary}:/usr/bin:/bin", "HOME": str(root), "CARGO_HOME": str(root / "no-cargo-home"),
+                   "CARGO_ALIASED": aliased}
             result = subprocess.run(["bash", "scripts/verify.sh", mode], cwd=root, env=env,
                                     capture_output=True, text=True, timeout=30)
             return result, ran.exists(), claimed.exists()
 
-    def test_a_missing_tool_stops_the_run_before_the_slot_and_before_cargo(self):
+    def test_a_tool_only_cargo_can_reach_counts(self):
+        # Installed outside PATH and Cargo's bin directory, reached through
+        # an alias in Cargo's configuration: only Cargo can say it is there.
+        result, cargo_ran, _ = self.run_verify("test", [], aliased="nextest")
+        self.assertNotEqual(result.returncode, 69, result.stderr)
+        self.assertNotIn("is not installed", result.stderr)
+        self.assertTrue(cargo_ran, "the run went on to its cargo steps")
+
+    def test_a_missing_tool_stops_the_run_before_the_slot_and_before_anything_is_built(self):
         for mode in ("check", "quick", "test"):
             result, cargo_ran, slot_asked = self.run_verify(mode, [])
             self.assertEqual(result.returncode, 69, result.stderr)
