@@ -124,18 +124,35 @@ fn read_json(path: &Path, limit: u64) -> Result<Option<serde_json::Value>, Strin
         .map_err(|e| format!("{}: not JSON ({e})", path.display()))
 }
 
-/// The entries of a directory, at most `MAX_DIR_ENTRIES` of them; the
-/// note says when there were more.
+/// The entries of a directory, as [`bounded`] keeps them.
 fn entries(dir: &Path, notes: &mut Vec<String>) -> io::Result<Vec<PathBuf>> {
+    let listing = std::fs::read_dir(dir)?.map(|entry| entry.map(|entry| entry.path()));
+    Ok(bounded(dir, listing, notes))
+}
+
+/// The first `MAX_DIR_ENTRIES` entries of `dir`'s listing, sorted. A note
+/// says when there were more, and one says how many entries the system
+/// could not give and why: a listing with holes is never passed off as
+/// whole.
+fn bounded(
+    dir: &Path,
+    listing: impl Iterator<Item = io::Result<PathBuf>>,
+    notes: &mut Vec<String>,
+) -> Vec<PathBuf> {
     let mut listed = Vec::new();
     let mut more = false;
-    for (index, entry) in std::fs::read_dir(dir)?.enumerate() {
+    let mut unread: Option<(usize, io::Error)> = None;
+    for (index, entry) in listing.enumerate() {
         if index >= MAX_DIR_ENTRIES {
             more = true;
             break;
         }
-        if let Ok(entry) = entry {
-            listed.push(entry.path());
+        match entry {
+            Ok(path) => listed.push(path),
+            Err(e) => match &mut unread {
+                Some((count, _)) => *count += 1,
+                None => unread = Some((1, e)),
+            },
         }
     }
     if more {
@@ -144,8 +161,38 @@ fn entries(dir: &Path, notes: &mut Vec<String>) -> io::Result<Vec<PathBuf>> {
             dir.display()
         ));
     }
+    if let Some((count, first)) = unread {
+        let entries = if count == 1 { "entry" } else { "entries" };
+        notes.push(format!(
+            "{}: {count} {entries} could not be read, not examined: {first}",
+            dir.display()
+        ));
+    }
     listed.sort();
-    Ok(listed)
+    listed
+}
+
+/// Nothing there, or a file where a directory on the way should be: what
+/// is missing, as opposed to what the system would not show.
+fn absent(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+    )
+}
+
+/// Whether `path` is a directory, when that can be told. Absence is
+/// `false`; any other failure is `false` with a note naming `what` of
+/// `browser` went unexamined, never taken silently for absence.
+fn is_dir_or_noted(browser: &str, what: &str, path: &Path, notes: &mut Vec<String>) -> bool {
+    match std::fs::metadata(path) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(e) if absent(&e) => false,
+        Err(e) => {
+            notes.push(not_examined(browser, what, path, &e));
+            false
+        }
+    }
 }
 
 /// The vendor's extension in every browser profile it is installed in,
@@ -161,7 +208,7 @@ pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> Inventory {
         match std::fs::metadata(&dir.path) {
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => continue,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) if absent(&e) => continue,
             Err(e) => {
                 notes.push(not_examined(&dir.browser, "user data", &dir.path, &e));
                 continue;
@@ -169,7 +216,7 @@ pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> Inventory {
         }
         // Profiles first: a user data directory that cannot be listed is
         // one note, not another for each thing beneath it.
-        let profiles = match profiles(&dir.path, notes) {
+        let profiles = match profiles(&dir.browser, &dir.path, notes) {
             Ok(profiles) => profiles,
             Err(e) => {
                 notes.push(not_examined(&dir.browser, "profiles", &dir.path, &e));
@@ -209,11 +256,13 @@ fn not_examined(browser: &str, what: &str, path: &Path, error: &io::Error) -> St
     format!("{browser} {what} not examined: {}: {error}", path.display())
 }
 
-/// Every profile directory: the ones with an `Extensions` directory.
-fn profiles(user_data: &Path, notes: &mut Vec<String>) -> io::Result<Vec<PathBuf>> {
+/// Every profile directory: the ones with an `Extensions` directory. One
+/// whose `Extensions` cannot be looked at is a note, and the rest are
+/// still examined.
+fn profiles(browser: &str, user_data: &Path, notes: &mut Vec<String>) -> io::Result<Vec<PathBuf>> {
     Ok(entries(user_data, notes)?
         .into_iter()
-        .filter(|path| path.join("Extensions").is_dir())
+        .filter(|path| is_dir_or_noted(browser, "profile", &path.join("Extensions"), notes))
         .collect())
 }
 
@@ -253,7 +302,7 @@ fn profile_names(local_state: &Path, notes: &mut Vec<String>) -> BTreeMap<String
 fn bridges(browser: &str, hosts: &Path, notes: &mut Vec<String>) -> BTreeMap<String, PathBuf> {
     let listed = match entries(hosts, notes) {
         Ok(listed) => listed,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return BTreeMap::new(),
+        Err(e) if absent(&e) => return BTreeMap::new(),
         Err(e) => {
             notes.push(not_examined(browser, "native messaging hosts", hosts, &e));
             return BTreeMap::new();
@@ -300,7 +349,8 @@ fn bridges(browser: &str, hosts: &Path, notes: &mut Vec<String>) -> BTreeMap<Str
 /// directories, the manifest's own `version` when it says one. A manifest
 /// that cannot be read within bounds leaves the copy's name to say the
 /// version, with a note; the extension is still there. Copies that cannot
-/// be listed are a note too, and nothing is reported found.
+/// be listed, or a copy that cannot be looked at, are a note too; the
+/// copies that can be are still weighed.
 fn newest_version(
     browser: &str,
     unpacked: &Path,
@@ -308,7 +358,7 @@ fn newest_version(
 ) -> Option<Option<String>> {
     let listed = match entries(unpacked, notes) {
         Ok(listed) => listed,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+        Err(e) if absent(&e) => return None,
         Err(e) => {
             notes.push(not_examined(browser, "extension", unpacked, &e));
             return None;
@@ -316,7 +366,7 @@ fn newest_version(
     };
     let mut copies: Vec<(Vec<u64>, PathBuf)> = listed
         .into_iter()
-        .filter(|path| path.is_dir())
+        .filter(|path| is_dir_or_noted(browser, "extension copy", path, notes))
         .map(|path| (version_key(&path), path))
         .collect();
     copies.sort();
@@ -550,6 +600,38 @@ mod tests {
         );
     }
 
+    /// Directories a test closed, given back as it ends so the temp dir
+    /// can go.
+    #[cfg(unix)]
+    struct Reopen(Vec<PathBuf>);
+
+    #[cfg(unix)]
+    impl Reopen {
+        /// Give `path` `mode` (`0o000` closes it; `0o444` lets it be
+        /// listed but nothing in it be looked at), until the test ends.
+        fn close(&mut self, path: &Path, mode: u32) {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+            self.0.push(path.to_owned());
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Reopen {
+        fn drop(&mut self) {
+            use std::os::unix::fs::PermissionsExt;
+            for path in &self.0 {
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+            }
+        }
+    }
+
+    /// Whether a mode closes anything here: not for root.
+    #[cfg(unix)]
+    fn modes_close(path: &Path) -> bool {
+        std::fs::read_dir(path).is_err()
+    }
+
     /// A directory the system will not list (as macOS will not list a
     /// browser's user data for a program not allowed to read other apps'
     /// data) is a note naming it, and everything else is still examined:
@@ -558,20 +640,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_directory_that_cannot_be_listed_is_noted_and_the_rest_examined() {
-        use std::os::unix::fs::PermissionsExt;
-        /// Gives back what the test took away, so the temp dir can go.
-        struct Reopen(Vec<PathBuf>);
-        impl Drop for Reopen {
-            fn drop(&mut self) {
-                for path in &self.0 {
-                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
-                }
-            }
-        }
-        let close = |path: &Path, reopen: &mut Reopen| {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
-            reopen.0.push(path.to_owned());
-        };
         let (tmp, mut roots) = machine();
         let claude = spec("claude-browser").unwrap().extensions[0].id;
         let mut reopen = Reopen(Vec::new());
@@ -581,9 +649,8 @@ mod tests {
         let closed = tmp.path().join("Closed");
         std::fs::create_dir_all(closed.join(format!("Default/Extensions/{claude}/1.0.0_0")))
             .unwrap();
-        close(&closed, &mut reopen);
-        if std::fs::read_dir(&closed).is_ok() {
-            // Root: a mode closes nothing, and there is nothing to test.
+        reopen.close(&closed, 0o000);
+        if !modes_close(&closed) {
             return;
         }
         roots.browser_dirs.insert(
@@ -610,10 +677,10 @@ mod tests {
         // extension closed. The other profile is still found, without a
         // bridge it could not read, and each closed door is its own note.
         let chrome = tmp.path().join("Chrome");
-        close(&chrome.join("NativeMessagingHosts"), &mut reopen);
-        close(
+        reopen.close(&chrome.join("NativeMessagingHosts"), 0o000);
+        reopen.close(
             &chrome.join(format!("Profile 1/Extensions/{claude}")),
-            &mut reopen,
+            0o000,
         );
         let inventory = extensions(spec("claude-browser").unwrap(), &roots);
         assert_eq!(
@@ -633,7 +700,96 @@ mod tests {
             "{notes}"
         );
         assert!(notes.contains("Chrome extension not examined"), "{notes}");
-        assert_eq!(inventory.incomplete.len(), 3, "{notes}");
+        // A closed directory beside the profiles cannot be told from one:
+        // that is said too, rather than passed over.
+        assert!(
+            notes.contains(&format!(
+                "Chrome profile not examined: {}",
+                chrome.join("NativeMessagingHosts/Extensions").display()
+            )),
+            "{notes}"
+        );
+        assert_eq!(inventory.incomplete.len(), 4, "{notes}");
+    }
+
+    /// A profile that cannot be looked at, or one copy of an extension, is
+    /// a note too, never taken for absent, and its siblings are still
+    /// examined.
+    #[cfg(unix)]
+    #[test]
+    fn a_profile_or_a_copy_that_cannot_be_looked_at_is_noted() {
+        let claude = spec("claude-browser").unwrap().extensions[0].id;
+
+        // Profile 1 closed: Default is found, Profile 1 is a note.
+        let (tmp, mut roots) = machine();
+        roots.browser_dirs.truncate(1);
+        let chrome = tmp.path().join("Chrome");
+        let mut reopen = Reopen(Vec::new());
+        reopen.close(&chrome.join("Profile 1"), 0o000);
+        if !modes_close(&chrome.join("Profile 1")) {
+            return;
+        }
+        let inventory = extensions(spec("claude-browser").unwrap(), &roots);
+        assert_eq!(inventory.found.len(), 1, "{:?}", inventory.found);
+        assert_eq!(inventory.found[0].version.as_deref(), Some("1.0.93"));
+        assert_eq!(inventory.incomplete.len(), 1, "{:?}", inventory.incomplete);
+        let note = &inventory.incomplete[0];
+        assert!(note.starts_with("Chrome profile not examined: "), "{note}");
+        assert!(note.contains("Profile 1"), "{note}");
+        drop(reopen);
+
+        // Default's copies listed but not to be looked at: each is a
+        // note, and Profile 1's copy is still found.
+        let (tmp, mut roots) = machine();
+        roots.browser_dirs.truncate(1);
+        let copies = tmp
+            .path()
+            .join(format!("Chrome/Default/Extensions/{claude}"));
+        let mut reopen = Reopen(Vec::new());
+        reopen.close(&copies, 0o444);
+        let inventory = extensions(spec("claude-browser").unwrap(), &roots);
+        assert_eq!(inventory.found.len(), 1, "{:?}", inventory.found);
+        assert_eq!(inventory.found[0].profile.as_deref(), Some("Work"));
+        assert_eq!(
+            inventory
+                .incomplete
+                .iter()
+                .filter(|n| n.starts_with("Chrome extension copy not examined: "))
+                .count(),
+            2,
+            "both copies: {:?}",
+            inventory.incomplete
+        );
+        drop(reopen);
+    }
+
+    /// An entry the system cannot give while listing is counted and said,
+    /// once per directory with the first reason; the others are kept.
+    #[test]
+    fn entries_the_listing_cannot_give_are_said() {
+        let dir = Path::new("/user-data");
+        let mut notes = Vec::new();
+        let listing = vec![
+            Ok(dir.join("b")),
+            Err(io::Error::other("injected")),
+            Ok(dir.join("a")),
+            Err(io::Error::other("later")),
+        ];
+        let listed = bounded(dir, listing.into_iter(), &mut notes);
+        assert_eq!(listed, [dir.join("a"), dir.join("b")]);
+        assert_eq!(
+            notes,
+            [format!(
+                "{}: 2 entries could not be read, not examined: injected",
+                dir.display()
+            )]
+        );
+        let mut notes = Vec::new();
+        assert_eq!(
+            bounded(dir, vec![Ok(dir.join("a"))].into_iter(), &mut notes).len(),
+            1
+        );
+        assert!(notes.is_empty(), "a whole listing says nothing");
     }
 
     #[test]
