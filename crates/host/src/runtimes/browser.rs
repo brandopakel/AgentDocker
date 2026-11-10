@@ -172,22 +172,22 @@ fn bounded(
     listed
 }
 
-/// Nothing there, or a file where a directory on the way should be: what
-/// is missing, as opposed to what the system would not show.
-fn absent(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
-    )
+/// Nothing at a path the inventory knows to look at: a browser's user
+/// data, its native messaging hosts, an extension's copies. Anything else
+/// there, a file where the directory should be included, is a note.
+fn missing(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound
 }
 
-/// Whether `path` is a directory, when that can be told. Absence is
-/// `false`; any other failure is `false` with a note naming `what` of
-/// `browser` went unexamined, never taken silently for absence.
+/// Whether a candidate `path` — an entry that may be a profile, or a copy
+/// of an extension — is a directory, when that can be told. Nothing there,
+/// or a file on the way (`Local State/Extensions`: that entry is just not
+/// a profile), is `false`; any other failure is `false` with a note naming
+/// `what` of `browser` went unexamined, never taken silently for absence.
 fn is_dir_or_noted(browser: &str, what: &str, path: &Path, notes: &mut Vec<String>) -> bool {
     match std::fs::metadata(path) {
         Ok(metadata) => metadata.is_dir(),
-        Err(e) if absent(&e) => false,
+        Err(e) if missing(&e) || e.kind() == io::ErrorKind::NotADirectory => false,
         Err(e) => {
             notes.push(not_examined(browser, what, path, &e));
             false
@@ -208,7 +208,7 @@ pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> Inventory {
         match std::fs::metadata(&dir.path) {
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => continue,
-            Err(e) if absent(&e) => continue,
+            Err(e) if missing(&e) => continue,
             Err(e) => {
                 notes.push(not_examined(&dir.browser, "user data", &dir.path, &e));
                 continue;
@@ -302,7 +302,7 @@ fn profile_names(local_state: &Path, notes: &mut Vec<String>) -> BTreeMap<String
 fn bridges(browser: &str, hosts: &Path, notes: &mut Vec<String>) -> BTreeMap<String, PathBuf> {
     let listed = match entries(hosts, notes) {
         Ok(listed) => listed,
-        Err(e) if absent(&e) => return BTreeMap::new(),
+        Err(e) if missing(&e) => return BTreeMap::new(),
         Err(e) => {
             notes.push(not_examined(browser, "native messaging hosts", hosts, &e));
             return BTreeMap::new();
@@ -358,7 +358,7 @@ fn newest_version(
 ) -> Option<Option<String>> {
     let listed = match entries(unpacked, notes) {
         Ok(listed) => listed,
-        Err(e) if absent(&e) => return None,
+        Err(e) if missing(&e) => return None,
         Err(e) => {
             notes.push(not_examined(browser, "extension", unpacked, &e));
             return None;
@@ -761,6 +761,46 @@ mod tests {
             inventory.incomplete
         );
         drop(reopen);
+    }
+
+    /// A file where a known directory should be — the native messaging
+    /// hosts, an extension's copies — is a malformed browser, said as a
+    /// note, never taken for absence; the profiles are still found. Only a
+    /// candidate that may or may not be a profile (`Local State`) passes
+    /// for not one.
+    #[test]
+    fn a_file_where_a_known_directory_should_be_is_noted() {
+        let (tmp, mut roots) = machine();
+        roots.browser_dirs.truncate(1);
+        let chrome = tmp.path().join("Chrome");
+        let claude = spec("claude-browser").unwrap().extensions[0].id;
+        let hosts = chrome.join("NativeMessagingHosts");
+        std::fs::remove_dir_all(&hosts).unwrap();
+        std::fs::write(&hosts, "not a directory").unwrap();
+        let copies = chrome.join(format!("Profile 1/Extensions/{claude}"));
+        std::fs::remove_dir_all(&copies).unwrap();
+        std::fs::write(&copies, "not a directory").unwrap();
+
+        let inventory = extensions(spec("claude-browser").unwrap(), &roots);
+        assert_eq!(
+            inventory.found,
+            vec![InstalledExtension {
+                label: "Claude".into(),
+                browser: "Chrome".into(),
+                profile: Some("Person 1".into()),
+                version: Some("1.0.93".into()),
+                bridge: None,
+            }]
+        );
+        let notes = inventory.incomplete.join("\n");
+        let hosts_note = format!(
+            "Chrome native messaging hosts not examined: {}: ",
+            hosts.display()
+        );
+        let copies_note = format!("Chrome extension not examined: {}: ", copies.display());
+        assert!(notes.contains(&hosts_note), "{notes}");
+        assert!(notes.contains(&copies_note), "{notes}");
+        assert_eq!(inventory.incomplete.len(), 2, "{notes}");
     }
 
     /// An entry the system cannot give while listing is counted and said,
