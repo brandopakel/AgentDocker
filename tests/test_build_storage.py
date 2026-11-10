@@ -774,6 +774,8 @@ class VerifyReport(unittest.TestCase):
             cargo = binary / "cargo"
             cargo.write_text("#!/bin/sh\necho cargo >> \"$STORAGE_LOG\"\n")
             cargo.chmod(0o700)
+            # The run looks for the tools its mode needs before anything else.
+            nextest = binary / "cargo-nextest"; nextest.write_text("#!/bin/sh\n"); nextest.chmod(0o700)
             env = {k: v for k, v in os.environ.items() if not k.startswith("AGENTDOCKER_")}
             env.update(PATH=str(binary) + os.pathsep + os.environ["PATH"], STORAGE_LOG=str(log), CI="1")
             result = subprocess.run(["bash", "scripts/verify.sh", "test"], cwd=root, env=env,
