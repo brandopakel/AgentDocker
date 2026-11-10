@@ -79,10 +79,6 @@ pub(super) fn browser_dirs(
         .collect()
 }
 
-fn error(path: &Path, detail: &str) -> io::Error {
-    io::Error::other(format!("browser inventory at {}: {detail}", path.display()))
-}
-
 /// A manifest is a few kilobytes; a native messaging host file smaller.
 const MAX_JSON_BYTES: u64 = 256 * 1024;
 /// Chrome's `Local State` grows with profiles and experiments, not without bound.
@@ -92,7 +88,11 @@ const MAX_LOCAL_STATE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_DIR_ENTRIES: usize = 4096;
 
 /// What the inventory found, and what it could not read within its bounds.
-/// An unreadable or oversized file is reported, never taken for absence.
+/// An unreadable or oversized file is reported, never taken for absence,
+/// and so is a directory that cannot be listed: macOS, for one, lets a
+/// program list a browser's user data only once the person has allowed it
+/// to read other apps' data. That browser is noted and the next one
+/// examined, so one closed door never costs the rest of the inventory.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Inventory {
     pub found: Vec<InstalledExtension>,
@@ -149,11 +149,12 @@ fn entries(dir: &Path, notes: &mut Vec<String>) -> io::Result<Vec<PathBuf>> {
 }
 
 /// The vendor's extension in every browser profile it is installed in,
-/// with a note for everything the bounds kept it from reading.
-pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> io::Result<Inventory> {
+/// with a note for everything the bounds, or the system, kept it from
+/// reading.
+pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> Inventory {
     let mut inventory = Inventory::default();
     if spec.extensions.is_empty() {
-        return Ok(inventory);
+        return inventory;
     }
     let notes = &mut inventory.incomplete;
     for dir in &roots.browser_dirs {
@@ -161,15 +162,26 @@ pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> io::Result<Invent
             Ok(metadata) if metadata.is_dir() => {}
             Ok(_) => continue,
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(_) => return Err(error(&dir.path, "user data cannot be inspected")),
+            Err(e) => {
+                notes.push(not_examined(&dir.browser, "user data", &dir.path, &e));
+                continue;
+            }
         }
-        let bridges = bridges(&dir.path.join("NativeMessagingHosts"), notes)?;
-        let profiles = profiles(&dir.path, notes)?;
+        // Profiles first: a user data directory that cannot be listed is
+        // one note, not another for each thing beneath it.
+        let profiles = match profiles(&dir.path, notes) {
+            Ok(profiles) => profiles,
+            Err(e) => {
+                notes.push(not_examined(&dir.browser, "profiles", &dir.path, &e));
+                continue;
+            }
+        };
+        let bridges = bridges(&dir.browser, &dir.path.join("NativeMessagingHosts"), notes);
         let names = profile_names(&dir.path.join("Local State"), notes);
         for profile in &profiles {
             for extension in spec.extensions {
                 let unpacked = profile.join("Extensions").join(extension.id);
-                let Some(version) = newest_version(&unpacked, notes)? else {
+                let Some(version) = newest_version(&dir.browser, &unpacked, notes) else {
                     continue;
                 };
                 inventory.found.push(InstalledExtension {
@@ -188,14 +200,18 @@ pub(super) fn extensions(spec: &RuntimeSpec, roots: &Roots) -> io::Result<Invent
             }
         }
     }
-    Ok(inventory)
+    inventory
+}
+
+/// The note for a directory the inventory could not list: whose it is,
+/// what in it went unexamined, and the system's own reason.
+fn not_examined(browser: &str, what: &str, path: &Path, error: &io::Error) -> String {
+    format!("{browser} {what} not examined: {}: {error}", path.display())
 }
 
 /// Every profile directory: the ones with an `Extensions` directory.
 fn profiles(user_data: &Path, notes: &mut Vec<String>) -> io::Result<Vec<PathBuf>> {
-    let listed =
-        entries(user_data, notes).map_err(|_| error(user_data, "profiles cannot be listed"))?;
-    Ok(listed
+    Ok(entries(user_data, notes)?
         .into_iter()
         .filter(|path| path.join("Extensions").is_dir())
         .collect())
@@ -231,13 +247,17 @@ fn profile_names(local_state: &Path, notes: &mut Vec<String>) -> BTreeMap<String
 
 /// The native messaging hosts registered in this user data directory, by
 /// the extension id each one admits: whose bridge it is. A manifest that
-/// cannot be read within bounds is noted; one that is not JSON is another
-/// vendor's problem and is skipped.
-fn bridges(hosts: &Path, notes: &mut Vec<String>) -> io::Result<BTreeMap<String, PathBuf>> {
+/// cannot be read within bounds, or a directory of them that cannot be
+/// listed, is noted; a manifest that is not JSON is another vendor's
+/// problem and is skipped.
+fn bridges(browser: &str, hosts: &Path, notes: &mut Vec<String>) -> BTreeMap<String, PathBuf> {
     let listed = match entries(hosts, notes) {
         Ok(listed) => listed,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
-        Err(_) => return Err(error(hosts, "native messaging hosts cannot be listed")),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return BTreeMap::new(),
+        Err(e) => {
+            notes.push(not_examined(browser, "native messaging hosts", hosts, &e));
+            return BTreeMap::new();
+        }
     };
     let mut bridges = BTreeMap::new();
     for path in listed {
@@ -273,18 +293,26 @@ fn bridges(hosts: &Path, notes: &mut Vec<String>) -> io::Result<BTreeMap<String,
             }
         }
     }
-    Ok(bridges)
+    bridges
 }
 
 /// The version of the newest unpacked copy of an extension: `<version>_<n>`
 /// directories, the manifest's own `version` when it says one. A manifest
 /// that cannot be read within bounds leaves the copy's name to say the
-/// version, with a note; the extension is still there.
-fn newest_version(unpacked: &Path, notes: &mut Vec<String>) -> io::Result<Option<Option<String>>> {
+/// version, with a note; the extension is still there. Copies that cannot
+/// be listed are a note too, and nothing is reported found.
+fn newest_version(
+    browser: &str,
+    unpacked: &Path,
+    notes: &mut Vec<String>,
+) -> Option<Option<String>> {
     let listed = match entries(unpacked, notes) {
         Ok(listed) => listed,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
-        Err(_) => return Err(error(unpacked, "extension cannot be listed")),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return None,
+        Err(e) => {
+            notes.push(not_examined(browser, "extension", unpacked, &e));
+            return None;
+        }
     };
     let mut copies: Vec<(Vec<u64>, PathBuf)> = listed
         .into_iter()
@@ -292,9 +320,7 @@ fn newest_version(unpacked: &Path, notes: &mut Vec<String>) -> io::Result<Option
         .map(|path| (version_key(&path), path))
         .collect();
     copies.sort();
-    let Some((_, newest)) = copies.pop() else {
-        return Ok(None);
-    };
+    let (_, newest) = copies.pop()?;
     let from_name = || {
         newest
             .file_name()
@@ -312,7 +338,7 @@ fn newest_version(unpacked: &Path, notes: &mut Vec<String>) -> io::Result<Option
             from_name()
         }
     };
-    Ok(Some(version))
+    Some(version)
 }
 
 /// `1.0.93_0` sorts after `1.0.9_0` numerically, not lexically.
@@ -410,7 +436,7 @@ mod tests {
     #[test]
     fn extensions_are_found_per_profile_with_their_bridge() {
         let (_tmp, roots) = machine();
-        let claude = extensions(spec("claude-browser").unwrap(), &roots).unwrap();
+        let claude = extensions(spec("claude-browser").unwrap(), &roots);
         assert!(claude.incomplete.is_empty(), "{:?}", claude.incomplete);
         assert_eq!(
             claude.found,
@@ -431,13 +457,13 @@ mod tests {
                 },
             ]
         );
-        let chatgpt = extensions(spec("chatgpt-browser").unwrap(), &roots).unwrap();
+        let chatgpt = extensions(spec("chatgpt-browser").unwrap(), &roots);
         assert_eq!(chatgpt.found.len(), 1);
         assert_eq!(chatgpt.found[0].profile.as_deref(), Some("Work"));
         assert_eq!(chatgpt.found[0].version.as_deref(), Some("2.1.0"));
         assert_eq!(chatgpt.found[0].bridge, None, "no host admits that id");
         assert!(chatgpt.incomplete.is_empty(), "{:?}", chatgpt.incomplete);
-        let none = extensions(spec("claude-code").unwrap(), &roots).unwrap();
+        let none = extensions(spec("claude-code").unwrap(), &roots);
         assert!(none.found.is_empty() && none.incomplete.is_empty());
     }
 
@@ -446,9 +472,7 @@ mod tests {
         let (tmp, mut roots) = machine();
         std::fs::remove_dir_all(tmp.path().join("Chrome/Profile 1")).unwrap();
         roots.browser_dirs.truncate(1);
-        let claude = extensions(spec("claude-browser").unwrap(), &roots)
-            .unwrap()
-            .found;
+        let claude = extensions(spec("claude-browser").unwrap(), &roots).found;
         assert_eq!(claude.len(), 1);
         assert_eq!(claude[0].profile, None);
     }
@@ -483,7 +507,7 @@ mod tests {
         // and the readable one still names its bridge.
         fifo(&chrome.join("NativeMessagingHosts/stuck.json"));
         let started = std::time::Instant::now();
-        let inventory = extensions(spec("claude-browser").unwrap(), &roots).unwrap();
+        let inventory = extensions(spec("claude-browser").unwrap(), &roots);
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
             "no FIFO was waited on"
@@ -514,7 +538,7 @@ mod tests {
             browser: "Crowded".into(),
             path: crowded.clone(),
         }];
-        let inventory = extensions(spec("claude-browser").unwrap(), &roots).unwrap();
+        let inventory = extensions(spec("claude-browser").unwrap(), &roots);
         assert!(inventory.found.is_empty());
         assert!(
             inventory
@@ -524,6 +548,92 @@ mod tests {
             "{:?}",
             inventory.incomplete
         );
+    }
+
+    /// A directory the system will not list (as macOS will not list a
+    /// browser's user data for a program not allowed to read other apps'
+    /// data) is a note naming it, and everything else is still examined:
+    /// the next browser, the profile beside it, the extension whose
+    /// bridges went unread.
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_that_cannot_be_listed_is_noted_and_the_rest_examined() {
+        use std::os::unix::fs::PermissionsExt;
+        /// Gives back what the test took away, so the temp dir can go.
+        struct Reopen(Vec<PathBuf>);
+        impl Drop for Reopen {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+                }
+            }
+        }
+        let close = |path: &Path, reopen: &mut Reopen| {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o000)).unwrap();
+            reopen.0.push(path.to_owned());
+        };
+        let (tmp, mut roots) = machine();
+        let claude = spec("claude-browser").unwrap().extensions[0].id;
+        let mut reopen = Reopen(Vec::new());
+
+        // A whole browser closed, ahead of Chrome: one note, and Chrome's
+        // two profiles are still found with their bridge.
+        let closed = tmp.path().join("Closed");
+        std::fs::create_dir_all(closed.join(format!("Default/Extensions/{claude}/1.0.0_0")))
+            .unwrap();
+        close(&closed, &mut reopen);
+        if std::fs::read_dir(&closed).is_ok() {
+            // Root: a mode closes nothing, and there is nothing to test.
+            return;
+        }
+        roots.browser_dirs.insert(
+            0,
+            BrowserDir {
+                browser: "Closed".into(),
+                path: closed.clone(),
+            },
+        );
+        let inventory = extensions(spec("claude-browser").unwrap(), &roots);
+        assert_eq!(inventory.found.len(), 2, "{:?}", inventory.found);
+        assert!(inventory.found.iter().all(|e| e.browser == "Chrome"));
+        assert!(
+            inventory.found.iter().all(|e| e.bridge.is_some()),
+            "{:?}",
+            inventory.found
+        );
+        assert_eq!(inventory.incomplete.len(), 1, "{:?}", inventory.incomplete);
+        let note = &inventory.incomplete[0];
+        assert!(note.starts_with("Closed profiles not examined: "), "{note}");
+        assert!(note.contains(&closed.display().to_string()), "{note}");
+
+        // Inside Chrome: the bridges and one profile's copies of the
+        // extension closed. The other profile is still found, without a
+        // bridge it could not read, and each closed door is its own note.
+        let chrome = tmp.path().join("Chrome");
+        close(&chrome.join("NativeMessagingHosts"), &mut reopen);
+        close(
+            &chrome.join(format!("Profile 1/Extensions/{claude}")),
+            &mut reopen,
+        );
+        let inventory = extensions(spec("claude-browser").unwrap(), &roots);
+        assert_eq!(
+            inventory.found,
+            vec![InstalledExtension {
+                label: "Claude".into(),
+                browser: "Chrome".into(),
+                profile: Some("Person 1".into()),
+                version: Some("1.0.93".into()),
+                bridge: None,
+            }]
+        );
+        let notes = inventory.incomplete.join("\n");
+        assert!(notes.contains("Closed profiles not examined"), "{notes}");
+        assert!(
+            notes.contains("Chrome native messaging hosts not examined"),
+            "{notes}"
+        );
+        assert!(notes.contains("Chrome extension not examined"), "{notes}");
+        assert_eq!(inventory.incomplete.len(), 3, "{notes}");
     }
 
     #[test]
