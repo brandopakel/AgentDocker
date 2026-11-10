@@ -401,6 +401,11 @@ pub fn comparable<'a>(
     reader: Reader<'_>,
     at: DateTime<Utc>,
 ) -> Vec<&'a Memory> {
+    // A memory with no words (punctuation, an emoji) shares none, so
+    // nothing is alike; `rank` would list every memory for it.
+    if words(&new.text).is_empty() {
+        return Vec::new();
+    }
     let pool = current(memories, reader, at)
         .into_iter()
         .filter(|m| m.id != new.id && new.supersedes.as_deref() != Some(m.id.as_str()))
@@ -746,6 +751,12 @@ mod tests {
         new.id = "new".into();
         new.supersedes = Some("open".into());
         assert!(ids(&new, Reader::Person, 8).is_empty());
+        // One with no words shares none, so nothing is alike: not every
+        // memory there is.
+        for wordless in ["!!!", "🚀", "-- ?"] {
+            let new = memory("new", wordless, 2, None);
+            assert!(ids(&new, Reader::Person, 8).is_empty(), "{wordless:?}");
+        }
     }
 
     /// A moment after every memory these tests keep.

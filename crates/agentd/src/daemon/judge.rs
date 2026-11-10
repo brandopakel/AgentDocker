@@ -233,6 +233,21 @@ pub(in crate::daemon) struct Judge {
     /// second.
     #[cfg(test)]
     pause: Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>,
+    /// A test's hold, once, on a due screen found within the budget and
+    /// not yet given its place, so another call can go in between.
+    #[cfg(test)]
+    admit_pause: Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>,
+}
+
+/// Why a call may not go now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refusal {
+    /// The setup it would be asked under is no longer in force.
+    Stale,
+    /// The service failed lately and is being given time.
+    BackingOff,
+    /// The minute's calls are spent.
+    OverBudget,
 }
 
 impl Default for Judge {
@@ -261,11 +276,50 @@ impl Default for Judge {
             reads: 0,
             #[cfg(test)]
             pause: None,
+            #[cfg(test)]
+            admit_pause: None,
         }
     }
 }
 
 impl Judge {
+    /// Why a call under `generation` may not go now, if it may not.
+    fn refusal(
+        &mut self,
+        generation: u64,
+        calls_per_minute: usize,
+        now: Instant,
+    ) -> Option<Refusal> {
+        self.prune(now);
+        if !self.current(generation) {
+            Some(Refusal::Stale)
+        } else if self.backoff_until.is_some_and(|until| now < until) {
+            Some(Refusal::BackingOff)
+        } else if self.calls.len() >= calls_per_minute {
+            Some(Refusal::OverBudget)
+        } else {
+            None
+        }
+    }
+
+    /// Give a call that goes now its place in the minute's budget, and its
+    /// deadline. Every call, a screen's or a memory's, is admitted here, in
+    /// the hold that checks the setup, the backoff and the budget, right
+    /// before it is sent: two calls never both take the last place, and
+    /// none goes out after another's failure began a backoff.
+    fn admit(
+        &mut self,
+        generation: u64,
+        calls_per_minute: usize,
+        now: Instant,
+    ) -> Result<StdDuration, Refusal> {
+        if let Some(refusal) = self.refusal(generation, calls_per_minute, now) {
+            return Err(refusal);
+        }
+        self.calls.push_back(now);
+        Ok(self.deadline)
+    }
+
     fn prune(&mut self, now: Instant) {
         while self
             .calls
@@ -725,20 +779,17 @@ impl Daemon {
             return (Suggestion::Made, Vec::new());
         }
         let config = &setup.config;
-        let deadline = {
-            let mut judge = lock(&self.judge);
-            let now = Instant::now();
-            judge.prune(now);
-            if !judge.current(setup.generation)
-                || judge.backoff_until.is_some_and(|until| now < until)
-            {
+        let admitted = lock(&self.judge).admit(
+            setup.generation,
+            config.calls_per_minute as usize,
+            Instant::now(),
+        );
+        let deadline = match admitted {
+            Ok(deadline) => deadline,
+            Err(Refusal::OverBudget) => return (Suggestion::OverBudget, Vec::new()),
+            Err(Refusal::Stale | Refusal::BackingOff) => {
                 return (Suggestion::Unavailable, Vec::new());
             }
-            if judge.calls.len() >= config.calls_per_minute as usize {
-                return (Suggestion::OverBudget, Vec::new());
-            }
-            judge.calls.push_back(now);
-            judge.deadline
         };
         let texts: Vec<&str> = candidates.iter().map(|(_, text)| text.as_str()).collect();
         let body = judgment::memory_request(&config.model, new, &texts);
@@ -1066,29 +1117,27 @@ impl Daemon {
     async fn ask_judge(self: &Arc<Self>, setup: &Setup, pass: &mut Pass, due: Vec<Due>) {
         let config = &setup.config;
         let thresholds = Thresholds::percent(config.threshold_percent);
+        let calls_per_minute = config.calls_per_minute as usize;
         for screen in due {
-            let deadline = {
-                let mut judge = lock(&self.judge);
-                let now = Instant::now();
-                judge.prune(now);
-                if !judge.current(setup.generation)
-                    || judge.backoff_until.is_some_and(|until| now < until)
-                    || judge.calls.len() >= config.calls_per_minute as usize
-                {
-                    break;
-                }
-                judge.deadline
-            };
+            // Not worth reading the screen again for a call that could not go.
+            let refused =
+                lock(&self.judge).refusal(setup.generation, calls_per_minute, Instant::now());
+            if refused.is_some() {
+                break;
+            }
+            #[cfg(test)]
+            self.admit_pause().await;
             if !self.unchanged(pass, &screen).await {
                 continue;
             }
-            {
-                let mut judge = lock(&self.judge);
-                if !judge.current(setup.generation) {
-                    break;
-                }
-                judge.calls.push_back(Instant::now());
-            }
+            // Checked again as the place is taken: while the screen was
+            // read, a memory's call may have spent the budget or failed
+            // into a backoff.
+            let admitted =
+                lock(&self.judge).admit(setup.generation, calls_per_minute, Instant::now());
+            let Ok(deadline) = admitted else {
+                break;
+            };
             let body = judgment::screen_request(&config.model, &screen.lines);
             let (url, key) = (config.url.clone(), setup.key.clone());
             let answered = tokio::task::spawn_blocking(move || call(&url, &key, &body, deadline))
@@ -1167,6 +1216,17 @@ impl Daemon {
     #[cfg(test)]
     async fn judge_pause(&self) {
         let pause = lock(&self.judge).pause.clone();
+        if let Some((reached, resume)) = pause {
+            reached.wait().await;
+            resume.wait().await;
+        }
+    }
+
+    /// Where a test holds a due screen, once, after its budget was looked
+    /// at and before it takes its place.
+    #[cfg(test)]
+    async fn admit_pause(&self) {
+        let pause = lock(&self.judge).admit_pause.take();
         if let Some((reached, resume)) = pause {
             reached.wait().await;
             resume.wait().await;
@@ -2067,6 +2127,120 @@ mod tests {
         let (_, _, word) = keep(&daemon, "author", None, text, &[]).await;
         assert_eq!(word, Some(Suggestion::Unavailable));
         assert_eq!(calls(&fake), sent, "no call while backing off");
+    }
+
+    /// A memory kept is the answer through the whole request, whatever
+    /// becomes of asking about it: a handover offered while the call is
+    /// out, and the failure the fence then keeps from being announced, do
+    /// not turn it into a refusal, which its client would send again and
+    /// so keep the memory twice.
+    #[tokio::test]
+    async fn a_memory_kept_before_a_handover_stays_the_answer() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.0; 4]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        keep(&daemon, "author", None, "deploys go out on Mondays", &[]).await;
+        configure_memories(&dir, &url, "");
+        {
+            let mut fake = fake.lock().unwrap();
+            fake.status = 500;
+            fake.hold = true;
+        }
+        let add = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move {
+                keep(&daemon, "author", None, "deploys go out on Fridays", &[]).await
+            })
+        };
+        eventually(async || (calls(&fake) == 1).then_some(())).await;
+        let _offer = daemon
+            .offer_transfer(4242)
+            .expect("the add holds no place while it asks");
+        fake.lock().unwrap().hold = false;
+        let (kept, may_supersede, word) = add.await.unwrap();
+        assert_eq!(word, Some(Suggestion::Unavailable));
+        assert!(may_supersede.is_empty());
+        assert_eq!(kept.text, "deploys go out on Fridays");
+        let memories = lock(&daemon.state).project_memories(&kept.project).unwrap();
+        assert!(memories.iter().any(|m| m.id == kept.id), "it was kept");
+    }
+
+    fn configure_both(dir: &TempDir, url: &str, extra: &str) {
+        let key = write_key(dir, 0o600);
+        std::fs::write(
+            dir.path().join(agentdocker_core::config::FILE_NAME),
+            format!(
+                "[judge]\njudgments = [\"screens\", \"memories\"]\nkey_file = {:?}\nurl = {url:?}\n{extra}",
+                key.display().to_string()
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Hold the next pass's first due screen after its budget was looked
+    /// at and before it takes its place.
+    fn hold_admission(
+        daemon: &Arc<Daemon>,
+    ) -> (Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>) {
+        let held = (
+            Arc::new(tokio::sync::Barrier::new(2)),
+            Arc::new(tokio::sync::Barrier::new(2)),
+        );
+        lock(&daemon.judge).admit_pause = Some(held.clone());
+        held
+    }
+
+    /// Screens and memories share one budget and one backoff, and each
+    /// call is admitted in the hold that takes its place: a memory's call
+    /// that takes the last place, or fails into a backoff, while a due
+    /// screen is between its look at the budget and its call, keeps that
+    /// screen's call from going.
+    #[tokio::test]
+    async fn a_screen_and_a_memory_never_both_take_the_last_place() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.1, 0.1, 0.1, 0.1]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        keep(&daemon, "author", None, "deploys go out on Mondays", &[]).await;
+        configure_both(&dir, &url, "calls_per_minute = 1\n");
+        fake.lock().unwrap().notes = vec![0.1];
+        let agent = showing(&daemon, &dir, "due", "first screen\\n").await;
+
+        // The memory's call takes the only place while the screen is held.
+        let (reached, resume) = hold_admission(&daemon);
+        let pass = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { daemon.judge_once().await })
+        };
+        tokio::time::timeout(StdDuration::from_secs(10), reached.wait())
+            .await
+            .expect("the screen is due");
+        let (_, _, word) = keep(&daemon, "author", None, "deploys go out on Fridays", &[]).await;
+        assert_eq!(word, Some(Suggestion::Made));
+        resume.wait().await;
+        pass.await.unwrap();
+        assert_eq!(calls(&fake), 1, "the screen found the place taken");
+        assert!(fake.lock().unwrap().seen[0].1["state"]["new"].is_string());
+
+        // A new minute: the memory's call fails, and the screen finds the
+        // service backing off.
+        lock(&daemon.judge).calls.clear();
+        fake.lock().unwrap().status = 500;
+        let (reached, resume) = hold_admission(&daemon);
+        let pass = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { daemon.judge_once().await })
+        };
+        tokio::time::timeout(StdDuration::from_secs(10), reached.wait())
+            .await
+            .expect("the screen is due");
+        let (_, _, word) = keep(&daemon, "author", None, "deploys go out on Sundays", &[]).await;
+        assert_eq!(word, Some(Suggestion::Unavailable));
+        resume.wait().await;
+        pass.await.unwrap();
+        assert_eq!(calls(&fake), 2, "the screen found the service backing off");
+        stop(&daemon, &agent).await;
     }
 
     /// A memory for everyone is compared only with what everyone can read:

@@ -164,9 +164,11 @@ impl Daemon {
             Ok(kept) => kept,
             Err(response) => return *response,
         };
-        // It is kept: asking the judge changes nothing, whatever it answers,
-        // and nothing here should hold a transfer back while it does.
-        self.done_writing();
+        // It is kept, and that is the answer: asking the judge changes
+        // nothing, whatever it answers, so nothing here holds a transfer
+        // back while it does, and nothing it writes (a failure announced)
+        // can turn the kept memory into a refusal its client would retry.
+        self.answer_settled();
         let (suggestion, may_supersede) = self.judge_memory(&memory.text, candidates).await;
         Response::Memory {
             memory,
