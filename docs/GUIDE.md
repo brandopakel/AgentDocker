@@ -667,7 +667,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]…` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
+| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]… <path>` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged. The worktree's build cache (`target/`) goes with it |
 | `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |
@@ -707,7 +707,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
+| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent, and so is a browser whose data the system will not let it list (macOS asks the person before a program reads another app's data); the rest of the table is still shown |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code. Docker Agent keeps its MCP servers in each agent's YAML, so `setup docker-agent --agent <file>` adds the toolset to that file's default agent (`root`, else the first) and `setup --remove docker-agent --agent <file>` takes it out; `--git-hook` plans the pre-commit backstop for this repository (below) |
 | `skill` | Print the portable coordination `SKILL.md`, the one `setup` installs for the providers that take one, without connecting to a daemon |
 | `ui` | Open the desktop app |
@@ -1095,6 +1095,24 @@ or id, no project, no path, nothing but what is on those 30 lines — which can
 be anything the agent printed, so turn it on only for work you are content to
 show TypeSafe. TypeSafe's own terms and costs apply; at most
 `calls_per_minute` requests go each minute (6 unless you set it, 1–60).
+
+**Suggesting which memory a new one replaces.** Add `"memories"` to
+`judgments` (`judgments = ["screens", "memories"]`, or `["memories"]` alone,
+which reads no screen). When a memory is kept, the judge is asked whether it
+restates, contradicts or replaces each of up to 8 current memories most like
+it. `agentdocker memory add` prints the likely ones to stderr, and the
+`add_memory` tool answers them as `may_supersede`, the likeliest first, above
+`threshold_percent`. It is only a suggestion: nothing is replaced until you
+or the agent say so with `--supersedes`. The memory is kept whatever becomes
+of asking, and `suggestion` says what did: `made`, `off`, `over_budget` or
+`unavailable`.
+
+What is sent: the new memory's text and the other memories' texts, with a
+fixed sentence and one yes/no question each. No id, link, author, role or
+project goes. Those texts can include memories said only to some roles,
+compared only with memories all their readers can read, so name this judgment
+only for memories you are content to show TypeSafe. Each new memory that
+shares a word with another costs one of the `calls_per_minute`.
 
 **Whose screens.** The terminals of agents AgentDocker started (from the app
 or with `run --tty`); the tmux pane an agent registered from — at the tmux

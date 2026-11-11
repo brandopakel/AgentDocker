@@ -677,6 +677,72 @@ async fn an_agent_is_started_on_a_card_only_by_the_person() {
     );
 }
 
+/// A browser whose user data the system will not list (as macOS will not
+/// for a program not allowed to read other apps' data) is said in
+/// `runtimes` as an incomplete inventory, and a start on a card still
+/// learns which runtimes there are: one closed door is not a failed
+/// inventory.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_browser_is_noted_and_costs_neither_runtimes_nor_a_start() {
+    use std::os::unix::fs::PermissionsExt;
+    /// Gives back what the test took away, so the temp dir can go.
+    struct Reopen(std::path::PathBuf);
+    impl Drop for Reopen {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let f = fixture().await;
+    let d = &f.daemon;
+    let chrome = f._dir.path().join("machine/Chrome");
+    std::fs::create_dir_all(chrome.join("Default/Extensions")).unwrap();
+    std::fs::set_permissions(&chrome, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _reopen = Reopen(chrome.clone());
+    if std::fs::read_dir(&chrome).is_ok() {
+        // Root: a mode closes nothing, and there is nothing to test.
+        return;
+    }
+    lock(&d.runtime_roots).browser_dirs = vec![agentdocker_host::runtimes::browser::BrowserDir {
+        browser: "Chrome".into(),
+        path: chrome.clone(),
+    }];
+    let Response::Runtimes { runtimes } = d.handle(Request::Runtimes).await else {
+        panic!("runtimes failed");
+    };
+    let browser = runtimes
+        .iter()
+        .find(|r| r.name == "claude-browser")
+        .expect("every known runtime is listed");
+    assert!(browser.extensions.is_empty());
+    assert!(
+        browser
+            .incomplete
+            .iter()
+            .any(|n| n.starts_with("Chrome profiles not examined: ")),
+        "{:?}",
+        browser.incomplete
+    );
+    let filed = card(
+        d.handle(create(HUMAN, &f.work, "Port it", Some("ready"), &[]))
+            .await,
+    );
+    assert!(matches!(
+        d.handle(Request::TaskStart {
+            from: HUMAN.to_owned(),
+            task: filed.id.to_string(),
+            runtime: "no-such-runtime".into(),
+            args: Vec::new(),
+            workdir: None,
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+}
+
 /// A card that waits, on an open card or on something off the board, is
 /// not started on by the person or by a start rule, as a pull would not
 /// take it; once what it waits on clears, both start on it.
@@ -1214,7 +1280,7 @@ async fn a_projects_memory_is_read_as_it_stood_at_a_moment() {
     };
     let keep = |request: Request| async move {
         match d.handle(request).await {
-            Response::Memory { memory } => memory,
+            Response::Memory { memory, .. } => memory,
             other => panic!("{other:?}"),
         }
     };
@@ -1311,7 +1377,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
     };
     let keep = |request: Request| async move {
         match d.handle(request).await {
-            Response::Memory { memory } => memory,
+            Response::Memory { memory, .. } => memory,
             other => panic!("{other:?}"),
         }
     };
@@ -1439,7 +1505,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         roles: vec![],
         valid_from: None,
     };
-    let Response::Memory { memory: first } = d
+    let Response::Memory { memory: first, .. } = d
         .handle(add(
             f.agent.id.to_string(),
             "Deploys go out on Fridays",
@@ -1464,7 +1530,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
     assert_eq!(memories.len(), 1, "a peer of the project finds it");
     assert_eq!(memories[0].id, first.id);
 
-    let Response::Memory { memory: second } = d
+    let Response::Memory { memory: second, .. } = d
         .handle(add(
             f.peer.id.to_string(),
             "Deploys go out on Mondays now",
@@ -1533,7 +1599,9 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
     // by full id or by prefix.
     let other = std::path::Path::new(&f.work).join("other-project");
     std::fs::create_dir_all(&other).unwrap();
-    let Response::Memory { memory: elsewhere } = d
+    let Response::Memory {
+        memory: elsewhere, ..
+    } = d
         .handle(Request::MemoryAdd {
             from: f.agent.id.to_string(),
             project: Some(other.display().to_string()),

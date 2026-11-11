@@ -4,6 +4,9 @@
 use super::*;
 use agentdocker_core::memory::{self, MEMORIES_PER_PROJECT, Memory, Reader};
 
+/// A memory just kept, and the ones it may be compared with, by id and text.
+type Kept = (Memory, Vec<(String, String)>);
+
 pub(in crate::daemon) const MEMORY: &str = "memory";
 
 fn memory_doc(memory: &Memory) -> Doc {
@@ -165,30 +168,64 @@ impl Daemon {
             Ok(project) => project,
             Err(response) => return *response,
         };
-        let mut state = lock(&self.state);
-        let actor = match state.actor(from) {
-            Ok(actor) => actor,
+        let (memory, candidates) = match self.keep_memory(
+            from,
+            project,
+            text,
+            links,
+            supersedes,
+            standing,
+            forget_after,
+            roles,
+            valid_from,
+        ) {
+            Ok(kept) => kept,
             Err(response) => return *response,
         };
-        if let Some(error) = state.write_failure() {
-            return error;
+        // It is kept, and that is the answer: asking the judge changes
+        // nothing, whatever it answers, so nothing here holds a transfer
+        // back while it does, and nothing it writes (a failure announced)
+        // can turn the kept memory into a refusal its client would retry.
+        self.answer_settled();
+        let (suggestion, may_supersede) = self.judge_memory(&memory.text, candidates).await;
+        Response::Memory {
+            memory,
+            may_supersede,
+            suggestion: Some(suggestion),
         }
-        let existing = match state.project_memories(&project) {
-            Ok(memories) => memories,
-            Err(response) => return *response,
-        };
+    }
+
+    /// Keep a memory under the state lock, with the current memories it may
+    /// be compared with, by id and text ([`memory::comparable`]).
+    #[allow(clippy::too_many_arguments)]
+    fn keep_memory(
+        &self,
+        from: &str,
+        project: ProjectId,
+        text: &str,
+        links: Vec<agentdocker_core::Link>,
+        supersedes: Option<String>,
+        standing: bool,
+        forget_after: Option<chrono::DateTime<Utc>>,
+        roles: Vec<String>,
+        valid_from: Option<chrono::DateTime<Utc>>,
+    ) -> Result<Kept, Box<Response>> {
+        let refuse = |response: Response| Err(Box::new(response));
+        let mut state = lock(&self.state);
+        let actor = state.actor(from)?;
+        if let Some(error) = state.write_failure() {
+            return refuse(error);
+        }
+        let existing = state.project_memories(&project)?;
         if existing.len() >= MEMORIES_PER_PROJECT {
-            return Response::error(
+            return refuse(Response::error(
                 ErrorCode::Invalid,
                 "a project keeps at most 1000 memories; forget some first",
-            );
+            ));
         }
         // The roles it is said to are the project's own.
         if !roles.is_empty() {
-            let catalog = match state.project_roles(&project) {
-                Ok(catalog) => catalog,
-                Err(response) => return *response,
-            };
+            let catalog = state.project_roles(&project)?;
             let unknown: Vec<&str> = roles
                 .iter()
                 .filter(|r| !catalog.iter().any(|c| &c.role == *r))
@@ -196,7 +233,7 @@ impl Daemon {
                 .collect();
             if !unknown.is_empty() {
                 let names: Vec<&str> = catalog.iter().map(|r| r.role.as_str()).collect();
-                return Response::Error {
+                return refuse(Response::Error {
                     code: ErrorCode::Invalid,
                     message: format!(
                         "the project has no role called {}; its roles are {}",
@@ -204,28 +241,28 @@ impl Daemon {
                         names.join(", ")
                     ),
                     details: Some(serde_json::json!({ "roles": names })),
-                };
+                });
             }
         }
-        let reading = match state.reading(Some(from), &project) {
-            Ok(reading) => reading,
-            Err(response) => return *response,
-        };
+        let reading = state.reading(Some(from), &project)?;
         // What it replaces is one of this project's, by its full id, and
         // one its author may read.
         let supersedes = match supersedes {
             Some(words) => match state.resolve_memory(&words, Some(&project)) {
                 Ok(old) if old.project == project && !old.seen_by(reading.reader()) => {
-                    return Response::error(ErrorCode::NotFound, format!("no memory is {words}"));
+                    return refuse(Response::error(
+                        ErrorCode::NotFound,
+                        format!("no memory is {words}"),
+                    ));
                 }
                 Ok(old) if old.project == project => Some(old.id),
                 Ok(_) => {
-                    return Response::error(
+                    return refuse(Response::error(
                         ErrorCode::Invalid,
                         "a memory replaces one of its own project's",
-                    );
+                    ));
                 }
-                Err(response) => return *response,
+                Err(response) => return Err(response),
             },
             None => None,
         };
@@ -242,17 +279,27 @@ impl Daemon {
         .and_then(|memory| memory.valid_from(valid_from))
         {
             Ok(memory) => memory,
-            Err(reason) => return Response::error(ErrorCode::Invalid, reason),
+            Err(reason) => return refuse(Response::error(ErrorCode::Invalid, reason)),
         };
+        let candidates = memory::comparable(
+            &existing,
+            &memory,
+            agentdocker_core::judgment::MEMORY_CANDIDATES,
+            reading.reader(),
+            Utc::now(),
+        )
+        .into_iter()
+        .map(|m| (m.id.clone(), m.text.clone()))
+        .collect();
         let kinds = vec![EventKind::MemoryAdded {
             project,
             memory: memory.id.clone(),
             by: actor.id,
         }];
         if let Some(error) = state.commit_documents("memory", vec![memory_doc(&memory)], kinds) {
-            return error;
+            return refuse(error);
         }
-        Response::Memory { memory }
+        Ok((memory, candidates))
     }
 
     pub(in crate::daemon) async fn memory_search(

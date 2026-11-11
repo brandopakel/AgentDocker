@@ -940,15 +940,21 @@ detail, beside a chip with the queued count (*2 queued*); an ended session's
 latest receipt is *Last message* under its **Details**.
 A setup review is named for its tool; its files show their MCP, Hooks or Shell
 lines as a diff, and its state is the footer's chip (*Waiting for you*,
-*Applying…*, *Nothing to change*). Applying a plan turns that chip to *Saved*,
+*Applying…*, *Undoing…*, *Nothing to change*). Applying a plan turns that chip to *Saved*,
 whose detail says what loads it (*Start a fresh session to load it*, or a new
-terminal for the shell), with **Undo** available afterwards. Fresh
+terminal for the shell), with **Undo** available afterwards. A plan whose
+receipt was left part-way through an apply or an undo, while this window runs
+no setup operation, was interrupted, and is not shown as in progress: the chip
+reads *Apply interrupted* or *Undo interrupted* with the alert mark and no
+progress ring, its detail says what finishes it (*Connect again to finish it*,
+*Undo again to finish it*), and that button is offered. Fresh
 sessions load saved setup; only the provider can request its required approval.
 The connection check is one line per installed tool, a *Configuration
 checked* chip when configuration passes or the alert mark with the first
 problem printed and all of them its detail, and closes with **Close**. Busy is a *Checking…*
 chip, and a failure one line beside the alert mark. Setup history lists each
-saved setup with its phase as a chip (*Applied*, *Prepared*, *Undone*). A connection
+saved setup with its phase as a chip (*Applied*, *Prepared*, *Undone*), or
+with *Apply interrupted* or *Undo interrupted* for one left part-way. A connection
 failure retains the last snapshot and clearly pauses daemon actions.
 
 ## Settings and installation
