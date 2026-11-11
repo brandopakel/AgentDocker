@@ -1213,6 +1213,7 @@ impl EventKind {
         "channels_pruned",
         "review_submitted",
         "code_verdict_given",
+        "code_verdict_superseded",
         "journal_appended",
         "journal_read",
         "journal_pruned",
