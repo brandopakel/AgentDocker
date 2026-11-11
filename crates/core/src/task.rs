@@ -338,7 +338,9 @@ pub enum TaskError {
         assignee: Option<AgentId>,
         column: Column,
     },
-    /// A move by somebody who is neither its assignee nor the person.
+    /// A change to what the card says, or to its place on or off the
+    /// board's record, by somebody who is neither its assignee nor the
+    /// person. Never a move: anybody moves a card.
     NotYours,
     /// A card that is archived.
     Archived,
@@ -358,7 +360,7 @@ impl std::fmt::Display for TaskError {
                 write!(f, "the card is not ready to pull; it is in {column}")
             }
             TaskError::NotYours => f.write_str(
-                "only the card's assignee or the person moves it; an agent takes a card nobody holds by pulling it by name",
+                "only the card's assignee or the person changes what it says; an agent takes a card nobody holds by pulling it by name",
             ),
             TaskError::Archived => f.write_str("the card is archived"),
             TaskError::Cycle => f.write_str("that would make the card wait on itself"),
@@ -594,11 +596,15 @@ impl Task {
         Ok(())
     }
 
-    /// Move the card to a lane: its assignee may, and the person always
-    /// may. A card moved back to Backlog or Ready by the person is
-    /// released for the next taker; one moved to Done by its assignee
-    /// stays theirs, for the record. Answers whether anything changed: a
-    /// move to where it already is changes nothing.
+    /// Move the card to a lane: anybody in its project may, the person
+    /// included (whether `by` is in the project is the caller's to
+    /// check). A move never hands the card to its mover: who holds it
+    /// stays who held it, so one moved to Review or Done is still its
+    /// assignee's, for the record. A card moved back to Backlog or Ready
+    /// by anybody but its assignee is released for the next taker; moved
+    /// there by its assignee it stays theirs, to pull again. Answers
+    /// whether anything changed: a move to where it already is changes
+    /// nothing.
     pub fn move_to(
         &mut self,
         by: &str,
@@ -609,9 +615,6 @@ impl Task {
         if self.archived_at.is_some() {
             return Err(TaskError::Archived);
         }
-        if !by_is_human && self.assignee.as_ref().is_none_or(|a| a.as_str() != by) {
-            return Err(TaskError::NotYours);
-        }
         if lane.category == self.column && self.lane.as_deref().is_none_or(|l| l == lane.slug) {
             if self.lane.is_none() {
                 // Its lane is said from now on; nothing moved.
@@ -619,8 +622,9 @@ impl Task {
             }
             return Ok(false);
         }
+        let theirs = !by_is_human && self.assignee.as_ref().is_some_and(|a| a.as_str() == by);
         self.place(lane, now);
-        if by_is_human && lane.category.waiting() {
+        if lane.category.waiting() && !theirs {
             self.assignee = None;
         }
         self.updated_at = now;
@@ -1240,23 +1244,45 @@ mod tests {
         );
     }
 
-    /// The assignee moves its own card and nobody else's; the person
-    /// moves any, and moving one back to Ready or Backlog releases it.
+    /// Anybody moves a card, and a move never hands it over: it stays its
+    /// assignee's through Review and Done whoever moved it. Moved back to
+    /// Ready or Backlog it is released, unless its own assignee put it
+    /// there.
     #[test]
-    fn moves_are_the_assignees_or_the_persons() {
+    fn anybody_moves_a_card_and_it_stays_its_assignees() {
         let board = board();
         let mut card = ready_card();
         let a = AgentId::from("a".to_owned());
         card.pull(&a, &board, false, Utc::now()).unwrap();
-        assert_eq!(
+        assert!(
             card.move_to("b", false, &lane("review"), Utc::now())
-                .unwrap_err(),
-            TaskError::NotYours
+                .unwrap(),
+            "another agent moves it"
         );
-        card.move_to("a", false, &lane("review"), Utc::now())
+        assert_eq!(
+            (card.assignee.as_ref(), card.column),
+            (Some(&a), Column::Review),
+            "and it is still its assignee's"
+        );
+        card.move_to("a", false, &lane("in_progress"), Utc::now())
             .unwrap();
-        assert_eq!(card.column, Column::Review);
-        card.move_to("a", false, &lane("done"), Utc::now()).unwrap();
+        card.move_to("a", false, &lane("ready"), Utc::now())
+            .unwrap();
+        assert_eq!(
+            (card.assignee.as_ref(), card.column),
+            (Some(&a), Column::Ready),
+            "put back by its assignee, it stays theirs"
+        );
+        card.pull(&a, &board, false, Utc::now()).unwrap();
+        card.move_to("b", false, &lane("ready"), Utc::now())
+            .unwrap();
+        assert_eq!(
+            (card.assignee.as_ref(), card.column),
+            (None, Column::Ready),
+            "put back by another agent, it is released"
+        );
+        card.pull(&a, &board, false, Utc::now()).unwrap();
+        card.move_to("b", false, &lane("done"), Utc::now()).unwrap();
         assert_eq!(
             card.assignee.as_ref(),
             Some(&a),
