@@ -8,10 +8,10 @@ permissions:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
-    # Four campaigns of FUZZ_SECONDS each, after a build. On a cold cache
-    # the builds alone take most of twenty minutes, and a cancelled job
-    # saves no cache, so a limit the cold run does not fit keeps every
-    # later run cold too.
+    # Four campaigns of FUZZ_SECONDS each, after two release builds. On a
+    # runner that restores no cache the builds take about thirteen
+    # minutes and the whole job about twenty-two; the limit leaves that
+    # room twice over, and each campaign is bounded by its own time.
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
