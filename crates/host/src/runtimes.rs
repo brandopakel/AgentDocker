@@ -119,6 +119,26 @@ impl Roots {
             hook_stamps: Some(hook_stamps()),
         }
     }
+
+    /// A machine with nothing on it but `home`: no `PATH`, no install,
+    /// app or desktop directories, this platform's browser layout beneath
+    /// `home`, no shell and no CLI asked for its version. What a test
+    /// inventories when it must not read the machine it runs on.
+    pub fn bare(home: &Path) -> Self {
+        Self {
+            home: home.to_owned(),
+            codex_home: None,
+            claude_config_dir: None,
+            path: Vec::new(),
+            install_dirs: Vec::new(),
+            desktop_dirs: Vec::new(),
+            app_dirs: Vec::new(),
+            browser_dirs: browser::browser_dirs(home, std::env::consts::OS, None),
+            shell: None,
+            versions: false,
+            hook_stamps: None,
+        }
+    }
 }
 
 /// How long one `--version` may take.
@@ -162,7 +182,7 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
     let browser::Inventory {
         found: extensions,
         incomplete,
-    } = browser::extensions(spec, roots)?;
+    } = browser::extensions(spec, roots);
     let config_dir = if spec.name == "codex" {
         roots.codex_home.clone()
     } else if spec.name == "claude-code" {
@@ -274,7 +294,9 @@ fn app_version(bundle: &Path) -> Option<String> {
 /// Resolve configuration from injectable Codex and Claude profile roots.
 pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
     match spec.mcp {
-        McpWiring::None => None,
+        // Docker Agent's servers live in each agent's YAML, which the
+        // person names at setup; the inventory has no file to read.
+        McpWiring::None | McpWiring::AgentConfig => None,
         McpWiring::JsonServers { file }
         | McpWiring::TomlServers { file }
         | McpWiring::OpencodeJson { file } => {
@@ -385,7 +407,7 @@ pub fn servers_key(spec: &RuntimeSpec) -> &'static str {
     match spec.mcp {
         McpWiring::TomlServers { .. } => "mcp_servers",
         McpWiring::OpencodeJson { .. } => "mcp",
-        McpWiring::JsonServers { .. } | McpWiring::None => "mcpServers",
+        McpWiring::JsonServers { .. } | McpWiring::AgentConfig | McpWiring::None => "mcpServers",
     }
 }
 

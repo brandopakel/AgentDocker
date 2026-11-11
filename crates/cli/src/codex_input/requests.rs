@@ -74,6 +74,7 @@ pub(super) async fn open(
                 question: pending.questions[index].text.clone(),
                 presentation: pending.questions[index].presentation.clone(),
                 timeout_secs: review::REVIEW_WINDOW_SECS,
+                form: Default::default(),
             },
         )
         .await?;

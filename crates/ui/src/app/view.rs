@@ -5221,6 +5221,8 @@ mod tests {
             presentation: None,
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(10),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions = vec![asked(&worker, "q1"), asked(&quiet, "q2")];
         let rail = seen(app.sidebar(c));

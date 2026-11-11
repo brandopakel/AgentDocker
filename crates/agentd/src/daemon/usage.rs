@@ -2,7 +2,7 @@
 //! proposals enter a fenced SQLite transaction; rejected proposals move nothing.
 use super::*;
 use crate::store::usage::discovery::{Change, Job, Progress};
-use crate::store::usage::{Attribution as UsageAttribution, FileProgress, Ingest};
+use crate::store::usage::{Attribution as UsageAttribution, FileProgress, Ingest, UsageReconcile};
 use agentdocker_core::config::{DaemonConfig, UsageConfig};
 use agentdocker_core::usage::{self, Range, report::*};
 use agentdocker_host::usage::{
@@ -11,7 +11,7 @@ use agentdocker_host::usage::{
 };
 use std::sync::Weak;
 
-fn configuration(home: &Path) -> Result<UsageConfig, String> {
+pub(super) fn configuration(home: &Path) -> Result<UsageConfig, String> {
     use agentdocker_host::policy_file::{self, ReadPolicy};
     let config =
         match policy_file::read_changed(&home.join(agentdocker_core::config::FILE_NAME), None)
@@ -65,7 +65,7 @@ fn roots(config: &UsageConfig) -> Result<Vec<Root>, String> {
     Ok(roots)
 }
 
-fn retained(now: DateTime<Utc>, config: &UsageConfig) -> DateTime<Utc> {
+pub(super) fn retained(now: DateTime<Utc>, config: &UsageConfig) -> DateTime<Utc> {
     usage::hour(now - Duration::days(i64::from(config.retention_days)))
 }
 
@@ -172,11 +172,13 @@ impl Daemon {
                     "usage attribution",
                     |store, seq| {
                         let event = store.usage_reconcile(
-                            &runtime,
-                            &session,
-                            Some(&attribution),
-                            (from, until),
-                            retained(now, config),
+                            UsageReconcile {
+                                runtime: &runtime,
+                                session: &session,
+                                attribution: Some(&attribution),
+                                window: (from, until),
+                                retained_since: retained(now, config),
+                            },
                             now,
                             seq,
                         )?;
@@ -256,6 +258,7 @@ impl Daemon {
                             &mut row.counters.cache_write_input_tokens,
                             &mut row.counters.output_tokens,
                             &mut row.counters.reasoning_output_tokens,
+                            &mut row.cost_usd_micros,
                         ] {
                             if counter.coverage == usage::Coverage::Complete {
                                 counter.coverage = usage::Coverage::Partial;
@@ -264,6 +267,17 @@ impl Daemon {
                     }
                 }
                 report.coverage.collection.enabled = Some(config.enabled);
+                // What the receiver is doing, not what the file asks of it:
+                // an address another program holds is not listening.
+                match &state.otlp_status {
+                    super::otlp::Status::Listening(address) => {
+                        report.coverage.collection.otlp_listen = Some(address.to_string());
+                    }
+                    super::otlp::Status::Refused(reason) => {
+                        report.coverage.collection.otlp_error = Some(reason.clone());
+                    }
+                    super::otlp::Status::Off => {}
+                }
                 Response::Usage { report }
             }
             Some(None) => Response::error(
@@ -312,16 +326,13 @@ impl Daemon {
     ) -> bool {
         let mut state = lock(&self.state);
         let now = Utc::now();
-        let samples: Vec<_> = batch
+        let held: Vec<_> = batch
             .samples
             .iter()
             .map(|sample| {
-                let attribution = usage::registration_at(
-                    &registrations(&state, &sample.runtime, &sample.session_id),
-                    sample.at,
-                )
-                .unwrap_or_default();
-                (sample.clone(), attribution)
+                let mut sample = sample.clone();
+                let held = attribution_at(&state, &mut sample);
+                (sample, held)
             })
             .collect();
         let progress = FileProgress {
@@ -332,7 +343,8 @@ impl Daemon {
         let result = state.commit_produced(
             "usage accounting",
             |store, seq| {
-                let event = store.usage_ingest(Ingest {
+                let samples = stamped(store, &held)?;
+                let events = store.usage_ingest(Ingest {
                     key,
                     progress: &progress,
                     samples: &samples,
@@ -343,12 +355,193 @@ impl Daemon {
                     event_seq: seq,
                     finished_job,
                 })?;
-                Ok((vec![event], ()))
+                Ok((events, ()))
             },
             |_, _, ()| {},
         );
         result == Persisted::Committed
     }
+}
+
+/// What became of one telemetry export.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Received {
+    /// Committed, with how many samples were new.
+    Recorded { accepted: u64 },
+    /// Storage is fenced or failed; the exporter may try again.
+    Unavailable,
+}
+
+impl Daemon {
+    /// Record what one received telemetry export decoded to: each sample
+    /// attributed to the agent whose session it names, as a collected
+    /// transcript record would be, and charged to the card and roles that
+    /// agent held when the response was made; each accounting event that
+    /// could not be read (`rejected`, its reason) a source gap, so the
+    /// report does not claim it. Committed through the usage transaction
+    /// with its `usage_recorded` event. Replays of responses already
+    /// counted, by this route or from a transcript, add nothing but a price
+    /// the first record lacked.
+    pub(crate) fn record_telemetry(
+        &self,
+        samples: &[agentdocker_host::usage::Sample],
+        rejected: &[String],
+    ) -> Received {
+        let config = configuration(&self.home).unwrap_or_default();
+        let now = Utc::now();
+        let mut state = lock(&self.state);
+        let held: Vec<_> = samples
+            .iter()
+            .map(|sample| {
+                let mut sample = sample.clone();
+                let held = attribution_at(&state, &mut sample);
+                (sample, held)
+            })
+            .collect();
+        let mut accepted = 0;
+        let result = state.commit_produced(
+            "usage telemetry",
+            |store, seq| {
+                let samples = stamped(store, &held)?;
+                let events = store.usage_ingest_telemetry(
+                    &samples,
+                    rejected,
+                    retained(now, &config),
+                    now,
+                    seq,
+                )?;
+                let count = events
+                    .iter()
+                    .find_map(|event| match &event.kind {
+                        EventKind::UsageRecorded { samples, .. } => Some(*samples),
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+                Ok((events, count))
+            },
+            |_, _, count| accepted = count,
+        );
+        if result == Persisted::Committed {
+            Received::Recorded { accepted }
+        } else {
+            Received::Unavailable
+        }
+    }
+}
+
+/// What memory says of a sample's attribution, before the store is asked:
+/// the registration of its session current at its time and, for the agent
+/// it names, the exclusive `task:` leases that agent holds covering that
+/// time (each with when it was taken) and its current `role` label.
+/// [`stamp`] finishes it in the ingest transaction.
+struct Held {
+    attribution: UsageAttribution,
+    leases: Vec<(DateTime<Utc>, String)>,
+    role_now: Option<String>,
+}
+
+/// Whose the sample is, and what that agent held when it was made. A
+/// thread another thread spawned, with no record of its own, is its
+/// parent's work: its usage is the parent's, and the store keeps the
+/// parent on it so that a parent record made later, or the thread's own,
+/// takes it (reconciliation). A thread with a record of its own is that
+/// record's alone, and the parent comes off the sample.
+fn attribution_at(state: &State, sample: &mut agentdocker_host::usage::Sample) -> Held {
+    let own = registrations(state, &sample.runtime, &sample.session_id);
+    let registered = if own.is_empty() {
+        sample
+            .parent_session
+            .as_deref()
+            .map(|parent| registrations(state, &sample.runtime, parent))
+            .unwrap_or_default()
+    } else {
+        sample.parent_session = None;
+        own
+    };
+    let attribution = usage::registration_at(&registered, sample.at).unwrap_or_default();
+    let Some(agent) = attribution.agent.clone() else {
+        return Held {
+            attribution,
+            leases: Vec::new(),
+            role_now: None,
+        };
+    };
+    let id = AgentId::from(agent);
+    let at = sample.at;
+    let leases = state
+        .leases
+        .by_holder(&id)
+        .into_iter()
+        .filter(|lease| {
+            lease.mode == LeaseMode::Exclusive && lease.held_since() <= at && at < lease.expires_at
+        })
+        .filter_map(|lease| {
+            let card = lease.resource.as_str().strip_prefix("task:")?;
+            Some((lease.held_since(), card.to_owned()))
+        })
+        .collect();
+    let role_now = state
+        .registry
+        .get(&id)
+        .and_then(|record| record.spec.labels.get(agentdocker_core::agent::ROLE_LABEL))
+        .filter(|label| !label.is_empty())
+        .cloned();
+    Held {
+        attribution,
+        leases,
+        role_now,
+    }
+}
+
+/// The card and roles an attributed agent held when the response was
+/// made, onto its sample, however late its record arrives. The card: of
+/// the exclusive `task:` leases on a board card it held at `at` (one it
+/// still holds, held by then and not lapsed, or one the store kept when
+/// it ended), the latest it took; a `task:` lease on anything else (a
+/// build campaign) is never one. A lease handed over is held from the
+/// hand-over (`Lease::held_since`), never from the sender's claim. The
+/// roles: those its kept history says it held then, or its current ones
+/// when they have never changed. Nothing for an unattributed sample. Read
+/// in the ingest transaction: a read the store refuses fails the batch,
+/// which fences storage as any failed read does and leaves the sample for
+/// the exporter or the next scan to bring again, so no sample is ever
+/// stamped as held by nothing because the store could not say.
+fn stamp(
+    store: &crate::store::Store,
+    held: &Held,
+    at: DateTime<Utc>,
+) -> anyhow::Result<UsageAttribution> {
+    let mut attribution = held.attribution.clone();
+    let Some(agent) = attribution.agent.clone() else {
+        return Ok(attribution);
+    };
+    let mut cards = Vec::with_capacity(held.leases.len() + 1);
+    for (taken, card) in &held.leases {
+        if store.usage_is_card(card)? {
+            cards.push((*taken, card.clone()));
+        }
+    }
+    cards.extend(store.usage_card_held(&agent, at)?);
+    attribution.card = cards
+        .into_iter()
+        .max_by_key(|(taken, _)| *taken)
+        .map(|(_, card)| card);
+    attribution.role = match store.usage_role_held(&agent, at)? {
+        Some(kept) => kept.filter(|label| !label.is_empty()),
+        None => held.role_now.clone(),
+    };
+    Ok(attribution)
+}
+
+/// Every sample with its attribution finished against the store, for one
+/// ingest transaction; the first read the store refuses fails it.
+fn stamped(
+    store: &crate::store::Store,
+    held: &[(agentdocker_host::usage::Sample, Held)],
+) -> anyhow::Result<Vec<(agentdocker_host::usage::Sample, UsageAttribution)>> {
+    held.iter()
+        .map(|(sample, held)| Ok((sample.clone(), stamp(store, held, sample.at)?)))
+        .collect()
 }
 
 fn alive_wait(weak: &Weak<Daemon>, ticks: usize) -> bool {
@@ -368,11 +561,13 @@ fn worker(weak: Weak<Daemon>) {
         };
         let config = configuration(&daemon.home);
         drop(daemon);
-        if let Ok(config) = config
-            && config.enabled
-        {
-            collect_generation(&weak, &config);
-            if let Some(daemon) = weak.upgrade() {
+        if let Ok(config) = config {
+            if config.enabled {
+                collect_generation(&weak, &config);
+            }
+            if reconciles(&config)
+                && let Some(daemon) = weak.upgrade()
+            {
                 daemon.reconcile_usage(&config);
             }
         }
@@ -380,6 +575,14 @@ fn worker(weak: Weak<Daemon>) {
             return;
         }
     }
+}
+
+/// Whether the worker's tick reconciles unattributed history: under
+/// collection, and while the telemetry receiver is on without it, since
+/// an export whose session registers after it arrived is attributed by
+/// nothing else and would otherwise wait for collection to be turned on.
+fn reconciles(config: &UsageConfig) -> bool {
+    config.enabled || matches!(config.otlp_listen(), Ok(Some(_)))
 }
 
 /// Wait `seconds` between collections, checking once a second that the
@@ -662,6 +865,7 @@ fn collect_pass(
                     "codex-rollout-0.153.4-0.154.0-v1".into(),
                     "codex-rollout-0.155.1-v1".into(),
                     "codex-rollout-0.160.0-v1".into(),
+                    agentdocker_host::usage::CODEX_RESPONSES_FORMAT.into(),
                     "claude-transcript-2.1.268-270-v1".into(),
                     "claude-transcript-2.1.271-276-v1".into(),
                     "claude-transcript-2.1.277-278-280-v1".into(),
@@ -1036,6 +1240,8 @@ fn registrations(
                 UsageAttribution {
                     agent: Some(id.to_string()),
                     project: agent.project.as_ref().map(|p| p.id().to_string()),
+                    card: None,
+                    role: None,
                 },
                 created,
             ))
@@ -1047,6 +1253,30 @@ fn registrations(
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn the_worker_reconciles_under_collection_or_a_receiver() {
+        let off = UsageConfig::default();
+        assert!(!reconciles(&off));
+        let collecting = UsageConfig {
+            enabled: true,
+            ..UsageConfig::default()
+        };
+        assert!(reconciles(&collecting));
+        let receiving = UsageConfig {
+            otlp_listen: Some("127.0.0.1:4318".into()),
+            ..UsageConfig::default()
+        };
+        assert!(reconciles(&receiving));
+        let unbindable = UsageConfig {
+            otlp_listen: Some("0.0.0.0:4318".into()),
+            ..UsageConfig::default()
+        };
+        assert!(
+            !reconciles(&unbindable),
+            "a receiver that cannot bind is none"
+        );
+    }
 
     #[test]
     fn usage_configuration_counts_default_roots_against_the_limit() {
@@ -1172,6 +1402,446 @@ mod tests {
             "timestamp":(Utc::now()-Duration::hours(2)).to_rfc3339(),
             "message":{"id":id,"model":"fixture-model","content":[{"text":"TRANSCRIPT_SECRET_MUST_NOT_PERSIST"}],
                 "usage":{"input_tokens":input,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":2}}}).to_string()+"\n"
+    }
+
+    async fn query_by(daemon: &Arc<Daemon>, by: Group) -> Report {
+        match daemon
+            .handle(Request::Usage {
+                project: None,
+                agent: None,
+                since: Some("24h".into()),
+                until: None,
+                by,
+            })
+            .await
+        {
+            Response::Usage { report } => report,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A response is charged to the card and roles its agent held when it
+    /// was made, not when its record is read: every record here arrives
+    /// after all of it. A card released before then still takes what was
+    /// made while it was held; a lapsed lease takes what was made before
+    /// its expiry and not what came after, whenever the sweep removed it;
+    /// a `task:` lease that is not a card takes nothing; and a change of
+    /// roles in between leaves what was made before it with the roles held
+    /// then.
+    #[tokio::test]
+    async fn responses_are_charged_to_what_was_held_when_they_were_made() {
+        use agentdocker_core::usage::Counters;
+        use agentdocker_host::usage::{Sample, Semantics};
+        let (temp, daemon, _, _) = fixture();
+        let checkout = temp.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let mut spec = AgentSpec {
+            name: "claude-held".into(),
+            runtime: "claude-code".into(),
+            workdir: Some(checkout.clone()),
+            ..Default::default()
+        };
+        spec.labels
+            .insert("session_id".into(), "held-session".into());
+        spec.labels.insert("role".into(), "reviewer".into());
+        let Response::Agent { agent } = daemon
+            .handle(Request::Register {
+                spec,
+                pid: None,
+                session: None,
+            })
+            .await
+        else {
+            panic!("registration")
+        };
+        let file = |title: &str| Request::TaskCreate {
+            from: agent.id.to_string(),
+            project: Some(checkout.display().to_string()),
+            title: title.to_owned(),
+            acceptance: "done".to_owned(),
+            column: Some(agentdocker_core::Column::Ready),
+            links: Vec::new(),
+            board: None,
+            lane: None,
+            description: String::new(),
+            priority: None,
+            size: None,
+            due: None,
+            external_blocker: String::new(),
+            parent: None,
+            blocked_by: Vec::new(),
+            tags: Vec::new(),
+            plan: None,
+        };
+        let Response::Task { task: first } = daemon.handle(file("first")).await else {
+            panic!("the first card is filed")
+        };
+        let Response::Task { task: second } = daemon.handle(file("second")).await else {
+            panic!("the second card is filed")
+        };
+        let claim = |resource: String, ttl_secs: u64| Request::Claim {
+            agent: agent.id.to_string(),
+            resource,
+            mode: LeaseMode::Exclusive,
+            amount: None,
+            ttl_secs,
+            note: None,
+            wait_secs: 0,
+            priority: 0,
+            automatic: false,
+        };
+
+        // The first card: pulled, worked on, released.
+        let Response::TaskDetail {
+            lease: Some(pulled),
+            ..
+        } = daemon
+            .handle(Request::TaskPull {
+                agent: agent.id.to_string(),
+                task: Some(first.id.to_string()),
+                take_over_from: None,
+                project: None,
+                board: None,
+            })
+            .await
+        else {
+            panic!("the first card is pulled")
+        };
+        let during_first = Utc::now();
+        let released = daemon
+            .handle(Request::Release {
+                agent: agent.id.to_string(),
+                lease: pulled.id.clone(),
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await;
+        assert!(matches!(released, Response::Lease { .. }), "{released:?}");
+
+        // The second card: held by hand for a second, and let lapse; a
+        // build campaign's lease taken meanwhile is not a card.
+        let Response::Lease { lease: held } =
+            daemon.handle(claim(format!("task:{}", second.id), 1)).await
+        else {
+            panic!("the second card is held")
+        };
+        assert!(matches!(
+            daemon.handle(claim("task:local-build".into(), 600)).await,
+            Response::Lease { .. }
+        ));
+        let during_second = Utc::now();
+        tokio::time::sleep(std::time::Duration::from_millis(1_200)).await;
+        let lapsed_unswept = Utc::now();
+        assert!(lapsed_unswept > held.expires_at);
+        daemon.expire_leases();
+        assert!(
+            lock(&daemon.state).leases.get(&held.id).is_none(),
+            "the sweep removed the lapsed lease"
+        );
+
+        // The roles change after all of that.
+        let Response::Agent { agent: changed } = daemon
+            .handle(Request::Role {
+                agent: agent.id.to_string(),
+                role: Some("tester".into()),
+            })
+            .await
+        else {
+            panic!("the role changes")
+        };
+        let now_held = changed.spec.labels.get("role").cloned().unwrap();
+        assert_ne!(now_held, "reviewer");
+        let after_all = Utc::now();
+
+        let sample = |id: &str, at: DateTime<Utc>| Sample {
+            source_id: format!("held-{id}"),
+            runtime: "claude-code".into(),
+            format: "fixture".into(),
+            session_id: "held-session".into(),
+            at,
+            provider: None,
+            model: Some("fixture-model".into()),
+            counters: Counters {
+                input_tokens: Some(10),
+                output_tokens: Some(1),
+                ..Counters::default()
+            },
+            semantics: Semantics::Response,
+            proves_zero_baseline: false,
+            cost_usd_micros: Some(100),
+            aliases: Vec::new(),
+            parent_session: None,
+        };
+        assert_eq!(
+            daemon.record_telemetry(
+                &[
+                    sample("first", during_first),
+                    sample("second", during_second),
+                    sample("lapsed", lapsed_unswept),
+                    sample("after", after_all),
+                ],
+                &[],
+            ),
+            Received::Recorded { accepted: 4 }
+        );
+
+        let by_card: BTreeMap<_, _> = query_by(&daemon, Group::Card)
+            .await
+            .rows
+            .into_iter()
+            .map(|row| (row.key, row.samples))
+            .collect();
+        assert_eq!(
+            by_card,
+            BTreeMap::from([
+                (None, 2),
+                (Some(first.id.to_string()), 1),
+                (Some(second.id.to_string()), 1),
+            ]),
+            "released and lapsed cards keep what was made while held"
+        );
+        let by_role: BTreeMap<_, _> = query_by(&daemon, Group::Role)
+            .await
+            .rows
+            .into_iter()
+            .map(|row| (row.key, row.samples))
+            .collect();
+        assert_eq!(
+            by_role,
+            BTreeMap::from([(Some("reviewer".to_owned()), 3), (Some(now_held), 1)]),
+            "what was made before the change keeps the roles held then"
+        );
+        drop(temp);
+    }
+
+    /// A card handed over is the recipient's from the moment it accepted,
+    /// not from the sender's claim: the recipient's response from before
+    /// the hand-over is not charged to it and its response after is, read
+    /// while it holds the card or after it let it go; and a hand back
+    /// keeps the sender's first interval as it was, with the time between
+    /// the two hand-overs the recipient's, not the sender's.
+    #[tokio::test]
+    async fn a_handed_over_card_is_charged_from_the_hand_over() {
+        use agentdocker_core::usage::Counters;
+        use agentdocker_host::usage::{Sample, Semantics};
+        let (temp, daemon, _, _) = fixture();
+        let checkout = temp.path().join("checkout");
+        std::fs::create_dir(&checkout).unwrap();
+        let mut agents = Vec::new();
+        for (name, session) in [("sender", "sess-sender"), ("recipient", "sess-recipient")] {
+            let mut spec = AgentSpec {
+                name: name.into(),
+                runtime: "claude-code".into(),
+                workdir: Some(checkout.clone()),
+                ..Default::default()
+            };
+            spec.labels.insert("session_id".into(), session.into());
+            let Response::Agent { agent } = daemon
+                .handle(Request::Register {
+                    spec,
+                    pid: None,
+                    session: None,
+                })
+                .await
+            else {
+                panic!("registration")
+            };
+            agents.push(agent);
+        }
+        let (a, b) = (agents[0].clone(), agents[1].clone());
+        let Response::Task { task: card } = daemon
+            .handle(Request::TaskCreate {
+                from: a.id.to_string(),
+                project: Some(checkout.display().to_string()),
+                title: "hand it on".to_owned(),
+                acceptance: "done".to_owned(),
+                column: Some(agentdocker_core::Column::Ready),
+                links: Vec::new(),
+                board: None,
+                lane: None,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
+                plan: None,
+            })
+            .await
+        else {
+            panic!("the card is filed")
+        };
+        let Response::TaskDetail {
+            lease: Some(pulled),
+            ..
+        } = daemon
+            .handle(Request::TaskPull {
+                agent: a.id.to_string(),
+                task: Some(card.id.to_string()),
+                take_over_from: None,
+                project: None,
+                board: None,
+            })
+            .await
+        else {
+            panic!("the sender pulls the card")
+        };
+        let hand = |from: &AgentRecord, to: &AgentRecord, key: &str| Request::Handoff {
+            agent: from.id.to_string(),
+            to: Some(to.id.to_string()),
+            task: Some("hand it on".into()),
+            note: None,
+            links: Vec::new(),
+            transfer_leases: true,
+            key: Some(key.into()),
+        };
+        let pause = || tokio::time::sleep(std::time::Duration::from_millis(5));
+
+        // t0: the sender holds the card. t1: the recipient holds nothing.
+        pause().await;
+        let sender_holding = Utc::now();
+        let recipient_before = Utc::now();
+        pause().await;
+        // t2: the recipient accepts the hand-over.
+        let Response::Handoff { bundle } = daemon.handle(hand(&a, &b, "to-recipient")).await else {
+            panic!("the sender hands over")
+        };
+        assert!(bundle.leases.iter().any(|lease| lease.id == pulled.id));
+        let accepted = daemon.resume(b.id.as_str(), &bundle.id, true).await;
+        assert!(
+            matches!(accepted, Response::Recovery { .. }),
+            "{accepted:?}"
+        );
+        let moved = lock(&daemon.state).leases.get(&pulled.id).cloned().unwrap();
+        assert_eq!(moved.holder, b.id);
+        assert_eq!(
+            moved.acquired_at, pulled.acquired_at,
+            "the claim's time stays"
+        );
+        assert!(
+            moved.held_since() > recipient_before,
+            "held from the hand-over"
+        );
+        // t3: the recipient holds the card.
+        pause().await;
+        let recipient_holding = Utc::now();
+
+        let sample = |id: &str, session: &str, at: DateTime<Utc>| Sample {
+            source_id: format!("handed-{id}"),
+            runtime: "claude-code".into(),
+            format: "fixture".into(),
+            session_id: session.into(),
+            at,
+            provider: None,
+            model: Some("fixture-model".into()),
+            counters: Counters {
+                input_tokens: Some(10),
+                output_tokens: Some(1),
+                ..Counters::default()
+            },
+            semantics: Semantics::Response,
+            proves_zero_baseline: false,
+            cost_usd_micros: Some(100),
+            aliases: Vec::new(),
+            parent_session: None,
+        };
+        let charged = |daemon: &Arc<Daemon>, samples: Vec<Sample>| {
+            assert_eq!(
+                daemon.record_telemetry(&samples, &[]),
+                Received::Recorded {
+                    accepted: samples.len() as u64
+                }
+            );
+        };
+        // Read while the recipient holds it.
+        charged(
+            &daemon,
+            vec![
+                sample("t1-early", "sess-recipient", recipient_before),
+                sample("t3-early", "sess-recipient", recipient_holding),
+            ],
+        );
+        let cards = |report: Report| -> BTreeMap<Option<String>, u64> {
+            report
+                .rows
+                .into_iter()
+                .map(|row| (row.key, row.samples))
+                .collect()
+        };
+        assert_eq!(
+            cards(query_by(&daemon, Group::Card).await),
+            BTreeMap::from([(None, 1), (Some(card.id.to_string()), 1)]),
+            "before the hand-over the recipient held nothing; after, the card"
+        );
+
+        // t4: handed back; t5: released by the sender.
+        pause().await;
+        let Response::Handoff { bundle: back } = daemon.handle(hand(&b, &a, "to-sender")).await
+        else {
+            panic!("the recipient hands back")
+        };
+        let returned = daemon.resume(a.id.as_str(), &back.id, true).await;
+        assert!(
+            matches!(returned, Response::Recovery { .. }),
+            "{returned:?}"
+        );
+        pause().await;
+        let sender_again = Utc::now();
+        let released = daemon
+            .handle(Request::Release {
+                agent: a.id.to_string(),
+                lease: pulled.id.clone(),
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await;
+        assert!(matches!(released, Response::Lease { .. }), "{released:?}");
+
+        // Read after all of it: the same moments again, and the sender's.
+        charged(
+            &daemon,
+            vec![
+                sample("t1-late", "sess-recipient", recipient_before),
+                sample("t3-late", "sess-recipient", recipient_holding),
+                sample("t0-late", "sess-sender", sender_holding),
+                sample("between", "sess-sender", recipient_holding),
+                sample("t4-late", "sess-sender", sender_again),
+            ],
+        );
+        let by_agent_and_card = {
+            let mut seen = BTreeMap::new();
+            for (agent, session) in [(&a, "sess-sender"), (&b, "sess-recipient")] {
+                let Response::Usage { report } = daemon
+                    .handle(Request::Usage {
+                        project: None,
+                        agent: Some(agent.id.to_string()),
+                        since: Some("24h".into()),
+                        until: None,
+                        by: Group::Card,
+                    })
+                    .await
+                else {
+                    panic!("usage for {session}")
+                };
+                seen.insert(session, cards(report));
+            }
+            seen
+        };
+        let on = |n: u64| (Some(card.id.to_string()), n);
+        assert_eq!(
+            by_agent_and_card["sess-recipient"],
+            BTreeMap::from([(None, 2), on(2)]),
+            "the recipient: t1 never charged to the card, t3 always"
+        );
+        assert_eq!(
+            by_agent_and_card["sess-sender"],
+            BTreeMap::from([(None, 1), on(2)]),
+            "the sender: its first interval kept, its second taken from the hand back, \
+             and the time between the hand-overs not its"
+        );
+        drop(temp);
     }
 
     async fn query(daemon: &Arc<Daemon>) -> Report {
@@ -1969,6 +2639,271 @@ mod tests {
                 .filter(|e| matches!(e.kind, EventKind::UsageReconciled { .. }))
                 .count(),
             events
+        );
+    }
+
+    /// A Codex rollout of a thread another spawned, two hours ago: its
+    /// first record names the parent, and one response's own count follows.
+    fn spawned_rollout(thread: &str, parent: &str, input: u64) -> String {
+        let at = (Utc::now() - Duration::hours(2)).to_rfc3339();
+        let meta = serde_json::json!({"type":"session_meta","timestamp":at,"payload":{"id":thread,
+            "cli_version":"0.164.0","model_provider":"fixture-provider",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":parent,"depth":1,"agent_role":"reviewer"}}}}});
+        let usage = serde_json::json!({"input_tokens":input,"cached_input_tokens":0,"cache_write_input_tokens":0,
+            "output_tokens":2,"reasoning_output_tokens":0,"total_tokens":input+2});
+        let response = serde_json::json!({"type":"token_usage_record","timestamp":at,"payload":{"thread_id":thread,
+            "turn_id":"turn-1","response_id":"response-1","usage":usage,"turn_token_usage":usage,"thread_token_usage":usage}});
+        let totals = serde_json::json!({"type":"event_msg","timestamp":at,"payload":{"type":"token_count",
+            "info":{"total_token_usage":usage,"last_token_usage":usage}}});
+        format!("{meta}\n{response}\n{totals}\n")
+    }
+
+    #[tokio::test]
+    async fn a_spawned_codex_threads_usage_is_its_parents_and_exact() {
+        let (temp, daemon, mut config, _root) = fixture();
+        let codex = temp.path().join("codex");
+        std::fs::create_dir(&codex).unwrap();
+        config.codex_roots = vec![codex.clone()];
+        let response = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "codex-parent".into(),
+                    runtime: "codex".into(),
+                    labels: BTreeMap::from([("session_id".into(), "fixture-root-thread".into())]),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        let Response::Agent { agent } = response else {
+            panic!("{response:?}")
+        };
+        std::fs::write(
+            codex.join("rollout-child.jsonl"),
+            spawned_rollout("fixture-child-thread", "fixture-root-thread", 5),
+        )
+        .unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(report.rows.len(), 1, "{report:?}");
+        // The parent's, counted once from the response's own figure (the
+        // running totals after it are the same tokens), and so exact.
+        assert_eq!(report.rows[0].key.as_deref(), Some(agent.id.as_str()));
+        assert_eq!(report.rows[0].samples, 1);
+        assert_eq!(report.rows[0].counters.input_tokens.sum, Some(5));
+        assert_eq!(
+            report.rows[0].usage_source,
+            Some(agentdocker_core::usage::UsageSource::Exact)
+        );
+    }
+
+    /// Codex token counters as a rollout writes them.
+    fn codex_counts(input: u64, output: u64) -> serde_json::Value {
+        serde_json::json!({"input_tokens":input,"cached_input_tokens":0,"cache_write_input_tokens":0,
+            "output_tokens":output,"reasoning_output_tokens":0,"total_tokens":input+output})
+    }
+
+    /// One more response of a spawned thread, an hour ago, and the running
+    /// totals after it.
+    fn next_response(thread: &str, response: &str, input: u64, totals: (u64, u64)) -> String {
+        let at = (Utc::now() - Duration::hours(1)).to_rfc3339();
+        let usage = codex_counts(input, 2);
+        let total = codex_counts(totals.0, totals.1);
+        let record = serde_json::json!({"type":"token_usage_record","timestamp":at,"payload":{
+            "thread_id":thread,"turn_id":"turn-2","response_id":response,"usage":usage,
+            "turn_token_usage":usage,"thread_token_usage":total}});
+        let count = serde_json::json!({"type":"event_msg","timestamp":at,"payload":{"type":"token_count",
+            "info":{"total_token_usage":total,"last_token_usage":usage}}});
+        format!("{record}\n{count}\n")
+    }
+
+    fn codex_fixture() -> (tempfile::TempDir, Arc<Daemon>, UsageConfig, PathBuf) {
+        let (temp, daemon, mut config, _root) = fixture();
+        let codex = temp.path().join("codex");
+        std::fs::create_dir(&codex).unwrap();
+        config.codex_roots = vec![codex.clone()];
+        (temp, daemon, config, codex)
+    }
+
+    /// A Codex record keyed by `thread`, as a bound terminal's is.
+    async fn register_codex(daemon: &Arc<Daemon>, name: &str, thread: &str) -> String {
+        let response = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: name.into(),
+                    runtime: "codex".into(),
+                    labels: BTreeMap::from([("session_id".into(), thread.into())]),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        let Response::Agent { agent } = response else {
+            panic!("{response:?}")
+        };
+        agent.id.to_string()
+    }
+
+    async fn input_by_agent(daemon: &Arc<Daemon>) -> BTreeMap<Option<String>, Option<u64>> {
+        query(daemon)
+            .await
+            .rows
+            .into_iter()
+            .map(|row| (row.key, row.counters.input_tokens.sum))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_spawned_threads_usage_goes_to_a_parent_registered_late_then_to_its_own_record() {
+        let (_temp, daemon, config, codex) = codex_fixture();
+        let log = codex.join("rollout-child.jsonl");
+        std::fs::write(
+            &log,
+            spawned_rollout("fixture-child-thread", "fixture-root-thread", 5),
+        )
+        .unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(None, Some(5))])
+        );
+        // The parent registers: what its thread spawned was its work, the
+        // tokens counted before it registered included.
+        let parent = register_codex(&daemon, "codex-parent", "fixture-root-thread").await;
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(parent.clone()), Some(5))])
+        );
+        append(
+            &log,
+            &next_response("fixture-child-thread", "response-2", 7, (12, 4)),
+        );
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(parent), Some(12))])
+        );
+        // The thread gets a record of its own: all of its usage is its own.
+        let child = register_codex(&daemon, "codex-child", "fixture-child-thread").await;
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(child.clone()), Some(12))])
+        );
+        append(
+            &log,
+            &next_response("fixture-child-thread", "response-3", 3, (15, 6)),
+        );
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(child), Some(15))])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_spawned_threads_own_record_keeps_its_usage_from_a_parent_registered_later() {
+        let (_temp, daemon, config, codex) = codex_fixture();
+        let log = codex.join("rollout-child.jsonl");
+        std::fs::write(
+            &log,
+            spawned_rollout("fixture-child-thread", "fixture-root-thread", 5),
+        )
+        .unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let child = register_codex(&daemon, "codex-child", "fixture-child-thread").await;
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(Some(child.clone()), Some(5))])
+        );
+        let parent = register_codex(&daemon, "codex-parent", "fixture-root-thread").await;
+        daemon.reconcile_usage(&config);
+        append(
+            &log,
+            &next_response("fixture-child-thread", "response-2", 7, (12, 4)),
+        );
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        daemon.reconcile_usage(&config);
+        let rows = input_by_agent(&daemon).await;
+        assert_eq!(rows, BTreeMap::from([(Some(child), Some(12))]));
+        assert!(!rows.contains_key(&Some(parent)));
+    }
+
+    #[tokio::test]
+    async fn a_child_log_counted_before_cursors_kept_its_parent_learns_it_after_restart() {
+        let (temp, daemon, config, codex) = codex_fixture();
+        let log = codex.join("rollout-child.jsonl");
+        // As the previous release counted a spawned thread: by its running
+        // totals, which it read past the thread's first record.
+        let at = (Utc::now() - Duration::hours(2)).to_rfc3339();
+        let meta = serde_json::json!({"type":"session_meta","timestamp":at,"payload":{
+            "id":"fixture-child-thread","cli_version":"0.164.0","model_provider":"fixture-provider",
+            "source":{"subagent":{"thread_spawn":{"parent_thread_id":"fixture-root-thread","depth":1}}}}});
+        let totals = serde_json::json!({"type":"event_msg","timestamp":at,"payload":{"type":"token_count",
+            "info":{"total_token_usage":codex_counts(5, 2),"last_token_usage":codex_counts(5, 2)}}});
+        std::fs::write(&log, format!("{meta}\n{totals}\n")).unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(None, Some(5))])
+        );
+        drop(daemon);
+        // What that release left behind: its contributions and its cursor
+        // (version 7) without the parent thread, and no session accounts.
+        let conn = crate::sqlite_fixture::open(temp.path().join("state.db")).unwrap();
+        conn.execute_batch(
+            "UPDATE usage_samples SET contribution=json_remove(contribution,'$.parent');
+             DELETE FROM usage_accounts;",
+        )
+        .unwrap();
+        drop(conn);
+        edit_progress(temp.path(), |_, progress| {
+            progress["cursor"]["version"] = serde_json::json!(7);
+            progress["cursor"]["codex"]
+                .as_object_mut()
+                .unwrap()
+                .remove("parent");
+        });
+        // Restarted on this release; the parent registers and the thread
+        // goes on with a response and its totals.
+        let daemon = reopen(temp.path());
+        let parent = register_codex(&daemon, "codex-parent", "fixture-root-thread").await;
+        append(
+            &log,
+            &next_response("fixture-child-thread", "response-2", 7, (12, 4)),
+        );
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        daemon.reconcile_usage(&config);
+        // The new tokens are the parent's, counted once by the account the
+        // session was already on; the earlier ones are counted once too,
+        // still nobody's, since what counted them did not keep the parent.
+        assert_eq!(
+            input_by_agent(&daemon).await,
+            BTreeMap::from([(None, Some(5)), (Some(parent), Some(7))])
+        );
+        edit_progress(temp.path(), |_, progress| {
+            assert_eq!(progress["cursor"]["version"], serde_json::json!(8));
+            assert_eq!(
+                progress["cursor"]["codex"]["parent"],
+                serde_json::json!("fixture-root-thread")
+            );
+        });
+        // Collecting again changes nothing.
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        daemon.reconcile_usage(&config);
+        assert_eq!(
+            query(&daemon)
+                .await
+                .rows
+                .iter()
+                .map(|row| row.samples)
+                .sum::<u64>(),
+            2
         );
     }
 

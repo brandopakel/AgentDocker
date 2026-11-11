@@ -191,6 +191,13 @@ impl Persistence {
         !self.saving && self.generation == self.saved_generation
     }
 
+    /// Whether a save is in flight, for the tests to tell a close that
+    /// waits for its flush from one that went past it.
+    #[cfg(test)]
+    pub fn saving(&self) -> bool {
+        self.saving
+    }
+
     pub fn begin(&mut self, closing: bool) -> Option<u64> {
         let due = closing
             || self
