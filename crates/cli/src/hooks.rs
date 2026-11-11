@@ -4256,7 +4256,11 @@ mod tests {
             left_out: vec![LeftOut::of(&paused)],
         }]);
         let (text, said) = memory_profile(&backend, &me, MEMORY_PROFILE_CHARS).await;
-        assert_eq!(said, [told.id.clone()], "only what is told in full");
+        assert_eq!(
+            said,
+            std::slice::from_ref(&told.id),
+            "only what is told in full"
+        );
         assert!(text.contains(&memory_line(&told)), "{text}");
         let first_words = serde_json::to_string(&headline(&paused.text)).unwrap();
         assert!(

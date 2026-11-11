@@ -2212,10 +2212,6 @@ struct ClaimArgs {
 /// Reserving this costs nothing until it is touched.
 const MAIN_STACK: usize = 32 << 20;
 
-/// A command ends with a status a script can branch on: the daemon's
-/// answer by its class (see [`client::exit_code`]), anything else as
-/// unexpected. The words go to stderr as they always did.
-
 /// What the adder of a standing memory is told when a new session will
 /// meet it by its first words only.
 fn no_room_said(full: &agentdocker_core::memory::NoRoom) -> String {
@@ -2228,6 +2224,9 @@ fn no_room_said(full: &agentdocker_core::memory::NoRoom) -> String {
     )
 }
 
+/// A command ends with a status a script can branch on: the daemon's
+/// answer by its class (see [`client::exit_code`]), anything else as
+/// unexpected. The words go to stderr as they always did.
 fn main() {
     if let Some(arguments) = daemon_arguments(std::env::args_os().collect()) {
         // What the separate `agentd` binary did: its error, and status 1.
