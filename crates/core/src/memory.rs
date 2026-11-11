@@ -426,7 +426,7 @@ fn quoted_secret(name: &str, content: &str) -> bool {
     if token_like(content, true) {
         return true;
     }
-    if content.contains("://") {
+    if whole_url(content) {
         return false;
     }
     let chars: Vec<char> = content.chars().collect();
@@ -452,6 +452,20 @@ fn quoted_secret(name: &str, content: &str) -> bool {
         start = end;
     }
     false
+}
+
+/// Whether `content` is a URL and nothing else: a scheme (letters, joined
+/// by `+` or `-` as in `git+ssh`) then `://`, with nothing before it. A
+/// value with anything before its `://` is not one, so a password written
+/// ahead of a URL is read like any other.
+fn whole_url(content: &str) -> bool {
+    content.split_once("://").is_some_and(|(scheme, _)| {
+        !scheme.is_empty()
+            && scheme.len() <= 16
+            && scheme
+                .split(['+', '-'])
+                .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphabetic()))
+    })
 }
 
 /// A character a generated secret or a password is written in: a letter,
@@ -1171,6 +1185,11 @@ mod tests {
             "PASSWORD=\"{ hunter2hunter2 }\"",
             "PASSWORD=\"x{hunter2hunter2}\"",
             "TOKEN_URL=\"https://auth.example.invalid/cb?token=hunter2hunter2\"",
+            // Only a value that is a URL and nothing else is read whole.
+            "PASSWORD=\"hunter2hunter2,https://auth.example.invalid\"",
+            "PASSWORD=\"hunter2hunter2;https://auth.example.invalid\"",
+            "PASSWORD=\"hunter2hunter2,://\"",
+            "PASSWORD=\"hunter2hunter2.https://auth.example.invalid\"",
             "PASSWORD=abcdefg.",
             "PASSWORD=abcdefgh.",
             "Bearer abcdefghijklmnopqrstuv",
@@ -1211,6 +1230,7 @@ mod tests {
             // Inside quotes: a URL is read whole, a bracketed run is a
             // placeholder, a reference run says where a secret is.
             "TOKEN_URL=\"https://auth.example.invalid/oauth2/token\"",
+            "TOKEN_URL=\"git+ssh://git.example.invalid/team/repo2.git\"",
             "API_KEY=\"<YourApiKey>\"",
             "PASSWORD=\"${DbPassword}\"",
             "TOKEN=\"${{secrets.RELEASE_TOKEN}}\"",
