@@ -516,8 +516,9 @@ impl State {
         None
     }
 
-    /// Tell an agent about a card the person did something to: handed
-    /// it to them, moved it while they held it, or said something on it.
+    /// Tell an agent about a card somebody else did something to: the
+    /// person handed it to them or said something on it, or anybody
+    /// moved it while they held it.
     /// The card goes with it as a link; nothing is sent to the person.
     fn tell_holder(&mut self, from: &str, to: &AgentId, task: &Task, text: String) {
         if self.registry.get(to).is_none_or(super::humans::is_human) {
@@ -1238,6 +1239,14 @@ impl Daemon {
             Ok(task) => task,
             Err(response) => return *response,
         };
+        // Anybody in the card's project moves it, whoever holds it; an
+        // agent of another project does not.
+        if !actor.human && actor.project.as_ref() != Some(&task.project) {
+            return Response::error(
+                ErrorCode::Forbidden,
+                "an agent moves cards in its own project",
+            );
+        }
         if let Err(response) = Self::agent_hold(&state, &task, &actor) {
             return *response;
         }
@@ -1371,11 +1380,11 @@ impl Daemon {
         if let Some(error) = state.commit_task(&task, None, None, released, kinds, documents) {
             return error;
         }
-        // The person moved a card an agent held, or sent it back: the
+        // Somebody else moved a card an agent held, or sent it back: the
         // agent hears where it went and why.
-        if actor.human
-            && moved
+        if moved
             && let Some(holder) = previous.assignee.clone()
+            && holder.as_str() != actor.id
         {
             let mut text = format!("{} {} → {}", task.handle(), task.title, lane.name);
             if let Some(words) = words {
@@ -2392,12 +2401,13 @@ mod tests {
     }
 
     /// The person files a card; two agents pull it and only the first
-    /// gets it, the second told who holds it; the holder moves it on and
-    /// nobody else can; the person can reassign, move back (releasing
+    /// gets it, the second told who holds it; anybody in the project
+    /// moves it on and it stays its holder's, while an agent of another
+    /// project cannot; the person can reassign, move back (releasing
     /// it) and archive; the board lists by column, oldest first, and
     /// leaves archived cards out unless asked; it all survives a reopen.
     #[tokio::test]
-    async fn a_card_is_pulled_once_and_moved_by_its_holder_or_the_person() {
+    async fn a_card_is_pulled_once_and_moved_by_anybody_in_its_project() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let work = dir.path().join("work");
@@ -2740,11 +2750,20 @@ mod tests {
                 ..
             }
         ));
-        // Moves: bob cannot, alice can, the person can.
+        // Moves: an agent of another project cannot; bob, who does not
+        // hold the card, can, and it stays alice's; alice can, the person
+        // can.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let carol = register(&daemon, "carol", &elsewhere).await;
+        assert_ne!(
+            carol.project.as_ref().map(ProjectRef::id),
+            Some(project.clone())
+        );
         assert!(matches!(
             daemon
                 .handle(Request::TaskMove {
-                    agent: "bob".to_owned(),
+                    agent: "carol".to_owned(),
                     task: first.id.to_string(),
                     column: Some(Column::Review),
                     to: None,
@@ -2758,6 +2777,40 @@ mod tests {
                 ..
             }
         ));
+        let Response::Task { task: moved_by_bob } = daemon
+            .handle(Request::TaskMove {
+                agent: "bob".to_owned(),
+                task: first.id.to_string(),
+                column: Some(Column::Review),
+                to: None,
+                after: None,
+                before: None,
+                comment: None,
+            })
+            .await
+        else {
+            panic!("bob moves a card he does not hold")
+        };
+        assert_eq!(
+            (moved_by_bob.assignee.as_ref(), moved_by_bob.column),
+            (Some(&alice.id), Column::Review),
+            "moved by bob, still alice's"
+        );
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: "alice".to_owned(),
+                drain: false,
+            })
+            .await
+        else {
+            panic!("inbox")
+        };
+        assert!(
+            messages.iter().any(|m| m.kind == "task"
+                && m.from == bob.id.as_str()
+                && m.payload["text"].as_str().is_some_and(|t| t.contains('→'))),
+            "alice is told bob moved her card: {messages:?}"
+        );
         let Response::Task { task: reviewed } = daemon
             .handle(Request::TaskMove {
                 agent: "alice".to_owned(),

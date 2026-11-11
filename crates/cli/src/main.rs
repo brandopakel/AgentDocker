@@ -1374,7 +1374,7 @@ enum TaskAction {
         #[arg(long)]
         board: Option<String>,
     },
-    /// Move a card to a lane: its holder may, the person always may.
+    /// Move a card to a lane: anybody in its project may, and it stays its holder's.
     Move {
         task: String,
         /// A lane by slug, name or category (review, done…).

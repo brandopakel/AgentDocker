@@ -3208,7 +3208,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "move_task",
-            "description": "Move a card you hold to another lane — review when it is ready for eyes (the first Review lane), done when its acceptance text is met. Name the lane by slug, name or category; the answer lists the board's lanes when nothing matches. Say why in comment and it goes on the card in the same change. after or before put it beside another card in that lane. Only the card's holder or the person moves it; take a card nobody holds with pull_task by naming it.",
+            "description": "Move a card to another lane — review when it is ready for eyes (the first Review lane), done when its acceptance text is met. Name the lane by slug, name or category; the answer lists the board's lanes when nothing matches. Say why in comment and it goes on the card in the same change. after or before put it beside another card in that lane. Anybody in the card's project moves it: a card you move that somebody else holds stays theirs, and they are told; moved back to a waiting lane by anybody but its holder it is released. To work on a card nobody holds, take it with pull_task by naming it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
