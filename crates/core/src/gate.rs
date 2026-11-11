@@ -7,7 +7,9 @@
 //! ended, until somebody who holds the role now, or the person, passes
 //! that commit or a later one. A verdict so set aside is marked
 //! superseded at that role's gate, and the person can set any verdict
-//! aside at every gate.
+//! aside at every gate. Each reviewer's latest word is their word: one
+//! set aside leaves them none, and never brings back what they said
+//! before.
 //!
 //! Whose word counts is the project's to say, by role: a verdict records
 //! the roles its reviewer held when it was given, and the gate is asked
@@ -216,7 +218,7 @@ pub struct CodeVerdict {
     pub note: String,
     pub at: DateTime<Utc>,
     /// Where it was set aside, one mark per role (or one for every gate):
-    /// it is nobody's standing word at a gate a mark covers.
+    /// at a gate a mark covers, its reviewer has no word.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub superseded: Vec<Supersession>,
 }
@@ -282,12 +284,11 @@ impl CodeVerdict {
             .find(|mark| mark.role.as_deref().is_none_or(|r| r == role))
     }
 
-    /// Whether `role`'s gate reads it: a pass or a request for changes
-    /// that counts for the role and was not set aside there.
-    fn stands_for(&self, role: &str) -> bool {
-        self.verdict != Word::None
-            && self.counts_for(role)
-            && self.superseded_at(role).is_none()
+    /// Whether it is a word at `role`'s gate, set aside or not: a pass or
+    /// a request for changes that counts for the role. A reviewer's latest
+    /// such word replaces what they said before, even once it is set aside.
+    fn speaks_for(&self, role: &str) -> bool {
+        self.verdict != Word::None && self.counts_for(role)
     }
 
     /// Set it aside at every gate, as the person does. Refused once it is.
@@ -357,7 +358,7 @@ pub fn standing(verdicts: &[CodeVerdict]) -> std::collections::BTreeSet<&str> {
     for role in roles {
         let mut latest: std::collections::BTreeMap<(&str, &AgentId), &CodeVerdict> =
             Default::default();
-        for verdict in verdicts.iter().filter(|v| v.stands_for(role)) {
+        for verdict in verdicts.iter().filter(|v| v.speaks_for(role)) {
             let kept = latest
                 .entry((verdict.branch.as_str(), &verdict.by))
                 .or_insert(verdict);
@@ -534,8 +535,9 @@ impl Gate {
     }
 }
 
-/// Each reviewer's latest standing word on `branch` for `role`.
-fn latest_words<'a>(
+/// Each reviewer's latest word on `branch` at `role`'s gate, set aside or
+/// not.
+fn latest_given<'a>(
     verdicts: &'a [CodeVerdict],
     branch: &str,
     role: &str,
@@ -543,7 +545,7 @@ fn latest_words<'a>(
     let mut latest: std::collections::BTreeMap<&AgentId, &CodeVerdict> = Default::default();
     for verdict in verdicts
         .iter()
-        .filter(|v| v.branch == branch && v.stands_for(role))
+        .filter(|v| v.branch == branch && v.speaks_for(role))
     {
         let kept = latest.entry(&verdict.by).or_insert(verdict);
         if verdict.order() > kept.order() {
@@ -553,11 +555,24 @@ fn latest_words<'a>(
     latest
 }
 
+/// Each reviewer's word on `branch` at `role`'s gate: their latest, unless
+/// it is set aside there, when they have none. What they said before stays
+/// replaced.
+fn latest_words<'a>(
+    verdicts: &'a [CodeVerdict],
+    branch: &str,
+    role: &str,
+) -> std::collections::BTreeMap<&'a AgentId, &'a CodeVerdict> {
+    let mut latest = latest_given(verdicts, branch, role);
+    latest.retain(|_, verdict| verdict.superseded_at(role).is_none());
+    latest
+}
+
 /// The gate for `branch` at `head`, counting the verdicts of `role`
-/// holders and the person. Each reviewer's latest approval or request for
-/// changes on the branch is their word (a comment is neither, and nor is
-/// a superseded verdict); one request for changes blocks; otherwise an
-/// approval of `head` passes it, and an approval of anything else is
+/// holders and the person. Each reviewer's latest pass or request for
+/// changes on the branch is their word (a `none` is neither), and one set
+/// aside at this gate leaves them none; one request for changes blocks;
+/// otherwise a pass of `head` passes it, and a pass of anything else is
 /// stale.
 pub fn gate(verdicts: &[CodeVerdict], branch: &str, head: &str, role: &str) -> Gate {
     let latest = latest_words(verdicts, branch, role);
@@ -718,9 +733,8 @@ pub fn supersessions(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Gated {
     pub gate: Gate,
-    /// The branch's passes and requests for changes that would count at
-    /// this gate but are set aside there, the ones lifted now included,
-    /// oldest first.
+    /// The reviewers' latest words on the branch that are set aside at
+    /// this gate, the ones lifted now included, oldest first.
     pub superseded: Vec<CodeVerdict>,
     /// The ones set aside now, for the caller to keep.
     pub lifted: Vec<Lifted>,
@@ -744,14 +758,10 @@ pub fn gated(
         }
     }
     let gate = gate(&all, branch, head, role);
-    let mut superseded: Vec<CodeVerdict> = all
-        .into_iter()
-        .filter(|v| {
-            v.branch == branch
-                && v.verdict != Word::None
-                && v.counts_for(role)
-                && v.superseded_at(role).is_some()
-        })
+    let mut superseded: Vec<CodeVerdict> = latest_given(&all, branch, role)
+        .into_values()
+        .filter(|v| v.superseded_at(role).is_some())
+        .cloned()
         .collect();
     superseded.sort_by(|a, b| a.order().cmp(&b.order()));
     Gated {
@@ -915,10 +925,7 @@ mod tests {
         assert!(standing(&kept).contains(said[0].id.as_str()));
         // The person's pass of the very commit R read lifts it too, with
         // nothing to ask.
-        let person = vec![
-            said[0].clone(),
-            verdict("user", &[], A, Word::Pass, 1),
-        ];
+        let person = vec![said[0].clone(), verdict("user", &[], A, Word::Pass, 1)];
         let nobody = succession(&["r"], &[], &[]);
         assert!(ancestry_questions(&person, "feature/x", GATE_ROLE, &nobody).is_empty());
         let lifted = gated(&person, "feature/x", A, GATE_ROLE, &nobody, now());
@@ -944,10 +951,7 @@ mod tests {
         ];
         assert!(blocked(&outsider, C, &ended), "not a holder now");
         // A pass given in another role.
-        let tester = [
-            changes.clone(),
-            verdict("s", &["tester"], C, Word::Pass, 2),
-        ];
+        let tester = [changes.clone(), verdict("s", &["tester"], C, Word::Pass, 2)];
         assert!(blocked(&tester, C, &ended), "another role's word");
         // A comment (`none`) is not a pass.
         let comment = [
@@ -970,10 +974,7 @@ mod tests {
         ];
         assert!(blocked(&earlier, C, &ended), "given before");
         // The departed reviewer's own word is not a successor's.
-        let own = [
-            changes.clone(),
-            verdict("r", &["tester"], C, Word::Pass, 2),
-        ];
+        let own = [changes.clone(), verdict("r", &["tester"], C, Word::Pass, 2)];
         assert!(blocked(&own, C, &ended), "its own");
         // A live reviewer's request stands, a successor's pass or not.
         let pass = verdict("s", &["reviewer"], C, Word::Pass, 2);
@@ -1039,9 +1040,94 @@ mod tests {
                 [Some(SupersedeReason::Person)]
             );
         }
-        // A verdict set aside everywhere is forgettable.
+        // Set aside, it still replaces what R said before, so it stands
+        // for forgetting; R's earlier word goes first.
+        let mut earlier = verdict("r", &["reviewer", "tester"], B, Word::Pass, -1);
+        earlier.seq = 0;
+        let mut kept = vec![earlier.clone()];
+        kept.extend(said.iter().cloned());
         let next = verdict("s", &["reviewer"], B, Word::None, 9);
-        assert_eq!(to_forget(&said, &next, 2).unwrap(), [said[0].id.clone()]);
+        assert_eq!(
+            to_forget(&kept, &next, 3).unwrap(),
+            std::slice::from_ref(&earlier.id)
+        );
+        assert_eq!(to_forget(&said, &next, 2), None, "never the word set aside");
+        // A pass set aside counts nowhere: its reviewer has no word.
+        let mut pass = said[1].clone();
+        pass.supersede(Supersession {
+            by: AgentId::from("user"),
+            by_name: "user".into(),
+            with: None,
+            role: None,
+            reason: SupersedeReason::Person,
+            note: String::new(),
+            at: now(),
+        })
+        .unwrap();
+        assert_eq!(pass.verdict, Word::Pass, "kept as given");
+        let gone = [pass];
+        assert_eq!(
+            gated(&gone, "feature/x", B, GATE_ROLE, &live, now()).gate,
+            Gate::Missing
+        );
+    }
+
+    #[test]
+    fn a_departed_reviewer_s_earlier_words_stay_replaced_once_its_latest_is_lifted() {
+        // R asked for changes at X, a commit since discarded, passed Y,
+        // then asked for changes at A; S passed B, after A, and R left.
+        const X: &str = "dddddddddddddddddddddddddddddddddddddddd";
+        const Y: &str = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let said = vec![
+            verdict("r", &["reviewer"], X, Word::Changes, 0),
+            verdict("r", &["reviewer"], Y, Word::Pass, 1),
+            verdict("r", &["reviewer"], A, Word::Changes, 2),
+            verdict("s", &["reviewer"], B, Word::Pass, 3),
+        ];
+        let ended = succession(&["r"], &["s"], &[(A, B), (Y, A), (Y, B)]);
+        // Only R's latest word is in question, never one it replaced.
+        assert_eq!(
+            ancestry_questions(&said, "feature/x", GATE_ROLE, &ended),
+            [(A.to_owned(), B.to_owned())].into_iter().collect()
+        );
+        let after = gated(&said, "feature/x", B, GATE_ROLE, &ended, now());
+        assert!(after.gate.approved(), "{after:?}");
+        assert_eq!(
+            after
+                .lifted
+                .iter()
+                .map(|l| l.verdict.id.as_str())
+                .collect::<Vec<_>>(),
+            [said[2].id.as_str()]
+        );
+        assert_eq!(
+            after.superseded,
+            std::slice::from_ref(&after.lifted[0].verdict)
+        );
+        // Kept, the lift leaves R no word at all: the discarded commit's
+        // request does not block, and the pass of Y does not pass Y.
+        let mut kept = said.clone();
+        kept[2] = after.lifted[0].verdict.clone();
+        let nobody = succession(&["r"], &[], &[]);
+        let again = gated(&kept, "feature/x", B, GATE_ROLE, &nobody, now());
+        assert!(again.gate.approved() && again.lifted.is_empty());
+        assert!(matches!(
+            gated(&kept, "feature/x", Y, GATE_ROLE, &nobody, now()).gate,
+            Gate::Stale { verdict } if verdict.by.as_str() == "s"
+        ));
+        assert!(matches!(
+            gated(&kept, "feature/x", X, GATE_ROLE, &nobody, now()).gate,
+            Gate::Stale { .. }
+        ));
+        // And forgetting takes R's replaced words, never the lifted one.
+        let standing = standing(&kept);
+        assert!(standing.contains(kept[2].id.as_str()) && standing.contains(kept[3].id.as_str()));
+        assert!(!standing.contains(kept[0].id.as_str()) && !standing.contains(kept[1].id.as_str()));
+        let next = verdict("s", &["reviewer"], B, Word::None, 9);
+        assert_eq!(
+            to_forget(&kept, &next, kept.len()).unwrap(),
+            [kept[0].id.clone()]
+        );
     }
 
     #[test]

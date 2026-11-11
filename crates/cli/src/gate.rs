@@ -585,16 +585,16 @@ mod tests {
         let changes = parsed(&["feature/x", "--head", "abc", "--changes", "fix the test"]).unwrap();
         assert_eq!(changes.branch.as_deref(), Some("feature/x"));
         assert!(changes.changes && changes.supersede.is_none());
-        assert!(
-            parsed(&["feature/x", "--head", "abc", "--approve"])
-                .unwrap()
-                .approve
-        );
-        assert!(
-            parsed(&["feature/x", "--head", "abc", "--comment"])
-                .unwrap()
-                .comment
-        );
+        // The words, and the spellings kept for them.
+        for (word, pass) in [
+            ("--pass", true),
+            ("--approve", true),
+            ("--none", false),
+            ("--comment", false),
+        ] {
+            let said = parsed(&["feature/x", "--head", "abc", word]).unwrap();
+            assert_eq!((said.pass, said.none), (pass, !pass), "{word}");
+        }
         let lifted = parsed(&["--supersede", "1", "--reason", "the reviewer is gone"]).unwrap();
         assert_eq!(lifted.supersede.as_deref(), Some("1"));
         assert_eq!(lifted.reason.as_deref(), Some("the reviewer is gone"));
@@ -692,7 +692,7 @@ mod tests {
     fn the_gate_says_which_verdict_was_set_aside_and_by_whom() {
         let head = "a".repeat(40);
         let mut lifted = *verdict(&head);
-        lifted.verdict = Verdict::Changes;
+        lifted.verdict = Word::Changes;
         lifted.superseded = vec![agentdocker_core::gate::Supersession {
             by: AgentId::from("s"),
             by_name: "reviewer-2".into(),
