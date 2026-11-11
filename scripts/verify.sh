@@ -246,6 +246,44 @@ case "${1:-check}" in
     step cargo nextest run --locked --workspace --profile ci
     step cargo test --locked --workspace --doc
     step python3 -m unittest discover -s tests
+    ;;
+  quick)
+    # The short gate for a change on a branch that has already passed
+    # `check` once: formatting, the documentation checks, strict Clippy on
+    # the packages the change touches, and the test suites of those
+    # packages and of every package that depends on them (the whole
+    # workspace when a file every package depends on changed, nothing when
+    # no package did). CI remains the full check for the pushed head.
+    if base="$(git merge-base HEAD origin/main 2>/dev/null)"; then
+      step python3 scripts/docs_check.py --base "$base"
+    elif git rev-parse --verify --quiet origin/main >/dev/null; then
+      # A shallow clone has the ref but not the history behind it; measured
+      # against one commit, the gate would miss the branch's earlier changes.
+      echo "verify.sh quick: HEAD has no merge base with origin/main (a shallow clone?); fetch the history (git fetch --unshallow origin main) and run again" >&2
+      exit 1
+    else
+      base=HEAD~1
+      step python3 scripts/docs_check.py
+    fi
+    step cargo fmt --all --check
+    # The selection is a checked step of its own: a Git or Cargo failure
+    # stops the run, and only a successful empty answer means nothing to test.
+    step python3 scripts/touched_crates.py --base "$base" --output "$campaign_dir/packages"
+    selectors=()
+    while IFS= read -r line; do [ -n "$line" ] && selectors+=("$line"); done < "$campaign_dir/packages"
+    if [ "${#selectors[@]}" -eq 0 ]; then
+      echo "verify.sh quick: no workspace package changed since ${base:0:12}; Cargo not run" >&2
+    else
+      step cargo clippy --locked "${selectors[@]}" --all-targets -- -D warnings
+      step cargo nextest run --locked "${selectors[@]}" --profile ci
+      step cargo test --locked "${selectors[@]}" --doc
+    fi
+    step python3 -m unittest discover -s tests
+    ;;
+  package)
+    # What a release needs beyond `check`: every crate packages, and the
+    # workspace builds in the release profile. CI runs it on every pull
+    # request; locally it is for a packaging or release change.
     step cargo package --locked --workspace --no-verify --allow-dirty
     step cargo build --locked --workspace --release
     ;;
@@ -370,5 +408,5 @@ PY
       step cargo +nightly fuzz run "$target" -- -max_total_time="$seconds" -max_len="$max_len" -timeout=10 -rss_limit_mb=1024 -print_final_stats=1 -verbosity=0 2>&1 | tee "artifacts/fuzz-$target.log"
     done
     ;;
-  *) echo 'usage: bash scripts/verify.sh [check|test|coverage|bench|fuzz]' >&2; exit 2 ;;
+  *) echo 'usage: bash scripts/verify.sh [check|quick|package|test|coverage|bench|fuzz]' >&2; exit 2 ;;
 esac

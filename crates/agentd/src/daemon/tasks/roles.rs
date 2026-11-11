@@ -51,6 +51,16 @@ impl State {
     }
 }
 
+/// A role as the person spelt it: the one it changes when `existing`, its
+/// name, and the colour, description and tools given.
+pub(in crate::daemon) struct RoleSaveArgs {
+    pub existing: Option<String>,
+    pub name: String,
+    pub color: Option<RoleColor>,
+    pub description: Option<String>,
+    pub tools: Option<Vec<String>>,
+}
+
 impl Daemon {
     pub(in crate::daemon) async fn role_catalog(
         self: &Arc<Self>,
@@ -69,17 +79,20 @@ impl Daemon {
     /// Make a role, or rename, recolour or describe one, or name the tools
     /// its holders are offered: the person's to do. A built-in role the
     /// person took out comes back when they make it again.
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn role_save(
         self: &Arc<Self>,
         from: &str,
         project: Option<String>,
-        existing: Option<String>,
-        name: &str,
-        color: Option<RoleColor>,
-        description: Option<String>,
-        tools: Option<Vec<String>>,
+        role: RoleSaveArgs,
     ) -> Response {
+        let RoleSaveArgs {
+            existing,
+            name,
+            color,
+            description,
+            tools,
+        } = role;
+        let name = name.as_str();
         let project = match self.named_project(project.as_deref(), Some(from)).await {
             Ok(project) => project,
             Err(response) => return *response,

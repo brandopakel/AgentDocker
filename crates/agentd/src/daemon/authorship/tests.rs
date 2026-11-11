@@ -80,7 +80,7 @@ fn verdict(agent: &str, project: Option<&str>, branch: &str, head: &str) -> Requ
         branch: branch.into(),
         head: head.into(),
         from: None,
-        verdict: "approve".into(),
+        verdict: "pass".into(),
         findings: Findings::default(),
         note: None,
     }

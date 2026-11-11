@@ -4,7 +4,7 @@ use iced::advanced::Renderer as _;
 mod composer;
 mod popover;
 mod reveal;
-pub use composer::{composer, framed_composer};
+pub use composer::{ComposerSpec, composer, framed_composer};
 pub use popover::popover;
 pub use reveal::hover;
 
@@ -885,6 +885,9 @@ pub fn custom<'a>(
     custom_sized(id, label, content, message, selected, kind, padding, width)
 }
 /// [`custom`] at an explicit width: an icon button among rail rows.
+// The control ladder's entry from fifty screens; its arguments are the
+// control's few properties, read in one order everywhere, so a struct would
+// only lengthen every call.
 #[allow(clippy::too_many_arguments)]
 pub fn custom_sized<'a>(
     id: impl Into<String>,
@@ -896,9 +899,17 @@ pub fn custom_sized<'a>(
     padding: [u16; 2],
     width: Length,
 ) -> Element<'a, Message> {
-    build(
-        id, label, content, message, selected, kind, padding, width, None,
-    )
+    build(Spec {
+        id: id.into(),
+        label: label.into(),
+        content: content.into(),
+        message,
+        selected,
+        kind,
+        padding,
+        width,
+        split: None,
+    })
 }
 
 /// Which half of a split button a control is.
@@ -919,17 +930,17 @@ pub fn split_primary<'a>(
 ) -> Element<'a, Message> {
     let label_text = label_text.into();
     let content = label(label_text.clone(), 13.0);
-    build(
-        id,
-        label_text,
-        content,
+    build(Spec {
+        id: id.into(),
+        label: label_text,
+        content: content.into(),
         message,
-        false,
-        Kind::Primary,
-        [7, 14],
-        Length::Shrink,
-        Some(side),
-    )
+        selected: false,
+        kind: Kind::Primary,
+        padding: [7, 14],
+        width: Length::Shrink,
+        split: Some(side),
+    })
 }
 
 /// The chevron half of a split primary action.
@@ -940,32 +951,46 @@ pub fn split_primary_glyph<'a>(
     message: Option<Message>,
 ) -> Element<'a, Message> {
     let content = iced::widget::container(glyph).center_y(LABEL_LINE);
-    build(
-        id,
-        spoken,
-        content,
+    build(Spec {
+        id: id.into(),
+        label: spoken.into(),
+        content: content.into(),
         message,
-        false,
-        Kind::Primary,
-        [7, 9],
-        Length::Shrink,
-        Some(Split::End),
-    )
+        selected: false,
+        kind: Kind::Primary,
+        padding: [7, 9],
+        width: Length::Shrink,
+        split: Some(Split::End),
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build<'a>(
-    id: impl Into<String>,
-    label: impl Into<String>,
-    content: impl Into<Element<'a, Message>>,
+/// What a button is built from: its id and spoken label, the content the
+/// eye sees, what pressing sends, its state, weight and shape, and which
+/// half of a split button it is.
+struct Spec<'a> {
+    id: String,
+    label: String,
+    content: Element<'a, Message>,
     message: Option<Message>,
     selected: bool,
     kind: Kind,
     padding: [u16; 2],
     width: Length,
     split: Option<Split>,
-) -> Element<'a, Message> {
-    let (id, label) = (id.into(), label.into());
+}
+
+fn build<'a>(spec: Spec<'a>) -> Element<'a, Message> {
+    let Spec {
+        id,
+        label,
+        content,
+        message,
+        selected,
+        kind,
+        padding,
+        width,
+        split,
+    } = spec;
     let content = iced::widget::button(content)
         .padding(padding)
         .width(width)

@@ -288,6 +288,8 @@ fn group_noun(by: Group) -> (&'static str, &'static str) {
         Group::Provider => ("provider", "providers"),
         Group::Project => ("project", "projects"),
         Group::Hour => ("hour", "hours"),
+        Group::Card => ("card", "cards"),
+        Group::Role => ("role", "roles"),
     }
 }
 
@@ -769,6 +771,8 @@ mod tests {
                 source_gaps: 0,
                 tracking: None,
                 collection: Collection {
+                    otlp_listen: None,
+                    otlp_error: None,
                     enabled: Some(true),
                     state,
                     discovery_generation: generation,
@@ -945,6 +949,7 @@ mod tests {
         let row = |key: Option<&str>, input: Option<u64>, output: Option<u64>| Row {
             key: key.map(str::to_owned),
             samples: 1,
+            usage_source: None,
             counters: CounterReports {
                 input_tokens: counter(input, Coverage::Complete),
                 cache_read_input_tokens: counter(None, Coverage::Unknown),
@@ -952,6 +957,8 @@ mod tests {
                 output_tokens: counter(output, Coverage::Complete),
                 reasoning_output_tokens: counter(None, Coverage::Unknown),
             },
+            cost_usd_micros: CounterReport::default(),
+            cache_read_share_percent: None,
         };
         let read = report(
             vec![
@@ -992,6 +999,7 @@ mod tests {
         let row_with = |input: CounterReport| Row {
             key: Some("k".into()),
             samples: 1,
+            usage_source: None,
             counters: CounterReports {
                 input_tokens: input,
                 cache_read_input_tokens: counter(None, Coverage::Unknown),
@@ -999,6 +1007,8 @@ mod tests {
                 output_tokens: counter(Some(5), Coverage::Complete),
                 reasoning_output_tokens: counter(None, Coverage::Unknown),
             },
+            cost_usd_micros: CounterReport::default(),
+            cache_read_share_percent: None,
         };
         let mut both = report(
             vec![
@@ -1177,6 +1187,7 @@ mod tests {
         let row = Row {
             key: Some("model-a".into()),
             samples: 2,
+            usage_source: None,
             counters: CounterReports {
                 input_tokens: counter(Some(900), Coverage::Partial),
                 cache_read_input_tokens: counter(None, Coverage::Unknown),
@@ -1184,6 +1195,8 @@ mod tests {
                 output_tokens: counter(Some(40), Coverage::Complete),
                 reasoning_output_tokens: counter(None, Coverage::Unknown),
             },
+            cost_usd_micros: CounterReport::default(),
+            cache_read_share_percent: None,
         };
         let mut read = report(vec![row], CollectionState::CaughtUp, Some(1));
         read.by = Group::Model;

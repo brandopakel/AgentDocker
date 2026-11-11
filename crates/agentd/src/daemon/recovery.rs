@@ -8,6 +8,17 @@ use agentdocker_host::content;
 use std::os::unix::process::CommandExt;
 use std::process::Stdio;
 
+/// What a checkpoint keeps, as the request spelt it; `release` ends the
+/// agent's leases once it is durable.
+pub(super) struct CheckpointArgs {
+    pub key: String,
+    pub task: String,
+    pub assumptions: Vec<String>,
+    pub next_steps: Vec<String>,
+    pub links: Vec<agentdocker_core::Link>,
+    pub release: bool,
+}
+
 impl Daemon {
     pub(super) fn checkpoints(&self, reference: Option<&str>) -> Response {
         let mut state = lock(&self.state);
@@ -93,17 +104,15 @@ impl Daemon {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn checkpoint(
-        &self,
-        reference: &str,
-        key: String,
-        task: String,
-        assumptions: Vec<String>,
-        next_steps: Vec<String>,
-        links: Vec<agentdocker_core::Link>,
-        release: bool,
-    ) -> Response {
+    pub(super) async fn checkpoint(&self, reference: &str, args: CheckpointArgs) -> Response {
+        let CheckpointArgs {
+            key,
+            task,
+            assumptions,
+            next_steps,
+            links,
+            release,
+        } = args;
         if let Err(reason) = agentdocker_core::link::check(&links) {
             return Response::error(ErrorCode::Invalid, reason);
         }
@@ -159,7 +168,7 @@ impl Daemon {
         let version = match tokio::task::spawn_blocking(move || content::fingerprint(&root)).await {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return unreadable_checkout(e),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let mut state = lock(&self.state);
         if !state
@@ -258,7 +267,7 @@ impl Daemon {
         .await;
         let (stale, checkout_matches) = match checked {
             Ok(v) => v,
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let mut state = lock(&self.state);
         if !state
@@ -348,6 +357,15 @@ impl Daemon {
                 let now = Utc::now();
                 // Ownership moves with acceptance, in the same transaction:
                 // a bundle that asked for it hands its leases over here.
+                // What they were before, to put back exactly if the write
+                // fails: the holder and when it took each.
+                let before: std::collections::HashMap<LeaseId, Lease> = bundle
+                    .iter()
+                    .filter(|b| b.transfer_leases)
+                    .flat_map(|b| b.leases.iter())
+                    .filter_map(|lease| state.leases.get(&lease.id).cloned())
+                    .map(|lease| (lease.id.clone(), lease))
+                    .collect();
                 let transferred = match &bundle {
                     Some(b) if b.transfer_leases => state.leases.transfer_selected(
                         &b.from,
@@ -425,8 +443,11 @@ impl Daemon {
                     // them back so memory matches what was (not) written.
                     if let Some(b) = &bundle {
                         for lease in &transferred {
-                            let mut back = lease.clone();
-                            back.holder = b.from.clone();
+                            let back = before.get(&lease.id).cloned().unwrap_or_else(|| {
+                                let mut back = lease.clone();
+                                back.holder = b.from.clone();
+                                back
+                            });
                             state.leases.restore(back);
                         }
                     }
@@ -511,7 +532,7 @@ impl Daemon {
         {
             Ok(Ok(v)) => v,
             Ok(Err(e)) => return unreadable_checkout(e),
-            Err(e) => return internal(e),
+            Err(e) => return Response::internal(e),
         };
         let id = MessageId::generate().to_string();
         let log = self.home.join("logs").join(format!("validation-{id}.log"));
@@ -618,7 +639,7 @@ impl Daemon {
                 .await
                 {
                     Ok(Ok(status)) => validation.exit_code = status.code(),
-                    Ok(Err(e)) => return internal(e),
+                    Ok(Err(e)) => return Response::internal(e),
                     Err(_) => {
                         validation.timed_out = true;
                         let _ = kill(group.0.unwrap(), Signal::SIGKILL);
@@ -640,7 +661,7 @@ impl Daemon {
                 .await
                 {
                     Ok(Ok(status)) => validation.exit_code = status.code(),
-                    Ok(Err(e)) => return internal(e),
+                    Ok(Err(e)) => return Response::internal(e),
                     Err(_) => {
                         validation.timed_out = true;
                         let _ = child.kill().await;
@@ -708,12 +729,6 @@ impl Drop for ValidationGroup {
         }
     }
 }
-/// A fault of the daemon's own: a worker task that panicked or was
-/// cancelled, a child that could not be waited for.
-pub(super) fn internal(error: impl std::fmt::Display) -> Response {
-    Response::error(ErrorCode::Internal, error.to_string())
-}
-
 /// The store, or a file under the daemon's home, could not be read or
 /// written.
 pub(super) fn storage(error: impl std::fmt::Display) -> Response {
@@ -1105,12 +1120,14 @@ mod tests {
         let result = daemon
             .checkpoint(
                 "original",
-                "rollback".into(),
-                "task".into(),
-                vec![],
-                vec![],
-                vec![],
-                true,
+                CheckpointArgs {
+                    key: "rollback".into(),
+                    task: "task".into(),
+                    assumptions: vec![],
+                    next_steps: vec![],
+                    links: vec![],
+                    release: true,
+                },
             )
             .await;
         assert!(matches!(
@@ -1144,12 +1161,14 @@ mod tests {
         let Response::Checkpoint { checkpoint } = daemon
             .checkpoint(
                 "original",
-                "accept-rollback".into(),
-                "task".into(),
-                vec![],
-                vec![],
-                vec![],
-                false,
+                CheckpointArgs {
+                    key: "accept-rollback".into(),
+                    task: "task".into(),
+                    assumptions: vec![],
+                    next_steps: vec![],
+                    links: vec![],
+                    release: false,
+                },
             )
             .await
         else {
@@ -1278,12 +1297,14 @@ mod tests {
             daemon
                 .checkpoint(
                     "original",
-                    "barrier".into(),
-                    "task".into(),
-                    vec![],
-                    vec![],
-                    vec![],
-                    true
+                    CheckpointArgs {
+                        key: "barrier".into(),
+                        task: "task".into(),
+                        assumptions: vec![],
+                        next_steps: vec![],
+                        links: vec![],
+                        release: true,
+                    },
                 )
                 .await,
             Response::Checkpoint { .. }

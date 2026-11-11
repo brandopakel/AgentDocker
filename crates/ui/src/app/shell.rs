@@ -275,6 +275,12 @@ pub(super) struct State {
     launch_codex_trust_generation: u64,
     /// The count last shown on the dock icon, so it is set only on a change.
     pub dock_badge: Option<usize>,
+    /// What the menu-bar item last showed (`Some(None)` is taken down), so
+    /// it is touched only on a change.
+    pub status_item: Option<Option<usize>>,
+    /// The window was closed to the menu bar: it exists, hidden, until
+    /// the item is clicked or the app is activated again.
+    pub hidden: bool,
     pub launching: bool,
     /// The session whose resume is on its way to the daemon, so its
     /// button alone says "Reconnecting…" (a launch from the Launch form
@@ -423,6 +429,9 @@ pub(super) struct State {
     /// its card can show the choice as the receipt. Only answers still in
     /// flight are kept. Window-local, display only.
     pub chosen_answers: BTreeMap<MessageId, String>,
+    /// The options picked so far on each multi-select question, in the
+    /// order they were picked, until they are sent. Window-local.
+    pub picked: BTreeMap<MessageId, Vec<String>>,
     /// The places behind and ahead, for Back and Forward.
     pub history: super::navigation::History,
 }
@@ -1200,6 +1209,11 @@ pub enum Message {
     SecretSubmit(String),
     SecretCancel(String),
     AnswerChoice(MessageId, String),
+    /// Pick or unpick one option of a multi-select question.
+    ToggleChoice(MessageId, String),
+    /// Send the picked options of a multi-select question, with the
+    /// written words as a note.
+    AnswerChoices(MessageId),
     CopyQuestionUrl(MessageId),
     FormEdit(MessageId, String, String),
     FormInclude(MessageId, String, bool),
@@ -1277,6 +1291,10 @@ pub enum Message {
     Palette(String),
     Roomy(bool),
     NotifyFinished(bool),
+    MenuBarItem(bool),
+    /// The menu-bar item was clicked: the window comes back, or comes to
+    /// the front. A panel on the item would hang off this message.
+    StatusItemClicked,
     /// Mark a session as something to come back to, and leave it.
     MarkUnread(String),
     /// A notice the window posted itself was taken or refused; either way
@@ -1639,6 +1657,8 @@ impl App {
                 | Message::OpenQuestion(_)
                 | Message::Answer(_)
                 | Message::AnswerChoice(..)
+                | Message::ToggleChoice(..)
+                | Message::AnswerChoices(_)
                 | Message::ReviewFiles(_)
                 | Message::QuestionDetails(_)
                 | Message::Notification(_)
@@ -1684,6 +1704,9 @@ impl App {
                 self.ask_due_memory_search();
                 for activation in crate::notification_route::take() {
                     tasks.push(self.update(Message::Notification(activation)));
+                }
+                if crate::status_item::take_click() {
+                    tasks.push(self.update(Message::StatusItemClicked));
                 }
                 for action in crate::accessibility::take_actions() {
                     tasks.push(self.update(action));
@@ -1738,10 +1761,7 @@ impl App {
                 }
             }
             Message::Notification(activation) => {
-                if let Some(id) = self.shell.window {
-                    crate::notification_route::unhide_application();
-                    tasks.push(window::minimize(id, false).chain(window::gain_focus(id)));
-                }
+                tasks.push(self.raise_window());
                 match activation {
                     crate::notification_route::Activation::Open(action)
                         if action.home == self.home
@@ -3460,9 +3480,7 @@ impl App {
                                 Some(agentdocker_core::QuestionPresentation::CodexFiles { .. })
                             ) || !grants(&value)
                                 || self.shell.file_review.as_ref() == Some(&id))
-                            && q.presentation
-                                .as_ref()
-                                .is_some_and(|p| p.valid_for(&q.text) && p.permits_choice(&value))
+                            && q.permits_choice(&value)
                     })
                 {
                     // A choice is an explicit submission, not a draft edit.
@@ -3477,6 +3495,78 @@ impl App {
                         .retain(|id, _| sending.contains(id));
                     self.shell.chosen_answers.insert(id.clone(), value.clone());
                     self.send(Cmd::Answer(id, value));
+                }
+            }
+            Message::ToggleChoice(id, label) => {
+                if !self.sending.contains(&id)
+                    && self.questions.iter().any(|q| {
+                        q.id == id
+                            && q.form.multi_select
+                            && !q.expired(Utc::now())
+                            && q.form.options.iter().any(|o| o.label == label)
+                    })
+                {
+                    let picked = self.shell.picked.entry(id).or_default();
+                    match picked.iter().position(|p| *p == label) {
+                        Some(at) => {
+                            picked.remove(at);
+                        }
+                        None => picked.push(label),
+                    }
+                }
+            }
+            Message::AnswerChoices(id) => {
+                // The picked rows by their numbers, in the form's order,
+                // so the longest valid form fits the window's command
+                // limit (the daemon writes the labels into the answer); and
+                // the written words, where the question allows an Other,
+                // as that Other: sent apart and as written, never read as
+                // a label or a number, never a note.
+                let question = self
+                    .questions
+                    .iter()
+                    .find(|q| q.id == id && q.form.multi_select && !q.expired(Utc::now()));
+                let picked = self.shell.picked.get(&id);
+                let choices: Vec<String> = question
+                    .map(|q| {
+                        q.form
+                            .options
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, option)| {
+                                picked.is_some_and(|picked| picked.contains(&option.label))
+                            })
+                            .map(|(at, _)| (at + 1).to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let other = question
+                    .filter(|q| q.form.allow_other)
+                    .and_then(|_| self.shell.answers.get(&id))
+                    .map(|words| words.trim().to_owned())
+                    .filter(|words| !words.is_empty());
+                if self.connected.is_ok()
+                    && !self.sending.contains(&id)
+                    && (!choices.is_empty() || other.is_some())
+                    && question.is_some()
+                {
+                    self.shell.answer_errors.remove(&id);
+                    self.sending.insert(id.clone());
+                    self.shell.pending_answer_reveal = Some(id.clone());
+                    let sending = &self.sending;
+                    self.shell
+                        .chosen_answers
+                        .retain(|id, _| sending.contains(id));
+                    let receipt: Vec<&str> = picked
+                        .into_iter()
+                        .flatten()
+                        .chain(other.iter())
+                        .map(String::as_str)
+                        .collect();
+                    self.shell
+                        .chosen_answers
+                        .insert(id.clone(), receipt.join(", "));
+                    self.send(Cmd::AnswerChoices(id, choices, other));
                 }
             }
             Message::SecretEdit(id, field, value) => {
@@ -3537,7 +3627,19 @@ impl App {
                     self.sending.insert(id.clone());
                     self.shell.pending_answer_reveal = Some(id.clone());
                     self.shell.chosen_answers.remove(&id);
-                    self.send(Cmd::Answer(id, answer));
+                    // To a question with options of its own and an Other,
+                    // the written answer is that Other: sent as written,
+                    // never read as one of the options' labels or numbers.
+                    if self
+                        .questions
+                        .iter()
+                        .any(|q| q.id == id && !q.form.options.is_empty() && q.form.allow_other)
+                    {
+                        let other = answer.trim().to_owned();
+                        self.send(Cmd::AnswerChoices(id, Vec::new(), Some(other)));
+                    } else {
+                        self.send(Cmd::Answer(id, answer));
+                    }
                 }
             }
             Message::DismissInbox(mut ids) => {
@@ -4129,6 +4231,12 @@ impl App {
                 self.shell.catalog.appearance = Some(self.settings.clone());
                 self.shell.changed();
             }
+            Message::MenuBarItem(on) => {
+                self.settings.menu_bar_item = on;
+                self.shell.catalog.appearance = Some(self.settings.clone());
+                self.shell.changed();
+            }
+            Message::StatusItemClicked => tasks.push(self.raise_window()),
             Message::DismissError => {
                 self.shell.error = None;
                 self.status.clear();
@@ -4408,7 +4516,21 @@ impl App {
             && (!self.shell.save_enabled
                 || (!self.shell.saving && self.shell.generation == self.shell.saved_generation))
         {
-            return iced::exit();
+            if !self.menu_bar_item_wanted() {
+                return iced::exit();
+            }
+            // Closed to the menu bar: the window keeps its state out of
+            // sight and the item stays, the app's one presence until the
+            // item is clicked. The close attempt is over with it: a Close
+            // without saving was chosen for this close alone, and must not
+            // wave a later one past a draft that is dirty or failing.
+            self.shell.closing = false;
+            self.shell.hidden = true;
+            self.shell.drafts.discard_on_close = false;
+            self.shell.drafts.close_blocked = false;
+            if let Some(id) = self.shell.window {
+                tasks.push(window::set_mode(id, window::Mode::Hidden));
+            }
         }
         if self.shell.save_enabled
             && !self.shell.saving
@@ -4614,6 +4736,13 @@ impl App {
             self.shell.dock_badge = Some(waiting);
             crate::dock::badge(waiting);
         }
+        // The menu-bar item says the same number, and is taken down when
+        // the setting is off (the window then closes as it always has).
+        let shown = self.menu_bar_item_wanted().then_some(waiting);
+        if self.shell.status_item != Some(shown) {
+            self.shell.status_item = Some(shown);
+            crate::status_item::sync(shown);
+        }
         tasks.push(match self.shell.window {
             Some(id) if self.smoke.is_none() => crate::accessibility::collect_and_update(
                 id,
@@ -4622,6 +4751,30 @@ impl App {
             _ => crate::accessibility::collect(),
         });
         Task::batch(tasks)
+    }
+
+    /// Whether the menu-bar item is on: the platform draws one, the person
+    /// has not turned it off, and this is not a smoke run (whose window
+    /// stays beneath theirs and must not put anything in their menu bar).
+    pub(super) fn menu_bar_item_wanted(&self) -> bool {
+        crate::status_item::offered() && self.settings.menu_bar_item && self.smoke.is_none()
+    }
+
+    /// Bring the window to the front: back from hidden (closed to the menu
+    /// bar), out of the Dock, and above other windows. A click on the
+    /// menu-bar item, a notification and a second launch all land here.
+    pub(super) fn raise_window(&mut self) -> Task<Message> {
+        let Some(id) = self.shell.window else {
+            return Task::none();
+        };
+        crate::notification_route::unhide_application();
+        let mut task = Task::none();
+        if self.shell.hidden {
+            self.shell.hidden = false;
+            task = window::set_mode(id, window::Mode::Windowed);
+        }
+        task.chain(window::minimize(id, false))
+            .chain(window::gain_focus(id))
     }
 
     /// The tags whose notice stopped being true, forgotten as noticed: a
@@ -7217,6 +7370,8 @@ mod tests {
                 presentation: Some(presentation),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             app.shell
                 .answers
@@ -7267,6 +7422,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions.push(question.clone());
         app.shell.answers.insert(id.clone(), "earlier draft".into());
@@ -7316,6 +7473,8 @@ mod tests {
                 presentation: Some(presentation),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             let _ = app.update(Message::Draft(
                 id.clone(),
@@ -7366,6 +7525,8 @@ mod tests {
                 presentation: Some(presentation),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             let _ = app.update(Message::Draft(
                 id.clone(),
@@ -7484,6 +7645,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         });
         let _ = app.update(Message::SessionDraft(
             "asker".into(),
@@ -7552,6 +7715,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         });
         let _ = app.update(Message::Draft(id.clone(), "Not the cache".into()));
         let _ = app.update(Message::AnswerChoice(id.clone(), "Deny".into()));
@@ -7604,6 +7769,8 @@ mod tests {
             presentation: None,
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(minutes),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions.push(question("live", 5));
         app.questions.push(question("expired", -1));
@@ -7636,6 +7803,126 @@ mod tests {
         let _ = app.update(Message::Event(iced::Event::Window(window::Event::Focused)));
         assert_eq!(app.waiting_on_you(), 2);
         assert_eq!(app.shell.dock_badge, Some(2));
+    }
+
+    /// The menu-bar item says the dock's number while the setting is on
+    /// and is taken down when it is off; with it on, closing the window
+    /// hides it instead of quitting, and a click on the item brings it
+    /// back. Only macOS draws the item; elsewhere the window closes as it
+    /// always has and nothing is shown.
+    #[test]
+    fn closing_goes_to_the_menu_bar_only_while_the_item_is_on() {
+        let (mut app, _, _) = app();
+        app.shell.window = Some(window::Id::unique());
+        let _ = app.update(Message::Tick);
+        let offered = crate::status_item::offered();
+        assert_eq!(
+            app.shell.status_item,
+            Some(offered.then_some(0)),
+            "the item is shown with nothing beside the mark, where there is a menu bar"
+        );
+        assert_eq!(app.menu_bar_item_wanted(), offered);
+
+        let _ = app.update(Message::Event(iced::Event::Window(
+            window::Event::CloseRequested,
+        )));
+        if offered {
+            assert!(app.shell.hidden, "closed to the menu bar, not quit");
+            assert!(!app.shell.closing);
+            assert_eq!(app.shell.status_item, Some(Some(0)), "the item stays");
+            let _ = app.update(Message::StatusItemClicked);
+            assert!(!app.shell.hidden, "the item's click brings the window back");
+            // Clicked while the window is open: raised, nothing else.
+            let _ = app.update(Message::StatusItemClicked);
+            assert!(!app.shell.hidden && !app.shell.closing);
+        } else {
+            assert!(
+                app.shell.closing,
+                "closing quits where there is no menu bar"
+            );
+            assert!(!app.shell.hidden);
+            app.shell.closing = false;
+        }
+
+        let _ = app.update(Message::MenuBarItem(false));
+        assert!(!app.settings.menu_bar_item);
+        assert_eq!(
+            app.shell
+                .catalog
+                .appearance
+                .as_ref()
+                .map(|s| s.menu_bar_item),
+            Some(false),
+            "the setting is kept with the other appearance settings"
+        );
+        assert_eq!(app.shell.status_item, Some(None), "taken down");
+        let _ = app.update(Message::Event(iced::Event::Window(
+            window::Event::CloseRequested,
+        )));
+        assert!(app.shell.closing, "with the item off, closing quits");
+        assert!(!app.shell.hidden);
+        app.shell.closing = false;
+        let _ = app.update(Message::MenuBarItem(true));
+        assert_eq!(app.shell.status_item, Some(offered.then_some(0)));
+    }
+
+    /// Close without saving is a choice for one close. Closed to the menu
+    /// bar instead of quit, the window comes back; a later close with new
+    /// draft text waits for its flush and is blocked by its failure as a
+    /// first close is, and with the item off it does not reach the exit
+    /// before the flush completes.
+    #[test]
+    fn close_without_saving_does_not_outlive_the_close_it_was_chosen_for() {
+        let close = || Message::Event(iced::Event::Window(window::Event::CloseRequested));
+        let (mut app, _, _) = app();
+        app.shell.window = Some(window::Id::unique());
+        app.shell.drafts = crate::drafts::Persistence::loaded();
+        app.shell.drafts.changed();
+        // The close starts the flush (generation 1) and waits for it.
+        let _ = app.update(close());
+        assert!(app.shell.closing && app.shell.drafts.saving());
+        let _ = app.update(Message::DraftsSaved(1, Err("disk full".into())));
+        assert!(
+            app.shell.drafts.close_blocked,
+            "a failed flush blocks the close"
+        );
+        assert!(!app.shell.closing);
+        let _ = app.update(Message::CloseWithoutDraftSave);
+        if !crate::status_item::offered() {
+            assert!(app.shell.closing, "quits, as it always has");
+            return;
+        }
+        assert!(app.shell.hidden, "closed to the menu bar");
+        assert!(
+            !app.shell.drafts.discard_on_close && !app.shell.drafts.close_blocked,
+            "the choice ends with the close it was made for"
+        );
+
+        // Back, saved after all, then new text: the next close is a new close.
+        let _ = app.update(Message::StatusItemClicked);
+        assert!(!app.shell.hidden);
+        let _ = app.update(Message::RetryDraftSave);
+        let _ = app.update(Message::DraftsSaved(1, Ok(())));
+        assert!(app.shell.drafts.clean());
+        app.shell.drafts.changed();
+        let _ = app.update(close());
+        assert!(!app.shell.hidden, "a dirty draft is flushed before hiding");
+        assert!(app.shell.closing && app.shell.drafts.saving());
+        let _ = app.update(Message::DraftsSaved(2, Err("disk full".into())));
+        assert!(app.shell.drafts.close_blocked && !app.shell.closing && !app.shell.hidden);
+
+        // With the item off the same gate holds before the exit.
+        let _ = app.update(Message::MenuBarItem(false));
+        let _ = app.update(Message::RetryDraftSave);
+        let _ = app.update(Message::DraftsSaved(2, Ok(())));
+        app.shell.drafts.changed();
+        let _ = app.update(close());
+        assert!(
+            app.shell.closing && app.shell.drafts.saving(),
+            "the exit waits for the flush instead of passing on the stale choice"
+        );
+        let _ = app.update(Message::DraftsSaved(3, Err("disk full".into())));
+        assert!(app.shell.drafts.close_blocked && !app.shell.closing);
     }
 
     /// A launched agent's terminal opens as soon as the list shows it
@@ -8089,6 +8376,8 @@ mod tests {
                 text: "which option?".into(),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             app.shell.catalog.selected = Some(previous.clone());
             app.shell.checked_project = Some(previous.clone());
@@ -8153,6 +8442,8 @@ mod tests {
             presentation: Some(presentation),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         });
         let _ = app.update(Message::Draft(id.clone(), "private input".into()));
         assert!(!app.shell.answers.contains_key(&id));
@@ -8221,6 +8512,8 @@ mod tests {
                 presentation: Some(presentation),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             });
             let _ = app.update(Message::AnswerChoice(id.clone(), "Allow".into()));
             assert!(matches!(commands.try_iter().collect::<Vec<_>>().as_slice(),
@@ -8302,6 +8595,8 @@ mod tests {
             text: "Continue?".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions = vec![
             question.clone(),
@@ -8958,6 +9253,8 @@ mod tests {
             text: "Continue?".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         app.questions = vec![
             question.clone(),
@@ -9009,6 +9306,8 @@ mod tests {
                 text: "Continue?".into(),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             };
             app.questions = vec![
                 question.clone(),
@@ -9082,6 +9381,8 @@ mod tests {
             text: "which option?".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         app.shell
             .answers
@@ -9504,6 +9805,8 @@ mod tests {
                 text: "question".into(),
                 asked_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
             }]))
             .unwrap();
         app.shell
@@ -10129,6 +10432,8 @@ mod tests {
             text: "Review this exact question".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         });
         app.shell.answers.insert(id.clone(), "target draft".into());
         app.shell

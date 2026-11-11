@@ -210,7 +210,10 @@ palette has one **Open in** row per editor for the selected project.
 only what waits on you: questions, each row the asker, the ask, the
 time-left chip (*4m left*, *Expired*) and **Answer** (a question from a
 session that has since ended carries a *Session ended* chip, and its spoken
-line says it was asked before the session ended; a remote sender's message
+line says it was asked before the session ended; a permission or access
+request carries its kind as a chip, **Permission** or **Access**, a plain
+question none; one whose stale window passed unanswered carries **Stale**,
+with what that means in the chip's detail; a remote sender's message
 the project holds is a question from that sender with **Release** and
 **Drop** as its choices), and sessions stopped at a
 permission prompt or question in their own terminal, each the agent's name
@@ -851,7 +854,19 @@ with its mark, the latest line and how many items wait; **Everyone** shows all
 of them. The conversation on the right starts with that agent's open questions
 as cards, because they carry Answer, Allow, Deny and review controls, followed
 by its messages as bubbles, newest last; long messages fold after eight lines
-behind **Show more**. Under an open conversation the composer sends to that
+behind **Show more**. A question card leads with a tile for its kind and the
+question as its title; a permission or access request adds its kind chip
+(**Permission**, **Access**) and a stale one **Stale**, beside the time left.
+Options an agent offered are full-width rows, the label on the left and what
+choosing it means on the right, a refusal in red; pressing one is the answer,
+and the chosen row stands in for the rows as the receipt while it goes. A
+multi-select question's rows pick and unpick (a picked row stays washed) and
+**Send choices** sends them together, each by its number; words in the box beside them go as the
+*Other*, alone or with the picked rows, exactly as written (a typed *2* is the
+words *2*, never the second option). Writing is the *Other*: the box is there
+when the question takes words of your own, on a single-choice question too,
+where the written answer is sent as its *Other*, and absent when it takes only
+its options. Under an open conversation the composer sends to that
 agent (**Send**) or to every agent in its project (**Send to everyone**); a
 failed send shows *Not sent* and why under the box, as does the delivery
 notice when recipients need attention, and drafts survive navigation, a failed
@@ -901,7 +916,11 @@ Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 Version, Command, Browser, URL, Code — and each live session as its name with
 its readiness chip and its contact chips (*MCP · recent*, *Hooks · none*), plus **Review setup**,
 **Check connections** and **Setup history**; an incomplete inventory is the
-alert mark; **Other tools (n)** expands
+alert mark. A tool that declares its MCP servers in each agent's file rather
+than in one of its own (Docker Agent) shows MCP as *In each agent's YAML*,
+with the `setup … --agent <file>` command that adds AgentDocker's as its tip;
+its row reads *Set up per agent file* rather than *Integration unavailable*,
+and it offers no Set up of its own, since the app does not name an agent file. **Other tools (n)** expands
 the inventory. Delivery, a session's readiness chip, says the same words as `ps`
 and a send's warning: **Ready for messages** (nothing taken
 yet), **Receiving messages**, **Not receiving messages**, **Not heard from
@@ -935,7 +954,7 @@ failure retains the last snapshot and clearly pauses daemon actions.
 ## Settings and installation
 
 Settings is a column of names beside their controls: Appearance (Theme, Text
-size, Notifications, Roomy rows), Terminal (Terminal text, Terminal colours)
+size, Notifications, Roomy rows and, on macOS, Menu bar item), Terminal (Terminal text, Terminal colours)
 and Installation (Update checks, Installation), with no line of explanation
 under any of them. Preferences are stored privately in the AgentDocker state directory.
 A malformed preference file is preserved and reported rather than silently reset.
@@ -1028,6 +1047,14 @@ and notarization; locally signed builds are explicit previews.
 
 On macOS the dock icon shows how many questions and prompts are waiting on you,
 in every project: the rows Needs you holds. It shows nothing when none are waiting.
+A menu-bar item shows the mark and, beside it as text, the same number, nothing at
+zero; its tooltip says it in words (*AgentDocker · 3 waiting on you*). With the item
+on (Settings → Appearance → **Menu bar item**, on by default), closing the window
+keeps the app running with the item as its one presence, and a click on the item
+brings the window back; clicked while the window is open, it brings the window to
+the front. The item has no menu and opens no panel. Quit is the app menu's or the
+Dock's **Quit** as before. With the item off, closing the window quits, as it does
+on Linux and Windows, which have no menu-bar item.
 
 Text inputs and the terminal support native input methods. Focus indicators,
 and the words every state chip prints and carries as its accessible name,

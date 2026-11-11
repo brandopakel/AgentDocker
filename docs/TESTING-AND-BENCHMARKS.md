@@ -22,7 +22,7 @@ Bencher credentials and configuration stay outside the repository and GitHub. Lo
 
 ## Behavioral gates
 
-Every PR runs formatting, strict Clippy, unit/integration tests and installer/package checks. New tests target: no overlapping exclusive physical leases; no post-cancellation/exit acquisition; stopping writers retain protection; durable effects have correct event ordering; checksum failure preserves installation; observed stale input requires reread; accepted recovery survives restart; source or image changes invalidate matching validation evidence. Exercise crash points before/after SQLite commits, full/slow output pipes, lost watchers, expired/revoked credentials and engine unavailability using test-owned processes and fixtures. The Codex input loops run end to end in `crates/cli/tests/codex_bridge.rs` (`cargo test -p agentdocker --test codex_bridge`), which is its own harness so the test binary can also be the mock app-server the bridge and the receiver spawn: a fixture daemon, a managed bridge whose message becomes a turn with a receipt proved from the user item, a refused turn, an app-server older than the floor, and an existing session the receiver feeds through the native queue. It is a contract test against the protocol subset the loops use, not a trial on Codex.
+Every PR runs formatting, strict Clippy, unit/integration tests and installer/package checks. New tests target: no overlapping exclusive physical leases; no post-cancellation/exit acquisition; stopping writers retain protection; durable effects have correct event ordering; checksum failure preserves installation; observed stale input requires reread; accepted recovery survives restart; source or image changes invalidate matching validation evidence. Exercise crash points before/after SQLite commits, full/slow output pipes, lost watchers, expired/revoked credentials and engine unavailability using test-owned processes and fixtures. The Codex input loops run end to end in `crates/cli/tests/codex_bridge.rs` (`cargo test -p agentdocker --test codex_bridge`), which is its own harness so the test binary can also be the mock app-server the bridge and the receiver spawn: a fixture daemon, a managed bridge whose message becomes a turn with a receipt proved from the user item, a refused turn, an app-server older than the floor, and an existing session the receiver feeds through the native queue. It is a contract test against the protocol subset the loops use, not a trial on Codex. The guide's hand-kept name lists are checked against the code by `crates/cli/src/guide_lists.rs` (`cargo test -p agentdocker --bin agentdocker guide_lists`): the MCP tools in `docs/GUIDE.md` against the server's tool definitions, the tools every agent keeps against `ALWAYS_TOOLS`, the connector's tools in `docs/REMOTE-CONNECTOR.md` against `REMOTE_TOOLS`, and the command reference rows and the hidden-command bullet against the clap command tree at its first level; a name missing from a document, or named there without existing, fails by name.
 
 The terminal writer-failure regression prints test-only phase markers around
 socket setup, injected write failure, reader completion and cleanup/join.
@@ -44,7 +44,7 @@ budget fails cleanup. The report keeps probe errors/timings, the rescue PID/exit
 and up to 16 KiB of its startup log. Functional assertion failures remain failed
 even when cleanup succeeds; no trial is replayed.
 
-The scheduled workflow runs bounded protocol, resource-key, engine-metadata and token-filter fuzz campaigns. Docker/Podman protocol jobs run on PRs and main pushes. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. CodeRabbit reviews implementation and test changes; green automated checks and disposition of valid review findings are required before integration.
+The scheduled workflow runs bounded protocol, resource-key, engine-metadata and token-filter fuzz campaigns. Docker/Podman protocol jobs run on PRs and main pushes. Failed seeds, logs, JUnit, coverage and benchmark outputs are retained with the exact commit and platform. The reviewer agent reviews implementation and test changes; its approval at the head, a green local gate there and the disposition of every valid finding are what a merge needs.
 
 ## Measurements and thresholds
 
@@ -75,7 +75,7 @@ References: [nextest configuration](https://nexte.st/docs/configuring-nextest/),
 
 ## Repository commands and installation
 
-`bash scripts/verify.sh check` runs the PR gate. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. Retained `socket_claim_release` results are not comparable with `socket_v2`: the older series mixed successes and conflicts, which `socket_v2` splits into different request counts. Stale detection/restart scenarios are correctness integration tests, not latency workloads. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
+`bash scripts/verify.sh check` runs the full local gate: the documentation checks, formatting, strict Clippy, nextest (zero retries), doctests and the Python suite under `tests/`. `quick` runs the same on the packages a change touches: `scripts/touched_crates.py` reads the files that differ from the merge base with `origin/main` (the previous commit without a remote; a clone too shallow to hold that merge base is refused until its history is fetched), committed or not, plus untracked files that are not ignored, and names each changed workspace package and every package that depends on it, from `cargo metadata`; a moved file counts at both its old and its new place; when Git or Cargo cannot answer, the run stops rather than test nothing; a file every package depends on (the root manifest, the lockfile, the toolchain file, Cargo and nextest configuration) selects the whole workspace, and a change outside every package runs no Cargo step. `package` runs crate packaging and the release build, which CI runs on every pull request and which a local `check` no longer includes. `test` runs nextest and doctests; `coverage` writes `artifacts/coverage.lcov`; `bench` runs Criterion and the native socket workload at 1/10/100 clients; `fuzz` runs four bounded nightly campaigns (`FUZZ_SECONDS`, default 60 per target). The native load workload runs shared-path contention and disjoint per-client paths separately. The `socket_v2` series separates successful claim/release cycles (two requests) from claim conflicts (one request), including connection setup. Each outcome records sample count and throughput over the same campaign duration; empty outcomes omit latency percentiles. Attempts, elapsed seconds and conflict ratio accompany each workload. Retained `socket_claim_release` results are not comparable with `socket_v2`: the older series mixed successes and conflicts, which `socket_v2` splits into different request counts. Stale detection/restart scenarios are correctness integration tests, not latency workloads. Custom counts use [Bencher Metric Format measures](https://bencher.dev/docs/reference/bencher-metric-format/).
 
 Install tools with `cargo install --locked cargo-nextest --version 0.9.143`, `cargo install --locked cargo-llvm-cov --version 0.9.0`, and `cargo install --locked cargo-fuzz --version 0.13.2`. Add `rustup component add llvm-tools-preview` and `rustup toolchain install nightly --profile minimal`. Criterion and Proptest are workspace development dependencies, pinned transitively by Cargo.lock. Benchmarks use a stable MSRV-compatible Criterion 0.5 harness. Keep workspace and fuzz lockfiles checked in. Fuzz campaigns first require locked dependency resolution and retain before/after source, lockfile, nightly compiler and cargo-fuzz manifests, including when a target fails. A campaign fails if these change during execution. Tools are development-only and do not ship in the release binaries.
 
@@ -157,17 +157,16 @@ it afterwards. The driver sets an explicit 10-second per-input timeout and
 1024 MiB RSS limit, in addition to the campaign duration, and retains per-target
 logs and final statistics. Limits follow [libFuzzer's documented options](https://llvm.org/docs/LibFuzzer.html#options).
 
-CodeRabbit automatic review includes every base branch, including stacked
-fix/test/docs branches. A skipped or rate-limited review remains pending even
-when its status context is green. Draft PRs can run preliminary CI; final review
-and all applicable checks on the published head are required before integration.
 A pull request's desktop packaging and CLI archives are built on Linux only;
-the macOS ones run for main, for a `batch/**` branch (main with the approved
-pull requests merged in, which also runs the CI suite) and on demand, since
-macOS runners are few. A pull request merged from a batch needs its own
-checks and the batch's green. A new push to a pull request cancels the runs
-of its earlier heads; runs on main and batch branches are never cancelled by
-another.
+the macOS ones run for main, for a `batch/**` branch (main with several
+approved pull requests merged in, which also runs the CI suite) and on demand,
+since macOS runners are few. A pull request merges once it is approved at its
+head, its local gate was green there and no review thread is open; it does not
+wait for CI, which runs on main after the merge for what the local gate cannot
+cover, and a red main is fixed forward before anything else merges. A batch
+branch is for wanting the macOS packages of several changes at once. A new
+push to a pull request cancels the runs of its earlier heads; runs on main and
+batch branches are never cancelled by another.
 
 Controller-binding fixtures resolve the intended `sleep` executable before
 spawning, then wait at most five seconds for the child's kernel executable path

@@ -16,6 +16,9 @@ mod desktop;
 mod emission;
 mod format;
 mod gate;
+mod git_hook;
+#[cfg(test)]
+mod guide_lists;
 mod hooks;
 mod input_status;
 mod mcp;
@@ -31,7 +34,7 @@ mod teams;
 mod top;
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use agentdocker_core::contest::Direction;
 use agentdocker_core::multiplexer::Session;
@@ -539,9 +542,15 @@ enum Command {
         /// Make every `claude` typed in a terminal carry the channel flag that lets AgentDocker wake it: a marked block in your shell's startup file, previewed like every other change.
         #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show"])]
         shell: bool,
-        /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
+        /// Plan a marked block in this repository's git `pre-commit` hook that refuses a commit over a path another live agent holds; `--apply <id>` installs it, `--undo <id>` takes it back. A daemon that cannot be reached lets the commit through. With `--remove`, takes the block out at once.
+        #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show", "shell"])]
+        git_hook: bool,
+        /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block; with `--git-hook`, this repository's pre-commit block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
         #[arg(long, conflicts_with_all = ["dry_run", "apply", "undo", "health", "list", "show", "shell"])]
         remove: bool,
+        /// Docker Agent only: the agent YAML file to add AgentDocker's MCP toolset to (its default agent, the one `docker agent run` runs: `root`, else the first), or to take it out of with `--remove`. Docker Agent reads MCP servers from each agent's file, so `setup docker-agent` needs one.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["apply", "undo", "health", "list", "show", "shell"])]
+        agent: Option<PathBuf>,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -694,6 +703,27 @@ enum Command {
         /// Return the question ID immediately; its answer queues in your inbox.
         #[arg(long)]
         no_wait: bool,
+        /// What kind of decision this is: `question` (the default), `permission`
+        /// (one operation, once) or `access` (standing access to something).
+        #[arg(long, value_name = "KIND", default_value = "question")]
+        kind: String,
+        /// An option to choose from, as `Label` or `Label: what choosing it means`;
+        /// repeat for each. Without any, the answer is free text.
+        #[arg(long = "option", value_name = "LABEL[: DESCRIPTION]")]
+        options: Vec<String>,
+        /// Several options may be chosen at once.
+        #[arg(long, requires = "options")]
+        multi: bool,
+        /// Take only the options offered, not an answer in the recipient's own words.
+        #[arg(long = "no-other", requires = "options")]
+        no_other: bool,
+        /// Seconds after which the question goes stale (shorter than the timeout).
+        #[arg(long, value_name = "SECS")]
+        stale_after: Option<u64>,
+        /// What a stale question does: `keep_waiting` (the default), `withdraw`,
+        /// or `answer:<label>` to take that option as the default.
+        #[arg(long, value_name = "ACTION", requires = "stale_after")]
+        stale_action: Option<String>,
         /// The question.
         question: String,
     },
@@ -711,8 +741,23 @@ enum Command {
         agent: Option<String>,
         /// The question's message id, as `ask` and `questions` print it.
         message: String,
-        /// The answer.
-        text: String,
+        /// The answer in words, or one option by its label or number;
+        /// give `--choice` or `--other` instead to say which it is.
+        #[arg(
+            required_unless_present_any = ["choices", "other"],
+            conflicts_with_all = ["choices", "other"]
+        )]
+        text: Option<String>,
+        /// An option taken, by label or number; repeat for a multi-select question.
+        #[arg(long = "choice", value_name = "LABEL|N")]
+        choices: Vec<String>,
+        /// Your own answer for the question's Other, taken as written: never
+        /// read as an option's label or number.
+        #[arg(long, value_name = "WORDS")]
+        other: Option<String>,
+        /// Your own words beside a choice.
+        #[arg(long)]
+        note: Option<String>,
     },
     /// Inspect, cancel or submit a temporary secret review through local IPC.
     #[command(hide = true)]
@@ -809,6 +854,37 @@ enum Command {
         /// What changed and why; becomes the project's journal entry.
         #[arg(long)]
         summary: Option<String>,
+    },
+    /// Ask whoever holds a resource to let go of it: each holder gets a `release_request` message and answers with `respond-release`; the answer comes back to you as a `release_response` message.
+    RequestRelease {
+        /// Agent id, name or unique prefix (defaults to this session).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// `path:`, `branch:`, `task:`... as `claim` takes it; a bare path is a `path:`.
+        resource: String,
+        /// Why you need it, for the holder to read (at most 400 characters).
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Answer a release request put to you, by its message id: `--accept` has the daemon release those leases for you, journaled with `--summary`; `--decline` sends `--reason` back.
+    RespondRelease {
+        /// Agent id, name or unique prefix (defaults to this session).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// The `release_request` message's id.
+        request: String,
+        /// Let go: the daemon releases the request's leases you still hold.
+        #[arg(long, required_unless_present = "decline", conflicts_with = "decline")]
+        accept: bool,
+        /// Keep them, and say why with --reason.
+        #[arg(long)]
+        decline: bool,
+        /// What changed under the leases and why; becomes the journal entry (with --accept).
+        #[arg(long, conflicts_with = "reason")]
+        summary: Option<String>,
+        /// Why you keep them (with --decline).
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// The project's journal: what changed and why, one line per release, note, or commit.
     Journal(JournalArgs),
@@ -1808,6 +1884,11 @@ struct SendArgs {
     /// most 16): path, commit, pr, url, task, message or memory.
     #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
     links: Vec<agentdocker_core::Link>,
+    /// Your own token for this one send (a UUID, say): repeating the
+    /// command with the same key after a lost answer queues nothing and
+    /// prints the first message id again.
+    #[arg(long, value_name = "KEY")]
+    idempotency_key: Option<String>,
 }
 
 /// Its own struct, like `SendArgs`: the top-level command enum is parsed
@@ -1978,8 +2059,8 @@ struct UsageArgs {
     /// Until when, RFC 3339; now when not given.
     #[arg(long)]
     until: Option<chrono::DateTime<chrono::Utc>>,
-    /// One row per agent, model, provider, project or hour.
-    #[arg(long, default_value = "agent", value_parser = ["agent", "model", "provider", "project", "hour"])]
+    /// One row per agent, model, provider, project, hour, card (the board card held) or role.
+    #[arg(long, default_value = "agent", value_parser = ["agent", "model", "provider", "project", "hour", "card", "role"])]
     by: String,
     /// The report as JSON, as the daemon answered it.
     #[arg(long)]
@@ -3305,8 +3386,12 @@ async fn run() -> Result<()> {
                     lease,
                     plan,
                     files,
+                    usage,
                 } => {
                     println!("{}", card_line(&task));
+                    if let Some(usage) = &usage {
+                        println!("  {}", format::card_usage(usage));
+                    }
                     if let Some(plan) = &plan {
                         println!("  plan {}  {}", plan.id, plan.title);
                     }
@@ -4117,12 +4202,15 @@ async fn run() -> Result<()> {
             show,
             json,
             shell,
+            git_hook,
             remove,
+            agent,
         } => {
             if remove
                 || preview
                 || !dry_run
                 || shell
+                || git_hook
                 || apply.is_some()
                 || undo.is_some()
                 || health
@@ -4144,14 +4232,23 @@ async fn run() -> Result<()> {
                     Action::RemovePreview
                 } else if remove {
                     Action::Remove
-                } else if preview || shell {
+                } else if preview || shell || git_hook {
                     Action::Preview
                 } else {
                     Action::Install
                 };
-                setup::guided::run(socket, &runtimes, action, json, shell).await?;
+                setup::guided::run(
+                    socket,
+                    &runtimes,
+                    action,
+                    json,
+                    shell,
+                    agent.as_deref(),
+                    git_hook,
+                )
+                .await?;
             } else {
-                setup::run(&client, &runtimes, dry_run).await?;
+                setup::run(&client, &runtimes, dry_run, agent.as_deref()).await?;
             }
         }
         Command::Run(args) => {
@@ -4607,6 +4704,7 @@ async fn run() -> Result<()> {
                 payload,
                 reply_to: args.reply_to.map(MessageId::from),
                 links: args.links,
+                idempotency_key: args.idempotency_key,
             };
             match client.call(&request).await? {
                 Response::Sent {
@@ -4646,11 +4744,25 @@ async fn run() -> Result<()> {
             from,
             timeout,
             no_wait,
+            kind,
+            options,
+            multi,
+            no_other,
+            stale_after,
+            stale_action,
             question,
         } => {
             let from = sender::resolve(&client, from)
                 .await?
                 .unwrap_or_else(|| HUMAN.into());
+            let form = format::question_form(
+                &kind,
+                &options,
+                multi,
+                !no_other,
+                stale_after,
+                stale_action.as_deref(),
+            )?;
             let request = if no_wait {
                 Request::PostQuestion {
                     from,
@@ -4658,6 +4770,7 @@ async fn run() -> Result<()> {
                     question,
                     presentation: None,
                     timeout_secs: timeout,
+                    form,
                 }
             } else {
                 Request::Ask {
@@ -4665,10 +4778,25 @@ async fn run() -> Result<()> {
                     to,
                     question,
                     timeout_secs: timeout,
+                    form,
                 }
             };
             match client.call(&request).await? {
-                Response::Answer { from, text, .. } => println!("{}: {text}", format::short(&from)),
+                Response::Answer {
+                    from,
+                    text,
+                    default,
+                    ..
+                } => {
+                    if default {
+                        println!(
+                            "{}: {text} (the default: nobody answered in time)",
+                            format::short(&from)
+                        );
+                    } else {
+                        println!("{}: {text}", format::short(&from));
+                    }
+                }
                 Response::Sent { message, .. } => println!("{message}"),
                 Response::Held { message, question } => {
                     println!("{message}");
@@ -4693,11 +4821,17 @@ async fn run() -> Result<()> {
             agent,
             message,
             text,
+            choices,
+            other,
+            note,
         } => {
             let request = Request::Answer {
                 from: sender::resolve(&client, agent).await?,
                 message: MessageId::from(message),
-                text,
+                text: text.unwrap_or_default(),
+                choices,
+                other,
+                note,
             };
             if let Response::Sent { message, .. } = client.call(&request).await? {
                 println!("{message}");
@@ -4752,13 +4886,7 @@ async fn run() -> Result<()> {
         }
         Command::Usage(args) => {
             use agentdocker_core::usage::report::Group;
-            let by = match args.by.as_str() {
-                "model" => Group::Model,
-                "provider" => Group::Provider,
-                "project" => Group::Project,
-                "hour" => Group::Hour,
-                _ => Group::Agent,
-            };
+            let by = Group::parse(&args.by).unwrap_or_default();
             let request = Request::Usage {
                 project: args.project.as_deref().map(project_selector),
                 agent: args.agent,
@@ -5059,6 +5187,75 @@ async fn run() -> Result<()> {
                 client.call(&request).await?;
             }
         }
+        Command::RequestRelease {
+            agent,
+            resource,
+            reason,
+        } => {
+            let from = sender::resolve(&client, agent)
+                .await?
+                .context("ask as an agent: give --as, or run from an agent's session")?;
+            let request = Request::RequestRelease {
+                from,
+                resource: resource_key(&resource),
+                reason,
+            };
+            if let Response::ReleaseRequests { requests } = client.call(&request).await? {
+                for request in requests {
+                    eprintln!(
+                        "asked {} to release {} ({} lease{}); its answer arrives as a release_response message",
+                        request.holder.short(),
+                        format::resource(&request.resource),
+                        request.leases.len(),
+                        if request.leases.len() == 1 { "" } else { "s" }
+                    );
+                    println!("{}", request.message);
+                }
+            }
+        }
+        Command::RespondRelease {
+            agent,
+            request,
+            accept,
+            decline,
+            summary,
+            reason,
+        } => {
+            let from = sender::resolve(&client, agent)
+                .await?
+                .context("answer as an agent: give --as, or run from an agent's session")?;
+            let request = Request::RespondRelease {
+                from,
+                request: MessageId::from(request),
+                accept: accept && !decline,
+                text: if decline { reason } else { summary },
+            };
+            if let Response::ReleaseRequest { request } = client.call(&request).await? {
+                let answer = request.answer.as_ref();
+                let released = answer.map_or(0, |a| a.released.len());
+                if answer.is_some_and(|a| a.accepted) && released == 0 {
+                    eprintln!(
+                        "nothing to release on {} for {}: the leases were already gone",
+                        format::resource(&request.resource),
+                        request.requester.short()
+                    );
+                } else if answer.is_some_and(|a| a.accepted) {
+                    eprintln!(
+                        "released {} ({} lease{}) for {}",
+                        format::resource(&request.resource),
+                        released,
+                        if released == 1 { "" } else { "s" },
+                        request.requester.short()
+                    );
+                } else {
+                    eprintln!(
+                        "declined to release {} for {}",
+                        format::resource(&request.resource),
+                        request.requester.short()
+                    );
+                }
+            }
+        }
         Command::Journal(args) => journal_command(&client, args).await?,
         Command::Leases { agent, resource } => {
             let request = Request::Leases {
@@ -5331,21 +5528,6 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
     Ok(())
 }
 
-/// Absolute, with as much of it canonical as exists.
-fn absolute_path(raw: &str) -> String {
-    let path = PathBuf::from(raw);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    };
-    agentdocker_host::project::canonical(&absolute)
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// Ledger rows, with agent ids turned into names.
 async fn print_changes(client: &Client, changes: &[Change]) -> Result<()> {
     let names: BTreeMap<String, String> = match client
@@ -5615,6 +5797,19 @@ async fn usage_names(
     report: &agentdocker_core::usage::report::Report,
 ) -> std::collections::HashMap<String, String> {
     use agentdocker_core::usage::report::Group;
+    if report.by == Group::Card {
+        // A card by its key, while the board still has it.
+        let mut names = std::collections::HashMap::new();
+        for id in report.rows.iter().filter_map(|row| row.key.clone()) {
+            if let Ok(Response::TaskDetail { task, .. }) =
+                client.call(&Request::TaskGet { task: id.clone() }).await
+                && !task.key.is_empty()
+            {
+                names.insert(id, task.key);
+            }
+        }
+        return names;
+    }
     if !matches!(report.by, Group::Agent | Group::Project) {
         return Default::default();
     }
@@ -5758,6 +5953,14 @@ fn print_agents(
             .map(Session::describe)
             .unwrap_or_else(|| "-".to_owned())
     };
+    // What the provider says of an agent's own thread, where any says
+    // anything: the role it was spawned with and whose thread spawned it.
+    let with_threads = agents.iter().any(|a| {
+        a.thread
+            .as_ref()
+            .is_some_and(|t| t.role.is_some() || t.parent.is_some())
+    });
+    let thread_cell = |a: &AgentRecord| thread_cell(a, agents);
     let mut rows: Vec<Vec<String>> = agents
         .iter()
         .map(|a| {
@@ -5806,6 +6009,9 @@ fn print_agents(
                         .unwrap_or_else(|| "-".to_owned()),
                 );
             }
+            if with_threads {
+                row.push(thread_cell(a));
+            }
             if in_session {
                 row.push(session_cell(a.session.as_ref()));
             }
@@ -5838,6 +6044,9 @@ fn print_agents(
         if with_tokens {
             row.push("-".to_owned());
         }
+        if with_threads {
+            row.push("-".to_owned());
+        }
         if in_session {
             row.push(session_cell(p.session.as_ref()));
         }
@@ -5856,11 +6065,40 @@ fn print_agents(
     if with_tokens {
         headers.push("TOKENS 24H");
     }
+    if with_threads {
+        headers.push("THREAD");
+    }
     if in_session {
         headers.push("LIVES IN");
     }
     headers.extend(["PID", "CREATED"]);
     format::table_dimming(&headers, &rows, |i| i >= first_unadopted);
+}
+
+/// The `ps` THREAD cell: what the provider says of the agent's own thread.
+/// A spawned thread reads `<role> of <parent>` (or `child of <parent>`
+/// without a role), the parent by its agent's name where one is listed, by
+/// its short id, or by the thread's own first characters where no agent is
+/// bound to it; a root thread, or one not read yet, is `-`.
+fn thread_cell(agent: &AgentRecord, agents: &[AgentRecord]) -> String {
+    let Some(thread) = &agent.thread else {
+        return "-".to_owned();
+    };
+    let role = thread.role.as_deref().map(format::single_line);
+    let parent = thread.parent.as_ref().map(|parent| match &parent.agent {
+        Some(id) => agents
+            .iter()
+            .find(|a| a.id == *id)
+            .map(|a| a.spec.name.clone())
+            .unwrap_or_else(|| id.short().to_owned()),
+        None => format!("thread {}", format::short(&parent.thread)),
+    });
+    match (role, parent) {
+        (Some(role), Some(parent)) => format!("{role} of {parent}"),
+        (Some(role), None) => role,
+        (None, Some(parent)) => format!("child of {parent}"),
+        (None, None) => "-".to_owned(),
+    }
 }
 
 /// One row per channel, with how many reviews it carries.
@@ -6207,15 +6445,15 @@ pub(crate) fn resource_key(raw: &str) -> String {
         Some(_) => return raw.to_owned(),
         None => raw,
     };
-    let path = PathBuf::from(value);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    };
-    format!("path:{}", hooks::normalize(&absolute).display())
+    format!("path:{}", absolute_path(value))
+}
+
+/// Absolute, with as much of it canonical as exists: the host resolves a
+/// relative path against the working directory itself.
+fn absolute_path(raw: &str) -> String {
+    agentdocker_host::project::canonical(Path::new(raw))
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {

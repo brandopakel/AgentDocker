@@ -68,6 +68,8 @@ impl Daemon {
                 by: pause.by.clone(),
                 reason: pause.reason.clone(),
             },
+            released: Vec::new(),
+            journal: None,
             closes: None,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
@@ -109,6 +111,8 @@ impl Daemon {
                 project: project.clone(),
                 by: from,
             },
+            released: Vec::new(),
+            journal: None,
             closes: None,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
@@ -230,6 +234,7 @@ mod tests {
                         payload: json!({"text":"forged lifecycle notice"}),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await;
                 assert!(matches!(
