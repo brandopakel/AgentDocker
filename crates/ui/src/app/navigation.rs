@@ -438,10 +438,7 @@ impl App {
                         tasks.push(self.update(Message::TaskOpen(card.clone())));
                     }
                     Some(_) => {}
-                    None => {
-                        self.task_open = None;
-                        self.card = None;
-                    }
+                    None => self.close_card(),
                 }
             }
             Screen::Questions => {

@@ -777,7 +777,10 @@ mod tests {
         let hosts = chrome.join("NativeMessagingHosts");
         std::fs::remove_dir_all(&hosts).unwrap();
         std::fs::write(&hosts, "not a directory").unwrap();
-        let copies = chrome.join(format!("Profile 1/Extensions/{claude}"));
+        // Joined a component at a time, as the inventory joins it: the note
+        // is matched by its path, and a `/` inside one component is not
+        // the separator everywhere.
+        let copies = chrome.join("Profile 1").join("Extensions").join(claude);
         std::fs::remove_dir_all(&copies).unwrap();
         std::fs::write(&copies, "not a directory").unwrap();
 
