@@ -376,6 +376,12 @@ pub struct Daemon {
     /// once; never held across an await.
     #[cfg(test)]
     claim_hold: Mutex<Option<waiting::ClaimHold>>,
+    /// Where a test's runtime inventory looks: a bare machine beneath the
+    /// daemon's home unless the test lays out another, so no test reads
+    /// the home, `PATH` or browsers of the machine it runs on. Never held
+    /// across an await.
+    #[cfg(test)]
+    runtime_roots: Mutex<agentdocker_host::runtimes::Roots>,
     /// What was found of the processes that asked to act as the person.
     /// Never held with the state lock.
     peers: Mutex<person::Peers>,
@@ -1697,6 +1703,8 @@ impl Daemon {
 
         let (bus, _) = broadcast::channel(1024);
         let (events, _) = broadcast::channel(1024);
+        #[cfg(test)]
+        let runtime_roots = agentdocker_host::runtimes::Roots::bare(&home.join("machine"));
         Ok(Self {
             home,
             socket,
@@ -1784,6 +1792,8 @@ impl Daemon {
             register_hold: Mutex::new(None),
             #[cfg(test)]
             claim_hold: Mutex::new(None),
+            #[cfg(test)]
+            runtime_roots: Mutex::new(runtime_roots),
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
             agent_check: std::env::var_os("AGENTDOCKER_AGENT_CHECK").is_none_or(|v| v != "off"),
