@@ -345,6 +345,14 @@ fn secret_assignment(text: &str) -> bool {
         // that ends a sentence. A `<placeholder>` or a `${VARIABLE}` keeps
         // what no secret holds, so it is never one.
         let rest = &text[at + 1..];
+        // A template or a placeholder in the value's place (`{{ … }}`,
+        // `${…}`, `<…>`), quoted or not, is not one; a bare `{` is a
+        // wrapper like `(` and `[`.
+        let lead =
+            rest.trim_start_matches(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '`'));
+        if lead.starts_with("{{") || lead.starts_with("${") || lead.starts_with('<') {
+            return false;
+        }
         let opened = rest.trim_start_matches(|c: char| {
             c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '\\' | '(' | '[' | '{')
         });
@@ -371,7 +379,10 @@ fn secret_assignment(text: &str) -> bool {
                 .to_owned()
             }
         };
-        !locator(&upper, &value) && token_like(&value, quote.is_some())
+        match quote {
+            Some(_) => quoted_secret(&upper, &value),
+            None => !locator(&upper, &value) && token_like(&value, false),
+        }
     })
 }
 
@@ -394,6 +405,63 @@ fn quoted_value(text: &str, quote: char, escaped: bool) -> String {
         }
     }
     value
+}
+
+/// Whether a quoted value is a secret: its whole content token-like, or
+/// any maximal run inside it of the characters a token is written in
+/// ([`token_char`]) token-like on its own. The runs are what make this
+/// independent of punctuation: whatever a password is written beside
+/// inside the quotes (a comma, a parenthesis, any character no token
+/// holds), the token-shaped run beside it is read by itself, as an
+/// unquoted value would be. A run inside `<…>`, `${…}` or `{{…}}` is a
+/// placeholder (a bare `{…}` is a wrapper), a run or a whole that only
+/// says where a secret is ([`locator`]) is not one, and a URL is read only
+/// whole: the scans over the whole text find a
+/// known token, a JWT, a high-entropy run or a secret-named parameter in
+/// one.
+fn quoted_secret(name: &str, content: &str) -> bool {
+    if locator(name, content) {
+        return false;
+    }
+    if token_like(content, true) {
+        return true;
+    }
+    if content.contains("://") {
+        return false;
+    }
+    let chars: Vec<char> = content.chars().collect();
+    let mut start = 0;
+    while start < chars.len() {
+        if !token_char(chars[start]) {
+            start += 1;
+            continue;
+        }
+        let end = (start..chars.len())
+            .find(|&i| !token_char(chars[i]))
+            .unwrap_or(chars.len());
+        let before = |back: usize| start.checked_sub(back).map(|i| chars[i]);
+        let after = chars.get(end).copied();
+        let placeholder = (before(1) == Some('<') && after == Some('>'))
+            || (before(1) == Some('{')
+                && matches!(before(2), Some('$' | '{'))
+                && after == Some('}'));
+        let run: String = chars[start..end].iter().collect();
+        if !placeholder && !locator(name, &run) && token_like(&run, false) {
+            return true;
+        }
+        start = end;
+    }
+    false
+}
+
+/// A character a generated secret or a password is written in: a letter,
+/// a digit, or one of `_ - + / = . ! @ # % ^ & * ~`.
+fn token_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+        || matches!(
+            c,
+            '_' | '-' | '+' | '/' | '=' | '.' | '!' | '@' | '#' | '%' | '^' | '&' | '*' | '~'
+        )
 }
 
 /// Whether an assignment's value only says where a secret is: a path
@@ -425,26 +493,9 @@ fn locator(name: &str, value: &str) -> bool {
 /// `${VARIABLE}` is not.
 fn token_like(value: &str, quoted: bool) -> bool {
     value.chars().count() >= 8
-        && value.chars().all(|c| {
-            (quoted && matches!(c, '"' | '\'' | '`'))
-                || c.is_ascii_alphanumeric()
-                || matches!(
-                    c,
-                    '_' | '-'
-                        | '+'
-                        | '/'
-                        | '='
-                        | '.'
-                        | '!'
-                        | '@'
-                        | '#'
-                        | '%'
-                        | '^'
-                        | '&'
-                        | '*'
-                        | '~'
-                )
-        })
+        && value
+            .chars()
+            .all(|c| token_char(c) || (quoted && matches!(c, '"' | '\'' | '`')))
         && (value.chars().any(|c| c.is_ascii_digit())
             || (value.chars().any(|c| c.is_ascii_uppercase())
                 && value.chars().any(|c| c.is_ascii_lowercase()))
@@ -1109,6 +1160,17 @@ mod tests {
             "PASSWORD=\"abcdefg.\"",
             "PASSWORD='abcdefgh.'",
             "PASSWORD=[\"abcdefgh.\"]",
+            // Inside quotes, a token-shaped run beside any punctuation.
+            "PASSWORD=\"hunter2hunter2,abc\"",
+            "PASSWORD=\"hunter2hunter2;abc\"",
+            "PASSWORD='hunter2hunter2,abc'",
+            "PASSWORD=\"hunter2hunter2)\"",
+            "PASSWORD=\"hunter2hunter2|abc\"",
+            "PASSWORD=\"abc:hunter2hunter2\"",
+            "PASSWORD=\"{hunter2hunter2}\"",
+            "PASSWORD=\"{ hunter2hunter2 }\"",
+            "PASSWORD=\"x{hunter2hunter2}\"",
+            "TOKEN_URL=\"https://auth.example.invalid/cb?token=hunter2hunter2\"",
             "PASSWORD=abcdefg.",
             "PASSWORD=abcdefgh.",
             "Bearer abcdefghijklmnopqrstuv",
@@ -1146,6 +1208,16 @@ mod tests {
             "TOKEN_FILE=\"/run/secrets/ci_token\"",
             r#"{"TOKEN_FILE":"\/run\/secrets\/ci_token"}"#,
             "Bearer YOUR_ACCESS_TOKEN_HERE",
+            // Inside quotes: a URL is read whole, a bracketed run is a
+            // placeholder, a reference run says where a secret is.
+            "TOKEN_URL=\"https://auth.example.invalid/oauth2/token\"",
+            "API_KEY=\"<YourApiKey>\"",
+            "PASSWORD=\"${DbPassword}\"",
+            "TOKEN=\"${{secrets.RELEASE_TOKEN}}\"",
+            "TOKEN=\"(secrets.RELEASE_TOKEN)\"",
+            "API_KEY: \"{{ YourApiKey }}\"",
+            "API_KEY={{YourApiKey}}",
+            "PASSWORD=\"prefix-${DbPassword}\"",
         ];
         let now = Utc::now();
         let project = ProjectId::from("p");
