@@ -2215,6 +2215,19 @@ const MAIN_STACK: usize = 32 << 20;
 /// A command ends with a status a script can branch on: the daemon's
 /// answer by its class (see [`client::exit_code`]), anything else as
 /// unexpected. The words go to stderr as they always did.
+
+/// What the adder of a standing memory is told when a new session will
+/// meet it by its first words only.
+fn no_room_said(full: &agentdocker_core::memory::NoRoom) -> String {
+    format!(
+        "kept, but a new session is told it by its first words only: the {} older standing {} already told in full take {} of the {} characters a session is told. Supersede a longer one with a shorter (`agentdocker memory profile` lists them) to have this one told in full",
+        full.told,
+        if full.told == 1 { "memory" } else { "memories" },
+        full.used,
+        full.budget,
+    )
+}
+
 fn main() {
     if let Some(arguments) = daemon_arguments(std::env::args_os().collect()) {
         // What the separate `agentd` binary did: its error, and status 1.
@@ -3050,6 +3063,7 @@ async fn run() -> Result<()> {
                     if let Response::Memory {
                         memory,
                         may_supersede,
+                        left_out,
                         ..
                     } = client.call(&request).await?
                     {
@@ -3061,6 +3075,9 @@ async fn run() -> Result<()> {
                                 likely.memory,
                                 likely.probability * 100.0
                             );
+                        }
+                        if let Some(full) = left_out {
+                            eprintln!("{}", no_room_said(&full));
                         }
                     }
                 }
@@ -3088,7 +3105,7 @@ async fn run() -> Result<()> {
                         min_score: None,
                     };
                     match client.call(&request).await? {
-                        Response::Memories { memories } => list(&memories, &none),
+                        Response::Memories { memories, .. } => list(&memories, &none),
                         Response::MemoryHistory { memories, replaced } => {
                             list(&memories, &replaced)
                         }
@@ -3110,8 +3127,30 @@ async fn run() -> Result<()> {
                         max_chars: None,
                         as_of,
                     };
-                    if let Response::Memories { memories } = client.call(&request).await? {
+                    if let Response::Memories { memories, left_out } = client.call(&request).await?
+                    {
                         list(&memories, &none);
+                        // What had no room goes to stderr: stdout stays the
+                        // list of memories told, one a line, as before.
+                        if !left_out.is_empty() {
+                            eprintln!(
+                                "{} standing {} had no room and {} told by {} first words only; `agentdocker memory search <words>` gives the text, and superseding a longer one with a shorter makes room:",
+                                left_out.len(),
+                                if left_out.len() == 1 {
+                                    "memory"
+                                } else {
+                                    "memories"
+                                },
+                                if left_out.len() == 1 { "is" } else { "are" },
+                                if left_out.len() == 1 { "its" } else { "their" },
+                            );
+                            for memory in &left_out {
+                                eprintln!(
+                                    "  {}  {} ({} characters)",
+                                    memory.id, memory.headline, memory.chars
+                                );
+                            }
+                        }
                     }
                 }
                 MemoryAction::Forget { memory, from } => {
