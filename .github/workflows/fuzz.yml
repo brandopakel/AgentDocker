@@ -8,7 +8,11 @@ permissions:
 jobs:
   fuzz:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Four campaigns of FUZZ_SECONDS each, after two release builds. On a
+    # runner that restores no cache the builds take about thirteen
+    # minutes and the whole job about twenty-two; the limit leaves that
+    # room twice over, and each campaign is bounded by its own time.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

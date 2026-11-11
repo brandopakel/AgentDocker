@@ -203,7 +203,8 @@ enum Persisted {
 /// Dropping it takes the state lock, so it must never be dropped by a
 /// holder of a state guard. It holds: the place lives in the `ADMISSION`
 /// scope and goes with the handler's future, after every guard the
-/// handler took; `done_writing` takes it outside any hold; and
+/// handler took; `done_writing` and `answer_settled` take it outside any
+/// hold; and
 /// `readmit_locked` hands a place out of the hold that made it, never
 /// dropping one inside it.
 pub(crate) struct InFlight(Arc<Daemon>);
@@ -220,7 +221,16 @@ tokio::task_local! {
     /// up: a request that has written what it will write and now only
     /// waits (an `ask` for its answer, a `claim --wait` for its lease)
     /// must not hold an offer back for as long as it waits.
-    static ADMISSION: std::cell::RefCell<Option<InFlight>>;
+    static ADMISSION: std::cell::RefCell<Admission>;
+}
+
+/// What a request's handler can say about its admission while it runs.
+struct Admission {
+    /// Its place, while it holds one.
+    place: Option<InFlight>,
+    /// Its answer was settled by a write that landed ([`Daemon::answer_settled`]):
+    /// a write the fence skips after it is not its failure.
+    settled: bool,
 }
 
 /// A recovery write held back until this process is allowed to write.
@@ -2031,14 +2041,22 @@ impl Daemon {
         // it again — which overflows a thread stack once the protocol is
         // big enough. On the heap it costs one allocation per request.
         let control = !admitted;
-        let response = ADMISSION
+        let (response, settled) = ADMISSION
             .scope(
-                std::cell::RefCell::new(in_flight),
-                Box::pin(self.handle_healthy(request, authorized)),
+                std::cell::RefCell::new(Admission {
+                    place: in_flight,
+                    settled: false,
+                }),
+                Box::pin(async {
+                    let response = self.handle_healthy(request, authorized).await;
+                    let settled = ADMISSION.with(|admission| admission.borrow().settled);
+                    (response, settled)
+                }),
             )
             .await;
-        if control {
-            // Reads and control requests answer for themselves: a write the
+        if control || settled {
+            // Reads and control requests answer for themselves, and so does
+            // a request whose answer a landed write settled: a write the
             // fence skipped meanwhile is not their failure.
             return response;
         }
@@ -2049,7 +2067,21 @@ impl Daemon {
     /// Give its in-flight place up, so an offer need not wait with it;
     /// anything it writes after this is fenced like a tick writer's.
     fn done_writing(&self) {
-        let _ = ADMISSION.try_with(|place| place.borrow_mut().take());
+        let _ = ADMISSION.try_with(|admission| admission.borrow_mut().place.take());
+    }
+
+    /// This request's answer is what it has written, which landed, and
+    /// what it does from here is advisory (a memory add asking the judge).
+    /// Give its place up as [`Self::done_writing`] does, and keep the
+    /// answer: a write of the advisory part that the fence skips, or a
+    /// failure latched after it, must not turn it into a refusal its
+    /// client would send again, making the write twice.
+    fn answer_settled(&self) {
+        let _ = ADMISSION.try_with(|admission| {
+            let mut admission = admission.borrow_mut();
+            admission.settled = true;
+            admission.place.take()
+        });
     }
 
     /// Keep background host work ahead of any transfer offer, just like an
@@ -2081,7 +2113,7 @@ impl Daemon {
     /// handler gives it up. Outside a request (a direct call in a test)
     /// the place goes straight back with the guard.
     fn resume_writing(place: InFlight) {
-        let _ = ADMISSION.try_with(|slot| *slot.borrow_mut() = Some(place));
+        let _ = ADMISSION.try_with(|admission| admission.borrow_mut().place = Some(place));
     }
 
     async fn handle_healthy(

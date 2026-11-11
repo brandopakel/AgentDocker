@@ -45,6 +45,7 @@ pub use provider::{
 pub mod registry;
 pub mod secret;
 pub mod seed;
+pub mod setup;
 
 pub use agent::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, ProviderThread, RestartPolicy,
