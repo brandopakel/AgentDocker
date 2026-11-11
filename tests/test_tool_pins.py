@@ -115,7 +115,23 @@ class ToolPins(unittest.TestCase):
         result, cargo_ran, _ = self.run_verify("fuzz", [])
         self.assertEqual(result.returncode, 69, result.stderr)
         self.assertIn(f"cargo install --locked cargo-fuzz --version {pins()['cargo-fuzz']}", result.stderr)
+        self.assertIn("rustup toolchain install nightly", result.stderr)
         self.assertFalse(cargo_ran)
+
+    def test_fuzzing_without_the_nightly_toolchain_stops_before_the_slot(self):
+        # cargo-fuzz is there; the toolchain its campaigns build with is not.
+        result, cargo_ran, slot_asked = self.run_verify("fuzz", ["cargo-fuzz"])
+        self.assertEqual(result.returncode, 69, result.stderr)
+        self.assertIn("the nightly toolchain is not installed", result.stderr)
+        self.assertIn("rustup toolchain install nightly", result.stderr)
+        self.assertNotIn("cargo install", result.stderr)
+        self.assertIn("the build slot was not taken", result.stderr)
+        self.assertFalse(cargo_ran, "fuzz: cargo ran without the nightly toolchain")
+        self.assertFalse(slot_asked, "fuzz: the build slot was asked for without the nightly toolchain")
+        # With both, the preflight passes and the run goes on to the slot.
+        result, _, slot_asked = self.run_verify("fuzz", ["cargo-fuzz"], aliased="+nightly")
+        self.assertNotEqual(result.returncode, 69, result.stderr)
+        self.assertNotIn("is not installed", result.stderr)
 
     def test_a_tool_in_cargos_own_bin_directory_counts_and_the_run_goes_on(self):
         with tempfile.TemporaryDirectory() as folder:

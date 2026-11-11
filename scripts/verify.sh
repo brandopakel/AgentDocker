@@ -251,6 +251,14 @@ require_tools() {
   local mode="$1" missing="" tool pin
   shift
   for tool in "$@"; do
+    if [ "$tool" = nightly ]; then
+      # A toolchain, not a crate: rustup's to provide, and asked of Cargo
+      # by its version, which builds nothing.
+      cargo +nightly --version >/dev/null 2>&1 && continue
+      echo "verify.sh $mode: the nightly toolchain is not installed; install it with: rustup toolchain install nightly --profile minimal" >&2
+      missing=1
+      continue
+    fi
     have_tool "$tool" && continue
     pin="$(tool_pin "$tool")"
     echo "verify.sh $mode: $tool is not installed; install it with: cargo install --locked $tool${pin:+ --version $pin}" >&2
@@ -265,7 +273,7 @@ trap 'campaign_end $?' EXIT
 case "${1:-check}" in
   check|quick|test) require_tools "${1:-check}" cargo-nextest ;;
   coverage) require_tools coverage cargo-nextest cargo-llvm-cov ;;
-  fuzz) require_tools fuzz cargo-fuzz ;;
+  fuzz) require_tools fuzz cargo-fuzz nightly ;;
 esac
 campaign_start "${1:-check}"
 # The fuzz workspace has a lockfile of its own, outside the workspace the
@@ -320,7 +328,7 @@ case "${1:-check}" in
     selectors=()
     while IFS= read -r line; do [ -n "$line" ] && selectors+=("$line"); done < "$campaign_dir/packages"
     if [ "${#selectors[@]}" -eq 0 ]; then
-      echo "verify.sh quick: no workspace package changed since ${base:0:12}; Cargo not run" >&2
+      echo "verify.sh quick: no workspace package changed since ${base:0:12}; no Cargo build, Clippy or tests run" >&2
     else
       step cargo clippy --locked "${selectors[@]}" --all-targets -- -D warnings
       step cargo nextest run --locked "${selectors[@]}" --profile ci
