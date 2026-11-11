@@ -228,8 +228,62 @@ step() {
   fi
   return "$status"
 }
+# The tools a mode needs beyond cargo itself, looked for before the build
+# slot is taken and before anything compiles: a machine without one would
+# otherwise hold the slot through a whole Clippy build and stop at the
+# first `cargo nextest`. A subcommand on PATH or in Cargo's own bin
+# directory is found without starting Cargo; anything else is Cargo's to
+# say, since it also dispatches through aliases in its configuration, so
+# the subcommand is asked for its version, which builds nothing. The
+# version each is pinned at is in scripts/tool_pins.txt, the one place the
+# workflows and the testing standard are checked against
+# (tests/test_tool_pins.py).
+tool_pin() {
+  [ -f scripts/tool_pins.txt ] || return 0
+  awk -v tool="$1" '$1 == tool { print $2 }' scripts/tool_pins.txt
+}
+have_tool() {
+  command -v "$1" >/dev/null 2>&1 && return 0
+  [ -x "${CARGO_HOME:-$HOME/.cargo}/bin/$1" ] && return 0
+  cargo "${1#cargo-}" --version >/dev/null 2>&1
+}
+require_tools() {
+  local mode="$1" missing="" tool pin
+  shift
+  for tool in "$@"; do
+    if [ "$tool" = nightly ]; then
+      # A toolchain, not a crate: rustup's to provide, and asked of Cargo
+      # by its version, which builds nothing.
+      cargo +nightly --version >/dev/null 2>&1 && continue
+      echo "verify.sh $mode: the nightly toolchain is not installed; install it with: rustup toolchain install nightly --profile minimal" >&2
+      missing=1
+      continue
+    fi
+    have_tool "$tool" && continue
+    pin="$(tool_pin "$tool")"
+    echo "verify.sh $mode: $tool is not installed; install it with: cargo install --locked $tool${pin:+ --version $pin}" >&2
+    missing=1
+  done
+  if [ -n "$missing" ]; then
+    echo "verify.sh $mode: nothing was built and the build slot was not taken; docs/TESTING-AND-BENCHMARKS.md lists what a machine needs" >&2
+    exit 69
+  fi
+}
 trap 'campaign_end $?' EXIT
+case "${1:-check}" in
+  check|quick|test) require_tools "${1:-check}" cargo-nextest ;;
+  coverage) require_tools coverage cargo-nextest cargo-llvm-cov ;;
+  fuzz) require_tools fuzz cargo-fuzz nightly ;;
+esac
 campaign_start "${1:-check}"
+# The fuzz workspace has a lockfile of its own, outside the workspace the
+# other steps resolve, so a dependency added to a crate it builds leaves
+# it stale with nothing here to notice. Resolving it locked takes a moment
+# and compiles nothing; it runs whatever the change touched, since the
+# package selection knows nothing of fuzz/.
+fuzz_lock_current() {
+  step cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+}
 
 case "${1:-check}" in
   check)
@@ -242,6 +296,7 @@ case "${1:-check}" in
       step python3 scripts/docs_check.py
     fi
     step cargo fmt --all --check
+    fuzz_lock_current
     step cargo clippy --locked --workspace --all-targets -- -D warnings
     step cargo nextest run --locked --workspace --profile ci
     step cargo test --locked --workspace --doc
@@ -266,13 +321,14 @@ case "${1:-check}" in
       step python3 scripts/docs_check.py
     fi
     step cargo fmt --all --check
+    fuzz_lock_current
     # The selection is a checked step of its own: a Git or Cargo failure
     # stops the run, and only a successful empty answer means nothing to test.
     step python3 scripts/touched_crates.py --base "$base" --output "$campaign_dir/packages"
     selectors=()
     while IFS= read -r line; do [ -n "$line" ] && selectors+=("$line"); done < "$campaign_dir/packages"
     if [ "${#selectors[@]}" -eq 0 ]; then
-      echo "verify.sh quick: no workspace package changed since ${base:0:12}; Cargo not run" >&2
+      echo "verify.sh quick: no workspace package changed since ${base:0:12}; no Cargo build, Clippy or tests run" >&2
     else
       step cargo clippy --locked "${selectors[@]}" --all-targets -- -D warnings
       step cargo nextest run --locked "${selectors[@]}" --profile ci
