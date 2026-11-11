@@ -1,20 +1,32 @@
 use super::*;
 
+/// A journal read as the request spelt it: the filters by name, resolved
+/// to ids, kinds and relative paths by [`Daemon::journal`].
+pub(super) struct JournalArgs {
+    pub since_seq: Option<u64>,
+    pub until_seq: Option<u64>,
+    pub agent: Option<String>,
+    pub branch: Option<String>,
+    pub kind: Option<String>,
+    pub path: Option<String>,
+    pub grep: Option<String>,
+    pub limit: usize,
+    pub digest: Option<DigestRequest>,
+}
+
 impl Daemon {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn journal(
-        &self,
-        project: &str,
-        since_seq: Option<u64>,
-        until_seq: Option<u64>,
-        agent: Option<String>,
-        branch: Option<String>,
-        kind: Option<String>,
-        path: Option<String>,
-        grep: Option<String>,
-        limit: usize,
-        digest: Option<DigestRequest>,
-    ) -> Response {
+    pub(super) async fn journal(&self, project: &str, args: JournalArgs) -> Response {
+        let JournalArgs {
+            since_seq,
+            until_seq,
+            agent,
+            branch,
+            kind,
+            path,
+            grep,
+            limit,
+            digest,
+        } = args;
         if let Some(request) = digest {
             return self.journal_digest(project, since_seq, request).await;
         }

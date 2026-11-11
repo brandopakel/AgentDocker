@@ -456,7 +456,9 @@ control does, its id or its accessible label:
   right, padded 8 by 14, with rules inset 14 (the same rows serve
   Installation), and no row or group has a line of why: the theme as a
   segmented control, text sizes as `− 14 pt +` steppers, switches for
-  notifications, roomier rows, update checks and preview builds, terminal
+  notifications, roomier rows, the menu bar item (macOS only; a switch read
+  aloud as what pressing it does, *Remove the menu bar item* or *Show the
+  menu bar item*), update checks and preview builds, terminal
   colours as preview swatches with an accent ring. The terminal
   pane has a header (agent over its folder in mono, a *Live*, *Scrolled back*
   or *Ended* chip and a small Detach) above the grid on its palette's ground,

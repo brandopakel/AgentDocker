@@ -22,7 +22,11 @@ mod roles;
 mod rules;
 pub(in crate::daemon) mod verdicts;
 
-const DOCUMENT: &str = "task";
+pub(in crate::daemon) use memory::MemorySearchArgs;
+pub(in crate::daemon) use plans::FilePutArgs;
+pub(in crate::daemon) use roles::RoleSaveArgs;
+
+const DOCUMENT: &str = crate::store::TASK_DOCUMENT;
 const BOARD: &str = "board";
 const COMMENT: &str = "task_comment";
 const ENTRY: &str = "task_entry";
@@ -76,14 +80,6 @@ fn comment_doc(comment: &Comment) -> Doc {
     doc(COMMENT, comment.id.to_string(), comment)
 }
 
-fn invalid(message: impl Into<String>) -> Box<Response> {
-    Box::new(Response::error(ErrorCode::Invalid, message))
-}
-
-fn not_found(message: impl Into<String>) -> Box<Response> {
-    Box::new(Response::error(ErrorCode::NotFound, message))
-}
-
 fn board_error(error: board::BoardError) -> Box<Response> {
     let details = match &error {
         board::BoardError::NoLane { lanes, .. } => Some(serde_json::json!({ "lanes": lanes })),
@@ -125,7 +121,7 @@ impl State {
     fn resolve_task(&mut self, reference: &str) -> Result<Task, Box<Response>> {
         let reference = reference.trim();
         if reference.is_empty() {
-            return Err(invalid("name a card by its key or id"));
+            return Err(Box::new(Response::invalid("name a card by its key or id")));
         }
         if let Some((prefix, number)) = reference.split_once('-')
             && !prefix.is_empty()
@@ -145,7 +141,7 @@ impl State {
             let mut found = found.into_iter();
             return match (found.next(), found.next()) {
                 (Some(task), None) => Ok(task),
-                (None, _) => Err(not_found(format!("no card is {key}"))),
+                (None, _) => Err(Box::new(Response::not_found(format!("no card is {key}")))),
                 (Some(_), Some(_)) => Err(Box::new(Response::error(
                     ErrorCode::Ambiguous,
                     format!("more than one project has a card {key}; give its id"),
@@ -153,7 +149,9 @@ impl State {
             };
         }
         if !reference.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return Err(not_found(format!("no card matches {reference}")));
+            return Err(Box::new(Response::not_found(format!(
+                "no card matches {reference}"
+            ))));
         }
         // Two is enough to tell one match from several, and no more of
         // the board is read for a lookup.
@@ -167,7 +165,9 @@ impl State {
         let mut matching = matching.into_iter();
         match (matching.next(), matching.next()) {
             (Some(task), None) => Ok(task),
-            (None, _) => Err(not_found(format!("no card matches {reference}"))),
+            (None, _) => Err(Box::new(Response::not_found(format!(
+                "no card matches {reference}"
+            )))),
             (Some(_), Some(_)) => Err(Box::new(Response::error(
                 ErrorCode::Ambiguous,
                 format!("more than one card matches {reference}; give more of the id"),
@@ -196,7 +196,7 @@ impl State {
 
     /// What a project is called, for its display keys: the name an agent
     /// in it has for it, else its id.
-    fn project_name(&self, project: &ProjectId) -> String {
+    pub(super) fn project_name(&self, project: &ProjectId) -> String {
         self.registry
             .all()
             .filter_map(|a| a.project.as_ref())
@@ -326,6 +326,9 @@ impl State {
             .and_then(|id| self.plan_by_id(id).ok())
             .map(|p| p.summary());
         let files = self.card_files(&task.id);
+        let usage = self
+            .store_read("card usage", |store| store.usage_card_row(task.id.as_str()))
+            .flatten();
         Response::TaskDetail {
             task,
             board,
@@ -336,6 +339,7 @@ impl State {
             lease,
             plan,
             files,
+            usage,
         }
     }
 
@@ -451,7 +455,7 @@ impl State {
         );
         if committed != Persisted::Committed {
             return Some(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the card was not recorded")
+                Response::error(ErrorCode::StorageUnavailable, "the card was not recorded")
             }));
         }
         None
@@ -478,7 +482,7 @@ impl State {
         );
         if committed != Persisted::Committed {
             return Some(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the change was not recorded")
+                Response::error(ErrorCode::StorageUnavailable, "the change was not recorded")
             }));
         }
         None
@@ -506,7 +510,7 @@ impl State {
         );
         if committed != Persisted::Committed {
             return Some(self.write_failure().unwrap_or_else(|| {
-                Response::error(ErrorCode::Internal, "the change was not recorded")
+                Response::error(ErrorCode::StorageUnavailable, "the change was not recorded")
             }));
         }
         None
@@ -561,9 +565,9 @@ impl State {
                 .collect();
             match matches.as_slice() {
                 [one] => Ok(one.id.clone()),
-                [] => Err(not_found(format!(
+                [] => Err(Box::new(Response::not_found(format!(
                     "no card of this project matches {words}"
-                ))),
+                )))),
                 _ => Err(Box::new(Response::error(
                     ErrorCode::Ambiguous,
                     format!("more than one card matches {words}; give more of the id"),
@@ -675,6 +679,25 @@ pub(super) struct Filing {
     /// Tags every card gets.
     pub tags: Vec<String>,
     pub cards: Vec<BatchCard>,
+}
+
+/// Where a card goes: a lane, a holder, a place in the lane, and a word
+/// about why.
+pub(super) struct TaskMoveArgs<'a> {
+    pub column: Option<Column>,
+    pub to: Option<&'a str>,
+    pub after: Option<&'a str>,
+    pub before: Option<&'a str>,
+    pub comment: Option<&'a str>,
+}
+
+/// What a board update changes; a field left `None` keeps what the board
+/// has.
+pub(super) struct BoardChange {
+    pub name: Option<String>,
+    pub lanes: Option<Vec<Lane>>,
+    pub pull_source: Option<String>,
+    pub pull_target: Option<String>,
 }
 
 impl Daemon {
@@ -1188,17 +1211,19 @@ impl Daemon {
             .collect()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn task_move(
         self: &Arc<Self>,
         reference: &str,
         task: &str,
-        column: Option<Column>,
-        to: Option<&str>,
-        after: Option<&str>,
-        before: Option<&str>,
-        comment: Option<&str>,
+        args: TaskMoveArgs<'_>,
     ) -> Response {
+        let TaskMoveArgs {
+            column,
+            to,
+            after,
+            before,
+            comment,
+        } = args;
         let mut state = lock(&self.state);
         let actor = match state.actor(reference) {
             Ok(actor) => actor,
@@ -1369,7 +1394,6 @@ impl Daemon {
         Response::Task { task }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn task_update(
         self: &Arc<Self>,
         reference: &str,
@@ -1962,17 +1986,19 @@ impl Daemon {
         Response::Board { board }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn board_update(
         self: &Arc<Self>,
         from: &str,
         project: Option<&str>,
         selector: &str,
-        name: Option<String>,
-        lanes: Option<Vec<Lane>>,
-        pull_source: Option<String>,
-        pull_target: Option<String>,
+        change: BoardChange,
     ) -> Response {
+        let BoardChange {
+            name,
+            lanes,
+            pull_source,
+            pull_target,
+        } = change;
         let named = match project {
             Some(selector) => match self.resolve_project(selector).await {
                 Ok(id) => Some(id),
@@ -2583,6 +2609,7 @@ mod tests {
                         agentdocker_core::LinkKind::Task,
                         "zz"
                     )],
+                    idempotency_key: None,
                 })
                 .await,
             Response::Error {
@@ -2600,6 +2627,7 @@ mod tests {
                     payload: serde_json::json!({"text": "this one is yours"}),
                     reply_to: None,
                     links: vec![card_link.clone()],
+                    idempotency_key: None,
                 })
                 .await,
             Response::Sent { .. }

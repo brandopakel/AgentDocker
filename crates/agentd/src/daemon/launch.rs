@@ -101,7 +101,7 @@ impl Daemon {
                 ));
             }
             if record.pid.is_some_and(|pid| {
-                process_exists(pid) && same_process(pid, record.process_started_at)
+                procinfo::alive(pid) && same_process(pid, record.process_started_at)
             }) {
                 return Some(Response::error(
                     ErrorCode::Conflict,
@@ -308,14 +308,9 @@ impl Daemon {
                     spawned.control.send_replace(Some(true));
                 }
                 let supervision = supervisor::supervise(self.clone(), record.id, spawned);
-                if let Some(error) = failed.or_else(|| {
-                    activation_error.map(|error| {
-                        Response::error(
-                            ErrorCode::Internal,
-                            format!("failed to execute command: {error:#}"),
-                        )
-                    })
-                }) {
+                if let Some(error) =
+                    failed.or_else(|| activation_error.as_ref().map(activation_refusal))
+                {
                     let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
                     return error;
                 }
@@ -690,17 +685,20 @@ impl Daemon {
     /// daemon's sibling worktree directory, on a branch named after it: `agent/<name>`, or with
     /// its id appended when that is taken by an earlier run.
     pub(super) async fn isolate(&self, record: &AgentRecord) -> Result<PathBuf, Box<Response>> {
-        let invalid = |text: &str| Box::new(Response::error(ErrorCode::Invalid, text));
         let Some(workdir) = record.spec.workdir.clone() else {
-            return Err(invalid(
+            return Err(Box::new(Response::invalid(
                 "isolate needs a working directory inside a git checkout",
-            ));
+            )));
         };
         let base = self
             .project_for(Some(workdir), true)
             .await
             .filter(|p| p.source == ProjectSource::Git)
-            .ok_or_else(|| invalid("isolate needs a working directory inside a git checkout"))?;
+            .ok_or_else(|| {
+                Box::new(Response::invalid(
+                    "isolate needs a working directory inside a git checkout",
+                ))
+            })?;
         let name = if record.spec.name.is_empty() {
             default_name(&record.id)
         } else {
@@ -709,14 +707,14 @@ impl Daemon {
         // The name becomes a path component and part of a git ref: say so
         // before anything is created rather than let git say "invalid".
         if !isolate_name_ok(&name) {
-            return Err(invalid(&format!(
+            return Err(Box::new(Response::invalid(format!(
                 "agent name `{name}` cannot name a worktree and branch: use letters, digits, '-', '_' and '.', not starting with '-' or '.', without '..' or a '.lock' ending"
-            )));
+            ))));
         }
         let dir = paths::worktree_dir(&self.home).join(base.id().short());
         if let Err(err) = std::fs::create_dir_all(&dir) {
             return Err(Box::new(Response::error(
-                ErrorCode::Internal,
+                ErrorCode::StorageUnavailable,
                 format!("cannot create {}: {err}", dir.display()),
             )));
         }
@@ -757,6 +755,49 @@ impl Daemon {
                 Err(response) => last = Some(response),
             }
         }
-        Err(last.unwrap_or_else(|| invalid("no free worktree path for the agent")))
+        Err(last
+            .unwrap_or_else(|| Box::new(Response::invalid("no free worktree path for the agent"))))
+    }
+}
+
+/// What a launch whose activation failed answers: `launch_failed` only
+/// when the command is known never to have run (it ended before the owner
+/// reported it running, its program not executable), `cancelled` when it
+/// was stopped before it was let go, and `unconfirmed` otherwise, since a
+/// session that failed after letting the command go may have run it.
+fn activation_refusal(error: &anyhow::Error) -> Response {
+    use crate::supervisor::NotActivated;
+    let code = match error.downcast_ref::<NotActivated>() {
+        Some(NotActivated::Exited(_)) => ErrorCode::LaunchFailed,
+        Some(NotActivated::Stopped) => ErrorCode::Cancelled,
+        None => ErrorCode::Unconfirmed,
+    };
+    Response::error(code, format!("failed to execute command: {error:#}"))
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+
+    /// Only a command known never to have run is `launch_failed`; one whose
+    /// session failed after it was let go (an attach that could not be
+    /// sent, an owner that closed) may have run, and is `unconfirmed`.
+    #[test]
+    fn only_a_command_that_never_ran_is_launch_failed() {
+        use crate::supervisor::NotActivated;
+        let code = |error: anyhow::Error| match activation_refusal(&error) {
+            Response::Error { code, .. } => code,
+            other => panic!("{other:?}"),
+        };
+        let exited = anyhow::Error::from(NotActivated::Exited("exit status 127".into()))
+            .context("command could not be launched");
+        assert_eq!(code(exited), ErrorCode::LaunchFailed);
+        assert_eq!(code(NotActivated::Stopped.into()), ErrorCode::Cancelled);
+        let attach = anyhow::anyhow!("broken pipe").context("command could not be launched");
+        assert_eq!(code(attach), ErrorCode::Unconfirmed);
+        assert_eq!(
+            code(anyhow::anyhow!("session owner closed during activation")),
+            ErrorCode::Unconfirmed
+        );
     }
 }

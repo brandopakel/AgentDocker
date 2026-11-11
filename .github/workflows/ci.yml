@@ -2,8 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'batch/**']
   pull_request:
+
+# A push to a pull request makes its earlier runs moot: they are cancelled.
+# Any other run is a group of its own, so nothing on main or a batch waits
+# for or replaces another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -51,6 +58,9 @@ jobs:
         run: cargo install --locked cargo-nextest --version 0.9.143
       - name: Standard verification
         run: bash scripts/verify.sh check
+      - name: Packaging and the release build
+        if: runner.os == 'Linux'
+        run: bash scripts/verify.sh package
       - name: Preserve test report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

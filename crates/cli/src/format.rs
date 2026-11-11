@@ -1,6 +1,11 @@
 //! Terminal output helpers.
 
-use agentdocker_core::{Activity, Envelope, Event, EventKind, Question, ResourceKey};
+use agentdocker_core::journal;
+pub use agentdocker_core::short;
+use agentdocker_core::{
+    Activity, Envelope, Event, EventKind, Question, QuestionForm, QuestionKind, QuestionOption,
+    ResourceKey, StaleAction,
+};
 use chrono::{DateTime, Local, Utc};
 use serde_json::Value;
 
@@ -54,10 +59,10 @@ pub fn table_dimming(headers: &[&str], rows: &[Vec<String>], dim: impl Fn(usize)
     }
 }
 
-/// "5s ago", "3m ago", "2h ago", "4d ago".
+/// "5s ago", "3m ago", "2h ago", "4d ago": core's rendering, against the
+/// clock, which the CLI may read.
 pub fn ago(at: DateTime<Utc>) -> String {
-    let secs = (Utc::now() - at).num_seconds().max(0);
-    format!("{} ago", span(secs))
+    journal::ago(Utc::now(), at)
 }
 
 /// "in 4m", or "expired".
@@ -66,27 +71,12 @@ pub fn until(at: DateTime<Utc>) -> String {
     if secs <= 0 {
         "expired".to_owned()
     } else {
-        format!("in {}", span(secs))
+        format!("in {}", journal::span(secs))
     }
 }
 
 pub fn span_secs(secs: u64) -> String {
-    span(i64::try_from(secs).unwrap_or(i64::MAX))
-}
-
-fn span(secs: i64) -> String {
-    match secs {
-        s if s < 60 => format!("{s}s"),
-        s if s < 3600 => format!("{}m", s / 60),
-        s if s < 86_400 => format!("{}h", s / 3600),
-        s => format!("{}d", s / 86_400),
-    }
-}
-
-/// First 12 characters of an id-like string, without splitting a char.
-pub fn short(s: &str) -> &str {
-    let end = s.char_indices().nth(12).map_or(s.len(), |(i, _)| i);
-    &s[..end]
+    journal::span(i64::try_from(secs).unwrap_or(i64::MAX))
 }
 
 /// `file:` keys carry a full project id; show twelve characters of it.
@@ -176,22 +166,94 @@ pub fn message_line_at(message: &Envelope, seq: Option<u64>) -> String {
 }
 
 /// A question somebody is blocked on. The id comes first because
-/// answering means naming it: `agentdocker answer <id> "..."`.
+/// answering means naming it: `agentdocker answer <id> "..."`. A kind
+/// other than a plain question is named, a stale one says so, and the
+/// options follow the words as the recipient would number them.
 pub fn question_line(question: &Question) -> String {
-    format!(
-        "{}  {}  {} → {}  ({} left)  {}",
+    let now = Utc::now();
+    let mut marks = String::new();
+    if question.kind() != QuestionKind::Question {
+        marks.push_str(&format!("  [{}]", question.kind()));
+    }
+    if question.stale(now) {
+        marks.push_str("  [stale]");
+    }
+    let mut line = format!(
+        "{}  {}  {} → {}  ({} left){marks}  {}",
         clock(question.asked_at),
         question.id,
         short(&question.from),
         question.to,
         span_secs(
-            (question.expires_at - Utc::now())
+            (question.expires_at - now)
                 .num_seconds()
                 .max(0)
                 .unsigned_abs()
         ),
         single_line(&question.text)
-    )
+    );
+    // The options as their own rows under the words, headed by how they
+    // are chosen, on separators of this function's own: a label or
+    // description is kept to one row.
+    if !question.form.options.is_empty() {
+        line.push_str(&format!("\n    {}", question.form.choose_line()));
+    }
+    for (index, option) in question.form.options.iter().enumerate() {
+        line.push_str(&format!(
+            "\n    {}. {}",
+            index + 1,
+            single_line(&option.label)
+        ));
+        if !option.description.trim().is_empty() {
+            line.push_str(&format!(" — {}", single_line(option.description.trim())));
+        }
+    }
+    if !question.form.options.is_empty() && question.form.allow_other {
+        line.push_str("\n    Other: answer in your own words.");
+    }
+    line
+}
+
+/// The typed part of `ask`, from its flags. An option is `Label` or
+/// `Label: what choosing it means`; the kind and the stale action are
+/// their wire spellings.
+pub fn question_form(
+    kind: &str,
+    options: &[String],
+    multi_select: bool,
+    allow_other: bool,
+    stale_after_secs: Option<u64>,
+    stale_action: Option<&str>,
+) -> anyhow::Result<QuestionForm> {
+    let kind = QuestionKind::parse(kind)
+        .ok_or_else(|| anyhow::anyhow!("--kind takes question, permission or access"))?;
+    let options = options
+        .iter()
+        .map(|option| match option.split_once(':') {
+            Some((label, description)) => QuestionOption {
+                label: label.trim().to_owned(),
+                description: description.trim().to_owned(),
+            },
+            None => QuestionOption {
+                label: option.trim().to_owned(),
+                description: String::new(),
+            },
+        })
+        .collect();
+    let stale_action = match stale_action {
+        Some(action) => StaleAction::parse(action).ok_or_else(|| {
+            anyhow::anyhow!("--stale-action takes keep_waiting, withdraw or answer:<label>")
+        })?,
+        None => StaleAction::KeepWaiting,
+    };
+    Ok(QuestionForm {
+        kind,
+        options,
+        multi_select,
+        allow_other,
+        stale_after_secs,
+        stale_action,
+    })
 }
 
 /// One cell for a `ps` row: the word, and for the one state that has a
@@ -217,6 +279,9 @@ pub fn event_line(event: &Event) -> String {
     let body = match &event.kind {
         EventKind::SecretReviewChanged { review, agent } => {
             format!("temporary review {review} updated for {}", agent.short())
+        }
+        EventKind::QuestionStale { question, action } => {
+            format!("question {question} went stale: {action}")
         }
         EventKind::QuestionCancelled { question, agent } => {
             format!("{} cancelled question {question}", agent.short())
@@ -727,6 +792,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::ChannelJoined { channel, agent } => {
             format!("channel joined   {channel} by {}", agent.short())
         }
+        EventKind::ChannelLeft { channel, agent } => {
+            format!("channel left     {channel} by {}", agent.short())
+        }
         EventKind::ConversationRead {
             reader,
             conversation,
@@ -778,11 +846,19 @@ pub fn event_line(event: &Event) -> String {
             head,
             by,
             verdict,
+            findings,
+            runtime,
             ..
         } => format!(
-            "verdict          {} {verdict} on {branch} at {}",
+            "verdict          {} {verdict} on {branch} at {} ({}; {})",
             by.short(),
-            head.chars().take(8).collect::<String>()
+            head.chars().take(8).collect::<String>(),
+            if runtime.is_empty() {
+                "unknown"
+            } else {
+                runtime.as_str()
+            },
+            findings.said()
         ),
         EventKind::CodeVerdictSuperseded {
             branch,
@@ -870,6 +946,24 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentSessionBound { agent, session } => {
             format!("agent bound      {} to session {session}", agent.short())
         }
+        EventKind::AgentThreadLearned {
+            agent,
+            role,
+            parent,
+        } => {
+            let role = role
+                .as_deref()
+                .map(|role| format!(" as {role}"))
+                .unwrap_or_default();
+            let parent = parent
+                .as_ref()
+                .map(|parent| match &parent.agent {
+                    Some(agent) => format!(", spawned by {}", agent.short()),
+                    None => format!(", spawned by thread {}", short(&parent.thread)),
+                })
+                .unwrap_or_else(|| ", a root thread".to_owned());
+            format!("thread learned   {}{role}{parent}", agent.short())
+        }
         EventKind::HumanLocationChanged { agent, workdir, .. } => {
             format!(
                 "human moved      {} to {}",
@@ -912,8 +1006,34 @@ pub fn event_line(event: &Event) -> String {
         ),
         EventKind::QuestionClosed { question, answer } => match answer {
             Some(answer) => format!("question answered {question} by message {answer}"),
-            None => format!("question expired {question}"),
+            None => format!("question closed  {question} (expired, or settled without an answer)"),
         },
+        EventKind::MessageHeld {
+            message,
+            question,
+            from,
+            to,
+            rule,
+        } => format!(
+            "message held     {message} {} → {to} for you as question {question} ({rule})",
+            short(from)
+        ),
+        EventKind::HeldMessageReleased {
+            message,
+            question,
+            by,
+        } => format!(
+            "message released {message} from question {question} by {}",
+            short(by)
+        ),
+        EventKind::HeldMessageDropped {
+            message,
+            question,
+            by,
+        } => format!(
+            "message dropped  {message} from question {question} by {}",
+            short(by)
+        ),
         EventKind::MessageSent {
             message,
             from,
@@ -960,6 +1080,35 @@ pub fn event_line(event: &Event) -> String {
                 holders.join(", ")
             )
         }
+        EventKind::ReleaseRequested { request } => format!(
+            "release asked    {} of {} by {} ({})",
+            resource(&request.resource),
+            request.holder.short(),
+            request.requester.short(),
+            request.message
+        ),
+        EventKind::ReleaseAnswered { request } => {
+            let answer = request.answer.as_ref();
+            format!(
+                "release {:<8} {} by {} for {} ({})",
+                if answer.is_some_and(|a| a.accepted) {
+                    "granted"
+                } else {
+                    "declined"
+                },
+                resource(&request.resource),
+                request.holder.short(),
+                request.requester.short(),
+                request.message
+            )
+        }
+        EventKind::ReleaseRequestExpired { request } => format!(
+            "release expired  {} of {} by {} ({}): no answer in a day",
+            resource(&request.resource),
+            request.holder.short(),
+            request.requester.short(),
+            request.message
+        ),
         EventKind::ProjectDiscovered { project } => format!(
             "project found    {} {} ({})",
             project.id().short(),
@@ -1069,6 +1218,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::UsageReconciled { agent, samples } => {
             format!("usage reconciled {} {samples} sample(s)", agent.short())
         }
+        EventKind::UsageJoined { priced, folded } => {
+            format!("usage joined     {priced} priced, {folded} counted twice now once")
+        }
         EventKind::UsageEmissionRecorded { agent, emission } => {
             format!(
                 "output counted  {} {} bytes ({:?})",
@@ -1083,7 +1235,9 @@ pub fn event_line(event: &Event) -> String {
 }
 
 /// Escape control characters so untrusted metadata cannot create terminal commands or extra rows.
-fn single_line(text: &str) -> String {
+/// One line of `text`: every control character spelled out, so nothing
+/// read from a log or a provider can break a row or move the cursor.
+pub(crate) fn single_line(text: &str) -> String {
     text.chars()
         .flat_map(|c| {
             if c.is_control() {
@@ -1117,6 +1271,53 @@ pub fn counter(report: &agentdocker_core::usage::CounterReport) -> String {
     }
 }
 
+/// The provider-reported estimated cost as the report knows it: the sum
+/// when every sample in the row carried one, marked `~` when some did not
+/// (transcripts carry none; telemetry events do), `—` when none did.
+pub fn cost(report: &agentdocker_core::usage::CounterReport) -> String {
+    use agentdocker_core::usage::{Coverage, dollars};
+    match (report.sum, report.coverage) {
+        (None, _) | (_, Coverage::Unknown) => "—".to_owned(),
+        (Some(sum), Coverage::Complete) => dollars(sum),
+        (Some(sum), Coverage::Partial) => format!("{}~", dollars(sum)),
+    }
+}
+
+/// Where the telemetry receiver stands, when one is configured: the
+/// address it takes Claude Code's events on, or why it takes none.
+fn telemetry_line(collection: &agentdocker_core::usage::report::Collection) -> Option<String> {
+    match (&collection.otlp_listen, &collection.otlp_error) {
+        (Some(address), _) => Some(format!(
+            "Telemetry: taking Claude Code's events on {address}"
+        )),
+        (None, Some(reason)) => Some(format!("Telemetry: not listening: {reason}")),
+        (None, None) => None,
+    }
+}
+
+/// The share of input read from the cache, `87%`, or `—` when the row
+/// cannot say.
+fn cache_share(percent: Option<u8>) -> String {
+    percent.map_or_else(|| "—".to_owned(), |p| format!("{p}%"))
+}
+
+/// One line for a card's usage to date: its price, its tokens, how
+/// many responses and the share of input read from cache.
+pub fn card_usage(row: &agentdocker_core::usage::report::Row) -> String {
+    let mut line = format!(
+        "cost to date {} ({} in, {} out; {} response(s)",
+        cost(&row.cost_usd_micros),
+        counter(&row.counters.input_tokens),
+        counter(&row.counters.output_tokens),
+        thousands(row.samples)
+    );
+    if let Some(percent) = row.cache_read_share_percent {
+        line.push_str(&format!("; {percent}% of input from cache"));
+    }
+    line.push(')');
+    line
+}
+
 /// Each agent's tokens over a usage report grouped by agent, as `ps`
 /// cells keyed by agent id.
 pub fn tokens_by_agent(
@@ -1134,6 +1335,16 @@ pub use agentdocker_core::usage::thousands;
 /// A usage row's first column: the agent or project by name when it is
 /// still known, else its ID (history outlives the registry), and
 /// `(unattributed)` for usage no session could be matched to.
+/// Whether a row's figures are the provider's own per-response counts.
+fn usage_source(source: Option<agentdocker_core::usage::UsageSource>) -> &'static str {
+    use agentdocker_core::usage::UsageSource;
+    match source {
+        Some(UsageSource::Exact) => "exact",
+        Some(UsageSource::Estimated) => "estimated",
+        None => "—",
+    }
+}
+
 fn usage_key(key: Option<&str>, names: &std::collections::HashMap<String, String>) -> String {
     match key {
         None => "(unattributed)".to_owned(),
@@ -1236,11 +1447,15 @@ pub fn usage_report(
         Group::Provider => "PROVIDER",
         Group::Project => "PROJECT",
         Group::Hour => "HOUR",
+        Group::Card => "CARD",
+        Group::Role => "ROLE",
     };
     let collection = &report.coverage.collection;
     let off = collection.enabled == Some(false);
     if report.rows.is_empty() {
-        if off {
+        // With the receiver taking events, collection being off is not why
+        // there is nothing to show.
+        if off && collection.otlp_listen.is_none() {
             println!(
                 "Collection is off. Enable it in agentd.toml ([usage] enabled = true) to read the providers' local usage logs. Existing totals remain available."
             );
@@ -1257,9 +1472,12 @@ pub fn usage_report(
                     thousands(row.samples),
                     counter(&row.counters.input_tokens),
                     counter(&row.counters.cache_read_input_tokens),
+                    cache_share(row.cache_read_share_percent),
                     counter(&row.counters.cache_write_input_tokens),
                     counter(&row.counters.output_tokens),
                     counter(&row.counters.reasoning_output_tokens),
+                    usage_source(row.usage_source).to_owned(),
+                    cost(&row.cost_usd_micros),
                 ]
             })
             .collect();
@@ -1269,13 +1487,18 @@ pub fn usage_report(
                 "SAMPLES",
                 "INPUT",
                 "CACHE READ",
+                "CACHED",
                 "CACHE WRITE",
                 "OUTPUT",
                 "REASONING",
+                "FIGURES",
+                "COST",
             ],
             &rows,
         );
-        println!("~ some samples did not say; — none did");
+        println!(
+            "~ some samples did not say; — none did; CACHED is cache reads over input; FIGURES: exact are the provider's own per-response counts, estimated has differences between its running totals in it; COST is the provider-reported estimated cost"
+        );
     }
     println!(
         "Range {} to {}{}{}; retained since {}{}",
@@ -1350,6 +1573,9 @@ pub fn usage_report(
             format!(" ({} root(s))", collection.scope.roots.len())
         }
     );
+    if let Some(line) = telemetry_line(collection) {
+        println!("{line}");
+    }
     let overhead = &report.overhead;
     let overhead_line = match (&overhead.estimated_tokens, overhead.injected_bytes) {
         (Some(estimate), _) => format!(
@@ -1484,6 +1710,99 @@ pub fn webhook_attempt_row(attempt: &agentdocker_core::WebhookAttempt) -> Vec<St
 
 #[cfg(test)]
 mod tests {
+    /// `questions` prints a typed question's options as rows under its
+    /// words, with the Other line, on separators of its own: a control
+    /// character in the words, a label or a description is escaped, never
+    /// a row.
+    #[test]
+    fn a_question_line_lists_its_options_and_escapes_what_they_carry() {
+        use agentdocker_core::{Destination, MessageId, Question, QuestionForm, QuestionOption};
+        use chrono::Utc;
+        let question = Question {
+            id: MessageId::from("q".to_owned()),
+            from: "asker".into(),
+            to: Destination::Agent("human".into()),
+            text: "Which\ntheme?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: QuestionForm {
+                options: vec![
+                    QuestionOption {
+                        label: "Blue\nRed".into(),
+                        description: "the current\ntheme".into(),
+                    },
+                    QuestionOption {
+                        label: "Green".into(),
+                        description: String::new(),
+                    },
+                ],
+                ..QuestionForm::default()
+            },
+            stale_since: None,
+        };
+        let line = super::question_line(&question);
+        let rows: Vec<&str> = line.split('\n').collect();
+        assert_eq!(rows.len(), 5, "{line}");
+        assert!(rows[0].ends_with("Which\\ntheme?"), "{line}");
+        assert_eq!(rows[1], "    Choose one, by number or label:");
+        assert_eq!(rows[2], "    1. Blue\\nRed — the current\\ntheme");
+        assert_eq!(rows[3], "    2. Green");
+        assert_eq!(rows[4], "    Other: answer in your own words.");
+        let mut strict = question;
+        strict.form.allow_other = false;
+        strict.form.multi_select = true;
+        let rows: Vec<String> = super::question_line(&strict)
+            .split('\n')
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(rows.len(), 4, "no Other line");
+        assert!(
+            rows[1].starts_with("    Choose any that apply")
+                && rows[1].contains("a text answer is one choice"),
+            "{}",
+            rows[1]
+        );
+    }
+
+    /// `ask`'s flags make the question form: an option is a label with an
+    /// optional description after a colon, the kind and the stale action
+    /// are their wire spellings, and a spelling outside them is refused.
+    #[test]
+    fn ask_flags_make_a_question_form() {
+        use agentdocker_core::{QuestionKind, StaleAction};
+        let form = super::question_form(
+            "permission",
+            &["Blue: the current theme".to_owned(), "Green".to_owned()],
+            true,
+            false,
+            Some(60),
+            Some("answer:Green"),
+        )
+        .unwrap();
+        assert_eq!(form.kind, QuestionKind::Permission);
+        assert_eq!(form.options[0].label, "Blue");
+        assert_eq!(form.options[0].description, "the current theme");
+        assert_eq!(form.options[1].label, "Green");
+        assert_eq!(form.options[1].description, "");
+        assert!(form.multi_select);
+        assert!(!form.allow_other);
+        assert_eq!(form.stale_after_secs, Some(60));
+        assert_eq!(
+            form.stale_action,
+            StaleAction::AnswerDefault {
+                label: "Green".into()
+            }
+        );
+        assert!(super::question_form("prompt", &[], false, true, None, None).is_err());
+        assert!(super::question_form("question", &[], false, true, Some(1), Some("drop")).is_err());
+        assert!(
+            super::question_form("question", &[], false, true, None, None)
+                .unwrap()
+                .is_plain()
+        );
+    }
+
     /// Each seed is one line: the directory, what became of it, and why
     /// when there is a reason.
     #[test]
@@ -1514,7 +1833,7 @@ mod tests {
             webhook: "team".into(),
             delivery: "0123456789abcdef0123456789abcdef".into(),
             seq: 41,
-            event: "question_asked".into(),
+            event: "question_opened".into(),
             attempt: 2,
             at,
             duration_ms: 87,
@@ -1529,7 +1848,7 @@ mod tests {
             row[1..],
             [
                 "41",
-                "question_asked",
+                "question_opened",
                 "2",
                 "retrying",
                 "503",
@@ -1576,14 +1895,136 @@ mod tests {
         assert_eq!(super::thousands(10_000_000), "10,000,000");
     }
 
+    /// A price shows as dollars with the counters' coverage marks, the
+    /// cache share as a percentage or nothing, and a card's line says its
+    /// cost, tokens, responses and cache share without inventing any.
+    #[test]
+    fn usage_prices_and_cache_shares_show_their_coverage() {
+        use agentdocker_core::usage::report::{CounterReports, Row};
+        use agentdocker_core::usage::{CounterReport, Coverage};
+        let report = |sum: Option<u64>, coverage| CounterReport {
+            sum,
+            known_samples: sum.map_or(0, |_| 1),
+            coverage,
+        };
+        assert_eq!(
+            super::cost(&report(Some(12_345), Coverage::Complete)),
+            "$0.0123"
+        );
+        assert_eq!(
+            super::cost(&report(Some(2_345_678), Coverage::Partial)),
+            "$2.35~"
+        );
+        assert_eq!(super::cost(&report(None, Coverage::Unknown)), "—");
+        assert_eq!(super::cache_share(Some(87)), "87%");
+        assert_eq!(super::cache_share(None), "—");
+        let row = Row {
+            key: Some("card-1".into()),
+            samples: 3,
+            usage_source: None,
+            counters: CounterReports {
+                input_tokens: report(Some(40_000), Coverage::Partial),
+                cache_read_input_tokens: report(Some(30_000), Coverage::Partial),
+                cache_write_input_tokens: report(None, Coverage::Unknown),
+                output_tokens: report(Some(2_000), Coverage::Partial),
+                reasoning_output_tokens: report(None, Coverage::Unknown),
+            },
+            cost_usd_micros: report(Some(250_000), Coverage::Partial),
+            cache_read_share_percent: Some(75),
+        };
+        assert_eq!(
+            super::card_usage(&row),
+            "cost to date $0.2500~ (40,000~ in, 2,000~ out; 3 response(s); 75% of input from cache)"
+        );
+        let unpriced = Row {
+            cost_usd_micros: CounterReport::default(),
+            cache_read_share_percent: None,
+            ..row
+        };
+        assert_eq!(
+            super::card_usage(&unpriced),
+            "cost to date — (40,000~ in, 2,000~ out; 3 response(s))"
+        );
+        use agentdocker_core::usage::report::Collection;
+        let mut collection = Collection::default();
+        assert_eq!(
+            super::telemetry_line(&collection),
+            None,
+            "no receiver configured"
+        );
+        collection.otlp_error = Some("cannot listen on 127.0.0.1:4318: address in use".into());
+        assert_eq!(
+            super::telemetry_line(&collection).as_deref(),
+            Some("Telemetry: not listening: cannot listen on 127.0.0.1:4318: address in use")
+        );
+        collection.otlp_error = None;
+        collection.otlp_listen = Some("127.0.0.1:4318".into());
+        assert_eq!(
+            super::telemetry_line(&collection).as_deref(),
+            Some("Telemetry: taking Claude Code's events on 127.0.0.1:4318")
+        );
+    }
+
     /// Rows name the agent or project when it is known and keep the ID
     /// when it is not.
     #[test]
     fn usage_rows_name_what_they_can() {
+        use agentdocker_core::usage::UsageSource;
         let names = [("abc123".to_owned(), "codex-4242".to_owned())].into();
         assert_eq!(super::usage_key(Some("abc123"), &names), "codex-4242");
         assert_eq!(super::usage_key(Some("gone"), &names), "gone");
         assert_eq!(super::usage_key(None, &names), "(unattributed)");
+        assert_eq!(super::usage_source(Some(UsageSource::Exact)), "exact");
+        assert_eq!(
+            super::usage_source(Some(UsageSource::Estimated)),
+            "estimated"
+        );
+        assert_eq!(super::usage_source(None), "—");
+    }
+
+    #[test]
+    fn a_learned_thread_names_its_role_and_parent_without_their_text_injected() {
+        use agentdocker_core::{AgentId, Event, EventKind, ThreadRef};
+        let child = AgentId::from("child-agent-id".to_owned());
+        let parent = AgentId::from("parent-agent-id".to_owned());
+        let line = |role: Option<&str>, parent: Option<ThreadRef>| {
+            super::event_line(&Event::new(
+                EventKind::AgentThreadLearned {
+                    agent: child.clone(),
+                    role: role.map(str::to_owned),
+                    parent,
+                },
+                chrono::Utc::now(),
+            ))
+        };
+        let known = line(
+            Some("reviewer"),
+            Some(ThreadRef {
+                thread: "0199a6f1-0000-7000-8000-0000000000d1".into(),
+                agent: Some(parent.clone()),
+            }),
+        );
+        assert!(known.contains("as reviewer"), "{known}");
+        assert!(
+            known.contains(&format!("spawned by {}", parent.short())),
+            "{known}"
+        );
+        let unresolved = line(
+            None,
+            Some(ThreadRef {
+                thread: "0199a6f1-0000-7000-8000-0000000000d1".into(),
+                agent: None,
+            }),
+        );
+        assert!(unresolved.contains("spawned by thread"), "{unresolved}");
+        assert!(!unresolved.contains(" as "), "{unresolved}");
+        let root = line(None, None);
+        assert!(root.contains("a root thread"), "{root}");
+        let injected = line(Some("x\n\u{1b}[2Jy"), None);
+        assert!(
+            !injected.contains('\n') && !injected.contains('\u{1b}'),
+            "{injected}"
+        );
     }
 
     #[test]

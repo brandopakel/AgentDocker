@@ -166,6 +166,8 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::SupersedeVerdict { agent, .. } => Some(agent),
         R::MergeBranch { from, .. }
         | R::Send { from, .. }
+        | R::RequestRelease { from, .. }
+        | R::RespondRelease { from, .. }
         | R::AnswerSecretReview { from, .. }
         | R::CancelSecretReview { from, .. }
         | R::Ask { from, .. }
@@ -3160,6 +3162,7 @@ mod tests {
                 payload: json!("for B alone"),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(!matches!(sent, Response::Error { .. }), "{sent:?}");
@@ -3409,6 +3412,7 @@ mod tests {
                         payload: json!("for B alone"),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await;
                 assert!(!matches!(sent, Response::Error { .. }), "{sent:?}");

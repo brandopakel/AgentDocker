@@ -200,9 +200,11 @@ fn project_event(event: &Event) -> Option<Projection> {
     })
 }
 
+/// An id as a line shows it: a hex id abbreviated to its first twelve
+/// characters, any other value (a name, a resource key) whole.
 fn short(id: &str) -> String {
     if id.len() > 12 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
-        id[..12].to_owned()
+        agentdocker_core::short(id).to_owned()
     } else {
         id.to_owned()
     }
@@ -545,7 +547,7 @@ async fn intake(
                     continue;
                 };
                 let bytes = body(&projection, sink.format);
-                let mut queue = lock_queue(&queue);
+                let mut queue = lock(&queue);
                 if bytes.len() > BODY_BYTES {
                     queue.dropped += 1;
                 } else {
@@ -556,17 +558,11 @@ async fn intake(
             }
             Err(broadcast::error::RecvError::Closed) => return,
             Err(broadcast::error::RecvError::Lagged(n)) => {
-                lock_queue(&queue).dropped += n;
+                lock(&queue).dropped += n;
                 wake.notify_one();
             }
         }
     }
-}
-
-fn lock_queue(queue: &std::sync::Mutex<Queue>) -> std::sync::MutexGuard<'_, Queue> {
-    queue
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// The delivery half of a sink: one request at a time, retries, and a
@@ -589,7 +585,7 @@ async fn deliver(
     let mut last_notice: Option<tokio::time::Instant> = None;
     let mut last_reason = String::new();
     loop {
-        let next = lock_queue(&queue).pop();
+        let next = lock(&queue).pop();
         let Some((projection, bytes)) = next else {
             // Nothing queued: say what was lost meanwhile, then wait —
             // until the next event, or until a loss the throttle held
@@ -608,7 +604,7 @@ async fn deliver(
                 notice_every,
             );
             drop(daemon);
-            let held_back = lock_queue(&queue).dropped > 0;
+            let held_back = lock(&queue).dropped > 0;
             match last_notice {
                 Some(at) if held_back => {
                     tokio::select! {
@@ -671,7 +667,7 @@ async fn deliver(
             }
         }
         if let Some(reason) = reason {
-            lock_queue(&queue).dropped += 1;
+            lock(&queue).dropped += 1;
             last_reason = reason;
         }
         let Some(daemon) = daemon.upgrade() else {
@@ -696,6 +692,7 @@ async fn deliver(
 /// event path. The count is taken under the one guard that decides to
 /// say it, so a loss the intake counts meanwhile is never lost twice
 /// over.
+// The sink loop's own locals, borrowed one notice at a time; a struct would outlive none of them.
 #[allow(clippy::too_many_arguments)]
 fn announce(
     daemon: &Daemon,
@@ -708,7 +705,7 @@ fn announce(
     notice_every: Duration,
 ) {
     let dropped = {
-        let mut queue = lock_queue(queue);
+        let mut queue = lock(queue);
         if queue.dropped == 0 || last_notice.is_some_and(|at| at.elapsed() < notice_every) {
             return;
         }
@@ -794,7 +791,7 @@ impl Daemon {
             .iter()
             .map(|(sink, _, secret)| (sink.clone(), digest(secret)))
             .collect();
-        let mut sinks = lock_sinks(self);
+        let mut sinks = lock(&self.webhooks);
         if sinks.generation > 0 && sinks.started_from == started {
             return;
         }
@@ -838,7 +835,7 @@ impl Daemon {
 
     /// How many sinks run, for tests and status.
     pub fn webhook_sinks(&self) -> usize {
-        lock_sinks(self).started_from.len()
+        lock(&self.webhooks).started_from.len()
     }
 
     /// Keep one attempt in its sink's delivery log, bounded per sink and
@@ -854,7 +851,7 @@ impl Daemon {
     /// has and no logged attempt carries is not found.
     pub(super) fn webhook_deliveries(&self, name: &str, limit: Option<usize>) -> Response {
         let limit = webhook::log_limit(limit);
-        let running = lock_sinks(self)
+        let running = lock(&self.webhooks)
             .started_from
             .iter()
             .any(|(sink, _)| sink.name == name);
@@ -862,9 +859,9 @@ impl Daemon {
         let Some(attempts) = state.store_read("webhook delivery log", |store| {
             store.webhook_attempts(name, limit)
         }) else {
-            return state
-                .storage_failure()
-                .unwrap_or_else(|| Response::error(ErrorCode::Internal, "storage failed"));
+            return state.storage_failure().unwrap_or_else(|| {
+                Response::error(ErrorCode::StorageUnavailable, "storage failed")
+            });
         };
         if attempts.is_empty() && !running {
             return Response::error(
@@ -877,13 +874,6 @@ impl Daemon {
             attempts,
         }
     }
-}
-
-fn lock_sinks(daemon: &Daemon) -> std::sync::MutexGuard<'_, Sinks> {
-    daemon
-        .webhooks
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 #[cfg(test)]
@@ -1612,12 +1602,16 @@ mod tests {
         std::fs::write(&secret, "fedcba9876543210fedcba9876543210\n").unwrap();
         daemon.reload_webhooks().await;
         assert_eq!(
-            lock_sinks(&daemon).generation,
+            lock(&daemon.webhooks).generation,
             2,
             "rotation is a new generation"
         );
         daemon.reload_webhooks().await;
-        assert_eq!(lock_sinks(&daemon).generation, 2, "unchanged: no restart");
+        assert_eq!(
+            lock(&daemon.webhooks).generation,
+            2,
+            "unchanged: no restart"
+        );
     }
 
     /// A loss inside the notice throttle is said when the throttle
@@ -1668,7 +1662,7 @@ mod tests {
         // Two refusals in a row: the first is said at once, the second
         // falls inside the throttle and is held back.
         for _ in 0..2 {
-            lock_queue(&queue).push(projection.clone(), bytes.clone());
+            lock(&queue).push(projection.clone(), bytes.clone());
             wake.notify_one();
         }
         let mut notices = Vec::new();
@@ -1720,7 +1714,7 @@ mod tests {
         .unwrap();
         daemon.reload_webhooks().await;
         assert_eq!(daemon.webhook_sinks(), 1);
-        let workers: Vec<tokio::task::AbortHandle> = lock_sinks(&daemon)
+        let workers: Vec<tokio::task::AbortHandle> = lock(&daemon.webhooks)
             .workers
             .iter()
             .map(tokio::task::JoinHandle::abort_handle)

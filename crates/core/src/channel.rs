@@ -244,6 +244,14 @@ impl Channel {
         true
     }
 
+    /// Take an agent out of the room. Its messages and reviews stay: they
+    /// were said. Returns whether it was a member.
+    pub fn dismiss(&mut self, agent: &AgentId) -> bool {
+        let before = self.members.len();
+        self.members.retain(|m| m != agent);
+        self.members.len() != before
+    }
+
     /// The paths this channel is about; empty for a task channel.
     pub fn paths(&self) -> &[PathBuf] {
         match &self.subject {
@@ -353,6 +361,26 @@ mod tests {
         assert_eq!(wire["role"], "reviewer");
         let back: Channel = serde_json::from_value(older).unwrap();
         assert_eq!(back.role, None);
+    }
+
+    /// Dismissing takes a member out once, leaves everyone else, and keeps
+    /// what they said.
+    #[test]
+    fn a_dismissed_member_leaves_and_what_it_said_stays() {
+        let mut room = channel();
+        room.reviews.push(review("b2", "a1", Verdict::Approve, 1));
+        let (a1, b2, c3) = (
+            AgentId::from("a1"),
+            AgentId::from("b2"),
+            AgentId::from("c3"),
+        );
+        assert!(room.dismiss(&b2));
+        assert_eq!(room.members, [a1.clone(), c3.clone()]);
+        assert!(!room.dismiss(&b2), "gone already");
+        assert!(!room.dismiss(&AgentId::from("nobody")), "never a member");
+        assert_eq!(room.members, [a1, c3]);
+        assert_eq!(room.reviews.len(), 1, "its review stays");
+        assert_eq!(room.reviews[0].by, b2);
     }
 
     fn channel() -> Channel {

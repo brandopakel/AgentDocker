@@ -38,6 +38,38 @@ pub struct Roots {
     pub shell: Option<String>,
     /// Ask each CLI for its version; off in tests that only lay out files.
     pub versions: bool,
+    /// Where each runtime's hooks leave word that they ran
+    /// ([`hook_ran`]); `None` says nothing about whether they did.
+    pub hook_stamps: Option<PathBuf>,
+}
+
+/// The file a runtime's hooks touch each time one runs: where `setup
+/// --check` reads whether the provider has ever run them, which for Codex
+/// says whether the person has trusted them.
+pub fn hook_stamp(stamps: &Path, runtime: &str) -> PathBuf {
+    stamps.join(format!("{runtime}.ran"))
+}
+
+/// Where hooks leave word that they ran, beneath AgentDocker's home.
+pub fn hook_stamps() -> PathBuf {
+    crate::dirs::home().join("hooks")
+}
+
+/// Leave word that one of `runtime`'s hooks ran, now. Only where
+/// AgentDocker's home already is: a hook never makes the home for it, as
+/// it never starts a daemon. Best effort: a hook never fails for it.
+pub fn hook_ran(runtime: &str) {
+    hook_ran_in(&crate::dirs::home(), runtime);
+}
+
+/// [`hook_ran`] beneath `home`.
+pub fn hook_ran_in(home: &Path, runtime: &str) {
+    if !home.is_dir() {
+        return;
+    }
+    let stamps = home.join("hooks");
+    let _ = std::fs::create_dir_all(&stamps)
+        .and_then(|()| std::fs::write(hook_stamp(&stamps, runtime), b""));
 }
 
 impl Roots {
@@ -84,6 +116,27 @@ impl Roots {
             path,
             app_dirs,
             versions: true,
+            hook_stamps: Some(hook_stamps()),
+        }
+    }
+
+    /// A machine with nothing on it but `home`: no `PATH`, no install,
+    /// app or desktop directories, this platform's browser layout beneath
+    /// `home`, no shell and no CLI asked for its version. What a test
+    /// inventories when it must not read the machine it runs on.
+    pub fn bare(home: &Path) -> Self {
+        Self {
+            home: home.to_owned(),
+            codex_home: None,
+            claude_config_dir: None,
+            path: Vec::new(),
+            install_dirs: Vec::new(),
+            desktop_dirs: Vec::new(),
+            app_dirs: Vec::new(),
+            browser_dirs: browser::browser_dirs(home, std::env::consts::OS, None),
+            shell: None,
+            versions: false,
+            hook_stamps: None,
         }
     }
 }
@@ -129,7 +182,7 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
     let browser::Inventory {
         found: extensions,
         incomplete,
-    } = browser::extensions(spec, roots)?;
+    } = browser::extensions(spec, roots);
     let config_dir = if spec.name == "codex" {
         roots.codex_home.clone()
     } else if spec.name == "claude-code" {
@@ -241,7 +294,9 @@ fn app_version(bundle: &Path) -> Option<String> {
 /// Resolve configuration from injectable Codex and Claude profile roots.
 pub fn mcp_config_path(spec: &RuntimeSpec, roots: &Roots) -> Option<PathBuf> {
     match spec.mcp {
-        McpWiring::None => None,
+        // Docker Agent's servers live in each agent's YAML, which the
+        // person names at setup; the inventory has no file to read.
+        McpWiring::None | McpWiring::AgentConfig => None,
         McpWiring::JsonServers { file }
         | McpWiring::TomlServers { file }
         | McpWiring::OpencodeJson { file } => {
@@ -352,7 +407,7 @@ pub fn servers_key(spec: &RuntimeSpec) -> &'static str {
     match spec.mcp {
         McpWiring::TomlServers { .. } => "mcp_servers",
         McpWiring::OpencodeJson { .. } => "mcp",
-        McpWiring::JsonServers { .. } | McpWiring::None => "mcpServers",
+        McpWiring::JsonServers { .. } | McpWiring::AgentConfig | McpWiring::None => "mcpServers",
     }
 }
 
@@ -564,6 +619,19 @@ pub fn missing_hook_events<'a>(
 
 #[cfg(test)]
 mod tests {
+
+    /// A hook leaves word that it ran only where AgentDocker's home already
+    /// is: it never makes the home for it.
+    #[test]
+    fn a_hook_stamps_only_an_existing_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("state");
+        hook_ran_in(&home, "codex");
+        assert!(!home.exists(), "the home is not made");
+        std::fs::create_dir(&home).unwrap();
+        hook_ran_in(&home, "codex");
+        assert!(hook_stamp(&home.join("hooks"), "codex").is_file());
+    }
     use super::*;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -780,6 +848,7 @@ mod tests {
             browser_dirs: vec![],
             shell: None,
             versions: false,
+            hook_stamps: None,
         };
         (tmp, roots)
     }

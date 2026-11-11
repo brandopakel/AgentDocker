@@ -88,9 +88,17 @@ pub enum McpWiring {
     /// directory: each server is `{"type": "local", "command": [executable,
     /// args…], "enabled": true}`, the command one array with its arguments.
     OpencodeJson { file: &'static str },
+    /// Declared in each agent's own configuration file rather than in one
+    /// of the runtime's: Docker Agent reads its MCP servers from the
+    /// `toolsets` of the YAML that describes the agent. There is no file
+    /// for setup to register in once; `setup docker-agent --agent <file>`
+    /// edits the agent file the person names ([`crate::docker_agent`]).
+    AgentConfig,
     /// Not known to take one.
     None,
 }
+
+pub use crate::docker_agent::docker_agent_toolset;
 
 /// A vendor's browser extension: an agent that works inside the browser.
 /// Its sessions run there and on the vendor's side, so nothing on this
@@ -350,6 +358,23 @@ pub const RUNTIMES: &[RuntimeSpec] = &[
         },
         hooks: false,
     },
+    // Docker's agent runtime (formerly cagent): it runs the model loop
+    // itself from a YAML file per agent, and ships both standalone and as
+    // the Docker CLI plugin behind `docker agent`. Its earlier name still
+    // works as a command, and its configuration directory kept that name
+    // (`--config-dir` defaults to `~/.config/cagent`).
+    RuntimeSpec {
+        name: "docker-agent",
+        vendor: "Docker",
+        label: "Docker Agent",
+        clis: &["docker-agent", "cagent"],
+        apps: &[],
+        linux_apps: &[],
+        extensions: &[],
+        config_dir: Some(".config/cagent"),
+        mcp: McpWiring::AgentConfig,
+        hooks: false,
+    },
 ];
 
 /// What every listing says under a runtime that works inside the browser,
@@ -539,6 +564,20 @@ mod tests {
         }
         assert_eq!(spec("codex").map(|r| r.vendor), Some("OpenAI"));
         assert!(spec("nope").is_none());
+        // Docker Agent is found under either of its names and takes its
+        // MCP servers per agent file, so no file of its own is wired.
+        let docker = spec("docker-agent").unwrap();
+        assert!(docker.clis.contains(&"docker-agent") && docker.clis.contains(&"cagent"));
+        assert_eq!(docker.mcp, McpWiring::AgentConfig);
+        assert!(!docker.hooks);
+        assert_eq!(
+            RUNTIMES
+                .iter()
+                .filter(|r| r.mcp == McpWiring::AgentConfig)
+                .count(),
+            1,
+            "one runtime declares MCP servers per agent file"
+        );
         let ids: Vec<&str> = RUNTIMES
             .iter()
             .flat_map(|r| r.extensions.iter().map(|e| e.id))

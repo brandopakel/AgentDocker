@@ -161,6 +161,7 @@ pub(super) fn moved(message: &Message) -> Moved {
         | Message::ProjectLocation(..)
         | Message::NoticeDone
         | Message::WaitGrace
+        | Message::StatusItemClicked
         | Message::Window(_)
         | Message::WindowScale(_)
         | Message::NativeAccessibility(_)
@@ -437,10 +438,7 @@ impl App {
                         tasks.push(self.update(Message::TaskOpen(card.clone())));
                     }
                     Some(_) => {}
-                    None => {
-                        self.task_open = None;
-                        self.card = None;
-                    }
+                    None => self.close_card(),
                 }
             }
             Screen::Questions => {

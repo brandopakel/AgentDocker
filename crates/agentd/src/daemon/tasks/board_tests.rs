@@ -677,6 +677,72 @@ async fn an_agent_is_started_on_a_card_only_by_the_person() {
     );
 }
 
+/// A browser whose user data the system will not list (as macOS will not
+/// for a program not allowed to read other apps' data) is said in
+/// `runtimes` as an incomplete inventory, and a start on a card still
+/// learns which runtimes there are: one closed door is not a failed
+/// inventory.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_browser_is_noted_and_costs_neither_runtimes_nor_a_start() {
+    use std::os::unix::fs::PermissionsExt;
+    /// Gives back what the test took away, so the temp dir can go.
+    struct Reopen(std::path::PathBuf);
+    impl Drop for Reopen {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let f = fixture().await;
+    let d = &f.daemon;
+    let chrome = f._dir.path().join("machine/Chrome");
+    std::fs::create_dir_all(chrome.join("Default/Extensions")).unwrap();
+    std::fs::set_permissions(&chrome, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _reopen = Reopen(chrome.clone());
+    if std::fs::read_dir(&chrome).is_ok() {
+        // Root: a mode closes nothing, and there is nothing to test.
+        return;
+    }
+    lock(&d.runtime_roots).browser_dirs = vec![agentdocker_host::runtimes::browser::BrowserDir {
+        browser: "Chrome".into(),
+        path: chrome.clone(),
+    }];
+    let Response::Runtimes { runtimes } = d.handle(Request::Runtimes).await else {
+        panic!("runtimes failed");
+    };
+    let browser = runtimes
+        .iter()
+        .find(|r| r.name == "claude-browser")
+        .expect("every known runtime is listed");
+    assert!(browser.extensions.is_empty());
+    assert!(
+        browser
+            .incomplete
+            .iter()
+            .any(|n| n.starts_with("Chrome profiles not examined: ")),
+        "{:?}",
+        browser.incomplete
+    );
+    let filed = card(
+        d.handle(create(HUMAN, &f.work, "Port it", Some("ready"), &[]))
+            .await,
+    );
+    assert!(matches!(
+        d.handle(Request::TaskStart {
+            from: HUMAN.to_owned(),
+            task: filed.id.to_string(),
+            runtime: "no-such-runtime".into(),
+            args: Vec::new(),
+            workdir: None,
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+}
+
 /// A card that waits, on an open card or on something off the board, is
 /// not started on by the person or by a start rule, as a pull would not
 /// take it; once what it waits on clears, both start on it.
@@ -1190,6 +1256,96 @@ async fn a_roles_tools_are_the_persons_to_name_and_lift() {
     );
 }
 
+/// A memory backdated to when its fact became true is read as of a moment
+/// over the request path: not before then, and replaced from when its
+/// successor became true; a history search lists the replaced one with what
+/// replaced it; a moment to come reads as now; a date after it was kept is
+/// refused.
+#[tokio::test]
+async fn a_projects_memory_is_read_as_it_stood_at_a_moment() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let now = Utc::now();
+    let days = |n: i64| now - chrono::Duration::days(n);
+    let add = |text: &str, valid_from, supersedes: Option<String>| Request::MemoryAdd {
+        from: f.agent.id.to_string(),
+        project: None,
+        text: text.into(),
+        links: vec![],
+        supersedes,
+        standing: false,
+        forget_after: None,
+        roles: vec![],
+        valid_from,
+    };
+    let keep = |request: Request| async move {
+        match d.handle(request).await {
+            Response::Memory { memory } => memory,
+            other => panic!("{other:?}"),
+        }
+    };
+    let old = keep(add("Deploys go out on Fridays", Some(days(10)), None)).await;
+    let new = keep(add(
+        "Deploys go out on Mondays",
+        Some(days(3)),
+        Some(old.id.clone()),
+    ))
+    .await;
+    assert!(matches!(
+        d.handle(add(
+            "A fact from tomorrow",
+            Some(now + chrono::Duration::days(1)),
+            None
+        ))
+        .await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+    let search = |as_of, include_superseded| Request::MemorySearch {
+        from: Some(f.agent.id.to_string()),
+        project: None,
+        query: "deploys".into(),
+        limit: None,
+        as_of,
+        include_superseded,
+        min_score: None,
+    };
+    let found = |response: Response| match response {
+        Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    assert!(found(d.handle(search(Some(days(20)), false)).await).is_empty());
+    assert_eq!(
+        found(d.handle(search(Some(days(5)), false)).await),
+        [old.id.as_str()]
+    );
+    assert_eq!(
+        found(d.handle(search(None, false)).await),
+        [new.id.as_str()]
+    );
+    assert_eq!(
+        found(
+            d.handle(search(Some(now + chrono::Duration::days(30)), false))
+                .await
+        ),
+        [new.id.as_str()],
+        "a moment to come reads as now"
+    );
+    match d.handle(search(None, true)).await {
+        Response::MemoryHistory { memories, replaced } => {
+            let mut ids: Vec<&str> = memories.iter().map(|m| m.id.as_str()).collect();
+            ids.sort();
+            let mut both = [old.id.as_str(), new.id.as_str()];
+            both.sort();
+            assert_eq!(ids, both);
+            assert_eq!(replaced[&old.id].by, new.id);
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// A memory said to a role reaches that role's holders and the person, and
 /// nobody else: not an agent without the role, nor a reader that names
 /// nobody. A role the project lacks is refused. A memory replaced by one
@@ -1217,6 +1373,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
         standing: false,
         forget_after: None,
         roles: roles.iter().map(|r| (*r).to_owned()).collect(),
+        valid_from: None,
     };
     let keep = |request: Request| async move {
         match d.handle(request).await {
@@ -1241,6 +1398,9 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
         project: Some(f.work.clone()),
         query: "review".into(),
         limit: None,
+        as_of: None,
+        include_superseded: false,
+        min_score: None,
     };
     let found = |response: Response| match response {
         Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
@@ -1264,6 +1424,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
         from: Some(from.to_owned()),
         project: None,
         max_chars: None,
+        as_of: None,
     };
     assert_eq!(
         found(d.handle(profile(f.peer.id.as_str())).await),
@@ -1300,6 +1461,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
                 from: Some(stranger.id.to_string()),
                 project: Some(f.work.clone()),
                 max_chars: None,
+                as_of: None,
             })
             .await
         ),
@@ -1315,6 +1477,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
             standing: false,
             forget_after: None,
             roles: vec![],
+            valid_from: None,
         })
         .await,
         Response::Error {
@@ -1340,6 +1503,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         standing: false,
         forget_after: None,
         roles: vec![],
+        valid_from: None,
     };
     let Response::Memory { memory: first } = d
         .handle(add(
@@ -1356,6 +1520,9 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         project: None,
         query: query.into(),
         limit: None,
+        as_of: None,
+        include_superseded: false,
+        min_score: None,
     };
     let Response::Memories { memories } = d.handle(search("deploys friday")).await else {
         panic!()
@@ -1379,6 +1546,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
             from: Some(f.agent.id.to_string()),
             project: None,
             max_chars: None,
+            as_of: None,
         })
         .await
     else {
@@ -1441,6 +1609,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
             standing: false,
             forget_after: None,
             roles: vec![],
+            valid_from: None,
         })
         .await
     else {

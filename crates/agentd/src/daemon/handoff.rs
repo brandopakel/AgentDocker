@@ -1,7 +1,6 @@
 //! Handoff bundles: a checkpoint addressed to someone, with everything the
 //! daemon already knows about the sender bundled around it. Acceptance is
 //! `resume` (in `recovery`), which is where ownership moves.
-use super::recovery::internal;
 use super::*;
 use agentdocker_core::handoff::{BUNDLE_ROWS, HANDOFF_SCHEMA};
 use agentdocker_core::{Checkpoint, HandoffBundle};
@@ -27,22 +26,33 @@ async fn tracked_diff(root: PathBuf) -> anyhow::Result<String> {
     })
 }
 
+/// What a handoff carries, as the request spelt it: who it is for, the
+/// task and note for them, the links, whether the leases go with it, and
+/// the retry key.
+pub(super) struct HandoffArgs {
+    pub to: Option<String>,
+    pub task: Option<String>,
+    pub note: Option<String>,
+    pub links: Vec<agentdocker_core::Link>,
+    pub transfer_leases: bool,
+    pub key: Option<String>,
+}
+
 impl Daemon {
     /// Make a bundle for `agent`'s work, addressed to `to` when given. The
     /// checkpoint underneath is made through the checkpoint path, so it
     /// has the same barrier, idempotency and release semantics; the bundle
     /// document, the `handoff` message, and the journal entry follow.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn handoff(
-        &self,
-        reference: &str,
-        to: Option<&str>,
-        task: Option<String>,
-        note: Option<String>,
-        links: Vec<agentdocker_core::Link>,
-        transfer_leases: bool,
-        key: Option<String>,
-    ) -> Response {
+    pub(super) async fn handoff(&self, reference: &str, args: HandoffArgs) -> Response {
+        let HandoffArgs {
+            to,
+            task,
+            note,
+            links,
+            transfer_leases,
+            key,
+        } = args;
+        let to = to.as_deref();
         let (from, record) = {
             let mut state = lock(&self.state);
             let id = match state.resolve(reference) {
@@ -138,12 +148,14 @@ impl Daemon {
         let checkpoint = match self
             .checkpoint(
                 reference,
-                key,
-                task,
-                Vec::new(),
-                Vec::new(),
-                links,
-                !transfer_leases,
+                super::recovery::CheckpointArgs {
+                    key,
+                    task,
+                    assumptions: Vec::new(),
+                    next_steps: Vec::new(),
+                    links,
+                    release: !transfer_leases,
+                },
             )
             .await
         {
@@ -154,10 +166,12 @@ impl Daemon {
         // Two retries with one key may both have passed the probe above
         // while nobody held the lock; the first to get here wins and the
         // other returns what it wrote.
-        match state.store.document::<HandoffBundle>("handoff", &id) {
+        match state.read_store("handoff", |store| {
+            store.document::<HandoffBundle>("handoff", &id)
+        }) {
             Ok(Some(bundle)) => return Response::Handoff { bundle },
             Ok(None) => {}
-            Err(e) => return internal(e),
+            Err(e) => return *e,
         }
         let project = record.project.as_ref().map(ProjectRef::id);
         let changes = match &project {
@@ -272,9 +286,9 @@ impl Daemon {
             Ok(a) => a,
             Err(e) => return *e,
         };
-        match state.store.handoffs(agent.as_ref()) {
+        match state.read_store("handoffs", |store| store.handoffs(agent.as_ref())) {
             Ok(bundles) => Response::Handoffs { bundles },
-            Err(e) => internal(e),
+            Err(e) => *e,
         }
     }
 
@@ -366,7 +380,9 @@ impl Daemon {
             Err(e) => return *e,
         };
         let mut state = lock(&self.state);
-        match state.store.document::<Checkpoint>("checkpoint", &bundle.id) {
+        match state.read_store("checkpoint", |store| {
+            store.document::<Checkpoint>("checkpoint", &bundle.id)
+        }) {
             Ok(Some(_)) => {
                 return Response::error(
                     ErrorCode::Conflict,
@@ -374,7 +390,7 @@ impl Daemon {
                 );
             }
             Ok(None) => {}
-            Err(e) => return internal(e),
+            Err(e) => return *e,
         }
         let now = Utc::now();
         let project = state
@@ -516,6 +532,7 @@ mod tests {
                 payload: json!({"text": "for the reviewer"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
     }
@@ -770,6 +787,7 @@ mod tests {
                 payload: serde_json::json!({"text": "on it"}),
                 reply_to: Some(message.clone()),
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(matches!(reply, Response::Sent { .. }), "{reply:?}");
