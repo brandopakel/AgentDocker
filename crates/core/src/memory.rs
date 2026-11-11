@@ -260,23 +260,30 @@ fn jwt(word: &str) -> bool {
 
 /// `Bearer <token>`, as an authorization header carries one, whatever
 /// wraps it: a header name with no space (`Authorization:Bearer …`), a
-/// JSON field's quotes, a sentence's brackets. A token is generated: it
-/// holds a digit, or upper and lower case together, so a placeholder
-/// (`Bearer <token>`, `Bearer ${TOKEN}`, `Bearer YOUR_ACCESS_TOKEN_HERE`)
-/// is not one.
+/// JSON field's quotes, a sentence's brackets. A placeholder is not one:
+/// `Bearer <token>` and `Bearer ${TOKEN}` hold what no token does, and
+/// `Bearer YOUR_ACCESS_TOKEN_HERE` is a name written in capitals, words
+/// joined by `_`, as no generated token is.
 fn bearer_token(text: &str) -> bool {
-    let words: Vec<&str> = text.split_whitespace().collect();
+    // A word with no letter or digit (a lone bracket or quote) sits
+    // between the scheme and its token, as in `Bearer [ … ]`.
+    let words: Vec<&str> = text
+        .split_whitespace()
+        .filter(|word| word.chars().any(|c| c.is_ascii_alphanumeric()))
+        .collect();
     words.windows(2).any(|pair| {
         // The scheme is the word's last run of letters, so what comes
-        // before it (`Authorization:`, a quote, a bracket) is no matter.
+        // before or after it (`Authorization:`, `Bearer:`, a quote, an
+        // escaped one, a bracket) is no matter.
         let scheme = pair[0]
+            .trim_end_matches(|c: char| !c.is_ascii_alphabetic())
             .rsplit(|c: char| !c.is_ascii_alphabetic())
             .next()
             .unwrap_or("");
         let token = pair[1].trim_matches(|c| {
             matches!(
                 c,
-                '"' | '\'' | '`' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
+                '"' | '\'' | '`' | '\\' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}'
             )
         });
         scheme.eq_ignore_ascii_case("bearer")
@@ -284,9 +291,10 @@ fn bearer_token(text: &str) -> bool {
             && token.chars().all(|c| {
                 c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '~' | '+' | '/' | '=')
             })
-            && (token.chars().any(|c| c.is_ascii_digit())
-                || (token.chars().any(|c| c.is_ascii_uppercase())
-                    && token.chars().any(|c| c.is_ascii_lowercase())))
+            && !(token.contains('_')
+                && token
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
     })
 }
 
@@ -311,9 +319,12 @@ fn secret_assignment(text: &str) -> bool {
             return false;
         }
         // The name: the identifier right before, spaces allowed between,
-        // and the quote that closes a JSON or YAML key (`"api_key":`).
+        // and the quote that closes a JSON or YAML key (`"api_key":`),
+        // escaped or not (`\"api_key\":`).
         let before = text[..at].trim_end();
-        let before = before.strip_suffix(['"', '\'', '`']).unwrap_or(before);
+        let before = before
+            .strip_suffix(['"', '\'', '`'])
+            .map_or(before, |key| key.strip_suffix('\\').unwrap_or(key));
         let name: String = before
             .chars()
             .rev()
@@ -326,21 +337,63 @@ fn secret_assignment(text: &str) -> bool {
         if name.is_empty() || !SECRET_NAMES.iter().any(|secret| upper.contains(secret)) {
             return false;
         }
-        // The value: the next word, past the quote or bracket that opens
-        // it and up to the one that closes it, without the full stop or
-        // question mark that ends a sentence. A `<placeholder>` or a
-        // `${VARIABLE}` keeps its brackets, so it is never one.
-        let value = text[at + 1..]
-            .trim_start()
-            .trim_start_matches(['"', '\'', '`', '(', '['])
-            .split(|c: char| {
-                c.is_whitespace() || matches!(c, ',' | ';' | '"' | '\'' | '`' | ')' | ']' | '}')
-            })
-            .next()
-            .unwrap_or("")
-            .trim_end_matches(['.', '?']);
-        !locator(&upper, value) && token_like(value)
+        // The value: the next word, past the spaces, quotes, escapes and
+        // brackets that open it. A quoted one runs to its closing quote
+        // ([`quoted_value`]); an unquoted one to the first space, quote,
+        // bracket or separator, and after a `:`, where prose names a thing
+        // ("TOKEN: generation."), without the full stop or question mark
+        // that ends a sentence. A `<placeholder>` or a `${VARIABLE}` keeps
+        // what no secret holds, so it is never one.
+        let rest = &text[at + 1..];
+        let opened = rest.trim_start_matches(|c: char| {
+            c.is_whitespace() || matches!(c, '"' | '\'' | '`' | '\\' | '(' | '[' | '{')
+        });
+        let opening = &rest[..rest.len() - opened.len()];
+        let quote = opening
+            .char_indices()
+            .rev()
+            .find(|(_, c)| matches!(c, '"' | '\'' | '`'));
+        let value = match quote {
+            Some((place, quote)) => quoted_value(opened, quote, opening[..place].ends_with('\\')),
+            None => {
+                let word = opened
+                    .split(|c: char| {
+                        c.is_whitespace()
+                            || matches!(c, ',' | ';' | '"' | '\'' | '`' | '\\' | ')' | ']' | '}')
+                    })
+                    .next()
+                    .unwrap_or("");
+                if *b == b':' {
+                    word.trim_end_matches(['.', '?'])
+                } else {
+                    word
+                }
+                .to_owned()
+            }
+        };
+        !locator(&upper, &value) && token_like(&value, quote.is_some())
     })
+}
+
+/// A quoted value, from just after its opening quote to its closing one or
+/// the first space. A backslash keeps the character after it (`"a\\"b"` is
+/// `a"b`), except that `\\"` closes a value that opened with `\\"`: a JSON
+/// string written inside another string.
+fn quoted_value(text: &str, quote: char, escaped: bool) -> String {
+    let mut value = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some(next) if next == quote && escaped => break,
+                Some(next) => value.push(next),
+                None => break,
+            },
+            c if c == quote || c.is_whitespace() => break,
+            c => value.push(c),
+        }
+    }
+    value
 }
 
 /// Whether an assignment's value only says where a secret is: a path
@@ -367,12 +420,14 @@ fn locator(name: &str, value: &str) -> bool {
 
 /// A value as a generated secret or a password is written: at least eight
 /// characters of no space or bracket, holding a digit, or upper and lower
-/// case letters together, or a symbol. A plain word, a `<placeholder>` or
-/// a `${VARIABLE}` is not.
-fn token_like(value: &str) -> bool {
+/// case letters together, or a symbol; inside quotes, an escaped quote is
+/// one of its characters. A plain word, a `<placeholder>` or a
+/// `${VARIABLE}` is not.
+fn token_like(value: &str, quoted: bool) -> bool {
     value.chars().count() >= 8
         && value.chars().all(|c| {
-            c.is_ascii_alphanumeric()
+            (quoted && matches!(c, '"' | '\'' | '`'))
+                || c.is_ascii_alphanumeric()
                 || matches!(
                     c,
                     '_' | '-'
@@ -1028,6 +1083,43 @@ mod tests {
             "Authorization:Bearer abcdefghijklmnopqrstuv0123",
             "{\"Authorization\":\"Bearer abcdefghijklmnopqrstuv0123\"}",
             "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuv0123' https://example.invalid",
+            // A quoted value's own full stop, a scheme followed by a colon
+            // or a quote, an escaped JSON key, spaces inside the wrappers.
+            "PASSWORD=\"abcdefgh.\"",
+            "Bearer: abcdefghijklmnopqrstuv0123",
+            "\"Bearer\" abcdefghijklmnopqrstuv0123",
+            // A token in one case, digits or none, is still a token.
+            "Authorization: Bearer abcdefghijklmnopqrstuvwxyz",
+            "Authorization: Bearer ABCDEFGHIJKLMNOPQRSTUVWXYZ",
+            "Authorization: Bearer abcd-efgh-ijkl-mnop-qrst",
+            "Authorization: Bearer abcd_efgh_ijkl_mnop_qrst",
+            // The reviewer's round-2 probe, each refused at round 1 or
+            // since: nested and spaced wrappers, braces, an escaped quote in
+            // a value, a scheme in quotes or brackets, a token in brackets
+            // with spaces, a quoted or `=` value's own full stop, a token in
+            // one case, and secrets that only look like references.
+            "PASSWORD=[(\"hunter2hunter2\")]",
+            "PASSWORD=( [\"hunter2hunter2\"] )",
+            "PASSWORD={hunter2hunter2}",
+            r#"{"DB_PASSWORD":"hunt\"er2hunter2"}"#,
+            "Authorization: \"Bearer\" abcdefghijklmnopqrstuv0123",
+            "(Bearer) abcdefghijklmnopqrstuv0123",
+            "Bearer [(abcdefghijklmnopqrstuv0123)]",
+            "Bearer [ abcdefghijklmnopqrstuv0123 ]",
+            "PASSWORD=\"abcdefg.\"",
+            "PASSWORD='abcdefgh.'",
+            "PASSWORD=[\"abcdefgh.\"]",
+            "PASSWORD=abcdefg.",
+            "PASSWORD=abcdefgh.",
+            "Bearer abcdefghijklmnopqrstuv",
+            "Bearer ABCDEFGHIJKLMNOPQRSTUV",
+            "Bearer abcdefghi-jklmnopqrstuv",
+            "TOKEN=secrets.RELEASE_TOKEN/abcd",
+            "TOKEN=secrets.eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhIn0.abcdefghij012345",
+            r#"{\"DB_PASSWORD\":\"hunter2hunter2\"}"#,
+            r#"{\"Authorization\":\"Bearer abcdefghijklmnopqrstuv0123\"}"#,
+            "{ \"api_key\" : \"Zx81-pq77-Lm00\" }",
+            "api_key = ( \"Zx81-pq77-Lm00\" )",
             // Shaped like a locator but not one, or a secret inside one.
             "TOKEN_FILE=hunter2hunter2",
             "PASSWORD_FILE=abcd/efgh",
@@ -1038,6 +1130,8 @@ mod tests {
         ];
         let kept = [
             "TOKEN: generation.",
+            "the token: rotate it monthly.",
+            "the bearer of this note: ask the person",
             "TOKEN=${TOKEN}",
             "{\"api_key\": \"<your key>\"}",
             "Authorization: Bearer <token>",
@@ -1047,6 +1141,11 @@ mod tests {
             "SECRET_PATH: ~/.config/app/secret.json",
             "SECRETS_DIR=./certs/staging",
             "the release job's token: secrets.RELEASE_TOKEN",
+            "TOKEN=secrets.RELEASE_TOKEN",
+            "TOKEN=([secrets.RELEASE_TOKEN])",
+            "TOKEN_FILE=\"/run/secrets/ci_token\"",
+            r#"{"TOKEN_FILE":"\/run\/secrets\/ci_token"}"#,
+            "Bearer YOUR_ACCESS_TOKEN_HERE",
         ];
         let now = Utc::now();
         let project = ProjectId::from("p");
