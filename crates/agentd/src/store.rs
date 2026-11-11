@@ -100,7 +100,11 @@ pub struct TaskTransition<'a> {
 // not be: each usage bucket now counts its exact samples, a field an older
 // daemon's strict bucket reader refuses, and an older daemon would count
 // both of a Codex session's accounts of the same tokens. It must refuse.
-pub(crate) const SCHEMA_VERSION: i64 = 30;
+// v31 keeps a `code_verdict` document's `superseded` marks. An older daemon
+// would ignore them and count each marked verdict again: a request for
+// changes a successor's pass lifted would block once more, and a pass the
+// person set aside would open the gate it was taken out of. It must refuse.
+pub(crate) const SCHEMA_VERSION: i64 = 31;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS usage_emissions (
@@ -2598,6 +2602,32 @@ impl Store {
     }
 
     /// Journal and ordered replay event must survive or roll back together.
+    /// Write documents with the journal entries that describe them (their
+    /// `seq`s assigned) and the events that announce both, in one
+    /// transaction: none of them lands without the rest.
+    pub fn documents_with_journal(
+        &self,
+        documents: &[(&str, String, String)],
+        entries: &[JournalEntry],
+        events: &[Event],
+    ) -> Result<()> {
+        let tx = write_transaction(&self.conn)?;
+        for (kind, id, json) in documents {
+            self.conn.execute(
+                "INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
+                params![kind, id, json],
+            )?;
+        }
+        for entry in entries {
+            self.insert_journal(entry)?;
+        }
+        for event in events {
+            self.append_event(event)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn append_journal_with_event(&self, entry: &JournalEntry, event: &Event) -> Result<()> {
         let tx = write_transaction(&self.conn)?;
         self.insert_journal(entry)?;

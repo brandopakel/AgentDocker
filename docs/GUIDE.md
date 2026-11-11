@@ -693,7 +693,8 @@ turn. A copied instruction is not executed by AgentDocker.
 | `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one; `channel prune --before <seconds>` forgets channels closed longer ago than that (two weeks by default) |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
 | `verdict <branch> --head <commit> --pass\|--changes\|--none [--from <commit>] [--findings important,nit,pre-existing] [note]` | Give your verdict on a branch at the commit you read, with what you found counted by severity (`0,1,0`; all zero when left out); it counts for the roles you hold, and only for that commit. Prints the verdict's id, then its parseable line (`verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`) on stderr. Refused on a branch you hold, are checked out on, or committed to |
-| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: passed at its head as it is now (exit 0), else changes asked, stale (commits since the pass) or unreviewed (exit 1). Prints what it said, then a line a job can gate on: `gate=approved branch=… head=… verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`. `--publish` sets the `agentdocker/review` commit status on GitHub, whose text carries the word, the reviewer, its runtime and the counts |
+| `verdict --supersede <verdict id> [--reason <text>]` | Set a verdict aside so it counts at no gate (the person only): the way out when a reviewer asked for changes and is gone |
+| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: passed at its head as it is now (exit 0), else changes asked, stale (commits since the pass) or unreviewed (exit 1). Prints what it said, then a line a job can gate on: `gate=approved branch=… head=… verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`, then one line per verdict set aside and by whom. `--publish` sets the `agentdocker/review` commit status on GitHub, whose text carries the word, the reviewer, its runtime and the counts |
 | `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first; `contest close <id> [--winner <agent>]` declares the answer, by the ranking when the metric separated the entries |
 
 ### Containers
@@ -1228,6 +1229,23 @@ Current behaviour that the sections above do not already state, by area.
   tools' replies, `events`) the word is written `approve`, `changes` or
   `comment`, the spelling older clients read: `pass` is `approve` and
   `none` is `comment`.
+
+- **A departed reviewer does not hold the gate for good.** A request for
+  changes blocks until the same reviewer says otherwise, and a verdict
+  belongs to the agent that gave it, not to the role: a successor
+  holding the role inherits nothing. Once that reviewer's record has
+  ended (exited or forgotten), a pass of the commit it read, or of
+  a later one, by an agent holding the role now, or by you, lifts the
+  request at that role's gate; `agentdocker gate` then says which
+  verdict was set aside and by whom, the journal has a line for it, and
+  the mark stays on the verdict. "Later" is what git says in the
+  project's repository, so a commit it does not have lifts nothing. A
+  `none`, a pass of an older commit, or a pass by an agent
+  without the role lifts nothing, and a reviewer that is still running
+  keeps its word. To lift a verdict yourself at every gate, whoever gave
+  it, `agentdocker verdict --supersede <verdict id> [--reason <text>]`.
+  A reviewer's latest verdict is its word: once that one is lifted, it
+  has no word at that gate, and nothing it said before comes back.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or

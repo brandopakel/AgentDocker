@@ -4,12 +4,16 @@
 //! ask the gate. No agent's word is taken on the branch its checkout is
 //! on, on a branch it holds (`branch:<name>` lease), on a branch the
 //! daemon saw it commit to (`daemon/authorship.rs`), nor on one the
-//! journal says it committed to.
-use std::collections::HashMap;
+//! journal says it committed to. A request for changes whose reviewer
+//! has gone is set aside at a role's gate once somebody holding the role
+//! passes that commit or a later one, as git says, and the person can set
+//! any verdict aside; either is kept on the verdict.
+use std::collections::{BTreeSet, HashMap};
 
 use super::*;
 use agentdocker_core::gate::{
-    self, CodeVerdict, Findings, GATE_ROLE, VERDICTS_PER_PROJECT, Word, full_commit,
+    self, CodeVerdict, Findings, GATE_ROLE, Lifted, NOTE_CHARS, SupersedeReason, Supersession,
+    VERDICTS_PER_PROJECT, Word, full_commit,
 };
 use agentdocker_core::{HUMAN_RUNTIME, JournalEntry, JournalKind, SummarySource};
 
@@ -70,6 +74,129 @@ impl State {
                 )
             }))
         })
+    }
+
+    /// What the registry says of the agents whose verdicts are on
+    /// `branch`, for `role`'s gate: whose record has ended — exited,
+    /// failed or forgotten, under its id or one it was folded into — and
+    /// who is live in the project holding the role now and has not
+    /// committed to the branch.
+    fn succession(
+        &mut self,
+        verdicts: &[CodeVerdict],
+        branch: &str,
+        role: &str,
+        project: &ProjectId,
+    ) -> gate::Succession {
+        let mut succession = gate::Succession::default();
+        let by: BTreeSet<AgentId> = verdicts
+            .iter()
+            .filter(|v| v.branch == branch && !v.human)
+            .map(|v| v.by.clone())
+            .collect();
+        let mut live = Vec::new();
+        for id in by {
+            match self.registry.get(self.registry.canonical_id(&id)) {
+                Some(record) if record.status.is_live() => live.push((id, record.clone())),
+                _ => {
+                    succession.ended.insert(id);
+                }
+            }
+        }
+        // Who holds the role matters only to a departed reviewer's word.
+        if succession.ended.is_empty() {
+            return succession;
+        }
+        for (id, record) in live {
+            let holds = record.project.as_ref().map(ProjectRef::id).as_ref() == Some(project)
+                && record.roles().contains(&role);
+            // An author speaks for nobody's review of its branch, a commit
+            // it made after its verdict included; what cannot be read is no.
+            if holds && matches!(self.has_authored(project, &id, branch), Ok(false)) {
+                succession.holders.insert(id);
+            }
+        }
+        succession
+    }
+
+    /// The repository a project's records name, to ask git about its
+    /// commits.
+    fn project_root(&self, project: &ProjectId) -> Option<std::path::PathBuf> {
+        self.registry
+            .all()
+            .filter_map(|r| r.project.as_ref())
+            .find(|p| p.id() == *project)
+            .map(|p| p.root.clone())
+    }
+
+    /// Keep the requests for changes a gate set aside, once each. While
+    /// coordination is being handed over nothing is kept and nothing
+    /// refused: the gate's answer is the same, and the next ask finds the
+    /// lift again. A storage failure is the asker's error, as for any
+    /// write.
+    fn keep_lifted(&mut self, lifted: &[Lifted]) -> Option<Response> {
+        if lifted.is_empty() || self.fenced() {
+            return None;
+        }
+        if let Some(error) = self.write_failure() {
+            return Some(error);
+        }
+        let marked: Vec<_> = lifted
+            .iter()
+            .map(|l| (&l.verdict, &l.mark, Some(&l.pass)))
+            .collect();
+        self.commit_superseded(&marked)
+    }
+
+    /// Write verdicts as marked with all that says so — each one's
+    /// `code_verdict_superseded` event and its journal line — in one
+    /// commit: none of it lands without the rest, and a failure is the
+    /// caller's to return.
+    fn commit_superseded(
+        &mut self,
+        marked: &[(&CodeVerdict, &Supersession, Option<&CodeVerdict>)],
+    ) -> Option<Response> {
+        let documents: Vec<Doc> = marked
+            .iter()
+            .map(|(verdict, _, _)| doc(VERDICT, verdict.id.clone(), *verdict))
+            .collect();
+        let entries: Vec<JournalEntry> = marked
+            .iter()
+            .map(|(verdict, mark, pass)| {
+                let mut entry = superseded_entry(verdict, mark, *pass);
+                entry.seq = self.next_journal_seq(&entry.project);
+                entry
+            })
+            .collect();
+        let now = Utc::now();
+        let events: Vec<Event> = marked
+            .iter()
+            .map(|(verdict, mark, _)| superseded_event(verdict, mark))
+            .chain(entries.iter().map(|entry| EventKind::JournalAppended {
+                entry: entry.clone(),
+            }))
+            .map(|kind| Event::new(kind, now))
+            .collect();
+        let cached = entries.clone();
+        let committed = self.commit(
+            "verdict superseded",
+            events,
+            |store, events| store.documents_with_journal(&documents, &entries, events),
+            |state, _, ()| {
+                for entry in cached {
+                    state.cache_journal(entry);
+                }
+            },
+        );
+        if committed != Persisted::Committed {
+            return Some(self.write_failure().unwrap_or_else(|| {
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "the verdict set aside was not recorded",
+                )
+            }));
+        }
+        None
     }
 }
 
@@ -297,6 +424,7 @@ impl Daemon {
             findings,
             note: note.map(|n| n.trim().to_owned()).unwrap_or_default(),
             at,
+            superseded: Vec::new(),
         };
         if let Err(reason) = given.check() {
             return Response::error(ErrorCode::Invalid, reason);
@@ -350,17 +478,213 @@ impl Daemon {
             Ok(project) => project,
             Err(response) => return *response,
         };
-        let verdicts = match lock(&self.state).project_verdicts(&project) {
-            Ok(verdicts) => verdicts,
-            Err(response) => return *response,
-        };
         let role = role
             .map(|r| r.trim().to_owned())
             .filter(|r| !r.is_empty())
             .unwrap_or_else(|| GATE_ROLE.to_owned());
-        Response::ReviewGate {
-            gate: gate::gate(&verdicts, branch.trim(), head.trim(), &role),
+        let (branch, head) = (branch.trim(), head.trim());
+        // Whether a successor's pass read a commit at or after a departed
+        // reviewer's request for changes is git's to say: asked once, with
+        // no lock held, and only when there is such a pass of another
+        // commit. A pair that appears while git is asked stays unknown, so
+        // lifts nothing until the next ask.
+        let mut descends = BTreeSet::new();
+        let mut asked = false;
+        loop {
+            let (root, questions) = {
+                let mut state = lock(&self.state);
+                let verdicts = match state.project_verdicts(&project) {
+                    Ok(verdicts) => verdicts,
+                    Err(response) => return *response,
+                };
+                let mut succession = state.succession(&verdicts, branch, &role, &project);
+                let questions = gate::ancestry_questions(&verdicts, branch, &role, &succession);
+                match state.project_root(&project) {
+                    Some(root) if !asked && !questions.is_empty() => (root, questions),
+                    _ => {
+                        succession.descends = descends;
+                        let gated =
+                            gate::gated(&verdicts, branch, head, &role, &succession, Utc::now());
+                        if let Some(error) = state.keep_lifted(&gated.lifted) {
+                            return error;
+                        }
+                        return Response::ReviewGate {
+                            gate: gated.gate,
+                            superseded: gated.superseded,
+                        };
+                    }
+                }
+            };
+            asked = true;
+            descends = tokio::task::spawn_blocking(move || {
+                questions
+                    .into_iter()
+                    .filter(|(earlier, later)| at_or_after(&root, earlier, later))
+                    .collect()
+            })
+            .await
+            .unwrap_or_default();
         }
+    }
+
+    /// The person sets a verdict aside; an agent may not.
+    pub(in crate::daemon) async fn supersede_verdict(
+        self: &Arc<Self>,
+        agent: &str,
+        project: Option<String>,
+        verdict: &str,
+        reason: Option<String>,
+    ) -> Response {
+        let named = project.is_some();
+        let project = match self.verdict_project(Some(agent), project).await {
+            Ok(project) => project,
+            Err(response) => return *response,
+        };
+        let note = reason.map(|r| r.trim().to_owned()).unwrap_or_default();
+        if note.chars().count() > NOTE_CHARS {
+            return Response::error(ErrorCode::Invalid, "the reason is at most 4000 characters");
+        }
+        let mut state = lock(&self.state);
+        let actor = match state.actor(agent) {
+            Ok(actor) => actor,
+            Err(response) => return *response,
+        };
+        if !actor.human {
+            return Response::error(
+                ErrorCode::Forbidden,
+                "setting a verdict aside is the person's to do",
+            );
+        }
+        if !named {
+            return Response::error(
+                ErrorCode::Invalid,
+                "the person names the project a verdict is in",
+            );
+        }
+        if let Some(error) = state.write_failure() {
+            return error;
+        }
+        let verdicts = match state.project_verdicts(&project) {
+            Ok(verdicts) => verdicts,
+            Err(response) => return *response,
+        };
+        let id = verdict.trim();
+        let Some(mut found) = verdicts.into_iter().find(|v| v.id == id) else {
+            return Response::error(
+                ErrorCode::NotFound,
+                format!("no verdict {id} in the project"),
+            );
+        };
+        if found.verdict == Word::None {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a `none` verdict counts at no gate: there is nothing to set aside",
+            );
+        }
+        let by = AgentId::from(actor.id.as_str());
+        let by_name = state
+            .registry
+            .get(&by)
+            .map(|r| r.spec.name.clone())
+            .unwrap_or_else(|| actor.id.clone());
+        let mark = Supersession {
+            by,
+            by_name,
+            with: None,
+            role: None,
+            reason: SupersedeReason::Person,
+            note,
+            at: Utc::now(),
+        };
+        if let Err(reason) = found.supersede(mark.clone()) {
+            return Response::error(ErrorCode::Conflict, reason);
+        }
+        if let Some(error) = state.commit_superseded(&[(&found, &mark, None)]) {
+            return error;
+        }
+        Response::CodeVerdict { verdict: found }
+    }
+}
+
+/// Whether git in `repository` says `later` is `earlier` or comes after
+/// it. Whatever git cannot say — a commit it does not have, no repository
+/// there — is no.
+fn at_or_after(repository: &std::path::Path, earlier: &str, later: &str) -> bool {
+    let argv: Vec<String> = ["git", "merge-base", "--is-ancestor", earlier, later]
+        .map(str::to_owned)
+        .to_vec();
+    agentdocker_host::command::run(repository, &argv, std::time::Duration::from_secs(10))
+        .is_ok_and(|output| output.success)
+}
+
+/// The event for a verdict set aside by `mark`.
+fn superseded_event(verdict: &CodeVerdict, mark: &Supersession) -> EventKind {
+    EventKind::CodeVerdictSuperseded {
+        project: verdict.project.clone(),
+        branch: verdict.branch.clone(),
+        verdict: verdict.id.clone(),
+        was_by: verdict.by.clone(),
+        by: mark.by.clone(),
+        reason: mark.reason,
+        role: mark.role.clone(),
+    }
+}
+
+/// The journal's line for a verdict set aside: which verdict, whose, and
+/// who set it aside — the successor whose pass did, at which gate and
+/// with which commit, or the person.
+fn superseded_entry(
+    verdict: &CodeVerdict,
+    mark: &Supersession,
+    pass: Option<&CodeVerdict>,
+) -> JournalEntry {
+    let short = |commit: &str| commit.chars().take(8).collect::<String>();
+    let word = match verdict.verdict {
+        Word::Pass => "pass of",
+        Word::Changes => "request for changes on",
+        Word::None => "reading of",
+    };
+    let mut summary = format!(
+        "lifted {}'s {word} {} at {} (verdict {})",
+        verdict.by_name,
+        verdict.branch,
+        short(&verdict.head),
+        verdict.id
+    );
+    match (mark.reason, pass) {
+        (SupersedeReason::ReviewerEnded, Some(pass)) => summary.push_str(&format!(
+            " at the {} gate: {} had left, and {} passed {} since (verdict {})",
+            mark.role.as_deref().unwrap_or(GATE_ROLE),
+            verdict.by_name,
+            mark.by_name,
+            short(&pass.head),
+            pass.id
+        )),
+        _ if !mark.note.is_empty() => {
+            let note: String = mark.note.chars().take(300).collect();
+            summary.push_str(": ");
+            summary.push_str(&note);
+        }
+        _ => {}
+    }
+    JournalEntry {
+        project: verdict.project.clone(),
+        seq: 0,
+        at: mark.at,
+        agent: Some(mark.by.clone()),
+        agent_name: mark.by_name.clone(),
+        branch: Some(verdict.branch.clone()),
+        checkout: None,
+        worktree: None,
+        kind: JournalKind::Review,
+        summary,
+        summary_source: SummarySource::Explicit,
+        resources: Vec::new(),
+        paths: Vec::new(),
+        paths_total: 0,
+        head_before: None,
+        head_after: Some(verdict.head.clone()),
+        changes: None,
     }
 }
 
@@ -725,7 +1049,7 @@ mod tests {
             })
             .await
         {
-            Response::ReviewGate { gate } => gate,
+            Response::ReviewGate { gate, .. } => gate,
             other => panic!("{other:?}"),
         }
     }
@@ -999,6 +1323,356 @@ mod tests {
             .handle(verdict(reviewer.id.as_str(), None, "feature/y", A, "pass"))
             .await;
         assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
+    }
+
+    /// Make an empty commit in `repo`; its full id.
+    fn commit_in(repo: &std::path::Path, message: &str) -> String {
+        let git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .args(["-c", "user.email=t@example.invalid", "-c", "user.name=T"])
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .current_dir(repo)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "git {args:?}: {output:?}");
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["commit", "-q", "--allow-empty", "-m", message]);
+        git(&["rev-parse", "HEAD"])
+    }
+
+    /// A project's review lines.
+    fn journal_request(project: &str) -> Request {
+        serde_json::from_value(serde_json::json!({
+            "op": "journal", "project": project, "kind": "review", "limit": 50
+        }))
+        .unwrap()
+    }
+
+    fn superseded_events(daemon: &Arc<Daemon>, id: &str) -> Vec<EventKind> {
+        daemon
+            .recent_events(500)
+            .into_iter()
+            .map(|e| e.kind)
+            .filter(|kind| {
+                matches!(kind, EventKind::CodeVerdictSuperseded { verdict, .. } if verdict == id)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_departed_reviewer_s_changes_are_lifted_by_its_successor_s_pass_of_a_later_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let repo = tmp.path().join("repo");
+        repository(&repo, "main");
+        // The commit the first reviewer read, and the fix after it.
+        let read = commit_in(&repo, "first");
+        let fixed = commit_in(&repo, "fix");
+        let author = register(&daemon, "author", &repo).await;
+        let first = register(&daemon, "reviewer-1", &repo).await;
+        let second = register(&daemon, "reviewer-2", &repo).await;
+        let project = author.project.as_ref().unwrap().id().to_string();
+        let author = author.id.to_string();
+        give_role(&daemon, &first.id, "reviewer");
+        give_role(&daemon, &second.id, "reviewer");
+        let give = |by: &AgentRecord, head: &str, word: &str| {
+            let request = verdict(by.id.as_str(), None, "feature/x", head, word);
+            let daemon = daemon.clone();
+            async move {
+                match daemon.handle(request).await {
+                    Response::CodeVerdict { verdict } => verdict,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        let changes = give(&first, &read, "changes").await;
+        // A verdict withheld is not a pass.
+        give(&second, &fixed, "comment").await;
+        let blocked_by_first = |gate: gate::Gate| matches!(gate, gate::Gate::Changes { verdict } if verdict.id == changes.id);
+        assert!(
+            blocked_by_first(ask(&daemon, &author, &fixed).await),
+            "live"
+        );
+        lock(&daemon.state)
+            .registry
+            .get_mut(&first.id)
+            .unwrap()
+            .status = AgentStatus::Exited { code: Some(0) };
+        assert!(
+            blocked_by_first(ask(&daemon, &author, &fixed).await),
+            "a comment"
+        );
+        // A pass of a commit git cannot place after the one read lifts
+        // nothing.
+        give(&second, B, "approve").await;
+        assert!(
+            blocked_by_first(ask(&daemon, &author, B).await),
+            "an unknown commit"
+        );
+        assert!(superseded_events(&daemon, &changes.id).is_empty());
+
+        // The successor's pass of the fix lifts it, and the gate says which
+        // verdict and by whom.
+        let pass = give(&second, &fixed, "approve").await;
+        let Response::ReviewGate { gate, superseded } = daemon
+            .handle(Request::ReviewGate {
+                agent: Some(author.clone()),
+                project: None,
+                branch: "feature/x".into(),
+                head: fixed.clone(),
+                role: None,
+            })
+            .await
+        else {
+            panic!("no gate");
+        };
+        assert!(gate.approved(), "{gate:?}");
+        assert_eq!(superseded.len(), 1);
+        assert_eq!(superseded[0].id, changes.id);
+        let mark = superseded[0].superseded_at(GATE_ROLE).unwrap();
+        assert_eq!(mark.by, second.id);
+        assert_eq!(mark.with.as_deref(), Some(pass.id.as_str()));
+        assert_eq!(mark.role.as_deref(), Some(GATE_ROLE));
+        assert_eq!(mark.reason, SupersedeReason::ReviewerEnded);
+        // Kept on the verdict, announced once however often the gate is
+        // asked, and journaled naming all three.
+        let kept = lock(&daemon.state)
+            .project_verdicts(&ProjectId::from(project.as_str()))
+            .unwrap();
+        assert!(
+            kept.iter()
+                .any(|v| v.id == changes.id && !v.superseded.is_empty())
+        );
+        assert!(ask(&daemon, &author, &fixed).await.approved());
+        let events = superseded_events(&daemon, &changes.id);
+        assert_eq!(events.len(), 1, "once");
+        assert!(matches!(
+            &events[0],
+            EventKind::CodeVerdictSuperseded {
+                was_by, by, reason: SupersedeReason::ReviewerEnded, role: Some(role), ..
+            } if *was_by == first.id && *by == second.id && role == GATE_ROLE
+        ));
+        let journal: Request = serde_json::from_value(serde_json::json!({
+            "op": "journal", "project": project, "kind": "review", "limit": 50
+        }))
+        .unwrap();
+        let Response::Journal { entries, .. } = daemon.handle(journal).await else {
+            panic!("no journal");
+        };
+        let line = entries
+            .iter()
+            .find(|e| {
+                e.summary
+                    .starts_with("lifted reviewer-1's request for changes on feature/x")
+            })
+            .unwrap_or_else(|| panic!("{entries:?}"));
+        assert!(line.summary.contains(&changes.id), "{}", line.summary);
+        assert!(
+            line.summary
+                .contains(&format!("reviewer-2 passed {}", &fixed[..8])),
+            "{}",
+            line.summary
+        );
+        assert_eq!(line.agent.as_ref(), Some(&second.id));
+
+        // Only the person sets a verdict aside: in the project they name,
+        // not a comment, and once.
+        let lift = |agent: &str, project: Option<&str>, id: &str| Request::SupersedeVerdict {
+            agent: agent.to_owned(),
+            project: project.map(str::to_owned),
+            verdict: id.to_owned(),
+            reason: Some("the reviewer is gone".into()),
+        };
+        assert!(refused(
+            daemon
+                .handle(lift(second.id.as_str(), None, &pass.id))
+                .await,
+            ErrorCode::Forbidden
+        ));
+        assert!(refused(
+            daemon.handle(lift(HUMAN, None, &pass.id)).await,
+            ErrorCode::Invalid
+        ));
+        assert!(refused(
+            daemon.handle(lift(HUMAN, Some(&project), "nope")).await,
+            ErrorCode::NotFound
+        ));
+        let comment = kept.iter().find(|v| v.verdict == Word::None).unwrap();
+        assert!(refused(
+            daemon
+                .handle(lift(HUMAN, Some(&project), &comment.id))
+                .await,
+            ErrorCode::Invalid
+        ));
+        let Response::CodeVerdict { verdict: set_aside } =
+            daemon.handle(lift(HUMAN, Some(&project), &pass.id)).await
+        else {
+            panic!("not set aside");
+        };
+        let mark = set_aside.superseded_at("tester").unwrap();
+        assert_eq!(
+            (mark.reason, mark.role.as_deref()),
+            (SupersedeReason::Person, None)
+        );
+        assert_eq!(mark.note, "the reviewer is gone");
+        assert!(refused(
+            daemon.handle(lift(HUMAN, Some(&project), &pass.id)).await,
+            ErrorCode::Conflict
+        ));
+        // The fix's pass gone too, nobody has a word at the fix: the
+        // successor's earlier pass of the unknown commit stays replaced.
+        assert_eq!(ask(&daemon, &author, &fixed).await, gate::Gate::Missing);
+        assert!(matches!(
+            superseded_events(&daemon, &pass.id).as_slice(),
+            [EventKind::CodeVerdictSuperseded {
+                reason: SupersedeReason::Person,
+                role: None,
+                ..
+            }]
+        ));
+        // Journaled with the person's reason, in the commit that kept the
+        // mark.
+        let Response::Journal { entries, .. } = daemon.handle(journal_request(&project)).await
+        else {
+            panic!("no journal");
+        };
+        let line = format!(
+            "lifted {}'s pass of feature/x at {} (verdict {}): the reviewer is gone",
+            pass.by_name,
+            &fixed[..8],
+            pass.id
+        );
+        assert!(entries.iter().any(|e| e.summary == line), "{entries:?}");
+        // A pass the person revoked is kept where a daemon that reads no
+        // marks, and so would count it again, cannot open it: schema 30 was
+        // the last without them, and an older build refuses a newer one.
+        const LAST_WITHOUT_MARKS: i64 = 30;
+        let recorded = lock(&daemon.state).store.recorded_schema_version().unwrap();
+        assert!(recorded > LAST_WITHOUT_MARKS, "recorded {recorded}");
+    }
+
+    /// A project where the first reviewer asked for changes at `read` and
+    /// has left, and the second, holding the reviewer role, passed `fixed`,
+    /// which comes after it; nobody has asked the gate since.
+    struct Departed {
+        _tmp: TempDir,
+        daemon: Arc<Daemon>,
+        project: String,
+        author: String,
+        fixed: String,
+        changes: CodeVerdict,
+    }
+
+    async fn departed() -> Departed {
+        let tmp = tempfile::tempdir().unwrap();
+        let daemon = open(&tmp);
+        let repo = tmp.path().join("repo");
+        repository(&repo, "main");
+        let read = commit_in(&repo, "first");
+        let fixed = commit_in(&repo, "fix");
+        let author = register(&daemon, "author", &repo).await;
+        let first = register(&daemon, "reviewer-1", &repo).await;
+        let second = register(&daemon, "reviewer-2", &repo).await;
+        give_role(&daemon, &first.id, "reviewer");
+        give_role(&daemon, &second.id, "reviewer");
+        let Response::CodeVerdict { verdict: changes } = daemon
+            .handle(verdict(
+                first.id.as_str(),
+                None,
+                "feature/x",
+                &read,
+                "changes",
+            ))
+            .await
+        else {
+            panic!("no verdict");
+        };
+        lock(&daemon.state)
+            .registry
+            .get_mut(&first.id)
+            .unwrap()
+            .status = AgentStatus::Exited { code: Some(0) };
+        let said = daemon
+            .handle(verdict(
+                second.id.as_str(),
+                None,
+                "feature/x",
+                &fixed,
+                "pass",
+            ))
+            .await;
+        assert!(matches!(said, Response::CodeVerdict { .. }), "{said:?}");
+        Departed {
+            project: author.project.as_ref().unwrap().id().to_string(),
+            author: author.id.to_string(),
+            _tmp: tmp,
+            daemon,
+            fixed,
+            changes,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_lift_whose_journal_line_cannot_be_written_is_not_kept_at_all() {
+        for by_the_person in [false, true] {
+            let departed = departed().await;
+            let daemon = &departed.daemon;
+            let conn = crate::sqlite_fixture::open(daemon.home.join("state.db")).unwrap();
+            conn.execute_batch(
+                "CREATE TRIGGER fail BEFORE INSERT ON journal BEGIN SELECT RAISE(ABORT, 'journal fault'); END;",
+            )
+            .unwrap();
+            let request = if by_the_person {
+                Request::SupersedeVerdict {
+                    agent: HUMAN.into(),
+                    project: Some(departed.project.clone()),
+                    verdict: departed.changes.id.clone(),
+                    reason: None,
+                }
+            } else {
+                Request::ReviewGate {
+                    agent: Some(departed.author.clone()),
+                    project: None,
+                    branch: "feature/x".into(),
+                    head: departed.fixed.clone(),
+                    role: None,
+                }
+            };
+            let answer = daemon.handle(request).await;
+            assert!(
+                refused(answer.clone(), ErrorCode::StorageUnavailable),
+                "{by_the_person}: {answer:?}"
+            );
+            let state = lock(&daemon.state);
+            assert!(state.storage_error.is_some(), "the fault fired");
+            let kept: Vec<CodeVerdict> = state
+                .store
+                .documents_where(VERDICT, "project", &departed.project, 100)
+                .unwrap();
+            assert!(
+                kept.iter().all(|v| v.superseded.is_empty()),
+                "no mark without its line"
+            );
+            assert!(
+                !state
+                    .store
+                    .recent_events(500)
+                    .unwrap()
+                    .iter()
+                    .any(|e| matches!(e.kind, EventKind::CodeVerdictSuperseded { .. })),
+                "no event without its line"
+            );
+            let lines: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM journal WHERE summary LIKE 'lifted %'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(lines, 0);
+        }
     }
 
     #[tokio::test]
