@@ -56,8 +56,10 @@ be on. Read the card's acceptance text before starting, and say what you find
 on it with `comment_task`. Move it with `move_task`, with a `comment` saying
 why, to review when it is ready for eyes and to done when the acceptance text
 is met; file follow-up work with `create_task`, or a plan of several cards at
-once with `create_tasks`. Do not move cards you do not hold: pull one nobody
-holds by name first.
+once with `create_tasks`. You may move any card in your project, not only one
+you hold: its holder keeps it and is told you moved it, and a card you send
+back to Backlog or Ready is freed for the next taker. Moving a card is not
+taking it: to work on a card, pull one nobody holds by name first.
 
 Message kinds `pause` and `resume` are reserved for committed project lifecycle
 changes; ordinary sends cannot use them. Check the current project state before
