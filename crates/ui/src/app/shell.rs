@@ -2210,8 +2210,7 @@ impl App {
 
             Message::TaskOpen(task) => {
                 if self.task_open.as_ref() == Some(&task) {
-                    self.task_open = None;
-                    self.card = None;
+                    self.close_card();
                 } else {
                     self.open_card(task);
                 }
@@ -2229,8 +2228,7 @@ impl App {
             Message::BoardPick(slug) => {
                 if let Some(project) = self.selected_project_root() {
                     self.shell.board_choice.insert(project, slug);
-                    self.task_open = None;
-                    self.card = None;
+                    self.close_card();
                     self.shell.lane_settings = None;
                 }
             }
@@ -2348,9 +2346,14 @@ impl App {
                             }
                         }
                         LinkDestination::Card(task) => {
-                            self.task_open = Some(task.clone());
-                            self.card = None;
-                            self.send(Cmd::TaskDetail(task));
+                            if self.task_open.as_ref() == Some(&task) {
+                                // The card the link is on: read again,
+                                // what is typed on it left as it is.
+                                self.card = None;
+                                self.send(Cmd::TaskDetail(task));
+                            } else {
+                                self.open_card(task);
+                            }
                         }
                         LinkDestination::Copy(text) => {
                             self.say("Copied to the clipboard");
@@ -4318,8 +4321,7 @@ impl App {
                             } else if self.shell.quick_add.is_some() {
                                 self.shell.quick_add = None;
                             } else if self.task_open.is_some() {
-                                self.task_open = None;
-                                self.card = None;
+                                self.close_card();
                             } else if self.shell.lane_settings.is_some() {
                                 self.shell.lane_settings = None;
                             } else {
@@ -5117,7 +5119,7 @@ impl App {
             // Another project's board, and a card open on the old one
             // is not open on this.
             self.tasks = None;
-            self.task_open = None;
+            self.close_card();
             self.board_asks.clear();
             if self.screen == Screen::Board {
                 self.request_tasks();
@@ -11376,6 +11378,237 @@ mod tests {
         let _ = app.update(Message::TodoOpen("/nowhere".into(), card.id.clone()));
         assert_eq!(app.screen, Screen::Todo);
         assert_eq!(app.status, "This card's project is no longer on the list.");
+    }
+
+    /// `alpha`'s board on view with two cards on it, the first linking to
+    /// the second and then to itself.
+    fn linked_cards() -> (App, PathBuf, Kept, [agentdocker_core::Task; 2]) {
+        let (mut app, alpha, beta, kept) = travel();
+        app.connected = Ok(());
+        let mut first = card_in("aaaaaaaaaaaa", &alpha, "Port the parser");
+        let second = card_in("bbbbbbbbbbbb", &alpha, "Write the release notes");
+        for target in [second.id.to_string(), first.id.to_string()] {
+            first.links.push(agentdocker_core::Link {
+                kind: agentdocker_core::LinkKind::Task,
+                target,
+                note: None,
+            });
+        }
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let (request, _, _) = board_asks(&kept._commands)
+            .pop()
+            .expect("the board is asked for");
+        kept.messages
+            .send(Msg::Tasks(
+                alpha.display().to_string(),
+                request,
+                Ok((vec![first.clone(), second.clone()], false)),
+            ))
+            .unwrap();
+        app.drain();
+        (app, beta, kept, [first, second])
+    }
+
+    /// Open `card` from the board and bring its detail.
+    fn open_in_full(app: &mut App, kept: &Kept, card: &agentdocker_core::Task) {
+        let _ = app.update(Message::TaskOpen(card.id.clone()));
+        bring_detail(app, kept, card);
+    }
+
+    /// The daemon's answer to a read of `card` in full.
+    fn bring_detail(app: &mut App, kept: &Kept, card: &agentdocker_core::Task) {
+        let detail = CardDetail {
+            task: card.clone(),
+            board: agentdocker_core::Board::main(card.project.clone(), "alpha", Utc::now()),
+            comments: vec![],
+            history: vec![],
+            blockers: vec![],
+            children: vec![],
+            plan: None,
+            files: vec![],
+        };
+        kept.messages
+            .send(Msg::TaskDetail(card.id.clone(), Ok(Box::new(detail))))
+            .unwrap();
+        app.drain();
+    }
+
+    /// The comments sent since the last look: which card, what words.
+    fn comments_sent(kept: &Kept) -> Vec<(agentdocker_core::TaskId, String)> {
+        kept._commands
+            .try_iter()
+            .filter_map(|c| match c {
+                Cmd::TaskComment { task, body } => Some((task, body)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A card a link opens has a comment line of its own: what was typed
+    /// on the card the link was on is not sent to it, and what is typed
+    /// there is.
+    #[test]
+    fn a_comment_typed_on_one_card_is_not_sent_to_the_card_a_link_opens() {
+        let (mut app, _, kept, [first, second]) = linked_cards();
+        open_in_full(&mut app, &kept, &first);
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Comment,
+            "for the parser card".into(),
+        ));
+        let _ = app.update(Message::LinkOpen(0));
+        assert_eq!(app.task_open.as_ref(), Some(&second.id));
+        assert!(
+            kept._commands
+                .try_iter()
+                .any(|c| matches!(c, Cmd::TaskDetail(ref task) if *task == second.id)),
+            "the linked card is asked for in full"
+        );
+
+        let _ = app.update(Message::CardCommentSend);
+        let sent = comments_sent(&kept);
+        assert!(
+            sent.is_empty(),
+            "nothing was typed on this card, so nothing is sent to it: {sent:?}"
+        );
+        let draft = &app.shell.card_draft;
+        assert_eq!(draft.task.as_ref(), Some(&second.id));
+        assert_eq!(
+            (draft.title.as_str(), draft.comment.as_str()),
+            ("Write the release notes", ""),
+            "the editor shows the linked card's words and an empty comment line"
+        );
+
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Comment,
+            "for the notes card".into(),
+        ));
+        let _ = app.update(Message::CardCommentSend);
+        assert_eq!(
+            comments_sent(&kept),
+            vec![(second.id.clone(), "for the notes card".to_owned())]
+        );
+    }
+
+    /// The link form and the card's menu belong to the card they were
+    /// opened on: however that card closes or gives way to another, they
+    /// close with it, and the next card opens with neither.
+    #[test]
+    fn the_link_form_and_the_card_menu_close_with_their_card() {
+        let escape = || {
+            let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+            Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::default(),
+                text: None,
+                repeat: false,
+            }))
+        };
+        for route in [
+            "pressed again",
+            "Esc",
+            "another board",
+            "another project",
+            "Back",
+            "another card",
+        ] {
+            let (mut app, beta, kept, [first, second]) = linked_cards();
+            open_in_full(&mut app, &kept, &first);
+            let _ = app.update(Message::LinkKind(agentdocker_core::LinkKind::Task));
+            let _ = app.update(Message::LinkTarget(second.id.to_string()));
+            let _ = app.update(Message::CardMenu(CardMenu::Plan));
+            assert_eq!(
+                (app.shell.link_kind, app.shell.card_menu),
+                (Some(agentdocker_core::LinkKind::Task), Some(CardMenu::Plan))
+            );
+
+            // Each way a card closes; the last gives way to another card
+            // without closing first.
+            let closes = route != "another card";
+            let messages = match route {
+                "pressed again" => vec![Message::TaskOpen(first.id.clone())],
+                // The first press closes the menu, the second the card.
+                "Esc" => vec![escape(), escape()],
+                "another board" => vec![Message::BoardPick("main".into())],
+                "another project" => vec![Message::SelectProject(beta)],
+                "Back" => vec![Message::GoBack],
+                _ => vec![Message::TaskOpen(second.id.clone())],
+            };
+            for message in messages {
+                let _ = app.update(message);
+            }
+            if closes {
+                assert_eq!(app.task_open, None, "{route}: the card is closed");
+                assert_eq!(app.card, None, "{route}: its detail goes with it");
+                let _ = app.update(Message::TaskOpen(second.id.clone()));
+            }
+            assert_eq!(app.task_open.as_ref(), Some(&second.id), "{route}");
+            assert_eq!(
+                (app.shell.link_kind, app.shell.link_target.as_str()),
+                (None, ""),
+                "{route}: the next card's link form is closed and empty"
+            );
+            assert_eq!(app.shell.card_menu, None, "{route}: and so is its menu");
+        }
+    }
+
+    /// Words typed on a card and not saved are that card's: a link to the
+    /// card itself leaves them where they are, and a card a link opens
+    /// shows its own, has nothing to save, and is a new opening of the
+    /// editor.
+    #[test]
+    fn unsaved_edits_on_one_card_are_not_shown_on_the_card_a_link_opens() {
+        let (mut app, _, kept, [first, second]) = linked_cards();
+        open_in_full(&mut app, &kept, &first);
+        let opening = app.shell.card_draft.generation;
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Title,
+            "Rewrite the parser".into(),
+        ));
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Description,
+            "half a thought".into(),
+        ));
+        assert!(app.card_change(&first.id).is_some());
+
+        let _ = app.update(Message::LinkOpen(1));
+        assert_eq!(app.task_open.as_ref(), Some(&first.id));
+        assert_eq!(
+            (
+                app.shell.card_draft.generation,
+                app.shell.card_draft.title.as_str()
+            ),
+            (opening, "Rewrite the parser"),
+            "a link to the card itself opens nothing anew"
+        );
+        bring_detail(&mut app, &kept, &first);
+
+        let _ = app.update(Message::LinkOpen(0));
+        assert_eq!(app.task_open.as_ref(), Some(&second.id));
+        let draft = &app.shell.card_draft;
+        assert_eq!(draft.task.as_ref(), Some(&second.id));
+        assert_eq!(
+            (draft.title.as_str(), draft.description.as_str()),
+            ("Write the release notes", ""),
+            "the editor shows the linked card's words"
+        );
+        assert_eq!(draft.base.title, "Write the release notes");
+        assert!(draft.generation > opening, "a new opening of the editor");
+        assert_eq!(app.card_change(&second.id), None, "nothing to save");
+        let _ = kept._commands.try_iter().count();
+        let _ = app.update(Message::CardSave);
+        assert!(
+            !kept
+                ._commands
+                .try_iter()
+                .any(|c| matches!(c, Cmd::TaskEdit { .. })),
+            "the first card's words are not saved to the second"
+        );
     }
 
     /// A compact window shows the list of conversations or one of them:

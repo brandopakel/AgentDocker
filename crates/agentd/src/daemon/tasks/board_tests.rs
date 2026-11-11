@@ -677,6 +677,72 @@ async fn an_agent_is_started_on_a_card_only_by_the_person() {
     );
 }
 
+/// A browser whose user data the system will not list (as macOS will not
+/// for a program not allowed to read other apps' data) is said in
+/// `runtimes` as an incomplete inventory, and a start on a card still
+/// learns which runtimes there are: one closed door is not a failed
+/// inventory.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_browser_is_noted_and_costs_neither_runtimes_nor_a_start() {
+    use std::os::unix::fs::PermissionsExt;
+    /// Gives back what the test took away, so the temp dir can go.
+    struct Reopen(std::path::PathBuf);
+    impl Drop for Reopen {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let f = fixture().await;
+    let d = &f.daemon;
+    let chrome = f._dir.path().join("machine/Chrome");
+    std::fs::create_dir_all(chrome.join("Default/Extensions")).unwrap();
+    std::fs::set_permissions(&chrome, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _reopen = Reopen(chrome.clone());
+    if std::fs::read_dir(&chrome).is_ok() {
+        // Root: a mode closes nothing, and there is nothing to test.
+        return;
+    }
+    lock(&d.runtime_roots).browser_dirs = vec![agentdocker_host::runtimes::browser::BrowserDir {
+        browser: "Chrome".into(),
+        path: chrome.clone(),
+    }];
+    let Response::Runtimes { runtimes } = d.handle(Request::Runtimes).await else {
+        panic!("runtimes failed");
+    };
+    let browser = runtimes
+        .iter()
+        .find(|r| r.name == "claude-browser")
+        .expect("every known runtime is listed");
+    assert!(browser.extensions.is_empty());
+    assert!(
+        browser
+            .incomplete
+            .iter()
+            .any(|n| n.starts_with("Chrome profiles not examined: ")),
+        "{:?}",
+        browser.incomplete
+    );
+    let filed = card(
+        d.handle(create(HUMAN, &f.work, "Port it", Some("ready"), &[]))
+            .await,
+    );
+    assert!(matches!(
+        d.handle(Request::TaskStart {
+            from: HUMAN.to_owned(),
+            task: filed.id.to_string(),
+            runtime: "no-such-runtime".into(),
+            args: Vec::new(),
+            workdir: None,
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+}
+
 /// A card that waits, on an open card or on something off the board, is
 /// not started on by the person or by a start rule, as a pull would not
 /// take it; once what it waits on clears, both start on it.
