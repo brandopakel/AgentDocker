@@ -576,6 +576,39 @@ impl State {
         }
     }
 
+    /// Release the leases `reference` holds on exactly `resource`, which is
+    /// already the daemon's own spelling of it ([`Daemon::localise`]). A
+    /// lease on a folder is not a lease on a file in it, nor the other way
+    /// round: only the resource itself is released, and holding nothing on
+    /// it is `not_found`, with whatever is held around it left in place.
+    pub(super) fn release_resource(
+        &mut self,
+        reference: &str,
+        resource: &ResourceKey,
+        summary: Option<String>,
+        source: SummarySource,
+    ) -> Response {
+        let holder = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        self.expire_leases();
+        let released: Vec<Lease> = self
+            .leases
+            .by_holder(&holder)
+            .into_iter()
+            .filter(|l| l.resource == *resource)
+            .cloned()
+            .collect();
+        if released.is_empty() {
+            return Response::not_found(format!(
+                "you hold no lease on {resource}; `leases` lists what is held"
+            ));
+        }
+        let released = self.finish_release(&holder, released, summary, source);
+        Response::Leases { leases: released }
+    }
+
     pub(super) fn release_all(
         &mut self,
         reference: &str,

@@ -1410,6 +1410,21 @@ pub enum Request {
         #[serde(default)]
         summary_source: SummarySource,
     },
+    /// Release the leases an agent holds on exactly this resource, named
+    /// as `claim` takes it (a `path:`, or a `file:` alias the daemon turns
+    /// into the same physical path). A lease over or under the resource is
+    /// another resource's and is left alone: which lease a name stands for
+    /// is the daemon's to say, since only it knows a resource's own
+    /// spelling. Answers `leases` with what was released, `not_found` when
+    /// the agent holds none there.
+    ReleaseResource {
+        agent: String,
+        resource: String,
+        #[serde(default)]
+        summary: Option<String>,
+        #[serde(default)]
+        summary_source: SummarySource,
+    },
     /// Release every lease an agent holds; the reply lists them.
     ReleaseAll {
         agent: String,

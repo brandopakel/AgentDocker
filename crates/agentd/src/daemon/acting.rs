@@ -156,6 +156,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::Claim { agent, .. }
         | R::Renew { agent, .. }
         | R::Release { agent, .. }
+        | R::ReleaseResource { agent, .. }
         | R::ReleaseAll { agent, .. }
         | R::JournalAdd { agent, .. }
         | R::ChannelOpen { agent, .. }
