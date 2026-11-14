@@ -11,6 +11,10 @@ pub const EFFORT_LABEL: &str = "effort";
 /// Claude Code's `--effort` levels.
 pub const CLAUDE_EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 
+/// Codex's `model_reasoning_effort` levels, every one any of its models
+/// takes; which of them one model takes is read from the machine.
+pub const CODEX_EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
+
 /// Claude Code's `--model` aliases, each the latest of its kind.
 pub const CLAUDE_MODELS: &[(&str, &str)] = &[
     ("opus", "Opus"),
