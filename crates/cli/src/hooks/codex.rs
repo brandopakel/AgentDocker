@@ -810,6 +810,18 @@ async fn session_start<B: Backend>(backend: &B, input: &Input, agent: &AgentReco
         memory.push_str(&recalled);
         said.extend(also);
     }
+    // Where the work stands, first, within its own allowance: with the
+    // memory block's 4 KiB it stays under the 6 KiB Codex's hook context is
+    // kept to.
+    let brief =
+        super::work_brief(backend, agent, agentdocker_core::brief::CODEX_SESSION_BYTES).await;
+    if !brief.is_empty() {
+        memory = if memory.is_empty() {
+            brief
+        } else {
+            format!("{brief}\n\n{memory}")
+        };
+    }
     let told = Some(super::Telling {
         agent: agent.id.to_string(),
         start: true,
@@ -1352,6 +1364,9 @@ mod tests {
         memories: Vec<agentdocker_core::memory::Memory>,
         requests: std::cell::RefCell<Vec<Request>>,
         emissions: std::cell::RefCell<Vec<(String, agentdocker_core::usage::emission::Emission)>>,
+        /// Where the work stands, for a daemon that has a brief; none
+        /// answers as one that predates it.
+        brief: Option<agentdocker_core::brief::Brief>,
     }
 
     impl MemoryOnly {
@@ -1360,6 +1375,7 @@ mod tests {
                 memories,
                 requests: Default::default(),
                 emissions: Default::default(),
+                brief: None,
             }
         }
     }
@@ -1372,6 +1388,16 @@ mod tests {
                     memories: self.memories.clone(),
                     left_out: Vec::new(),
                 }),
+                // Where the work stands is no queue: read, never consumed.
+                Request::Brief { .. } => Ok(match &self.brief {
+                    Some(brief) => Response::Brief {
+                        brief: brief.clone(),
+                    },
+                    None => Response::error(
+                        agentdocker_core::ErrorCode::Invalid,
+                        "malformed request: unknown variant `brief`",
+                    ),
+                }),
                 other => panic!("a session start asked for {other:?}"),
             }
         }
@@ -1382,6 +1408,55 @@ mod tests {
         ) {
             self.emissions.borrow_mut().push((agent.into(), emission));
         }
+    }
+
+    /// Where the work stands comes first in a Codex session start, within
+    /// its own allowance, and the project's memory follows it; a daemon
+    /// that has no brief leaves the start as it was.
+    #[tokio::test]
+    async fn a_session_start_is_told_where_the_work_stands_before_the_memory() {
+        use agentdocker_core::brief::{Brief, CODEX_SESSION_BYTES, Reader};
+        let mut record = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            false,
+            chrono::Utc::now(),
+        );
+        record.project = Some(agentdocker_core::ProjectRef::directory("/work/alpha"));
+        let kept = agentdocker_core::memory::Memory::new(
+            record.project.as_ref().unwrap().id(),
+            "codex-1",
+            "Codex reviews every PR",
+            vec![],
+            None,
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let mut backend = MemoryOnly::new(vec![kept]);
+        backend.brief = Some(Brief {
+            project: "alpha".into(),
+            reader: Reader::Person,
+            groups: Vec::new(),
+            held_live: Vec::new(),
+            checkpoints: Vec::new(),
+            questions: Vec::new(),
+            leases: Vec::new(),
+            not_covered: vec!["checkouts".into()],
+        });
+        let delivery = session_start(&backend, &input("SessionStart"), &record).await;
+        let text = delivery.output["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert!(
+            text.starts_with("Where the work stands in project `alpha`"),
+            "{text}"
+        );
+        let memory = text.find("Project memory (").expect("the memory follows");
+        assert!(memory <= CODEX_SESSION_BYTES + 2, "{text}");
+        assert!(text.len() < 6 * 1024);
     }
 
     #[tokio::test]
@@ -1437,8 +1512,11 @@ mod tests {
         assert!(delivery.acknowledgement.is_none() && delivery.continuation.is_none());
         assert!(matches!(
             &backend.requests.borrow()[..],
-            [Request::MemoryProfile { from: Some(from), project: None, max_chars: Some(agentdocker_core::memory::SESSION_PROFILE_CHARS), as_of: None }]
-                if from == record.id.as_str()
+            [
+                Request::MemoryProfile { from: Some(from), project: None, max_chars: Some(agentdocker_core::memory::SESSION_PROFILE_CHARS), as_of: None },
+                Request::Brief { from: reader, project: None },
+            ]
+                if from == record.id.as_str() && reader == record.id.as_str()
         ));
 
         // Written as Codex reads it, and counted as AgentDocker's overhead.
@@ -1469,7 +1547,15 @@ mod tests {
                 agentdocker_core::usage::emission::Channel::NativeHook
             );
             assert_eq!(emissions[0].1.bytes, written.len() as u64);
-            assert_eq!(backend.requests.borrow().len(), 1, "no acknowledgement");
+            // The profile and the brief were read; nothing was acknowledged.
+            let requests = backend.requests.borrow();
+            assert_eq!(requests.len(), 2, "{requests:?}");
+            assert!(
+                !requests
+                    .iter()
+                    .any(|r| matches!(r, Request::AckInbox { .. })),
+                "no acknowledgement"
+            );
         }
     }
 

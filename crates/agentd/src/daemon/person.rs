@@ -774,8 +774,9 @@ impl Daemon {
         peer: Option<Peer>,
         request: &Request,
     ) -> Option<Response> {
-        // Reads are not the person's to guard, but for a memory read: the
-        // person reads what is said only to some roles.
+        // Reads are not the person's to guard, but for a memory read (the
+        // person reads what is said only to some roles) and a brief (the
+        // person reads any project's).
         if !self.person_check
             || !(mutates(request)
                 || matches!(
@@ -784,6 +785,7 @@ impl Daemon {
                         | Request::Attach { .. }
                         | Request::MemorySearch { .. }
                         | Request::MemoryProfile { .. }
+                        | Request::Brief { .. }
                 ))
         {
             return None;

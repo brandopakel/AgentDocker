@@ -1171,6 +1171,15 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<chrono::DateTime<chrono::Utc>>,
     },
+    /// Where the work stands in a project, from the daemon's own records
+    /// ([`crate::brief`]): for an agent, in its own project (a `project`
+    /// naming another is `forbidden`); for the person (`user`), in the
+    /// project `project` names. Answers `brief`.
+    Brief {
+        from: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
     /// Forget a memory for good: its author's or the person's to do.
     /// Forgetting a retirement brings back the memory it retired, and is
     /// that memory's author's to do as well. Answers `ok`.
@@ -2303,6 +2312,11 @@ pub enum Response {
         /// this memory by its first words only.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         left_out: Option<crate::memory::NoRoom>,
+    },
+    /// From `brief`: what its reader is told, as [`crate::brief::render`]
+    /// says it.
+    Brief {
+        brief: crate::brief::Brief,
     },
     Memories {
         memories: Vec<crate::memory::Memory>,

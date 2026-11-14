@@ -458,6 +458,24 @@ enum Command {
     /// A project's memory: facts its agents and the person keep for each
     /// other, said to every new session in the project.
     Memory(MemoryArgs),
+    /// Where the work stands in a project, from AgentDocker's own records:
+    /// the cards left open, the newest checkpoints, the questions waiting on
+    /// the person and the leases held. A session is told it at its start;
+    /// an agent reads its own project's, the person any project's.
+    Brief {
+        /// All of it, not the first 16 KiB.
+        #[arg(long)]
+        all: bool,
+        /// The brief as JSON, exactly what the text is made from.
+        #[arg(long)]
+        json: bool,
+        /// For the person: the project, by id or a path in it (this
+        /// directory's by default).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
     /// A project's files, kept beside the work and linked to cards.
     File(FileArgs),
     /// The webhook sinks in agentd.toml: what each attempt to post came to.
@@ -3055,6 +3073,44 @@ async fn run() -> Result<()> {
                 }
             }
         },
+        Command::Brief {
+            all,
+            json,
+            project,
+            from,
+        } => {
+            use agentdocker_core::brief;
+            let reader = sender::resolve(&client, from)
+                .await?
+                .unwrap_or_else(|| HUMAN.into());
+            // An agent's brief is of its own project; the person names one,
+            // this directory's unless told otherwise.
+            let project = match project {
+                Some(project) => Some(project),
+                None if reader == HUMAN => Some(std::env::current_dir()?.display().to_string()),
+                None => None,
+            };
+            match client
+                .call(&Request::Brief {
+                    from: reader,
+                    project,
+                })
+                .await?
+            {
+                Response::Brief { brief } if json => {
+                    println!("{}", serde_json::to_string_pretty(&brief)?);
+                }
+                Response::Brief { brief } => {
+                    let max = if all {
+                        usize::MAX
+                    } else {
+                        brief::COMMAND_BYTES
+                    };
+                    println!("{}", brief::render(&brief, chrono::Utc::now(), max));
+                }
+                other => bail!("unexpected answer to brief: {other:?}"),
+            }
+        }
         Command::Memory(args) => {
             let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
             let list = |memories: &[agentdocker_core::memory::Memory],
