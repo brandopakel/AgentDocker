@@ -163,12 +163,29 @@ enum Command {
         /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
     },
-    /// Remove an ended session's own worktree once its branch is merged or
-    /// no longer wanted: the worktree must be clean, and its branch is
-    /// deleted only when git considers it merged.
+    /// Remove a worktree that is done with: an ended session's own
+    /// (`worktree-remove <agent>`), or, asked by a running agent of the
+    /// project, one nobody works in, named with `--path` or `--branch`.
+    /// The worktree must be clean, and its branch is deleted only when
+    /// git considers it merged.
     WorktreeRemove {
-        /// Agent id, name or unique prefix.
-        agent: String,
+        /// The ended session whose worktree goes: agent id, name or
+        /// unique prefix.
+        #[arg(
+            required_unless_present_any = ["path", "branch"],
+            conflicts_with_all = ["path", "branch"]
+        )]
+        agent: Option<String>,
+        /// The worktree at this path.
+        #[arg(long, conflicts_with = "branch")]
+        path: Option<String>,
+        /// The worktree that has this branch checked out.
+        #[arg(long)]
+        branch: Option<String>,
+        /// Who asks, with `--path` or `--branch`: agent id, name or unique
+        /// prefix (defaults to this session).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
     },
     /// What an agent's branch would bring to the branch in the project's
     /// main checkout: its commits and files, and what stops a merge now.
@@ -2706,7 +2723,8 @@ async fn run() -> Result<()> {
             match client
                 .call(&Request::WorktreeCreate {
                     agent,
-                    path,
+                    // A relative path is the caller's, not the daemon's.
+                    path: path.as_deref().map(absolute_path),
                     branch,
                     from,
                     seed_build,
@@ -2736,8 +2754,24 @@ async fn run() -> Result<()> {
         Command::WorktreeDiff { agent } => {
             print_json(&client.call(&Request::WorktreeDiff { agent }).await?)?
         }
-        Command::WorktreeRemove { agent } => {
-            match client.call(&Request::WorktreeRemove { agent }).await? {
+        Command::WorktreeRemove {
+            agent,
+            path,
+            branch,
+            from,
+        } => {
+            let request = match agent {
+                Some(agent) => Request::WorktreeRemove { agent },
+                None => Request::WorktreeRemoveNamed {
+                    agent: from.context(
+                        "say who asks: --as <agent> (a session started through AgentDocker has it set)",
+                    )?,
+                    // A relative path is the caller's, not the daemon's.
+                    path: path.as_deref().map(absolute_path),
+                    branch,
+                },
+            };
+            match client.call(&request).await? {
                 Response::WorktreeRemoved {
                     path,
                     branch_removed,

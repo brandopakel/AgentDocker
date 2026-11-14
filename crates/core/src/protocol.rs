@@ -145,6 +145,18 @@ pub enum Request {
     WorktreeRemove {
         agent: String,
     },
+    /// Remove a linked worktree of the asking agent's project that nobody
+    /// works in, named by its path or by the branch checked out in it
+    /// (one of the two): clean and without force as `worktree_remove`
+    /// does, its branch deleted only when git considers it merged.
+    /// Answers `worktree_removed`.
+    WorktreeRemoveNamed {
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+    },
     /// What an agent's branch would bring to the branch in the project's
     /// main checkout, and whether it can be merged now. Answers
     /// `branch_review`.

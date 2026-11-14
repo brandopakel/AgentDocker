@@ -338,6 +338,19 @@ pub enum EventKind {
         branch_removed: bool,
         reason: Option<String>,
     },
+    /// An agent removed a linked worktree of its project that nobody
+    /// worked in (`worktree_remove_named`). `by` is who asked, `branch`
+    /// what was checked out there, and `branch_removed` whether git let
+    /// it go as merged; `reason` says why it was kept.
+    WorktreeRemoved {
+        by: crate::AgentId,
+        path: std::path::PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        branch_removed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     IntegrationPrepared {
         agent: crate::AgentId,
         source_head: String,
@@ -1133,6 +1146,7 @@ impl EventKind {
         "committed",
         "branch_merged",
         "worktree_cleanup",
+        "worktree_removed",
         "integration_prepared",
         "access_granted",
         "access_revoked",
@@ -1309,6 +1323,13 @@ mod tests {
             EventKind::WorktreeCreated {
                 agent: AgentId::from("a1b2c3"),
                 path: std::path::PathBuf::from("/tmp/w"),
+            },
+            EventKind::WorktreeRemoved {
+                by: AgentId::from("a1b2c3"),
+                path: std::path::PathBuf::from("/tmp/w"),
+                branch: Some("agent/fix".to_owned()),
+                branch_removed: false,
+                reason: None,
             },
             EventKind::InputHeldForTyping {
                 agent: AgentId::from("a1b2c3"),

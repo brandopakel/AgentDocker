@@ -404,6 +404,33 @@ pub(super) async fn remove_finished(
     }
 }
 
+/// One checkout as `git worktree list --porcelain -z` names it: where it
+/// is, and the branch checked out there when it has one.
+#[derive(Debug, PartialEq, Eq)]
+struct Listed {
+    path: PathBuf,
+    branch: Option<String>,
+}
+
+/// The checkouts of a repository from `git worktree list --porcelain -z`,
+/// the main one first, as git lists them.
+fn listed(porcelain: &str) -> Vec<Listed> {
+    let mut all: Vec<Listed> = Vec::new();
+    for line in porcelain.split('\0') {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            all.push(Listed {
+                path: project::canonical(Path::new(path)),
+                branch: None,
+            });
+        } else if let Some(branch) = line.strip_prefix("branch refs/heads/")
+            && let Some(last) = all.last_mut()
+        {
+            last.branch = Some(branch.to_owned());
+        }
+    }
+    all
+}
+
 /// Remove only a clean, unstarted isolated checkout whose branch did not advance.
 /// Git's normal (non-force) removal/deletion checks remain authoritative.
 pub(super) async fn cleanup_unstarted(record: &AgentRecord) -> (bool, bool, Option<String>) {
@@ -864,6 +891,165 @@ impl Daemon {
                 });
                 Response::WorktreeRemoved {
                     path,
+                    branch_removed,
+                    note: reason,
+                }
+            }
+            Err(reason) => Response::error(ErrorCode::Conflict, reason),
+        }
+    }
+
+    /// Remove a linked worktree of the asking agent's project that nobody
+    /// works in, named by its path or by the branch checked out in it.
+    ///
+    /// Any running agent of the project may ask, not only the one that
+    /// made the worktree: sessions end, and a rule naming the maker would
+    /// leave a checkout nobody is allowed to remove. What protects the
+    /// work is the same as for an ended session's worktree: it must be
+    /// clean, git removes it without force, and its branch goes only when
+    /// git considers it merged. What protects the others is said first:
+    /// the main folder is never removed, nor the checkout the asker
+    /// stands in, nor one a live agent works in, nor one in which
+    /// anybody holds a path or whose branch anybody holds.
+    pub(super) async fn worktree_remove_named(
+        &self,
+        reference: &str,
+        path: Option<String>,
+        branch: Option<String>,
+    ) -> Response {
+        let (agent, checkout, _) = match self.reader_checkout(reference) {
+            Ok(v) => v,
+            Err(e) => return *e,
+        };
+        let path = match (path, &branch) {
+            (Some(path), None) => match physical(PathBuf::from(path)).await {
+                Ok(path) => Some(path),
+                Err(e) => return Response::invalid(e),
+            },
+            (None, Some(_)) => None,
+            _ => {
+                return Response::invalid(
+                    "name the worktree by its path or by its branch, one of the two",
+                );
+            }
+        };
+        let listing = match git(
+            checkout.clone(),
+            vec![
+                "worktree".into(),
+                "list".into(),
+                "--porcelain".into(),
+                "-z".into(),
+            ],
+        )
+        .await
+        {
+            Ok(output) if output.success => listed(&output.stdout),
+            Ok(output) => return Response::invalid(output.text),
+            Err(e) => return Response::invalid(e),
+        };
+        let Some(main) = listing.first().map(|main| main.path.clone()) else {
+            return Response::invalid("this agent's checkout is not a git repository's");
+        };
+        let found = listing.iter().find(|listed| match (&path, &branch) {
+            (Some(path), _) => listed.path == *path,
+            (None, branch) => listed.branch.is_some() && listed.branch == *branch,
+        });
+        let Some(target) = found else {
+            return Response::error(
+                ErrorCode::NotFound,
+                match (&path, &branch) {
+                    (Some(path), _) => {
+                        format!("no worktree of this project is at {}", path.display())
+                    }
+                    (None, branch) => format!(
+                        "no worktree of this project has {} checked out",
+                        branch.as_deref().unwrap_or_default()
+                    ),
+                },
+            );
+        };
+        let target_branch = target.branch.clone();
+        let target = target.path.clone();
+        if target == main {
+            return Response::invalid("that is the project's main folder, which is not removed");
+        }
+        if checkout.starts_with(&target) {
+            return Response::error(
+                ErrorCode::Conflict,
+                "you are working in that worktree: ask from another checkout once you have left it",
+            );
+        }
+        {
+            let mut state = lock(&self.state);
+            state.expire_leases();
+            let working = state.registry.live().find(|record| {
+                record.id != agent
+                    && record.project.as_ref().is_some_and(|project| {
+                        project::canonical(project.dir()).starts_with(&target)
+                    })
+            });
+            if let Some(working) = working {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    format!(
+                        "{} ({}) is working in that worktree",
+                        working.spec.name,
+                        working.id.short()
+                    ),
+                );
+            }
+            // A lease on a path there, or on its branch, is somebody's
+            // word that it is in use, the asker's own included: it is
+            // theirs to release first, rather than left behind on a path
+            // or a branch that is gone.
+            let key = ResourceKey::new(format!("path:{}", target.display()));
+            let on_branch = target_branch
+                .as_ref()
+                .map(|branch| ResourceKey::new(format!("branch:{branch}")));
+            let held = state
+                .leases
+                .holders_of(&key)
+                .into_iter()
+                .next()
+                .or_else(|| {
+                    on_branch
+                        .as_ref()
+                        .and_then(|key| state.leases.holders_of(key).into_iter().next())
+                });
+            if let Some(lease) = held {
+                let who = if lease.holder == agent {
+                    "you hold".to_owned()
+                } else {
+                    let name = state
+                        .registry
+                        .get(&lease.holder)
+                        .map(|record| record.spec.name.clone())
+                        .unwrap_or_else(|| lease.holder.short().to_owned());
+                    format!("{name} holds")
+                };
+                return Response::error(
+                    ErrorCode::Conflict,
+                    format!(
+                        "{who} {}: it is released before the worktree goes",
+                        lease.resource
+                    ),
+                );
+            }
+        }
+        match remove_finished(main, target.clone()).await {
+            Ok((branch_removed, reason)) => {
+                let mut state = lock(&self.state);
+                state.worktree_creators.remove(&target);
+                state.emit(EventKind::WorktreeRemoved {
+                    by: agent,
+                    path: target.clone(),
+                    branch: target_branch,
+                    branch_removed,
+                    reason: reason.clone(),
+                });
+                Response::WorktreeRemoved {
+                    path: target,
                     branch_removed,
                     note: reason,
                 }
@@ -1809,7 +1995,7 @@ mod lifecycle_tests {
         (project::canonical(&root), daemon)
     }
 
-    async fn register(daemon: &Arc<Daemon>, name: &str, workdir: &Path) {
+    async fn register(daemon: &Arc<Daemon>, name: &str, workdir: &Path) -> AgentId {
         let answer = daemon
             .handle(Request::Register {
                 spec: AgentSpec {
@@ -1821,10 +2007,10 @@ mod lifecycle_tests {
                 session: None,
             })
             .await;
-        assert!(
-            matches!(answer, Response::Agent { .. }),
-            "{name}: {answer:?}"
-        );
+        match answer {
+            Response::Agent { agent } => agent.id,
+            other => panic!("{name}: {other:?}"),
+        }
     }
 
     async fn create(
@@ -2180,6 +2366,224 @@ mod lifecycle_tests {
         for unnamable in ["two\nlines", "tab\there", "bell\u{7}"] {
             assert!(line(unnamable).is_err(), "{unnamable:?}");
         }
+    }
+
+    async fn remove(
+        daemon: &Arc<Daemon>,
+        agent: &str,
+        path: Option<&Path>,
+        branch: Option<&str>,
+    ) -> Response {
+        daemon
+            .handle(Request::WorktreeRemoveNamed {
+                agent: agent.into(),
+                path: path.map(|path| path.to_string_lossy().into_owned()),
+                branch: branch.map(str::to_owned),
+            })
+            .await
+    }
+
+    fn answered(answer: &Response, code: ErrorCode, why: &str) {
+        assert!(
+            matches!(answer, Response::Error { code: said, message, .. } if *said == code && message.contains(why)),
+            "expected {code:?} saying `{why}`: {answer:?}"
+        );
+    }
+
+    async fn request(daemon: &Arc<Daemon>, request: serde_json::Value) -> Response {
+        daemon
+            .handle(serde_json::from_value(request).expect("a request"))
+            .await
+    }
+
+    /// A running agent removes a worktree of its project that nobody
+    /// works in, by its path or its branch, whichever agent made it. The
+    /// main folder, the asker's own checkout, one another agent works in
+    /// or holds a path in, and one with unsaved work all stay, each with
+    /// its reason; a branch git does not consider merged is kept when its
+    /// worktree goes.
+    #[tokio::test]
+    async fn an_agent_removes_a_worktree_nobody_works_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        let first = made(create(&daemon, "builder", None, "agent/first").await);
+        let second = made(create(&daemon, "builder", None, "agent/second").await);
+
+        // Named by exactly one of the two, and a worktree of this project.
+        refused(
+            &remove(&daemon, "builder", None, None).await,
+            "one of the two",
+        );
+        refused(
+            &remove(&daemon, "builder", Some(&first), Some("agent/first")).await,
+            "one of the two",
+        );
+        answered(
+            &remove(&daemon, "builder", None, Some("agent/none")).await,
+            ErrorCode::NotFound,
+            "agent/none",
+        );
+        answered(
+            &remove(&daemon, "builder", Some(&tmp.path().join("nowhere")), None).await,
+            ErrorCode::NotFound,
+            "nowhere",
+        );
+        refused(
+            &remove(&daemon, "builder", Some(&root), None).await,
+            "main folder",
+        );
+        refused(
+            &remove(&daemon, "builder", None, Some("main")).await,
+            "main folder",
+        );
+
+        // Nobody is removed from under: not another agent, not the asker.
+        let nested = register(&daemon, "nested", &first).await;
+        answered(
+            &remove(&daemon, "builder", Some(&first), None).await,
+            ErrorCode::Conflict,
+            "nested",
+        );
+        answered(
+            &remove(&daemon, "nested", None, Some("agent/first")).await,
+            ErrorCode::Conflict,
+            "you are working in that worktree",
+        );
+
+        // Unsaved work stays where it is.
+        std::fs::write(second.join("note.txt"), "unsaved").unwrap();
+        answered(
+            &remove(&daemon, "builder", Some(&second), None).await,
+            ErrorCode::Conflict,
+            "uncommitted or untracked",
+        );
+        std::fs::remove_file(second.join("note.txt")).unwrap();
+
+        // A path held there keeps it, whoever holds it: the holder
+        // releases it first.
+        let held = format!("path:{}", second.join("held.rs").display());
+        let claimed = request(
+            &daemon,
+            serde_json::json!({"op": "claim", "agent": "nested", "resource": held}),
+        )
+        .await;
+        assert!(!matches!(claimed, Response::Error { .. }), "{claimed:?}");
+        answered(
+            &remove(&daemon, "builder", Some(&second), None).await,
+            ErrorCode::Conflict,
+            "nested holds",
+        );
+        answered(
+            &remove(&daemon, "nested", None, Some("agent/second")).await,
+            ErrorCode::Conflict,
+            "you hold",
+        );
+        assert!(second.exists());
+        let released = request(
+            &daemon,
+            serde_json::json!({"op": "release_resource", "agent": "nested", "resource": held}),
+        )
+        .await;
+        assert!(!matches!(released, Response::Error { .. }), "{released:?}");
+        // And so does its branch, held.
+        let claimed = request(
+            &daemon,
+            serde_json::json!({"op": "claim", "agent": "nested", "resource": "branch:agent/second"}),
+        )
+        .await;
+        assert!(!matches!(claimed, Response::Error { .. }), "{claimed:?}");
+        answered(
+            &remove(&daemon, "builder", Some(&second), None).await,
+            ErrorCode::Conflict,
+            "nested holds branch:agent/second",
+        );
+        let released = request(
+            &daemon,
+            serde_json::json!({"op": "release_resource", "agent": "nested", "resource": "branch:agent/second"}),
+        )
+        .await;
+        assert!(!matches!(released, Response::Error { .. }), "{released:?}");
+
+        // The agent that did not make it removes it, by its branch.
+        let answer = remove(&daemon, "nested", None, Some("agent/second")).await;
+        let Response::WorktreeRemoved {
+            path,
+            branch_removed,
+            ..
+        } = &answer
+        else {
+            panic!("not removed: {answer:?}");
+        };
+        assert_eq!(*path, second);
+        assert!(
+            *branch_removed,
+            "a branch with nothing of its own is merged"
+        );
+        assert!(!second.exists());
+        assert!(
+            daemon.recent_events(50).iter().any(|event| matches!(
+                &event.kind,
+                EventKind::WorktreeRemoved { by, path, branch, branch_removed: true, .. }
+                    if *by == nested && *path == second && branch.as_deref() == Some("agent/second")
+            )),
+            "the removal is announced, with who asked"
+        );
+        let listed = git(
+            first.clone(),
+            vec!["worktree".into(), "list".into(), "--porcelain".into()],
+        )
+        .await
+        .unwrap();
+        assert!(!listed.stdout.contains("agent-second"), "{}", listed.stdout);
+
+        // A branch with a commit of its own is kept when its worktree goes.
+        let third = made(create(&daemon, "builder", None, "agent/third").await);
+        std::fs::write(third.join("work.txt"), "work").unwrap();
+        run(&third, &["add", "work.txt"]).await;
+        run(&third, &["commit", "-qm", "work"]).await;
+        let answer = remove(&daemon, "builder", Some(&third), None).await;
+        assert!(
+            matches!(&answer, Response::WorktreeRemoved { branch_removed: false, note: Some(note), .. } if note.contains("is kept")),
+            "{answer:?}"
+        );
+        assert!(!third.exists());
+        let branches = git(
+            root.clone(),
+            vec!["branch".into(), "--list".into(), "agent/third".into()],
+        )
+        .await
+        .unwrap();
+        assert!(
+            branches.stdout.contains("agent/third"),
+            "{}",
+            branches.stdout
+        );
+    }
+
+    /// `git worktree list --porcelain -z` as the removal reads it: each
+    /// checkout's place and branch, the main one first, a detached one
+    /// with no branch.
+    #[test]
+    fn the_worktree_listing_is_read_by_place_and_branch() {
+        let text = "worktree /work/app\0HEAD 1111\0branch refs/heads/main\0\0\
+                    worktree /work/app/.agentdocker/worktrees/agent-fix\0HEAD 2222\0branch refs/heads/agent/fix\0\0\
+                    worktree /work/detached\0HEAD 3333\0detached\0\0";
+        let all = listed(text);
+        let places: Vec<(&Path, Option<&str>)> = all
+            .iter()
+            .map(|one| (one.path.as_path(), one.branch.as_deref()))
+            .collect();
+        assert_eq!(
+            places,
+            [
+                (Path::new("/work/app"), Some("main")),
+                (
+                    Path::new("/work/app/.agentdocker/worktrees/agent-fix"),
+                    Some("agent/fix")
+                ),
+                (Path::new("/work/detached"), None),
+            ]
+        );
     }
 
     /// `[worktrees] dir` in the daemon's settings moves the folder: an

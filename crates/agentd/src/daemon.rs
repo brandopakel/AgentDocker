@@ -2200,6 +2200,11 @@ impl Daemon {
             }
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
             Request::WorktreeRemove { agent } => self.worktree_remove(&agent).await,
+            Request::WorktreeRemoveNamed {
+                agent,
+                path,
+                branch,
+            } => self.worktree_remove_named(&agent, path, branch).await,
             Request::ReviewBranch { agent } => self.review_branch(&agent).await,
             Request::MergeBranch { from, agent, head } => {
                 self.merge_branch(&from, &agent, &head).await

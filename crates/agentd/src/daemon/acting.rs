@@ -127,6 +127,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
     match request {
         R::RecordEmission { agent, .. }
         | R::WorktreeCreate { agent, .. }
+        | R::WorktreeRemoveNamed { agent, .. }
         | R::Commit { agent, .. }
         | R::Integrate { agent, .. }
         | R::Checkpoint { agent, .. }
@@ -1303,6 +1304,7 @@ mod tests {
             serde_json::json!({"op": "mark_read", "conversation": "c1", "through": 4, "reader": "x"}),
             serde_json::json!({"op": "journal", "project": "p", "digest": {"reader": "x", "max_entries": 5, "max_chars": 500, "advance": true}}),
             serde_json::json!({"op": "worktree_create", "agent": "x", "path": "/w", "branch": "b", "from": "main"}),
+            serde_json::json!({"op": "worktree_remove_named", "agent": "x", "branch": "b"}),
             serde_json::json!({"op": "memory_search", "from": "x", "query": "q"}),
             serde_json::json!({"op": "memory_profile", "from": "x"}),
         ] {

@@ -739,6 +739,25 @@ pub fn event_line(event: &Event) -> String {
                 .map(|r| format!(", {r}"))
                 .unwrap_or_default()
         ),
+        EventKind::WorktreeRemoved {
+            by,
+            path,
+            branch,
+            branch_removed,
+            reason,
+        } => format!(
+            "{by} removed the worktree {}{}{}",
+            path.display(),
+            match (branch, branch_removed) {
+                (Some(branch), true) => format!(" and its branch {branch}"),
+                (Some(branch), false) => format!("; its branch {branch} stays"),
+                (None, _) => String::new(),
+            },
+            reason
+                .as_ref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default()
+        ),
         EventKind::IntegrationPrepared {
             agent,
             source_head,
