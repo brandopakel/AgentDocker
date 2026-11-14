@@ -1,12 +1,14 @@
-"""The development tools are pinned in one place, scripts/tool_pins.txt.
-Every other statement of a tool's version (a workflow's install step, the
-testing standard) must say the same, and verify.sh stops before the build
-slot and before anything is built when a tool its mode needs is missing."""
+"""The development tools are pinned in one place, scripts/tool_pins.txt,
+and the Rust they run on in another, rust-toolchain.toml. Every other
+statement of a version (a workflow's install step, the testing standard)
+must say the same, and verify.sh stops before the build slot and before
+anything is built when a tool its mode needs is missing."""
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -25,6 +27,29 @@ def installs(text):
             if tool:
                 version = VERSION.search(command)
                 found.append((tool.group(0), version.group(1) if version else None))
+    return found
+
+
+def toolchain_steps(text):
+    """Every step of a workflow that installs a Rust toolchain: the
+    version it names and the components it asks for, in file order."""
+    found = []
+    lines = text.splitlines()
+    for at, line in enumerate(lines):
+        if "dtolnay/rust-toolchain@" not in line:
+            continue
+        step = len(line) - len(line.lstrip())
+        version, components = None, []
+        for inner in lines[at + 1:]:
+            indent = len(inner) - len(inner.lstrip())
+            if inner.strip() and indent <= step:
+                break
+            key, _, value = inner.strip().partition(":")
+            if key == "toolchain":
+                version = value.strip().strip("\"'")
+            elif key == "components":
+                components = [name.strip() for name in value.split(",") if name.strip()]
+        found.append((version, components))
     return found
 
 
@@ -49,6 +74,43 @@ class ToolPins(unittest.TestCase):
                 self.assertIn(tool, pinned, f"{place.relative_to(ROOT)} installs {tool}, which scripts/tool_pins.txt does not pin")
                 self.assertEqual(version, pinned[tool], f"{place.relative_to(ROOT)} installs {tool} at {version}; scripts/tool_pins.txt pins {pinned[tool]}")
         self.assertEqual(stated, set(pinned), "a pinned tool that nothing installs, or the reverse")
+
+    def test_every_workflow_installs_the_rust_the_toolchain_file_names(self):
+        # One Rust for the local gates and for CI: a workflow that asked
+        # for `stable` would build with whatever was released last, and a
+        # new release could fail main with no change of ours.
+        pinned = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]
+        channel, wanted = pinned["channel"], pinned["components"]
+        self.assertRegex(channel, r"^[0-9]+\.[0-9]+\.[0-9]+$", "rust-toolchain.toml names one version, not a channel that moves")
+        seen = 0
+        for place in sorted((ROOT / ".github/workflows").glob("*.yml")):
+            for version, components in toolchain_steps(place.read_text()):
+                where = place.relative_to(ROOT)
+                if version == "nightly":
+                    continue
+                seen += 1
+                self.assertEqual(version, channel, f"{where} installs Rust {version}; rust-toolchain.toml names {channel}")
+                for component in wanted:
+                    self.assertIn(component, components,
+                                  f"{where} installs Rust {version} without {component}, which rust-toolchain.toml lists: "
+                                  "the first Cargo run would have to fetch it")
+        self.assertTrue(seen, "no workflow installs the pinned Rust")
+
+    def test_a_toolchain_step_is_read_with_its_version_and_components(self):
+        text = ("      - uses: dtolnay/rust-toolchain@abc # master\n"
+                "        with:\n"
+                "          toolchain: \"1.2.3\"\n"
+                "          components: llvm-tools-preview, rustfmt, clippy\n"
+                "          targets: ${{ matrix.target }}\n"
+                "      - uses: dtolnay/rust-toolchain@abc\n"
+                "        if: inputs.flag\n"
+                "        with:\n"
+                "          toolchain: nightly\n"
+                "      - run: cargo build\n"
+                "        with:\n"
+                "          toolchain: not-a-toolchain-step\n")
+        self.assertEqual(toolchain_steps(text),
+                         [("1.2.3", ["llvm-tools-preview", "rustfmt", "clippy"]), ("nightly", [])])
 
     def test_an_install_is_found_however_its_options_are_ordered(self):
         self.assertEqual(installs("run: cargo install cargo-nextest --locked --version 0.9.142"),

@@ -1,0 +1,8 @@
+# The Rust every Cargo run in this checkout uses: the local gates and CI
+# alike. Each workflow installs this version by name, with these
+# components (tests/test_tool_pins.py fails when one differs); fuzzing
+# alone asks for nightly. Raise it on purpose, here and in the workflows,
+# by a pull request that is green under the new version.
+[toolchain]
+channel = "1.100.0"
+components = ["rustfmt", "clippy"]
