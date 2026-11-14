@@ -10,15 +10,28 @@ python3 scripts/build_storage.py
 # pointing elsewhere (a private or test daemon), on CI, or with no daemon
 # answering at all, it runs without the lease. AGENTDOCKER_CAMPAIGN_LEASE=off
 # skips it too, for a caller that already holds the lease through its own
-# tools. Where a daemon answers, the run holds the lease or does not run:
+# tools, and AGENTDOCKER_CAMPAIGN_LEASE=<lease id> names a lease the caller
+# took on purpose for this run to work inside (see below). Where a daemon
+# answers, the run holds the lease or does not run:
 # a lease somebody else holds past the wait, or a run the daemon will not
 # let hold one, stops before any cargo process exists, and says why.
 #
 # The lease needs an agent to hold it. A session's own identity is used
 # when the daemon knows it (AGENTDOCKER_AGENT_ID, or the process the CLI
 # can tell it is); otherwise this run registers itself as an agent for its
-# duration — `verify-<pid>`, external, ended when the run ends. A lease the
-# caller already holds is kept and never released here. Whichever it is,
+# duration — `verify-<pid>`, external, ended when the run ends.
+#
+# The lease this run takes is a fresh one (`claim --fresh`): the slot is
+# for one build at a time, whoever the builders claim as, so a lease the
+# same agent already holds is another of its workers building, and this
+# run waits behind it like behind anybody else's. A plain claim would be
+# answered with that worker's lease, both would build at once, and the
+# first to finish would end the other's hold. A caller that holds the slot
+# on purpose and wants this run inside that hold names its lease in
+# AGENTDOCKER_CAMPAIGN_LEASE: it is renewed while the run lasts and never
+# released here. With a CLI too old to know `--fresh`, a lease the agent
+# held before this run is taken for the caller's own, as it always was.
+# Whichever it is,
 # the lease is renewed while the run lasts, since a cold gate outlives a
 # TTL; a renewal that fails means the slot is no longer this run's, and
 # the run stops rather than build on top of whoever has it now.
@@ -47,7 +60,10 @@ campaign_holders() {
 }
 campaign_start() {
   local mode="$1"
-  [ "${AGENTDOCKER_CAMPAIGN_LEASE:-on}" = "off" ] && return 0
+  # `on` (take the slot), `off` (do not), or the id of a lease the caller
+  # holds on purpose for this run.
+  local named="${AGENTDOCKER_CAMPAIGN_LEASE:-on}"
+  [ "$named" = "off" ] && return 0
   # Whatever this run decides covers the scripts it runs in turn (the
   # Python suite drives fixture campaigns through this file); a nested
   # run must not negotiate the slot against its own parent.
@@ -60,17 +76,22 @@ campaign_start() {
   campaign_cli ping >/dev/null 2>&1 || return 0
   local ttl=1800
   case "$mode" in bench|coverage|fuzz) ttl=3600 ;; esac
-  # The ids on the resource before asking: a claim by an agent that
-  # already holds it renews that lease and answers with the same id, and
-  # a lease that was the caller's before this run stays the caller's.
+  # The ids on the resource before asking: a plain claim by an agent that
+  # already holds it renews that lease and answers with the same id.
   local before
   before="$(campaign_holders | awk '{print $1}')"
+  # A fresh lease, unless the caller named the one it holds or the
+  # installed CLI does not know the word.
+  local fresh=()
+  if [ "$named" = "on" ] && campaign_cli claim --help 2>/dev/null | grep -q -e '--fresh'; then
+    fresh=(--fresh)
+  fi
   # `as` is `--as <agent>` when an identity is known, empty otherwise;
   # the expansion below is the form macOS's bash 3.2 accepts under set -u.
   local output as=()
   [ -n "$campaign_agent" ] && as=(--as "$campaign_agent")
   if ! output="$(campaign_cli claim task:local-cargo-campaign ${as[@]+"${as[@]}"} \
-      --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
+      ${fresh[@]+"${fresh[@]}"} --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
       --note "scripts/verify.sh $mode in $PWD" 2>&1)"; then
     case "$output" in
       *"give --as"*|*"specify the sender"*|*"--as <AGENT>"*|*"no agent matches"*)
@@ -89,13 +110,18 @@ campaign_start() {
         echo "verify.sh: registered as verify-$$ ($campaign_agent) for this run" >&2
         as=(--as "$campaign_agent")
         if ! output="$(campaign_cli claim task:local-cargo-campaign ${as[@]+"${as[@]}"} \
-            --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
+            ${fresh[@]+"${fresh[@]}"} --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
             --note "scripts/verify.sh $mode in $PWD" 2>&1)"; then
           echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
           echo "$output" >&2
           campaign_holders >&2
           exit 75
         fi ;;
+      *"already held by this agent"*)
+        echo "verify.sh: task:local-cargo-campaign is held by another run of this same agent; not starting cargo beside it. If that hold is this run's own, name it: AGENTDOCKER_CAMPAIGN_LEASE=<its lease id>." >&2
+        echo "$output" >&2
+        campaign_holders >&2
+        exit 75 ;;
       *)
         echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
         echo "$output" >&2
@@ -104,9 +130,18 @@ campaign_start() {
     esac
   fi
   local renewing="$output"
-  if grep -qx "$output" <<<"$before"; then
+  if [ "$named" != "on" ] && [ "$output" = "$named" ]; then
+    echo "verify.sh: running inside the caller's own hold of task:local-cargo-campaign ($output); renewed, not released here" >&2
+  elif [ "$named" != "on" ] && grep -qx "$output" <<<"$before"; then
+    # The agent holds the slot, but not by the lease the caller named:
+    # that is another of its workers building.
+    echo "verify.sh: AGENTDOCKER_CAMPAIGN_LEASE names $named, but this agent holds task:local-cargo-campaign as $output: another of its runs is building; not starting cargo beside it." >&2
+    campaign_holders >&2
+    exit 75
+  elif [ "$named" = "on" ] && [ ${#fresh[@]} -eq 0 ] && grep -qx "$output" <<<"$before"; then
     echo "verify.sh: task:local-cargo-campaign was already yours ($output); renewed, not released here" >&2
   else
+    [ "$named" != "on" ] && echo "verify.sh: the lease named in AGENTDOCKER_CAMPAIGN_LEASE ($named) is no longer held; this run took the slot itself" >&2
     campaign_lease="$output"
     echo "verify.sh: holding task:local-cargo-campaign ($campaign_lease) for this $mode run" >&2
   fi

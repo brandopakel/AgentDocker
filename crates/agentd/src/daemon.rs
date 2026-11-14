@@ -3102,6 +3102,7 @@ impl Daemon {
                 wait_secs,
                 priority,
                 automatic,
+                fresh,
             } => {
                 self.claim(
                     &agent,
@@ -3114,6 +3115,7 @@ impl Daemon {
                         wait_secs,
                         priority,
                         automatic,
+                        fresh,
                     },
                 )
                 .await

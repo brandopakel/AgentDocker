@@ -1368,6 +1368,14 @@ pub enum Request {
         /// asked for holds until it releases it or the TTL runs out.
         #[serde(default)]
         automatic: bool,
+        /// Only a new lease will do: one the agent already holds is in
+        /// the way like anybody else's and is not renewed. Answered
+        /// `conflict` at once, with `details.own`, however long the claim
+        /// would wait: the agent is not queued behind itself. For a
+        /// resource one process at a time may use, whoever its workers
+        /// claim as.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fresh: bool,
     },
     Renew {
         agent: String,
@@ -2610,6 +2618,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             }
         );
         let back = serde_json::to_string(&req).unwrap();

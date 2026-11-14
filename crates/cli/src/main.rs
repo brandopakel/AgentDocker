@@ -2221,7 +2221,18 @@ struct ClaimArgs {
     /// decides is whether the sum fits its capacity.
     #[arg(long)]
     amount: Option<u64>,
+    /// Only a new lease will do: one you already hold is in the way like
+    /// anybody else's, and is not renewed. For a slot one process at a
+    /// time may use (the machine's build slot): a second worker claiming
+    /// as the same agent then waits, with `--wait`, or is refused,
+    /// instead of being told it holds what the first one holds.
+    #[arg(long)]
+    fresh: bool,
 }
+
+/// How long a fresh claim waits before asking again while another worker
+/// of the same agent holds the lease.
+const FRESH_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Stack for the thread that does the work. Clap's derived parser for
 /// this many commands and the one future behind every command want more
@@ -5291,22 +5302,42 @@ async fn run() -> Result<()> {
             let agent = sender::resolve(&client, args.agent)
                 .await?
                 .context("claim as an agent: give --as, or run from an agent's session")?;
-            let request = Request::Claim {
-                agent,
-                resource: resource_key(&args.resource),
-                amount: args.amount,
-                mode: if args.shared {
-                    LeaseMode::Shared
-                } else {
-                    LeaseMode::Exclusive
-                },
-                ttl_secs: args.ttl,
-                note: args.note,
-                wait_secs: args.wait,
-                priority: args.priority,
-                automatic: false,
+            let resource = resource_key(&args.resource);
+            let started = std::time::Instant::now();
+            let answer = loop {
+                let request = Request::Claim {
+                    agent: agent.clone(),
+                    resource: resource.clone(),
+                    amount: args.amount,
+                    mode: if args.shared {
+                        LeaseMode::Shared
+                    } else {
+                        LeaseMode::Exclusive
+                    },
+                    ttl_secs: args.ttl,
+                    note: args.note.clone(),
+                    // What is left of the wait, when this is a later ask.
+                    wait_secs: args.wait.saturating_sub(started.elapsed().as_secs()),
+                    priority: args.priority,
+                    automatic: false,
+                    fresh: args.fresh,
+                };
+                let response = client.call_raw(&request).await?;
+                // Another worker of this same agent holds it. The daemon
+                // queues no agent behind itself, so the wait is kept here:
+                // ask again until it is spent.
+                let own = matches!(
+                    &response,
+                    Response::Error { code: agentdocker_core::ErrorCode::Conflict, details: Some(details), .. }
+                        if details["own"] == true
+                );
+                if own && started.elapsed().as_secs() < args.wait {
+                    tokio::time::sleep(FRESH_RETRY).await;
+                    continue;
+                }
+                break client::into_result(response)?;
             };
-            if let Response::Lease { lease } = client.call(&request).await? {
+            if let Response::Lease { lease } = answer {
                 println!("{}", lease.id);
             }
         }
