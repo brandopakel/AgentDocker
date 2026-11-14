@@ -617,6 +617,15 @@ pub enum EventKind {
         by: String,
         comment: crate::CommentId,
     },
+    /// A card nobody held stopped waiting on something off the board: the
+    /// agent taking it said what happened. `was` is what it waited on.
+    TaskUnblocked {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        was: String,
+        reason: String,
+    },
     /// A comment was rewritten, or deleted.
     TaskCommentChanged {
         task: crate::TaskId,
@@ -1168,6 +1177,7 @@ impl EventKind {
         "task_archived",
         "task_unarchived",
         "task_commented",
+        "task_unblocked",
         "task_comment_changed",
         "board_changed",
         "rule_changed",

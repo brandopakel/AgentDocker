@@ -408,6 +408,43 @@ impl State {
         kinds: Vec<EventKind>,
         documents: Vec<Doc>,
     ) -> Option<Response> {
+        self.commit_task_journaled(
+            task,
+            holder,
+            claimed,
+            released,
+            kinds,
+            documents,
+            Vec::new(),
+        )
+    }
+
+    /// [`Self::commit_task`], with the journal's lines for the change in
+    /// the same commit: each gets its place in the project's journal and
+    /// its `journal_appended` event here, and none of it lands without
+    /// the card.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_task_journaled(
+        &mut self,
+        task: &Task,
+        holder: Option<AgentId>,
+        claimed: Option<Lease>,
+        released: Vec<Lease>,
+        mut kinds: Vec<EventKind>,
+        documents: Vec<Doc>,
+        journal: Vec<JournalEntry>,
+    ) -> Option<Response> {
+        let previous_seq = self.journal_seq.clone();
+        let journal: Vec<JournalEntry> = journal
+            .into_iter()
+            .map(|mut entry| {
+                entry.seq = self.next_journal_seq(&entry.project);
+                entry
+            })
+            .collect();
+        kinds.extend(journal.iter().map(|entry| EventKind::JournalAppended {
+            entry: entry.clone(),
+        }));
         let now = task.updated_at;
         let record = holder.as_ref().map(|id| {
             let mut record = self
@@ -434,6 +471,7 @@ impl State {
                     kind: DOCUMENT,
                     id: task.id.as_str(),
                     documents: &documents,
+                    journal: &journal,
                     events,
                 };
                 store.task_transition(&transition, task)
@@ -451,9 +489,14 @@ impl State {
                 if let Some(lease) = &claimed {
                     state.leases.restore(lease.clone());
                 }
+                for entry in &journal {
+                    state.cache_journal(entry.clone());
+                }
             },
         );
         if committed != Persisted::Committed {
+            // The journal's places were taken for lines that were not kept.
+            self.journal_seq = previous_seq;
             return Some(self.write_failure().unwrap_or_else(|| {
                 Response::error(ErrorCode::StorageUnavailable, "the card was not recorded")
             }));
@@ -951,7 +994,15 @@ impl Daemon {
         take_over_from: Option<&str>,
         project: Option<&str>,
         board_selector: Option<&str>,
+        unblock: Option<&str>,
     ) -> Response {
+        // Saying a wait is over is about one card, taken afresh.
+        if unblock.is_some() && (task.is_none() || take_over_from.is_some()) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "name the card whose wait is over; a take-over takes a card already in progress, which waits on nothing to start",
+            );
+        }
         let named_project = match project {
             Some(selector) => match self.resolve_project(selector).await {
                 Ok(id) => Some(id),
@@ -1075,8 +1126,22 @@ impl Daemon {
             .clone()
             .filter(|_| held.is_none() && task.column.working());
         let from_lane = task.lane_on(&board).slug.clone();
+        // What the card waited on, and what the taker says happened.
+        let mut unblocked: Option<(String, String)> = None;
         let from = match take_over_from {
             None => {
+                if task.assignee.as_ref() == Some(&agent)
+                    && held.is_some()
+                    && unblock.is_some()
+                    && !task.external_blocker.trim().is_empty()
+                {
+                    // Its own held card that still waits: its holder says
+                    // so on the card itself, not by taking it again.
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        "you hold this card: say what it waits on with task update (`--blocker \"\"` clears it)",
+                    );
+                }
                 if task.assignee.as_ref() == Some(&agent) && held.is_some() {
                     // Its own held card: the pull is a renewal, so a
                     // retry after an uncertain reply changes nothing.
@@ -1116,6 +1181,23 @@ impl Daemon {
                         };
                     }
                 }
+                // What the card waited on off the board has happened, says
+                // whoever takes it: any agent of the card's project, since
+                // the one that filed it is a session that ends. Cleared on
+                // this copy only; nothing is kept unless the pull is.
+                if let Some(reason) = unblock {
+                    if record.project.as_ref().map(ProjectRef::id).as_ref() != Some(&task.project)
+                    {
+                        return Response::error(
+                            ErrorCode::Forbidden,
+                            "an agent says a card's wait is over in its own project",
+                        );
+                    }
+                    match task.unblock(reason) {
+                        Ok(was) => unblocked = Some((was, reason.trim().to_owned())),
+                        Err(error) => return refused_with(error, lapsed.as_ref()),
+                    }
+                }
                 if let Err(error) = task.pull(&agent, &board, named, now) {
                     return refused_with(error, lapsed.as_ref());
                 }
@@ -1150,7 +1232,7 @@ impl Daemon {
             Ok(lease) => lease,
             Err(response) => return *response,
         };
-        let kinds = vec![
+        let mut kinds = vec![
             EventKind::LeaseClaimed {
                 lease: lease.clone(),
             },
@@ -1171,13 +1253,60 @@ impl Daemon {
             },
             now,
         );
-        if let Some(error) = state.commit_task(
+        let mut documents = vec![entry_doc(&entry)];
+        let mut journal = Vec::new();
+        // A wait declared over is kept where the next reader looks: on the
+        // card, as a comment with what it waited on and what happened; in
+        // the journal; and as an event. All of it with the pull, or none.
+        if let Some((was, reason)) = unblocked {
+            let body = format!(
+                "Took the card and said its wait is over.\nIt waited on: {was}\nWhat happened: {reason}"
+            );
+            let comment = match Comment::new(&task, agent.as_str(), &body, None, now) {
+                Ok(comment) => comment,
+                Err(error) => return refused(error),
+            };
+            documents.push(comment_doc(&comment));
+            documents.push(entry_doc(&TaskEntry::new(
+                &task,
+                agent.as_str(),
+                TaskAction::Commented {
+                    comment: comment.id.clone(),
+                },
+                now,
+            )));
+            kinds.push(EventKind::TaskCommented {
+                task: task.id.clone(),
+                project: task.project.clone(),
+                by: agent.to_string(),
+                comment: comment.id.clone(),
+            });
+            journal.extend(state.plain_entry(
+                &record,
+                JournalKind::Note,
+                format!(
+                    "took {} and said its wait is over: it waited on \"{}\"; {reason}",
+                    task.handle(),
+                    agentdocker_core::memory::headline(&was)
+                ),
+                SummarySource::Synthesised,
+            ));
+            kinds.push(EventKind::TaskUnblocked {
+                task: task.id.clone(),
+                project: task.project.clone(),
+                by: agent.to_string(),
+                was,
+                reason,
+            });
+        }
+        if let Some(error) = state.commit_task_journaled(
             &task,
             Some(agent),
             Some(lease.clone()),
             Vec::new(),
             kinds,
-            vec![entry_doc(&entry)],
+            documents,
+            journal,
         ) {
             return error;
         }
@@ -2351,6 +2480,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             };
             async move { as_card(daemon.handle(request).await) }
         };
@@ -2674,6 +2804,7 @@ mod tests {
                     take_over_from: None,
                     project: None,
                     board: None,
+                    unblock: None,
                 })
                 .await,
         ) else {
@@ -2709,6 +2840,7 @@ mod tests {
                     take_over_from: None,
                     project: None,
                     board: None,
+                    unblock: None,
                 })
                 .await,
         ) {
@@ -2728,6 +2860,7 @@ mod tests {
                     take_over_from: None,
                     project: None,
                     board: None,
+                    unblock: None,
                 })
                 .await,
             Response::NothingReady { .. }
@@ -2742,6 +2875,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -3024,6 +3158,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             };
             let daemon = daemon.clone();
             async move { as_card(daemon.handle(request).await) }
@@ -3120,6 +3255,7 @@ mod tests {
                 take_over_from: from.map(str::to_owned),
                 project: None,
                 board: None,
+                unblock: None,
             };
             let daemon = daemon.clone();
             async move { as_card(daemon.handle(request).await) }
@@ -3195,6 +3331,7 @@ mod tests {
                             take_over_from: from,
                             project: None,
                             board: None,
+                            unblock: None,
                         })
                         .await,
                 )
@@ -3566,6 +3703,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -3595,6 +3733,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -3670,6 +3809,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -3723,6 +3863,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -3974,6 +4115,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
