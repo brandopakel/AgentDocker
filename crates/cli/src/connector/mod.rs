@@ -694,7 +694,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 eprintln!("agentdocker connector: admitting {client_id} refused: {error}");
                 return Err(OAuthError::new(
                     "temporarily_unavailable",
-                    "the connector cannot keep its state just now; try again",
+                    format!("the connector cannot keep its state just now ({error})"),
                 ));
             }
         }
@@ -736,6 +736,20 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         let outcome = change(&mut store);
         if let Err(error) = file.publish(&held, &store) {
             undo(&mut store, &outcome);
+            // The refused change had already replaced the file: put back
+            // what is kept, so the file says what memory says and a restart
+            // never honours a token that was not handed out.
+            if let StateError::Unsynced(_) = error {
+                match file.publish(&held, &store) {
+                    Ok(()) => {}
+                    Err(again @ StateError::Unsynced(_)) => eprintln!(
+                        "agentdocker connector: the refused change is taken back out of the state file, not yet durably: {again}"
+                    ),
+                    Err(again) => eprintln!(
+                        "agentdocker connector: a refused change stays in the state file until its next save: {again}"
+                    ),
+                }
+            }
             return Err(error);
         }
         Ok(outcome)
@@ -922,6 +936,21 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
 
     fn refuse_authorization(&self, refusal: AuthorizeRefusal) -> HttpResponse {
         match refusal {
+            // The connector could not keep its state: the client is fine,
+            // and the same request may succeed in a moment.
+            AuthorizeRefusal::Page(error) if error.code == "temporarily_unavailable" => {
+                HttpResponse::html(
+                    503,
+                    page(
+                        "Try again in a moment",
+                        &format!(
+                            "<p>{}</p><p>Nothing was changed. Reload this page in a moment; if it keeps happening, the connector's output on the machine that runs it says why.</p>",
+                            escape_html(&error.description)
+                        ),
+                    ),
+                )
+                .header("Retry-After", "5")
+            }
             AuthorizeRefusal::Page(error) => HttpResponse::html(
                 400,
                 page(
@@ -4307,11 +4336,147 @@ mod tests {
                 good,
                 "the old file stands"
             );
+
+            // The file is replaced but its folder cannot be synced: the
+            // refresh is refused, and the rotation it wrote is taken back
+            // out, so a fresh read of the file, as after a restart, still
+            // honours the refresh token the client holds.
+            mode(&folder, 0o300);
+            let answer = connector.handle(refresh_with(&refresh)).await;
+            let kept = on_file(&file);
+            mode(&folder, 0o700);
+            assert_eq!(answer.status, 503, "sync failing");
+            let form = [
+                ("grant_type".to_owned(), "refresh_token".to_owned()),
+                ("refresh_token".to_owned(), refresh.clone()),
+            ];
+            assert!(
+                kept.refreshing(&form).is_some(),
+                "the file still holds the refresh token the client has"
+            );
         }
 
         let answer = connector.handle(refresh_with(&refresh)).await;
         assert_eq!(answer.status, 200, "the token was never spent");
         assert!(on_file(&file).grants.values().all(oauth::Grant::active));
+    }
+
+    /// A revoke that replaces the file but cannot sync its folder says the
+    /// revocation is written and not durable, and how to finish. Run again
+    /// while that lasts it says the same, keeping the first moment; once
+    /// the state can be saved it publishes before it says done.
+    #[cfg(unix)]
+    #[test]
+    fn a_revoke_not_made_durable_says_so_and_a_retry_finishes_it() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root syncs a folder it cannot read all the same.
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = StateFile::at(&dir.path().join("connector/state.json"));
+        let mut store = Store::default();
+        store.issue(
+            &oauth::Consent {
+                vendor: Vendor::Claude,
+                client_id: "c".into(),
+                agent_name: "unsynced".into(),
+                generated: false,
+                project: "/p/orchard".into(),
+            },
+            AgentIdentity {
+                id: "a1".into(),
+                name: "unsynced".into(),
+                runtime: "claude".into(),
+                project: "/p/orchard".into(),
+            },
+            Utc::now(),
+        );
+        file.publish(&file.lock().unwrap(), &store).unwrap();
+        let folder = file.path().parent().unwrap().to_owned();
+        let mode = |mode| {
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        let first: chrono::DateTime<Utc> = "2026-09-17T22:00:00Z".parse().unwrap();
+
+        mode(0o300);
+        let unsynced = file.revoke("unsynced", first);
+        let again = file.revoke("unsynced", first + chrono::Duration::hours(1));
+        let kept = on_file(&file);
+        mode(0o700);
+
+        let said = unsynced.as_ref().unwrap_err().to_string();
+        assert!(
+            said.contains("written but not confirmed durable")
+                && said.contains("agentdocker connector revoke a1"),
+            "{said}"
+        );
+        let Err(state::RevokeError::NotDurable(revoked, state::StateError::Unsynced(_))) = unsynced
+        else {
+            panic!("{unsynced:?}")
+        };
+        assert!(!revoked.already);
+        assert_eq!(revoked.at, first);
+        assert_eq!(
+            kept.grants[&revoked.grant_id].revoked_at(),
+            Some(first),
+            "the file holds the revocation, so the server refuses the grant"
+        );
+        let Err(state::RevokeError::NotDurable(retried, _)) = again else {
+            panic!("a retry that could not publish said it was done: {again:?}")
+        };
+        assert!(retried.already);
+        assert_eq!(retried.at, first);
+
+        let finished = file
+            .revoke("unsynced", first + chrono::Duration::hours(2))
+            .unwrap();
+        assert!(finished.already);
+        assert_eq!(finished.at, first);
+    }
+
+    /// A metadata client whose admission the state cannot keep is told to
+    /// try again, as registration and tokens are: a 503 page, not a
+    /// refusal that reads as permanent; the same request then goes on.
+    #[tokio::test]
+    async fn a_metadata_client_is_told_to_try_again_when_the_state_cannot_be_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let (connector, _mock, _down, file) = on_disk(dir.path(), vec![]);
+        let fetcher: Arc<cimd::Fetcher> = Arc::new(|url: &str| {
+            Ok(json!({
+                "client_id": url,
+                "client_name": "ChatGPT",
+                "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+                "token_endpoint_auth_method": "none",
+            }))
+        });
+        let connector = connector.with_fetcher(fetcher);
+        let authorize = || {
+            get(&format!(
+                "/authorize?response_type=code&client_id=https%3A%2F%2Fchatgpt.com%2Foauth%2Fclient.json&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector_platform_oauth_redirect&code_challenge={}&code_challenge_method=S256&state=s",
+                oauth::s256(&"v".repeat(60))
+            ))
+        };
+
+        let held = file.lock().unwrap();
+        let answer = connector.handle(authorize()).await;
+        drop(held);
+        let body = String::from_utf8_lossy(&answer.body).into_owned();
+        assert_eq!(answer.status, 503, "{body}");
+        assert!(
+            answer
+                .headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("retry-after") && value == "5")
+        );
+        assert!(
+            body.contains("Try again in a moment") && !body.contains("Only a client registered"),
+            "{body}"
+        );
+        assert!(on_file(&file).clients.is_empty(), "nothing was admitted");
+
+        assert_eq!(connector.handle(authorize()).await.status, 200);
     }
 
     /// `connector revoke` is durable and happens once: a fresh reader of

@@ -1848,7 +1848,9 @@ Current behaviour that the sections above do not already state, by area.
   not the daemon is running. It then asks the daemon to mark the agent
   finished and says what came of it. If the daemon could not, it exits
   with the daemon's class, or 1 when the answer was lost; run it again to
-  retry that half.
+  retry that half. If the revocation is written but cannot be made durable,
+  it says so and exits 1 without asking the daemon; run it again once the
+  connector's state can be saved.
   `--tunnel tailscale` exposes it through Tailscale Funnel on this machine's
   own stable name and `--tunnel cloudflared` starts a quick tunnel;
   `connector install` runs it as a login service, `connector status` shows

@@ -40,8 +40,11 @@ pub enum StateError {
     Unreadable(std::io::Error),
     /// The file does not parse as a connector state.
     Corrupt(serde_json::Error),
-    /// The new state could not be written and made durable.
+    /// The new state could not be written: the old file stands.
     Publish(std::io::Error),
+    /// The new state replaced the file, so every reader sees it, but its
+    /// directory could not be synced: a crash could still undo it.
+    Unsynced(std::io::Error),
 }
 
 impl std::fmt::Display for StateError {
@@ -57,6 +60,10 @@ impl std::fmt::Display for StateError {
             Self::Unreadable(error) => write!(f, "cannot read the connector state: {error}"),
             Self::Corrupt(error) => write!(f, "the connector state does not parse: {error}"),
             Self::Publish(error) => write!(f, "cannot save the connector state: {error}"),
+            Self::Unsynced(error) => write!(
+                f,
+                "the connector state was replaced but cannot be made durable: {error}"
+            ),
         }
     }
 }
@@ -131,7 +138,9 @@ impl StateFile {
 
     /// Write the store whole and make it durable before returning: staged
     /// beside the file, readable by its owner only, synced, renamed over
-    /// the file, the directory synced. A failure leaves the old file.
+    /// the file, the directory synced. A failure before the rename leaves
+    /// the old file ([`StateError::Publish`]); one after it leaves the new
+    /// file in place, not yet durable ([`StateError::Unsynced`]).
     pub fn publish(&self, _held: &Held, store: &Store) -> Result<(), StateError> {
         let parent = self.path.parent().ok_or(StateError::Missing)?;
         let staged = parent.join(format!(".state.{}.tmp", std::process::id()));
@@ -151,14 +160,25 @@ impl StateFile {
                 file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
             }
             file.write_all(&bytes)?;
-            file.sync_all()?;
-            drop(file);
-            agentdocker_host::files::publish_staged(&staged, &self.path)
+            file.sync_all()
         })();
-        if written.is_err() {
+        // Unix renames, then syncs the directory, so a failure is known to
+        // fall before the file was replaced or after; Windows moves it
+        // written through, in one step.
+        #[cfg(unix)]
+        let replaced = written.and_then(|()| std::fs::rename(&staged, &self.path));
+        #[cfg(not(unix))]
+        let replaced =
+            written.and_then(|()| agentdocker_host::files::publish_staged(&staged, &self.path));
+        if let Err(error) = replaced {
             let _ = std::fs::remove_file(&staged);
+            return Err(StateError::Publish(error));
         }
-        written.map_err(StateError::Publish)
+        #[cfg(unix)]
+        std::fs::File::open(parent)
+            .and_then(|folder| folder.sync_all())
+            .map_err(StateError::Unsynced)?;
+        Ok(())
     }
 
     /// The state at a server's start, the file made if there was none:
@@ -173,7 +193,9 @@ impl StateFile {
     /// End the grant `reference` names, as `connector revoke` does: under
     /// the lock, from the file as it is now, changing only that grant's
     /// revocation and publishing durably before saying so. A grant already
-    /// revoked keeps the moment it was.
+    /// revoked keeps the moment it was, and is published again all the
+    /// same: an earlier revoke may have replaced the file without making
+    /// it durable, and only a publish that completes says it is.
     pub fn revoke(&self, reference: &str, now: DateTime<Utc>) -> Result<Revoked, RevokeError> {
         let held = self.lock()?;
         let mut store = self.read(&held, true)?;
@@ -181,18 +203,24 @@ impl StateFile {
             return Err(RevokeError::NoGrant(reference.to_owned()));
         };
         let already = grant.revoked_at();
-        let (agent_id, agent_name) = (grant.agent_id.clone(), grant.agent_name.clone());
-        if already.is_none() {
-            store.revoke(&grant_id, now);
-            self.publish(&held, &store)?;
-        }
-        Ok(Revoked {
-            grant_id,
-            agent_id,
-            agent_name,
+        let revoked = Revoked {
+            agent_id: grant.agent_id.clone(),
+            agent_name: grant.agent_name.clone(),
             at: already.unwrap_or(now),
             already: already.is_some(),
-        })
+            grant_id,
+        };
+        store.revoke(&revoked.grant_id, now);
+        match self.publish(&held, &store) {
+            Ok(()) => Ok(revoked),
+            // The old file stands, and it had no revocation.
+            Err(error @ StateError::Publish(_)) if !revoked.already => {
+                Err(RevokeError::State(error))
+            }
+            // The file holds the revocation, written now or before, and
+            // nothing says it is durable.
+            Err(error) => Err(RevokeError::NotDurable(Box::new(revoked), error)),
+        }
     }
 }
 
@@ -211,7 +239,11 @@ pub struct Revoked {
 #[derive(Debug)]
 pub enum RevokeError {
     NoGrant(String),
+    /// Nothing was revoked.
     State(StateError),
+    /// The file holds the revocation, so the serving connector refuses the
+    /// grant, but it is not known to be durable: a crash could undo it.
+    NotDurable(Box<Revoked>, StateError),
 }
 
 impl From<StateError> for RevokeError {
@@ -228,6 +260,11 @@ impl std::fmt::Display for RevokeError {
                 "no connector agent named `{reference}`; see `agentdocker connector grants`"
             ),
             Self::State(error) => write!(f, "nothing was revoked: {error}"),
+            Self::NotDurable(revoked, error) => write!(
+                f,
+                "{} ({}): the revocation is written but not confirmed durable, so a crash could undo it ({error}). The daemon was not asked to finish the agent. Run `agentdocker connector revoke {}` again once the connector's state can be saved",
+                revoked.agent_name, revoked.agent_id, revoked.agent_id
+            ),
         }
     }
 }
