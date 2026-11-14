@@ -2825,6 +2825,11 @@ impl Daemon {
                 as_of,
             } => self.memory_profile(from, project, max_chars, as_of).await,
             Request::MemoryForget { from, memory } => self.memory_forget(&from, &memory),
+            Request::MemoryRetire {
+                from,
+                memory,
+                reason,
+            } => self.memory_retire(&from, &memory, &reason),
             Request::Files { project, task } => self.files(project, task).await,
             Request::FilePut {
                 from,

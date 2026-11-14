@@ -193,6 +193,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::RoleDelete { from, .. }
         | R::MemoryAdd { from, .. }
         | R::MemoryForget { from, .. }
+        | R::MemoryRetire { from, .. }
         | R::PlanSave { from, .. }
         | R::FilePut { from, .. }
         | R::FileLink { from, .. }

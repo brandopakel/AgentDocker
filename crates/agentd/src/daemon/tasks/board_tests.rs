@@ -1640,6 +1640,253 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
     }
 }
 
+/// Any agent of the project retires a memory another kept: it is no
+/// longer said, the history says who retired it and why, and the journal
+/// has a line. Forgetting the retirement brings the memory back, and is
+/// its author's, the retired memory's author's or the person's to do. A
+/// retirement is neither retired nor replaced, and an agent retires
+/// nothing in a project that is not its own.
+#[tokio::test]
+async fn any_agent_of_the_project_retires_a_memory_and_forgetting_that_brings_it_back() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let add = |from: String, project: Option<String>, text: &str, supersedes: Option<String>| {
+        Request::MemoryAdd {
+            from,
+            project,
+            text: text.into(),
+            links: vec![],
+            supersedes,
+            standing: true,
+            forget_after: None,
+            roles: vec![],
+            valid_from: None,
+        }
+    };
+    let retire = |from: String, memory: String, reason: &str| Request::MemoryRetire {
+        from,
+        memory,
+        reason: reason.into(),
+    };
+    let Response::Memory { memory: first, .. } = d
+        .handle(add(
+            f.agent.id.to_string(),
+            None,
+            "Deploys go out on Fridays",
+            None,
+        ))
+        .await
+    else {
+        panic!("kept")
+    };
+    let said = || async {
+        let Response::Memories { memories, .. } = d
+            .handle(Request::MemoryProfile {
+                from: Some(f.agent.id.to_string()),
+                project: None,
+                max_chars: None,
+                as_of: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        memories.into_iter().map(|m| m.id).collect::<Vec<_>>()
+    };
+    let search = |query: &str, history: bool| Request::MemorySearch {
+        from: Some(f.agent.id.to_string()),
+        project: None,
+        query: query.into(),
+        limit: None,
+        as_of: None,
+        include_superseded: history,
+        min_score: None,
+    };
+    assert_eq!(said().await, std::slice::from_ref(&first.id));
+
+    // A reason is asked for.
+    assert!(matches!(
+        d.handle(retire(f.peer.id.to_string(), first.id.clone(), "  "))
+            .await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+    // The peer did not keep it, and retires it all the same, by a prefix.
+    let Response::Memory {
+        memory: retirement, ..
+    } = d
+        .handle(retire(
+            f.peer.id.to_string(),
+            first.id[..6].to_owned(),
+            "Deploys moved to a release train",
+        ))
+        .await
+    else {
+        panic!("retired")
+    };
+    assert!(retirement.retirement);
+    assert_eq!(retirement.supersedes.as_deref(), Some(first.id.as_str()));
+    assert_eq!(retirement.author, f.peer.id.to_string());
+    assert!(said().await.is_empty(), "no longer said");
+    for words in ["deploys", "release train"] {
+        let Response::Memories { memories, .. } = d.handle(search(words, false)).await else {
+            panic!()
+        };
+        assert!(memories.is_empty(), "{words}");
+    }
+    let Response::MemoryHistory { memories, replaced } = d.handle(search("deploys", true)).await
+    else {
+        panic!("history")
+    };
+    assert_eq!(memories.len(), 1);
+    assert_eq!(memories[0].id, first.id);
+    let was = &replaced[&first.id];
+    assert_eq!(was.by, retirement.id);
+    assert_eq!(
+        was.retired,
+        Some(agentdocker_core::memory::Retired {
+            by: f.peer.id.to_string(),
+            reason: "Deploys moved to a release train".into(),
+        })
+    );
+    // The journal has the retiring agent's line.
+    let Response::Journal { entries, .. } = d
+        .handle(Request::Journal {
+            project: f.work.clone(),
+            since_seq: None,
+            until_seq: None,
+            agent: None,
+            branch: None,
+            kind: None,
+            path: None,
+            grep: Some("retired memory".into()),
+            limit: 20,
+            digest: None,
+        })
+        .await
+    else {
+        panic!("journal")
+    };
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert!(
+        entries[0].summary.contains(&first.id),
+        "{}",
+        entries[0].summary
+    );
+    assert!(
+        entries[0]
+            .summary
+            .ends_with("Deploys moved to a release train"),
+        "{}",
+        entries[0].summary
+    );
+    assert_eq!(entries[0].agent.as_ref(), Some(&f.peer.id));
+
+    // Already retired; and a retirement is no memory to retire or replace.
+    for target in [first.id.clone(), retirement.id.clone()] {
+        assert!(
+            matches!(
+                d.handle(retire(f.agent.id.to_string(), target.clone(), "again"))
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "{target}"
+        );
+    }
+    assert!(matches!(
+        d.handle(add(
+            f.agent.id.to_string(),
+            None,
+            "Deploys go out daily",
+            Some(retirement.id.clone())
+        ))
+        .await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+
+    // The retired memory's author brings it back, though the peer wrote
+    // the retirement.
+    assert!(matches!(
+        d.handle(Request::MemoryForget {
+            from: f.agent.id.to_string(),
+            memory: retirement.id.clone(),
+        })
+        .await,
+        Response::Ok
+    ));
+    assert_eq!(said().await, std::slice::from_ref(&first.id), "said again");
+
+    // The person retires it; forgetting the memory itself then takes its
+    // retirement with it.
+    let Response::Memory { memory: again, .. } = d
+        .handle(retire(
+            HUMAN.into(),
+            first.id.clone(),
+            "superseded by the runbook",
+        ))
+        .await
+    else {
+        panic!("retired by the person")
+    };
+    assert!(said().await.is_empty());
+    assert!(matches!(
+        d.handle(Request::MemoryForget {
+            from: HUMAN.into(),
+            memory: first.id.clone(),
+        })
+        .await,
+        Response::Ok
+    ));
+    assert!(matches!(
+        d.handle(Request::MemoryForget {
+            from: HUMAN.into(),
+            memory: again.id.clone(),
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+
+    // A memory of another project is not this agent's to retire.
+    let other = std::path::Path::new(&f.work).join("other-project");
+    std::fs::create_dir_all(&other).unwrap();
+    let Response::Memory {
+        memory: elsewhere, ..
+    } = d
+        .handle(add(
+            f.agent.id.to_string(),
+            Some(other.display().to_string()),
+            "a fact of another project",
+            None,
+        ))
+        .await
+    else {
+        panic!("kept elsewhere")
+    };
+    assert!(matches!(
+        d.handle(retire(
+            f.peer.id.to_string(),
+            elsewhere.id.clone(),
+            "not mine to say"
+        ))
+        .await,
+        Response::Error {
+            code: ErrorCode::Forbidden,
+            ..
+        }
+    ));
+}
+
 /// `mine` is the person's cards and those held by the agents they launched:
 /// for the person, or a reader who names nobody. An agent asking means its
 /// own, as `me` does; a holder nobody says the person launched is not

@@ -3554,6 +3554,7 @@ mod tests {
             forget_after: None,
             roles: vec![],
             valid_from: None,
+            retirement: false,
         };
         let line = memory_line(&memory);
         assert!(

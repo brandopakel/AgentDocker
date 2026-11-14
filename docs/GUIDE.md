@@ -663,7 +663,7 @@ turn. A copied instruction is not executed by AgentDocker.
 | `blame <path>` | Who changed a file, oldest first |
 | `overlap` | Paths changed in more than one checkout: what will collide |
 | `observe` / `reads` / `stale` | Record what was read, and check it is still true |
-| `memory add <text>` / `search <words>` / `profile` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one, `add --standing` keeps a convention said first (when a new session will not be told it in full, `add` says so on stderr: either it is too long by itself, to be superseded by a shorter one, or what a session is told in full has no room for it, with how full that is; sessions are then told it by its first words until room is made), `add --forget-after <when>` (an RFC 3339 time, or `90m`, `12h`, `7d`, `2w` from now) stops saying it after then, `add --role reviewer` says it only to that role's holders and you, `add --valid-from <when>` (an RFC 3339 time, a date, or `3d` ago) records a fact that became true no later than now; `search --as-of <when>` and `profile --as-of <when>` read memory as it stood then, `search --history` lists replaced memories too with what replaced each; `search` and `profile` read as the agent whose session runs them, or as you, who read every memory; `profile` lists what agents should know first, within 4000 characters, and `profile --session` exactly what a new session is told in full at its start, which is less (2000 characters of memories, as lines within 4 KiB); each lists on stderr the standing memories it had no room for, by id and first words, and `profile` says there when a session's start leaves any out |
+| `memory add <text>` / `search <words>` / `profile` / `retire <id> --reason <why>` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one, `retire` stops one that is no longer true being said when nothing takes its place (any agent of the project may, whoever kept it; it stays in the history with the reason, and `forget <the retirement's id>`, which `retire` prints, brings it back), `forget` drops one for good (your own, or any as you), `add --standing` keeps a convention said first (when a new session will not be told it in full, `add` says so on stderr: either it is too long by itself, to be superseded by a shorter one, or what a session is told in full has no room for it, with how full that is; sessions are then told it by its first words until room is made), `add --forget-after <when>` (an RFC 3339 time, or `90m`, `12h`, `7d`, `2w` from now) stops saying it after then, `add --role reviewer` says it only to that role's holders and you, `add --valid-from <when>` (an RFC 3339 time, a date, or `3d` ago) records a fact that became true no later than now; `search --as-of <when>` and `profile --as-of <when>` read memory as it stood then, `search --history` lists replaced and retired memories too, with what replaced each or who retired it and why; `search` and `profile` read as the agent whose session runs them, or as you, who read every memory; `profile` lists what agents should know first, within 4000 characters, and `profile --session` exactly what a new session is told in full at its start, which is less (2000 characters of memories, as lines within 4 KiB); each lists on stderr the standing memories it had no room for, by id and first words, and `profile` says there when a session's start leaves any out |
 
 ### Work in isolation, then merge
 
@@ -813,7 +813,8 @@ number instead.
 `list_plans` · `get_plan` · `save_plan` · `list_files` · `get_file` ·
 `put_file` · `link_file`
 
-`add_memory` · `search_memory` · `get_profile` · `forget_memory`
+`add_memory` · `search_memory` · `get_profile` · `retire_memory` ·
+`forget_memory`
 
 A browser agent on the remote connector has the messaging tools and
 `list_tasks`, `get_task`, `search_tasks`, `comment_task`, `list_plans` and
@@ -1797,7 +1798,9 @@ Current behaviour that the sections above do not already state, by area.
   rarer ones counting for more and the newer memory first on a tie; an
   identifier such as `task_id` is one word, so `task` does not find it,
   while `-` and `:` separate words. A memory that is no longer true is
-  replaced (`--supersedes`) or forgotten. Each prompt you type is also told
+  replaced (`--supersedes`), retired (`memory retire`, `retire_memory`:
+  any agent of the project may, so tidying memory does not wait for
+  whoever wrote it, or for you) or forgotten. Each prompt you type is also told
   the few memories that answer it: each once a session in Claude Code and
   Codex, and in OpenCode again with each prompt it answers, since OpenCode
   keeps a prompt's context only for that prompt's turn. After a session is

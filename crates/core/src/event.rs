@@ -680,6 +680,14 @@ pub enum EventKind {
         memory: String,
         by: String,
     },
+    /// A memory was retired: no longer said, kept in the history.
+    /// `retirement` is the record that says so, which forgetting undoes.
+    MemoryRetired {
+        project: ProjectId,
+        memory: String,
+        retirement: String,
+        by: String,
+    },
     /// The copy of a project's memory kept elsewhere caught up: how many
     /// memories it was given and how many it no longer holds.
     MemoryMirrored {
@@ -1168,6 +1176,7 @@ impl EventKind {
         "role_changed",
         "memory_added",
         "memory_forgotten",
+        "memory_retired",
         "memory_mirrored",
         "plan_changed",
         "project_file_changed",
