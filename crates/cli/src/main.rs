@@ -3097,25 +3097,51 @@ async fn run() -> Result<()> {
                 None if reader == HUMAN => Some(std::env::current_dir()?.display().to_string()),
                 None => None,
             };
-            match client
+            let Response::Brief { mut brief } = client
                 .call(&Request::Brief {
-                    from: reader,
-                    project,
+                    from: reader.clone(),
+                    project: project.clone(),
                 })
                 .await?
-            {
-                Response::Brief { brief } if json => {
-                    println!("{}", serde_json::to_string_pretty(&brief)?);
+            else {
+                bail!("the daemon gave no brief");
+            };
+            // GitHub's open pull requests, each with the gate's word at its
+            // head: asked here, never by the daemon or a session's hook.
+            let pulls = crate::gate::open_pulls(&client, Some(reader), project).await;
+            if pulls.is_ok() {
+                brief.not_covered.clear();
+            }
+            if json {
+                let pulls = match &pulls {
+                    Ok(lines) => serde_json::json!({ "lines": lines }),
+                    Err(error) => serde_json::json!({ "error": format!("{error:#}") }),
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "brief": brief, "pull_requests": pulls })
+                    )?
+                );
+            } else {
+                let max = if all {
+                    usize::MAX
+                } else {
+                    brief::COMMAND_BYTES
+                };
+                println!("{}", brief::render(&brief, chrono::Utc::now(), max));
+                match pulls {
+                    Ok(lines) if lines.is_empty() => println!("No open pull requests on GitHub."),
+                    Ok(lines) => {
+                        println!(
+                            "Open pull requests on GitHub, asked now (titles quoted as written):"
+                        );
+                        for line in lines {
+                            println!("{line}");
+                        }
+                    }
+                    Err(error) => println!("GitHub was not asked for pull requests: {error:#}"),
                 }
-                Response::Brief { brief } => {
-                    let max = if all {
-                        usize::MAX
-                    } else {
-                        brief::COMMAND_BYTES
-                    };
-                    println!("{}", brief::render(&brief, chrono::Utc::now(), max));
-                }
-                other => bail!("unexpected answer to brief: {other:?}"),
             }
         }
         Command::Memory(args) => {

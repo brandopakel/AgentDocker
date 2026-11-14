@@ -1443,7 +1443,10 @@ mod tests {
             checkpoints: Vec::new(),
             questions: Vec::new(),
             leases: Vec::new(),
-            not_covered: vec!["checkouts".into()],
+            checkouts: Vec::new(),
+            checkouts_clean: 0,
+            checkouts_unread: 0,
+            not_covered: vec!["pull requests".into()],
         });
         let delivery = session_start(&backend, &input("SessionStart"), &record).await;
         let text = delivery.output["hookSpecificOutput"]["additionalContext"]

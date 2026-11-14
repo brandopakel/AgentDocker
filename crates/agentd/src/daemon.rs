@@ -550,6 +550,14 @@ struct State {
     /// its linked worktrees. Refreshed off the lock on the same tick as
     /// the VCS sweep, because enumerating them runs git.
     project_checkouts: HashMap<ProjectId, Vec<PathBuf>>,
+    /// Where each checkout stood when git was last asked, by path, with
+    /// its project: read off the lock on the checkout tick and by a brief
+    /// that finds none read. In memory only: a restarted daemon reads them
+    /// again.
+    checkout_reads: HashMap<PathBuf, (ProjectId, agentdocker_core::brief::CheckoutRead)>,
+    /// The projects whose checkouts are being read right now, so a tick
+    /// and a brief never read the same project at once.
+    checkout_scans: HashSet<ProjectId>,
     /// Checkouts the daemon is committing in right now. The watcher polls
     /// on its own schedule and will see HEAD move part-way through, so
     /// without this it writes its own guessed-at entry for a commit the
@@ -1763,6 +1771,8 @@ impl Daemon {
                 last_branch: HashMap::new(),
                 worktree_creators: HashMap::new(),
                 project_checkouts: HashMap::new(),
+                checkout_reads: HashMap::new(),
+                checkout_scans: HashSet::new(),
                 committing: std::collections::BTreeSet::new(),
                 controller_pins: HashMap::new(),
                 question_waiters: HashSet::new(),
@@ -4155,6 +4165,28 @@ impl State {
             |store, event| store.append_event(event),
             |_| {},
         );
+    }
+
+    /// A project's checkouts: those git lists for it, and the checkout of
+    /// each of its live agents, once each.
+    pub(crate) fn project_checkout_dirs(&self, project: &ProjectId) -> Vec<PathBuf> {
+        let mut dirs = self
+            .project_checkouts
+            .get(project)
+            .cloned()
+            .unwrap_or_default();
+        for dir in self
+            .registry
+            .live()
+            .filter_map(|a| a.project.as_ref())
+            .filter(|p| &p.id() == project)
+            .map(|p| p.dir().to_path_buf())
+        {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        dirs
     }
 
     pub fn resolve(&mut self, reference: &str) -> Result<AgentId, Box<Response>> {

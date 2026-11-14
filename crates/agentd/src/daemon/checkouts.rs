@@ -1,4 +1,9 @@
 use super::*;
+use agentdocker_core::brief::CheckoutRead;
+
+/// How long a tick gives git, in all, to read where one project's
+/// checkouts stand.
+const TICK_STANDINGS: std::time::Duration = std::time::Duration::from_secs(5);
 
 impl Daemon {
     pub(super) async fn vcs_for(workdir: Option<PathBuf>) -> Option<VcsState> {
@@ -233,14 +238,24 @@ impl Daemon {
         })
         .await
         .unwrap_or_default();
+        let mut listed = Vec::new();
         {
             let mut state = lock(&self.state);
             for (id, dirs) in found {
                 if dirs.is_empty() {
                     continue;
                 }
-                state.project_checkouts.insert(id, dirs);
+                // A checkout the project no longer has is no longer read.
+                state
+                    .checkout_reads
+                    .retain(|dir, (project, _)| project != &id || dirs.contains(dir));
+                state.project_checkouts.insert(id.clone(), dirs.clone());
+                listed.push((id, dirs));
             }
+        }
+        // Where each stands, for a brief: read on the same tick.
+        for (id, dirs) in listed {
+            self.read_standings(&id, dirs, TICK_STANDINGS).await;
         }
         // Take each checkout's head now rather than waiting for a
         // filesystem event. Two reasons: a checkout first seen at the
@@ -249,6 +264,50 @@ impl Daemon {
         // under the watcher for the days it misses something.
         for checkout in self.watch_targets() {
             self.note_checkout(&checkout).await;
+        }
+    }
+
+    /// Read where each of `checkouts` of `project` stands
+    /// (`vcs::standing`), off the lock and within `budget` in all, unless
+    /// that project's checkouts are being read already: a tick and a brief
+    /// share one scan. A checkout the budget does not reach keeps what was
+    /// known of it, and git is stopped at the budget's end. Each answer is
+    /// published only while its checkout is still the project's, since the
+    /// project's checkouts may change while git is asked.
+    pub(super) async fn read_standings(
+        &self,
+        project: &ProjectId,
+        checkouts: Vec<PathBuf>,
+        budget: std::time::Duration,
+    ) {
+        if checkouts.is_empty() || !lock(&self.state).checkout_scans.insert(project.clone()) {
+            return;
+        }
+        let read = tokio::task::spawn_blocking(move || {
+            let deadline = std::time::Instant::now() + budget;
+            let mut read = Vec::new();
+            for dir in checkouts {
+                let at = Utc::now();
+                let outcome = match vcs::standing(&dir, deadline) {
+                    Ok(standing) => CheckoutRead::Read { at, standing },
+                    Err(vcs::ReadError::TimedOut) => break,
+                    Err(error) => CheckoutRead::Failed {
+                        at,
+                        error: error.to_string(),
+                    },
+                };
+                read.push((dir, outcome));
+            }
+            read
+        })
+        .await
+        .unwrap_or_default();
+        let mut state = lock(&self.state);
+        state.checkout_scans.remove(project);
+        for (dir, outcome) in read {
+            if state.project_checkout_dirs(project).contains(&dir) {
+                state.checkout_reads.insert(dir, (project.clone(), outcome));
+            }
         }
     }
 

@@ -6,11 +6,20 @@
 //! agent's session.
 
 use super::*;
-use agentdocker_core::brief::{CardRecord, Reader, Records, compose};
+use agentdocker_core::brief::{CardRecord, CheckoutRead, CheckoutRecord, Reader, Records, compose};
+use agentdocker_core::gate::Gate;
+
+/// How long a brief gives git, in all, to read checkouts nothing has read
+/// yet: a session start waits for it.
+const COLD_READ: std::time::Duration = std::time::Duration::from_millis(300);
 use agentdocker_core::{Checkpoint, HUMAN, Task};
 
 impl Daemon {
-    pub(super) async fn work_brief(&self, from: &str, project: Option<&str>) -> Response {
+    pub(super) async fn work_brief(
+        self: &Arc<Self>,
+        from: &str,
+        project: Option<&str>,
+    ) -> Response {
         let person = from == HUMAN || {
             let state = lock(&self.state);
             state
@@ -84,11 +93,55 @@ impl Daemon {
             },
             Reader::Person => Reader::Person,
         };
-        match self.brief_records(&project) {
-            Ok(records) => Response::Brief {
-                brief: compose(&records, &reader),
-            },
-            Err(response) => *response,
+        // Checkouts nothing has read yet are read now, briefly; those the
+        // time does not reach are said to be unread.
+        let unread: Vec<PathBuf> = {
+            let state = lock(&self.state);
+            state
+                .project_checkout_dirs(&project)
+                .into_iter()
+                .filter(|dir| !state.checkout_reads.contains_key(dir))
+                .collect()
+        };
+        self.read_standings(&project, unread, COLD_READ).await;
+        let mut records = match self.brief_records(&project) {
+            Ok(records) => records,
+            Err(response) => return *response,
+        };
+        // The gate's word at each pushed head, as `agentdocker gate` would
+        // give it for that branch and commit.
+        let pushed: Vec<(String, String)> = records
+            .checkout_reads
+            .iter()
+            .filter_map(|c| match &c.read {
+                CheckoutRead::Read { standing, .. } if standing.stands() => {
+                    Some((standing.branch.clone()?, standing.pushed.clone()?))
+                }
+                _ => None,
+            })
+            .collect();
+        for (branch, head) in pushed {
+            if let Response::ReviewGate { gate, .. } = self
+                .review_gate(
+                    None,
+                    Some(project.as_str().to_owned()),
+                    &branch,
+                    &head,
+                    None,
+                )
+                .await
+            {
+                let word = match gate {
+                    Gate::Approved { .. } => "approved",
+                    Gate::Changes { .. } => "changes requested",
+                    Gate::Stale { .. } => "stale (a pass of an earlier commit)",
+                    Gate::Missing => "no verdict",
+                };
+                records.gates.push((branch, head, word.to_owned()));
+            }
+        }
+        Response::Brief {
+            brief: compose(&records, &reader),
         }
     }
 
@@ -162,6 +215,18 @@ impl Daemon {
             .filter(|l| !l.is_expired(now))
             .cloned()
             .collect();
+        let checkout_reads = state
+            .project_checkout_dirs(project)
+            .into_iter()
+            .map(|path| CheckoutRecord {
+                read: state
+                    .checkout_reads
+                    .get(&path)
+                    .filter(|(p, _)| p == project)
+                    .map_or(CheckoutRead::Unread, |(_, read)| read.clone()),
+                path,
+            })
+            .collect();
         Ok(Records {
             project: project.clone(),
             project_name,
@@ -172,6 +237,8 @@ impl Daemon {
             questions,
             leases,
             handoffs,
+            checkout_reads,
+            gates: Vec::new(),
         })
     }
 }
@@ -258,6 +325,56 @@ mod tests {
             .iter()
             .map(|g| (&g.whose, g.cards.iter().map(|c| c.key.as_str()).collect()))
             .collect()
+    }
+
+    /// A checkout nothing has read yet is read by the brief itself, within
+    /// its short budget: the reader's own uncommitted file is told, from
+    /// its own checkout, with when it was read.
+    #[tokio::test]
+    async fn a_brief_reads_the_checkouts_nothing_has_read_yet() {
+        let git = |dir: &std::path::Path, args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+                .args([
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "init.defaultBranch=main",
+                ])
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .output()
+                .is_ok_and(|o| o.status.success())
+        };
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        if !git(&work, &["init", "-q"]) {
+            return;
+        }
+        std::fs::write(work.join("kept.txt"), "kept").unwrap();
+        assert!(git(&work, &["add", "-A"]) && git(&work, &["commit", "-q", "-m", "one"]));
+        std::fs::write(work.join("wip.txt"), "not yet").unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock")).unwrap());
+        let me = register(&daemon, "alice", &work).await;
+        let read = brief(
+            daemon
+                .handle(Request::Brief {
+                    from: me.id.to_string(),
+                    project: None,
+                })
+                .await,
+        );
+        assert_eq!(read.checkouts.len(), 1, "{:?}", read.checkouts);
+        let line = &read.checkouts[0];
+        assert!(line.yours, "{line:?}");
+        let standing = line.standing.as_ref().unwrap();
+        assert_eq!(standing.dirty, ["wip.txt"]);
+        assert_eq!(standing.branch.as_deref(), Some("main"));
+        assert_eq!(read.checkouts_unread, 0);
     }
 
     /// An agent reads its own project's brief: its own open card first,

@@ -144,6 +144,217 @@ pub fn worktrees(dir: &Path, timeout: std::time::Duration) -> Vec<PathBuf> {
         .collect()
 }
 
+/// What kept a git read from answering.
+#[derive(Debug)]
+pub enum ReadError {
+    /// Git could not be started.
+    Spawn(std::io::Error),
+    /// It did not finish by its deadline, and was stopped.
+    TimedOut,
+    /// It finished and said no: the first line it wrote to stderr.
+    Failed(String),
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Spawn(error) => write!(f, "git could not be started: {error}"),
+            Self::TimedOut => f.write_str("git did not answer in time"),
+            Self::Failed(said) if said.is_empty() => f.write_str("git failed"),
+            Self::Failed(said) => write!(f, "git: {said}"),
+        }
+    }
+}
+
+impl std::error::Error for ReadError {}
+
+/// The most of a git command's output kept; past it the read fails.
+const OUTPUT_LIMIT: usize = 4 << 20;
+
+/// `git -C dir <args>`'s standard output, read as it comes so that a long
+/// answer never stalls the child, which is stopped at `deadline`.
+fn git_output(
+    dir: &Path,
+    args: &[&str],
+    deadline: std::time::Instant,
+) -> Result<String, ReadError> {
+    use std::process::{Command, Stdio};
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(ReadError::Spawn)?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>, limit: usize| {
+        std::thread::spawn(move || {
+            let mut kept = Vec::new();
+            let Some(mut pipe) = pipe else {
+                return (kept, false);
+            };
+            let mut chunk = [0u8; 8192];
+            let mut over = false;
+            loop {
+                match pipe.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) if kept.len() + n <= limit => kept.extend_from_slice(&chunk[..n]),
+                    // Read on so the child is never stalled, keep no more.
+                    Ok(_) => over = true,
+                }
+            }
+            (kept, over)
+        })
+    };
+    let out = drain(
+        child
+            .stdout
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        OUTPUT_LIMIT,
+    );
+    let err = drain(
+        child
+            .stderr
+            .take()
+            .map(|p| Box::new(p) as Box<dyn Read + Send>),
+        4096,
+    );
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ReadError::TimedOut);
+            }
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ReadError::Spawn(error));
+            }
+        }
+    };
+    let (out, over) = out.join().unwrap_or_default();
+    let (err, _) = err.join().unwrap_or_default();
+    if !status.success() {
+        let said = String::from_utf8_lossy(&err);
+        return Err(ReadError::Failed(
+            said.lines().next().unwrap_or_default().trim().to_owned(),
+        ));
+    }
+    if over {
+        return Err(ReadError::Failed("its answer was too long".to_owned()));
+    }
+    Ok(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// The paths of the checkout `dir` that differ from its HEAD: modified,
+/// added and deleted ones, both sides of a rename, and untracked files
+/// that are not ignored, relative to the checkout's root as git prints
+/// them, in git's order. Asked of git within `deadline`.
+pub fn dirty_paths(dir: &Path, deadline: std::time::Instant) -> Result<Vec<String>, ReadError> {
+    let out = git_output(
+        dir,
+        &[
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--no-renames",
+        ],
+        deadline,
+    )?;
+    // Each entry is two status letters, a space and the path.
+    Ok(out
+        .split('\0')
+        .filter_map(|entry| entry.get(3..))
+        .filter(|path| !path.is_empty())
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Where the checkout `dir` stands, for a brief: its branch and head
+/// (read from `.git`), its uncommitted paths ([`dirty_paths`]), the
+/// commits its upstream lacks, what `origin/<branch>` names, and the
+/// commits its base lacks, the base being what `origin/HEAD` names, else
+/// `origin/main`. Local refs only, never a fetch. Every git call shares
+/// `deadline`; a question git cannot answer (no upstream, no base) is
+/// left unanswered rather than failing the read.
+pub fn standing(
+    dir: &Path,
+    deadline: std::time::Instant,
+) -> Result<agentdocker_core::brief::Standing, ReadError> {
+    let (branch, head) = state(dir).map_or((None, None), |s| (s.branch, s.head));
+    let dirty = dirty_paths(dir, deadline)?;
+    let ask = |args: &[&str]| match git_output(dir, args, deadline) {
+        Ok(out) => Ok(Some(out.trim().to_owned()).filter(|s| !s.is_empty())),
+        Err(ReadError::Failed(_)) => Ok(None),
+        Err(error) => Err(error),
+    };
+    let count = |range: &str| -> Result<Option<usize>, ReadError> {
+        Ok(ask(&["rev-list", "--count", range])?.and_then(|n| n.parse().ok()))
+    };
+    let upstream = if head.is_some() {
+        ask(&[
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ])?
+    } else {
+        None
+    };
+    let unpushed = match &upstream {
+        Some(upstream) => count(&format!("{upstream}..HEAD"))?,
+        None => None,
+    };
+    let pushed = match &branch {
+        Some(branch) => ask(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("refs/remotes/origin/{branch}^{{commit}}"),
+        ])?,
+        None => None,
+    };
+    let base = match ask(&[
+        "symbolic-ref",
+        "--quiet",
+        "--short",
+        "refs/remotes/origin/HEAD",
+    ])? {
+        Some(base) => Some(base),
+        None => ask(&[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "refs/remotes/origin/main",
+        ])?
+        .map(|_| "origin/main".to_owned()),
+    };
+    let unmerged = match (&base, &head) {
+        (Some(base), Some(_)) => count(&format!("{base}..HEAD"))?,
+        _ => None,
+    };
+    Ok(agentdocker_core::brief::Standing {
+        branch,
+        head,
+        dirty,
+        upstream,
+        unpushed,
+        pushed,
+        base,
+        unmerged,
+    })
+}
+
 /// `(git directory of this checkout, common git directory)`: equal for a
 /// main checkout, distinct for a linked worktree.
 pub fn git_dirs(dir: &Path) -> Option<(PathBuf, PathBuf)> {
@@ -265,6 +476,83 @@ mod tests {
             &["commit", "-q", "--allow-empty", "-m", "root"],
         );
         main
+    }
+
+    /// A checkout's standing comes from local refs: its uncommitted paths
+    /// (untracked ones too), the commits its upstream lacks, what
+    /// `origin/<branch>` names, and the commits its base lacks; a branch
+    /// never pushed has neither an upstream nor a pushed ref; and a read
+    /// past its deadline is stopped.
+    #[test]
+    fn a_checkouts_standing_is_read_from_local_refs() {
+        if !have_git() {
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        let remote = tmp.path().join("remote.git");
+        let work = tmp.path().join("work");
+        git(
+            home,
+            home,
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        );
+        git(
+            home,
+            home,
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                work.to_str().unwrap(),
+            ],
+        );
+        let commit = |name: &str| {
+            fs::write(work.join(format!("{name}.txt")), name).unwrap();
+            git(home, &work, &["add", "-A"]);
+            git(home, &work, &["commit", "-q", "-m", name]);
+        };
+        commit("one");
+        git(home, &work, &["push", "-q", "origin", "main"]);
+        git(home, &work, &["remote", "set-head", "origin", "main"]);
+        git(home, &work, &["checkout", "-q", "-b", "feat"]);
+        commit("two");
+        git(home, &work, &["push", "-q", "-u", "origin", "feat"]);
+        let pushed = git(home, &work, &["rev-parse", "HEAD"]);
+        commit("three");
+        fs::write(work.join("one.txt"), "changed").unwrap();
+        fs::write(work.join("new.txt"), "new").unwrap();
+
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let read = standing(&work, deadline()).unwrap();
+        assert_eq!(read.branch.as_deref(), Some("feat"));
+        assert_eq!(read.dirty, ["one.txt", "new.txt"]);
+        assert_eq!(read.upstream.as_deref(), Some("origin/feat"));
+        assert_eq!(read.unpushed, Some(1));
+        assert_eq!(read.pushed.as_deref(), Some(pushed.as_str()));
+        assert_eq!(read.base.as_deref(), Some("origin/main"));
+        assert_eq!(read.unmerged, Some(2));
+        assert!(read.stands());
+
+        git(home, &work, &["checkout", "-q", "-b", "local"]);
+        commit("four");
+        let read = standing(&work, deadline()).unwrap();
+        assert_eq!(read.branch.as_deref(), Some("local"));
+        assert!(read.dirty.is_empty(), "{:?}", read.dirty);
+        assert_eq!(
+            (read.upstream, read.unpushed, read.pushed),
+            (None, None, None)
+        );
+        assert_eq!(read.unmerged, Some(3), "two, three and four");
+
+        assert!(matches!(
+            dirty_paths(&work, std::time::Instant::now()),
+            Err(ReadError::TimedOut)
+        ));
+        assert!(matches!(
+            dirty_paths(&tmp.path().join("nowhere"), deadline()),
+            Err(ReadError::Failed(_))
+        ));
     }
 
     #[test]

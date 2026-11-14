@@ -447,6 +447,77 @@ pub async fn gate(client: &Client, args: GateArgs) -> Result<bool> {
     Ok(gate.approved())
 }
 
+/// How long `agentdocker brief` waits for GitHub's list of open pull
+/// requests.
+const PULLS_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// An open pull request, as `gh pr list --json` gives it.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+struct Pull {
+    number: u64,
+    #[serde(default)]
+    title: String,
+    #[serde(rename = "headRefName")]
+    branch: String,
+    #[serde(rename = "headRefOid")]
+    head: String,
+}
+
+fn parse_pulls(json: &str) -> Result<Vec<Pull>> {
+    serde_json::from_str(json).context("GitHub's list of pull requests does not parse")
+}
+
+/// The repository's open pull requests as GitHub lists them now (`gh`),
+/// each with what the gate says at its head, as `agentdocker gate` says
+/// it: the lines `agentdocker brief` adds. Asked of `gh` within a few
+/// seconds; `Err` says why GitHub could not be asked. A pull request's
+/// title is quoted, as every record's text in a brief is.
+pub async fn open_pulls(
+    client: &Client,
+    agent: Option<String>,
+    project: Option<String>,
+) -> Result<Vec<String>> {
+    let argv: Vec<String> = [
+        "gh",
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        "50",
+        "--json",
+        "number,title,headRefName,headRefOid",
+    ]
+    .iter()
+    .map(|&a| a.to_owned())
+    .collect();
+    let output = agentdocker_host::command::run(&std::env::current_dir()?, &argv, PULLS_TIMEOUT)
+        .context("cannot run gh")?;
+    ensure!(output.success, "gh failed: {}", output.text.trim());
+    let mut lines = Vec::new();
+    for pull in parse_pulls(&output.stdout)? {
+        let request = Request::ReviewGate {
+            agent: agent.clone(),
+            project: project.clone(),
+            branch: pull.branch.clone(),
+            head: pull.head.clone(),
+            role: None,
+        };
+        let word = match client.call(&request).await {
+            Ok(Response::ReviewGate { gate, .. }) => said(&gate, &pull.branch, &pull.head),
+            Ok(other) => format!("the gate could not be read ({other:?})"),
+            Err(error) => format!("the gate could not be read ({error:#})"),
+        };
+        let title = agentdocker_core::memory::headline(&pull.title);
+        lines.push(format!(
+            "- #{} {}: {word}",
+            pull.number,
+            serde_json::to_string(&title).unwrap_or_default()
+        ));
+    }
+    Ok(lines)
+}
+
 /// How long a hook's report may take: a commit waits for it.
 const REPORT_TIMEOUT: Duration = Duration::from_secs(5);
 /// A witness file is a few hundred bytes; past this it is not one.
@@ -635,6 +706,27 @@ mod tests {
         for bad in ["", "1,2", "1,2,3,4", "a,b,c", "-1,0,0"] {
             assert!(parse_findings(bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// GitHub's list is read as `gh pr list --json` writes it; anything
+    /// else is said not to parse.
+    #[test]
+    fn open_pull_requests_are_read_from_ghs_json() {
+        let pulls = parse_pulls(
+            r#"[{"number":540,"title":"A brief","headRefName":"claude/ad-87-brief","headRefOid":"f14b62b60a0b52af93c490f12a99eaa85578a7f5"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            pulls,
+            [Pull {
+                number: 540,
+                title: "A brief".into(),
+                branch: "claude/ad-87-brief".into(),
+                head: "f14b62b60a0b52af93c490f12a99eaa85578a7f5".into(),
+            }]
+        );
+        assert!(parse_pulls("[]").unwrap().is_empty());
+        assert!(parse_pulls("not json").is_err());
     }
 
     #[test]
