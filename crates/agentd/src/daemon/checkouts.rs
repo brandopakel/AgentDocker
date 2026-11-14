@@ -87,9 +87,16 @@ impl Daemon {
             })
             .collect();
         // Then the rest of each project's checkouts, from the cache the
-        // VCS sweep keeps. Nested ones are skipped: a worktree inside a
-        // watched directory is already covered, and watching it twice
-        // would record every change in it twice.
+        // VCS sweep keeps. One inside a watched directory is a target of
+        // its own all the same: a project keeps its agents' worktrees
+        // inside it and out of git, so the directory around one records
+        // none of its changes and never reads its HEAD. Watching both
+        // gives each change one owner, the deepest checkout that holds
+        // its path (`watcher::owner`), and the two reports of one change
+        // are one within a batch (`watcher::classify`); where each
+        // checkout has a stream of its own they can fall in two batches
+        // and be recorded twice, as for an agent registered in a
+        // checkout inside another.
         let known: Vec<(ProjectId, Vec<PathBuf>)> = state
             .project_checkouts
             .iter()
@@ -103,7 +110,7 @@ impl Daemon {
             let mut added = 0usize;
             let mut skipped = 0usize;
             for dir in dirs {
-                if seen.contains(&dir) || seen.iter().any(|w| dir.starts_with(w)) {
+                if seen.contains(&dir) {
                     continue;
                 }
                 if added >= MAX_EXTRA_CHECKOUTS {

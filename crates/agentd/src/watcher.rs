@@ -749,9 +749,11 @@ mod tests {
 
     /// A checkout in the project's worktrees folder is inside the main
     /// checkout, and its edits are still its own: they are that
-    /// checkout's while it is watched, and nobody's when it is not, since
-    /// the line that keeps the folder out of git keeps it out of the main
-    /// checkout's changes too.
+    /// checkout's while it is watched, and never the main checkout's,
+    /// since the line that keeps the folder out of git keeps it out of
+    /// the main checkout's changes too. That makes an unwatched one
+    /// nobody's, which is why the daemon watches every checkout of a
+    /// project, a nested one included (`Daemon::watch_targets`).
     #[test]
     fn a_checkout_inside_the_project_owns_its_edits() {
         let tmp = tempfile::tempdir().unwrap();

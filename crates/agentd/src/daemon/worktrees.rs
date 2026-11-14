@@ -503,14 +503,100 @@ pub(super) async fn cleanup_unstarted(record: &AgentRecord) -> (bool, bool, Opti
 
 /// The line that keeps a project's worktrees folder out of git, when the
 /// folder is inside the project: rooted at the repository's top, as
-/// `info/exclude` reads it.
-fn exclude_line(project_root: &Path, home: &Path) -> Option<String> {
-    let relative = home.strip_prefix(project_root).ok()?;
-    let parts: Vec<String> = relative
-        .components()
-        .map(|part| part.as_os_str().to_string_lossy().into_owned())
-        .collect();
-    (!parts.is_empty()).then(|| format!("/{}/", parts.join("/")))
+/// `info/exclude` reads it, and naming that folder and no other. A folder
+/// name is taken to the letter, so what git would read as a pattern
+/// (`*`, `?`, `[`, `]`, `\`) is escaped; a name no line can hold (a
+/// control character, or one that is not text) is said.
+fn exclude_line(project_root: &Path, home: &Path) -> Result<Option<String>, String> {
+    let Ok(relative) = home.strip_prefix(project_root) else {
+        return Ok(None);
+    };
+    let mut line = String::new();
+    for part in relative.components() {
+        let name = part
+            .as_os_str()
+            .to_str()
+            .filter(|name| !name.chars().any(char::is_control))
+            .ok_or_else(|| {
+                format!(
+                    "{} has a name no git ignore rule can hold; name another folder with `[worktrees] dir`",
+                    home.display()
+                )
+            })?;
+        line.push('/');
+        for letter in name.chars() {
+            if matches!(letter, '\\' | '*' | '?' | '[' | ']') {
+                line.push('\\');
+            }
+            line.push(letter);
+        }
+    }
+    Ok((!line.is_empty()).then(|| line + "/"))
+}
+
+/// The rule `git check-ignore -v` says decides a path, from its line
+/// `<source>:<line>:<pattern><TAB><path>`: where the rule is written, its
+/// line there, and the rule. The source is a path and may hold a colon
+/// (a drive letter), so the line number is the first part that is all
+/// digits. Nothing when no rule speaks of the path.
+fn deciding_rule(said: &str) -> Option<(String, &str, String)> {
+    let rule = said.lines().next()?.split('\t').next()?;
+    let parts: Vec<&str> = rule.split(':').collect();
+    let at = (1..parts.len().saturating_sub(1)).find(|at| {
+        !parts[*at].is_empty() && parts[*at].bytes().all(|byte| byte.is_ascii_digit())
+    })?;
+    Some((parts[..at].join(":"), parts[at], parts[at + 1..].join(":")))
+}
+
+/// Whether git leaves the worktrees folder alone, in git's own word.
+/// The line in `info/exclude` is the least of git's ignore rules: one in
+/// a `.gitignore` the project tracks (`!*/`) wins over it, and the
+/// checkouts in the folder would then read as the project's untracked
+/// files, to be staged by the next `git add -A`. So the folder is asked
+/// about once it exists and the line is there, and a rule that keeps it
+/// in view is named, for the person to change or to go around.
+async fn kept_out_of_git(project_root: &Path, home: &Path) -> Result<(), String> {
+    let output = git(
+        project_root.to_path_buf(),
+        vec![
+            "check-ignore".into(),
+            "-v".into(),
+            "--".into(),
+            home.to_string_lossy().into_owned(),
+        ],
+    )
+    .await
+    .map_err(|e| {
+        format!(
+            "git could not say whether {} is ignored: {e}",
+            home.display()
+        )
+    })?;
+    let around = "name another folder with `[worktrees] dir` in agentd.toml (an absolute one is outside every project), or give the worktree a path of its own";
+    // The rule that decides is printed whether it ignores the folder or
+    // brings it back into view; nothing is printed when none speaks of it.
+    let Some((source, line, pattern)) = deciding_rule(&output.stdout) else {
+        // Or git could not answer, and said why.
+        let said = output.text.trim();
+        return Err(if said.is_empty() {
+            format!(
+                "git does not ignore {}, so a checkout there would read as the project's own untracked files: {around}",
+                home.display()
+            )
+        } else {
+            format!(
+                "git could not say whether {} is ignored ({said}): {around}",
+                home.display()
+            )
+        });
+    };
+    if pattern.starts_with('!') {
+        return Err(format!(
+            "{source} line {line} (`{pattern}`) keeps {} in git's view, so a checkout there would read as the project's own untracked files: change that rule, or {around}",
+            home.display()
+        ));
+    }
+    Ok(())
 }
 
 /// The folder a project's worktrees go in is reached through real
@@ -534,8 +620,9 @@ fn through_a_link(project_root: &Path, home: &Path) -> Option<String> {
 /// which is the project's to write. Without the line every checkout in
 /// the folder would read as the main checkout's untracked files. The
 /// line is added to the end of the file, whose other lines are left as
-/// they are.
-fn prepare_home(project_root: &Path, home: &Path) -> Result<(), String> {
+/// they are. Answers the folders it made, the deepest first, for a
+/// caller that finds the place unusable after all.
+fn prepare_home(project_root: &Path, home: &Path) -> Result<Vec<PathBuf>, String> {
     // One at a time: two checkouts asked for at once would both find the
     // line missing and write it twice.
     static ONE: Mutex<()> = Mutex::new(());
@@ -543,9 +630,16 @@ fn prepare_home(project_root: &Path, home: &Path) -> Result<(), String> {
     if let Some(why) = through_a_link(project_root, home) {
         return Err(why);
     }
+    let line = exclude_line(project_root, home)?;
+    let made: Vec<PathBuf> = home
+        .ancestors()
+        .take_while(|folder| *folder != project_root)
+        .filter(|folder| !folder.exists())
+        .map(Path::to_path_buf)
+        .collect();
     std::fs::create_dir_all(home).map_err(|e| format!("cannot create {}: {e}", home.display()))?;
-    let Some(line) = exclude_line(project_root, home) else {
-        return Ok(());
+    let Some(line) = line else {
+        return Ok(Vec::new());
     };
     // Looked at again now that it exists: what was missing a moment ago
     // may have been made a link meanwhile.
@@ -558,7 +652,7 @@ fn prepare_home(project_root: &Path, home: &Path) -> Result<(), String> {
     let file = common.join("info").join("exclude");
     let known = std::fs::read_to_string(&file).unwrap_or_default();
     if known.lines().any(|known| known.trim() == line) {
-        return Ok(());
+        return Ok(made);
     }
     let mut text = String::new();
     if !known.is_empty() && !known.ends_with('\n') {
@@ -576,7 +670,8 @@ fn prepare_home(project_root: &Path, home: &Path) -> Result<(), String> {
         .append(true)
         .open(&file)
         .and_then(|mut file| std::io::Write::write_all(&mut file, text.as_bytes()))
-        .map_err(|e| format!("cannot write {}: {e}", file.display()))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    Ok(made)
 }
 
 impl Daemon {
@@ -608,17 +703,32 @@ impl Daemon {
 
     /// Make a project's worktrees folder and keep it out of git: asked
     /// only for a checkout that goes in it, so a project whose worktrees
-    /// all have a path of their own never gets the folder.
+    /// all have a path of their own never gets the folder. A folder git
+    /// would not leave alone is refused, with the rule that says so, and
+    /// what was made for it is taken away again.
     pub(super) async fn worktree_make(&self, home: &Home) -> Result<(), Box<Response>> {
         let (root, dir) = (home.project_root.clone(), home.dir.clone());
-        match tokio::task::spawn_blocking(move || prepare_home(&root, &dir)).await {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(why)) => Err(Box::new(Response::error(
-                ErrorCode::StorageUnavailable,
-                why,
-            ))),
-            Err(e) => Err(Box::new(Response::internal(e))),
+        let made = match tokio::task::spawn_blocking(move || prepare_home(&root, &dir)).await {
+            Ok(Ok(made)) => made,
+            Ok(Err(why)) => {
+                return Err(Box::new(Response::error(
+                    ErrorCode::StorageUnavailable,
+                    why,
+                )));
+            }
+            Err(e) => return Err(Box::new(Response::internal(e))),
+        };
+        if !home.dir.starts_with(&home.project_root) {
+            return Ok(());
         }
+        if let Err(why) = kept_out_of_git(&home.project_root, &home.dir).await {
+            // Only what this call made, and only while it is empty.
+            for folder in made {
+                let _ = std::fs::remove_dir(folder);
+            }
+            return Err(Box::new(Response::invalid(why)));
+        }
+        Ok(())
     }
 
     /// A linked checkout on a new branch, from this session's HEAD or
@@ -1880,6 +1990,175 @@ mod lifecycle_tests {
             made(create(&daemon, "builder", Some(&named), "agent/first").await),
             named
         );
+    }
+
+    /// The line in `info/exclude` is the least of git's ignore rules. A
+    /// project whose own `.gitignore` keeps every folder in view defeats
+    /// it: the worktree is refused with that rule named and the way
+    /// around said, nothing is left behind, and the answer is the same
+    /// once the line is there.
+    #[tokio::test]
+    async fn a_folder_the_projects_own_rules_keep_in_view_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        std::fs::write(
+            root.join(".gitignore"),
+            "# every folder stays in view\n!*/\n",
+        )
+        .unwrap();
+        run(&root, &["add", ".gitignore"]).await;
+        run(&root, &["commit", "-qm", "rules"]).await;
+
+        for round in ["the line is written", "the line is there"] {
+            let answer = create(&daemon, "builder", None, "agent/first").await;
+            refused(&answer, ".gitignore line 2 (`!*/`)");
+            refused(&answer, "[worktrees] dir");
+            assert!(
+                !root.join(".agentdocker").exists(),
+                "{round}: what was made for it is taken away"
+            );
+            assert_eq!(
+                exclude_lines(&root, "/.agentdocker/worktrees/"),
+                1,
+                "{round}"
+            );
+        }
+        let listed = git(root.clone(), vec!["worktree".into(), "list".into()])
+            .await
+            .unwrap();
+        assert_eq!(listed.stdout.lines().count(), 1, "{}", listed.stdout);
+        let branches = git(
+            root.clone(),
+            vec!["branch".into(), "--list".into(), "agent/*".into()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(branches.stdout.trim(), "", "no branch was made either");
+
+        // A folder somebody else put there is not taken away with the refusal.
+        std::fs::create_dir(root.join(".agentdocker")).unwrap();
+        refused(
+            &create(&daemon, "builder", None, "agent/first").await,
+            ".gitignore line 2",
+        );
+        assert!(root.join(".agentdocker").is_dir());
+        assert!(!root.join(paths::PROJECT_WORKTREES).exists());
+
+        // The ways around it: a folder outside the project, or a path.
+        std::fs::write(
+            daemon.home.join(agentdocker_core::config::FILE_NAME),
+            format!(
+                "[worktrees]\ndir = '{}'\n",
+                tmp.path().join("elsewhere").display()
+            ),
+        )
+        .unwrap();
+        let first = made(create(&daemon, "builder", None, "agent/first").await);
+        assert!(!first.starts_with(&root), "{}", first.display());
+    }
+
+    /// A folder name is taken to the letter in the line that keeps it out
+    /// of git. What git would read as a pattern is escaped, so the folder
+    /// is ignored and a folder the pattern would have matched is not; a
+    /// name no line can hold is refused.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_folder_name_git_would_read_as_a_pattern_is_named_to_the_letter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        let settings = daemon.home.join(agentdocker_core::config::FILE_NAME);
+        // What the unescaped lines would have matched as well.
+        for sibling in ["checkXoutsl1", "backslash"] {
+            std::fs::create_dir(root.join(sibling)).unwrap();
+            std::fs::write(root.join(sibling).join("seen.txt"), "seen").unwrap();
+        }
+        let untracked = async || {
+            git(
+                root.clone(),
+                vec![
+                    "status".into(),
+                    "--porcelain".into(),
+                    "--untracked-files=all".into(),
+                ],
+            )
+            .await
+            .unwrap()
+            .stdout
+        };
+        let siblings = "?? backslash/seen.txt\n?? checkXoutsl1/seen.txt\n";
+
+        std::fs::write(&settings, "[worktrees]\ndir = 'check*outs[local]?'\n").unwrap();
+        assert_eq!(
+            made(create(&daemon, "builder", None, "agent/first").await),
+            root.join("check*outs[local]?/agent-first")
+        );
+        assert_eq!(exclude_lines(&root, r"/check\*outs\[local\]\?/"), 1);
+        assert_eq!(untracked().await, siblings);
+
+        std::fs::write(&settings, "[worktrees]\ndir = 'back\\slash'\n").unwrap();
+        assert_eq!(
+            made(create(&daemon, "builder", None, "agent/second").await),
+            root.join("back\\slash/agent-second")
+        );
+        assert_eq!(exclude_lines(&root, r"/back\\slash/"), 1);
+        assert_eq!(untracked().await, siblings);
+
+        std::fs::write(&settings, "[worktrees]\ndir = \"two\\nlines\"\n").unwrap();
+        refused(
+            &create(&daemon, "builder", None, "agent/third").await,
+            "no git ignore rule can hold",
+        );
+        assert_eq!(untracked().await, siblings);
+    }
+
+    /// What `git check-ignore -v` prints is read for the rule that
+    /// decides: its file, its line and the rule, a colon in any of them
+    /// notwithstanding; nothing when git names no rule.
+    #[test]
+    fn the_rule_git_names_is_read_from_its_line() {
+        let read = |said: &'static str| {
+            deciding_rule(said).map(|(source, line, pattern)| (source, line.to_owned(), pattern))
+        };
+        let rule = |source: &str, line: &str, pattern: &str| {
+            Some((source.to_owned(), line.to_owned(), pattern.to_owned()))
+        };
+        assert_eq!(
+            read(".git/info/exclude:8:/.agentdocker/worktrees/\t.agentdocker/worktrees\n"),
+            rule(".git/info/exclude", "8", "/.agentdocker/worktrees/")
+        );
+        assert_eq!(
+            read(".gitignore:2:!*/\t.agentdocker/worktrees\n"),
+            rule(".gitignore", "2", "!*/")
+        );
+        assert_eq!(
+            read("C:\\work\\ignore:12:/a:b/\ta:b\n"),
+            rule("C:\\work\\ignore", "12", "/a:b/")
+        );
+        assert_eq!(read(""), None);
+        assert_eq!(read("fatal: not a git repository\n"), None);
+    }
+
+    /// The line itself: one folder, rooted at the project's top, with
+    /// what git reads as a pattern escaped; none for a folder outside the
+    /// project, and a reason for a name a line cannot hold.
+    #[cfg(unix)]
+    #[test]
+    fn the_exclude_line_names_one_folder_to_the_letter() {
+        let root = Path::new("/work/app");
+        let line = |folder: &str| exclude_line(root, &root.join(folder));
+        assert_eq!(
+            line(".agentdocker/worktrees"),
+            Ok(Some("/.agentdocker/worktrees/".to_owned()))
+        );
+        assert_eq!(
+            line("a*b/c[d]?\\e f"),
+            Ok(Some(r"/a\*b/c\[d\]\?\\e f/".to_owned()))
+        );
+        assert_eq!(exclude_line(root, Path::new("/elsewhere/trees")), Ok(None));
+        assert_eq!(exclude_line(root, root), Ok(None));
+        for unnamable in ["two\nlines", "tab\there", "bell\u{7}"] {
+            assert!(line(unnamable).is_err(), "{unnamable:?}");
+        }
     }
 
     /// `[worktrees] dir` in the daemon's settings moves the folder: an

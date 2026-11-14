@@ -85,6 +85,16 @@ impl WorktreesConfig {
                     || !dir.components().all(|c| matches!(c, Component::Normal(_)));
                 let in_git =
                     matches!(parts.next(), Some(Component::Normal(first)) if first == ".git");
+                // Git is told to leave the folder alone by a line naming
+                // it, and a line holds no control character.
+                let unnamable = dir
+                    .to_str()
+                    .is_none_or(|name| name.chars().any(char::is_control));
+                if unnamable {
+                    return Err(format!(
+                        "worktrees.dir: {dir:?} has a character no git ignore rule can hold; give a plain folder name, or an absolute path"
+                    ));
+                }
                 if leaves || in_git {
                     return Err(format!(
                         "worktrees.dir: `{}` is not a folder inside a project (no `.`, no `..`, not under `.git`); give one, or an absolute path",
@@ -906,8 +916,11 @@ pub fn parse_duration(text: &str) -> Result<Duration, String> {
 mod tests {
     use super::*;
 
-    /// The mirror is off unless turned on, names its projects, keeps its
-    /// key in an absolute file and talks https (or http to this machine).
+    /// A project's worktrees go in a folder inside it unless the setting
+    /// names another: a relative one stays inside each project, an
+    /// absolute one holds a folder per project, and one that leaves the
+    /// project, sits in its git directory or cannot be named in a git
+    /// ignore rule is a broken setting, said.
     #[test]
     fn worktrees_go_inside_the_project_unless_the_setting_says_where() {
         use std::path::{Path, PathBuf};
@@ -936,9 +949,23 @@ mod tests {
             let text = format!("[worktrees]\ndir = \"{broken}\"\n");
             assert!(at(&text).is_err(), "{broken}");
         }
+        for unnamable in ["two\\nlines", "tab\\there"] {
+            let text = format!("[worktrees]\ndir = \"{unnamable}\"\n");
+            assert!(
+                at(&text).is_err_and(|why| why.contains("no git ignore rule can hold")),
+                "{unnamable}"
+            );
+        }
+        assert_eq!(
+            at("[worktrees]\ndir = 'check*outs[local]'\n"),
+            Ok(PathBuf::from("/work/app/check*outs[local]")),
+            "a name git reads as a pattern is the daemon's to escape, not refused"
+        );
         assert!(toml::from_str::<DaemonConfig>("[worktrees]\nfolder = \"x\"\n").is_err());
     }
 
+    /// The mirror is off unless turned on, names its projects, keeps its
+    /// key in an absolute file and talks https (or http to this machine).
     #[test]
     fn the_memory_mirror_is_off_unless_turned_on_and_checked_when_it_is() {
         let key = std::env::temp_dir().join("supermemory.key");
