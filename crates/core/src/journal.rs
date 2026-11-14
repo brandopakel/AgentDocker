@@ -329,6 +329,10 @@ impl JournalFilter {
 pub struct DigestBudget {
     pub max_entries: usize,
     pub max_chars: usize,
+    /// The UTF-8 bytes the text may take as well, for a reader whose room
+    /// is counted in bytes; none beyond the characters when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
 }
 
 impl DigestBudget {
@@ -336,11 +340,13 @@ impl DigestBudget {
     pub const SESSION_START: Self = Self {
         max_entries: 20,
         max_chars: 2000,
+        max_bytes: None,
     };
     /// What a prompt may carry: only what is new, and little of it.
     pub const PROMPT: Self = Self {
         max_entries: 5,
         max_chars: 500,
+        max_bytes: None,
     };
 }
 
@@ -461,19 +467,25 @@ pub fn digest(
     // The newest entries stay; when the budget bites, the oldest fold
     // first. Keep the newest entry when any matched, truncating the final text
     // only if this entry or the counts alone cannot fit.
+    let max_bytes = budget.max_bytes.unwrap_or(usize::MAX);
+    let fits = |text: &str| text.chars().count() <= budget.max_chars && text.len() <= max_bytes;
     let mut shown = matched.len().min(budget.max_entries.max(1));
     let mut text = render(shown);
-    while text.chars().count() > budget.max_chars && shown > 1 {
+    while !fits(&text) && shown > 1 {
         shown -= 1;
         text = render(shown);
     }
-    if text.chars().count() > budget.max_chars {
+    if !fits(&text) {
+        // Cut at a character, leaving room for the ellipsis in both counts.
+        let ellipsis = '…'.len_utf8();
         let end = text
             .char_indices()
-            .nth(budget.max_chars.saturating_sub(1))
-            .map_or(0, |(at, _)| at);
+            .take_while(|(at, c)| at + c.len_utf8() + ellipsis <= max_bytes)
+            .take(budget.max_chars.saturating_sub(1))
+            .last()
+            .map_or(0, |(at, c)| at + c.len_utf8());
         text.truncate(end);
-        if budget.max_chars > 0 {
+        if budget.max_chars > 0 && max_bytes >= ellipsis {
             text.push('…');
         }
     }
@@ -1049,6 +1061,7 @@ mod tests {
             DigestBudget {
                 max_entries: 2,
                 max_chars: 2000,
+                max_bytes: None,
             },
             now,
         );
@@ -1069,6 +1082,7 @@ mod tests {
             DigestBudget {
                 max_entries: 20,
                 max_chars: 120,
+                max_bytes: None,
             },
             now,
         );
@@ -1083,11 +1097,61 @@ mod tests {
             DigestBudget {
                 max_entries: 20,
                 max_chars: 1,
+                max_bytes: None,
             },
             now,
         );
         assert_eq!(d.shown, 1, "the newest entry is selected even if truncated");
         assert_eq!(d.text, "…");
+    }
+
+    /// A byte bound holds as the character bound does: older entries fold
+    /// first, and the newest is cut at a character, its ellipsis counted,
+    /// so wide text never takes more bytes than its reader has.
+    #[test]
+    fn digest_keeps_a_byte_bound_on_wide_text() {
+        let now = Utc::now();
+        let entries: Vec<JournalEntry> = (1..=6)
+            .map(|seq| {
+                at(
+                    seq,
+                    JournalKind::Note,
+                    "writer",
+                    None,
+                    &"界\u{1F680}".repeat(300),
+                )
+            })
+            .collect();
+        for max_bytes in [0, 1, 2, 3, 4, 40, 400, 1_000, 3_000, 9_000] {
+            let d = digest(
+                &entries,
+                0,
+                &Reader::default(),
+                DigestBudget {
+                    max_entries: 20,
+                    max_chars: 2_000,
+                    max_bytes: Some(max_bytes),
+                },
+                now,
+            );
+            assert!(
+                d.text.len() <= max_bytes,
+                "{max_bytes}: {} bytes",
+                d.text.len()
+            );
+            assert!(d.text.chars().count() <= 2_000);
+            assert_eq!(d.head_seq, 6);
+        }
+        // Without a byte bound, the characters alone bound it, as before.
+        let wide = digest(
+            &entries,
+            0,
+            &Reader::default(),
+            DigestBudget::SESSION_START,
+            now,
+        );
+        assert!(wide.text.chars().count() <= 2_000);
+        assert!(wide.text.len() > 2_000);
     }
 
     #[test]
@@ -1112,6 +1176,7 @@ mod tests {
                     DigestBudget {
                         max_entries: 5,
                         max_chars,
+                        max_bytes: None,
                     },
                     now,
                 );

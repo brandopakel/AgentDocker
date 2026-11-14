@@ -69,6 +69,11 @@ pub struct DigestRequest {
     pub reader: String,
     pub max_entries: usize,
     pub max_chars: usize,
+    /// The UTF-8 bytes the digest's text may take as well, for a reader
+    /// whose room is counted in bytes. A daemon that predates it bounds
+    /// the characters alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
     #[serde(default)]
     pub all_branches: bool,
     /// Move the reader's cursor to the digest's head in the same request.

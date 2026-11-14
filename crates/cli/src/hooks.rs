@@ -1008,15 +1008,8 @@ pub async fn claude_code<B: Backend>(
             let memory_allowance = MEMORY_CONTEXT_BYTES + 4;
             let room =
                 CONTEXT_BYTES.saturating_sub(text.len() + memory_allowance + all_waiting.len() + 2);
-            let heading = journal_text("").len();
-            // In characters, as the daemon bounds a digest: never more than
-            // its bytes, so the whole stays within the context's characters.
-            let digest = if room >= heading + JOURNAL_LEAST {
-                let chars = opts.digest_chars.min(room - heading);
-                journal_digest(backend, &me, opts.digest_entries, chars).await
-            } else {
-                String::new()
-            };
+            let digest =
+                journal_within(backend, &me, opts.digest_entries, opts.digest_chars, room).await;
             if !digest.is_empty() {
                 text.push_str("\n\n");
                 text.push_str(&journal_text(&digest));
@@ -1082,12 +1075,18 @@ pub async fn claude_code<B: Backend>(
                 all_agents(backend).await?
             };
             // Only a prompt carries journal text; a tool result never does.
+            // It gives way first: its room, fixed before it is read, is what
+            // the recall's bound and every waiting message leave.
+            let heading = |count: &str| format!("AgentDocker: {count} new message(s):\n");
             let digest = if input.hook_event_name == "UserPromptSubmit" {
-                journal_digest(
+                let all = messages_within(&inbox, &agents, usize::MAX, heading).0;
+                let room = CONTEXT_BYTES.saturating_sub(PROMPT_MEMORY_BYTES + all.len() + 4);
+                journal_within(
                     backend,
                     &me,
                     opts.prompt_digest_entries,
                     opts.prompt_digest_chars,
+                    room,
                 )
                 .await
             } else {
@@ -1120,7 +1119,7 @@ pub async fn claude_code<B: Backend>(
                 &inbox,
                 &agents,
                 CONTEXT_BYTES.saturating_sub(blocks(&[&journal, &recalled])),
-                |count| format!("AgentDocker: {count} new message(s):\n"),
+                heading,
             );
             backend.withhold(&withheld);
             for part in [journal, recalled] {
@@ -1985,11 +1984,31 @@ async fn release_held<B: Backend>(
 /// The project journal since this agent last looked, marked as seen.
 /// Empty when nothing is new, when the agent is in no project, or when
 /// the daemon could not say: a hook fails open.
+/// A journal digest within `room` bytes of a hook's text, its heading
+/// included, or nothing at all when that room is under [`JOURNAL_LEAST`]:
+/// a digest moves its reader past what it covers, so its room is fixed
+/// before it is read and nothing read is dropped.
+async fn journal_within<B: Backend>(
+    backend: &B,
+    me: &AgentRecord,
+    max_entries: usize,
+    max_chars: usize,
+    room: usize,
+) -> String {
+    let heading = journal_text("").len();
+    if room < heading + JOURNAL_LEAST {
+        return String::new();
+    }
+    let bytes = room - heading;
+    journal_digest(backend, me, max_entries, max_chars.min(bytes), Some(bytes)).await
+}
+
 async fn journal_digest<B: Backend>(
     backend: &B,
     me: &AgentRecord,
     max_entries: usize,
     max_chars: usize,
+    max_bytes: Option<usize>,
 ) -> String {
     if me.project.is_none() || max_entries == 0 || max_chars == 0 {
         return String::new();
@@ -2008,6 +2027,7 @@ async fn journal_digest<B: Backend>(
             reader: me.id.to_string(),
             max_entries,
             max_chars,
+            max_bytes,
             all_branches: false,
             advance: true,
         }),
@@ -2126,6 +2146,11 @@ const PROMPT_MEMORY_QUERY_CHARS: usize = 1000;
 /// Memories told with a prompt at most, and the most of their text.
 const PROMPT_MEMORIES: usize = 4;
 const PROMPT_MEMORY_CHARS: usize = 1500;
+
+/// The bytes a prompt's recalled memories take at most, their heading and
+/// lines included: room for [`PROMPT_MEMORY_CHARS`] of plain text with its
+/// framing, which a hook's whole bound keeps for them.
+const PROMPT_MEMORY_BYTES: usize = 3_072;
 /// The least a memory's words must score against a prompt to be told with
 /// it: a word few memories hold, or several that some do. A memory that
 /// shares only words most memories hold is not.
@@ -2171,7 +2196,7 @@ pub(crate) async fn prompt_memory<B: Backend>(
             .collect::<String>(),
         told,
         "Project memory that may bear on this prompt",
-        usize::MAX,
+        PROMPT_MEMORY_BYTES,
     )
     .await
 }
@@ -2507,6 +2532,11 @@ fn messages_within(
             break;
         }
         (shown, told) = (shown + 1, next);
+    }
+    // The callers keep room for the heading and the closing line; should
+    // even those not fit, nothing is said, and every message stays queued.
+    if shown == 0 && heading(&count(0)).len() + rest(all).len() > room {
+        return (String::new(), inbox.iter().map(|m| m.id.clone()).collect());
     }
     let mut text = heading(&count(shown));
     if shown > 0 {
@@ -6173,7 +6203,24 @@ mod tests {
     struct Queue {
         me: AgentRecord,
         queue: RefCell<Vec<Envelope>>,
-        digest_max_chars: RefCell<Option<usize>>,
+        /// The bounds the last digest was asked for.
+        digest: RefCell<Option<(usize, Option<usize>)>>,
+        /// What a digest is filled with up to its bounds, as a journal
+        /// with more than fits would be; none adds nothing.
+        journal_fill: Option<char>,
+        memories: Vec<agentdocker_core::memory::Memory>,
+    }
+
+    impl Queue {
+        fn new(me: AgentRecord, queue: Vec<Envelope>) -> Self {
+            Self {
+                me,
+                queue: RefCell::new(queue),
+                digest: RefCell::new(None),
+                journal_fill: None,
+                memories: Vec::new(),
+            }
+        }
     }
 
     impl Backend for Queue {
@@ -6199,11 +6246,24 @@ mod tests {
                     digest: Some(digest),
                     ..
                 } => {
-                    *self.digest_max_chars.borrow_mut() = Some(digest.max_chars);
-                    digest_reply(
+                    *self.digest.borrow_mut() = Some((digest.max_chars, digest.max_bytes));
+                    let mut text = String::from(
                         "Since you last looked (1 entry):\n- 4m ago   codex-1 [main] noted: \"parser is next\"\n",
-                    )
+                    );
+                    if let Some(fill) = self.journal_fill {
+                        let bytes = digest.max_bytes.unwrap_or(usize::MAX);
+                        while text.len() + fill.len_utf8() <= bytes
+                            && text.chars().count() < digest.max_chars
+                        {
+                            text.push(fill);
+                        }
+                    }
+                    digest_reply(&text)
                 }
+                Request::MemoryProfile { .. } => Response::Memories {
+                    memories: self.memories.clone(),
+                    left_out: Vec::new(),
+                },
                 _ => Response::Ok,
             })
         }
@@ -6228,11 +6288,7 @@ mod tests {
         let first = message("sender", "pause for the night");
         let long = message("sender", &"x".repeat(12_000));
         let after = message("sender", "and then this");
-        let daemon = Queue {
-            me: me.clone(),
-            queue: RefCell::new(vec![first.clone(), long.clone(), after.clone()]),
-            digest_max_chars: RefCell::new(None),
-        };
+        let daemon = Queue::new(me.clone(), vec![first.clone(), long.clone(), after.clone()]);
         let delivery = HookDelivery {
             backend: &daemon,
             pending: RefCell::new(Vec::new()),
@@ -6254,7 +6310,7 @@ mod tests {
             "{text}"
         );
         // The queue was more than all the room: no digest was read.
-        assert_eq!(*daemon.digest_max_chars.borrow(), None);
+        assert_eq!(*daemon.digest.borrow(), None);
         assert!(!text.contains("AgentDocker journal"), "{text}");
 
         // The answer was written, so its acknowledgements go out, as the
@@ -6305,7 +6361,7 @@ mod tests {
         let text = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();
-        assert_eq!(*daemon.digest_max_chars.borrow(), Some(2000));
+        assert!(matches!(*daemon.digest.borrow(), Some((2000, Some(_)))));
         assert!(text.contains("parser is next") && text.contains("and then this"));
         assert!(!text.contains("more message(s) queued"), "{text}");
         for request in delivery.pending.take() {
@@ -6320,11 +6376,10 @@ mod tests {
     /// it told.
     #[tokio::test]
     async fn withheld_messages_leave_the_pending_acknowledgements() {
-        let daemon = Queue {
-            me: agent("claude-01234567", true),
-            queue: RefCell::new(vec![message("a", "one"), message("b", "two")]),
-            digest_max_chars: RefCell::new(None),
-        };
+        let daemon = Queue::new(
+            agent("claude-01234567", true),
+            vec![message("a", "one"), message("b", "two")],
+        );
         let ids: Vec<MessageId> = daemon.queue.borrow().iter().map(|m| m.id.clone()).collect();
         let delivery = HookDelivery {
             backend: &daemon,
@@ -6346,6 +6401,116 @@ mod tests {
         ));
         delivery.withhold(&ids[..1]);
         assert!(delivery.pending.borrow().is_empty());
+    }
+
+    /// The whole start stays within its bound when every block is at its
+    /// own: a full memory block of wide characters, a journal of emoji up
+    /// to the bytes its digest was asked for, and a short message, which
+    /// is told, since the journal gives way first.
+    #[tokio::test]
+    async fn a_wide_journal_and_a_full_memory_leave_a_short_message_its_room() {
+        use agentdocker_core::ProjectRef;
+        use agentdocker_core::memory::Memory;
+        let mut me = agent("claude-01234567", true);
+        me.spec
+            .labels
+            .insert("session_id".into(), input("SessionStart").session_id);
+        me.project = Some(ProjectRef::directory("/work/alpha"));
+        let project = me.project.as_ref().unwrap().id();
+        let mut daemon = Queue::new(me.clone(), vec![message("sender", "pause for the night")]);
+        daemon.journal_fill = Some('\u{1F680}');
+        daemon.memories = (0..12)
+            .map(|n| {
+                Memory::new(
+                    project.clone(),
+                    "codex-1",
+                    &format!("{n} {}", "界\u{1F680}".repeat(90)),
+                    vec![],
+                    None,
+                    Utc::now(),
+                )
+                .unwrap()
+            })
+            .collect();
+        let delivery = HookDelivery {
+            backend: &daemon,
+            pending: RefCell::new(Vec::new()),
+            channel_input: false,
+            channel_home: None,
+        };
+        let out = claude_code(&delivery, &input("SessionStart"), &opts())
+            .await
+            .unwrap()
+            .unwrap();
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(text.len() <= CONTEXT_BYTES, "{} bytes", text.len());
+        assert!(text.contains("Project memory ("), "{text}");
+        assert!(text.contains("AgentDocker journal"), "{text}");
+        assert!(text.contains("pause for the night"), "{text}");
+        assert!(!text.contains("more message(s) queued"), "{text}");
+        let (chars, bytes) = daemon.digest.borrow().unwrap();
+        assert!(bytes.is_some_and(|b| chars <= b), "{chars} {bytes:?}");
+    }
+
+    /// A prompt's journal is read within what its recall's bound and the
+    /// waiting messages leave, however many characters it is configured
+    /// to carry, so the prompt's text stays within its bound and its
+    /// message is told.
+    #[tokio::test]
+    async fn a_prompt_s_configured_digest_is_held_to_the_hook_s_bound() {
+        use agentdocker_core::ProjectRef;
+        let mut me = agent("claude-01234567", true);
+        me.spec
+            .labels
+            .insert("session_id".into(), input("UserPromptSubmit").session_id);
+        me.project = Some(ProjectRef::directory("/work/alpha"));
+        let mut daemon = Queue::new(me.clone(), vec![message("sender", "pause for the night")]);
+        daemon.journal_fill = Some('x');
+        let opts = ClaudeCodeArgs {
+            prompt_digest_chars: 12_000,
+            prompt_digest_entries: 50,
+            ..opts()
+        };
+        let delivery = HookDelivery {
+            backend: &daemon,
+            pending: RefCell::new(Vec::new()),
+            channel_input: false,
+            channel_home: None,
+        };
+        let out = claude_code(&delivery, &input("UserPromptSubmit"), &opts)
+            .await
+            .unwrap()
+            .unwrap();
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(text.len() <= CONTEXT_BYTES, "{} bytes", text.len());
+        assert!(text.contains("pause for the night"), "{text}");
+        assert!(text.contains("AgentDocker journal"), "{text}");
+        let (chars, bytes) = daemon.digest.borrow().unwrap();
+        assert!(chars < 12_000, "{chars}");
+        assert!(
+            bytes.is_some_and(|b| b + PROMPT_MEMORY_BYTES < CONTEXT_BYTES),
+            "{bytes:?}"
+        );
+    }
+
+    /// When even the heading and the closing line do not fit, nothing is
+    /// said of the messages and every one stays queued: the text never
+    /// passes its room.
+    #[test]
+    fn messages_within_say_nothing_when_their_frame_does_not_fit() {
+        let heading = |count: &str| format!("\nMessages waiting ({count}):\n");
+        let queue = [message("sender", "one"), message("sender", "two")];
+        for room in 0..400 {
+            let (text, left) = messages_within(&queue, &[], room, heading);
+            assert!(text.len() <= room, "room {room}: {text}");
+            if text.is_empty() {
+                assert_eq!(left.len(), 2, "room {room}");
+            }
+        }
     }
 
     /// A start names a handful of the project's live agents, each cut to

@@ -1820,6 +1820,7 @@ impl<B: Backend> McpServer<B> {
                         reader: me,
                         max_entries: budget.max_entries,
                         max_chars: budget.max_chars,
+                        max_bytes: None,
                         all_branches: args.all_branches,
                         advance: name == "mark_journal_read",
                     }),

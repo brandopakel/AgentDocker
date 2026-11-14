@@ -634,6 +634,7 @@ mod tests {
                 reader: reader.into(),
                 max_entries: 20,
                 max_chars: 2000,
+                max_bytes: None,
                 all_branches: false,
                 advance: true,
             }),

@@ -12723,6 +12723,7 @@ async fn digest_for(
                 reader: reader.to_owned(),
                 max_entries: budget.max_entries,
                 max_chars: budget.max_chars,
+                max_bytes: None,
                 all_branches: false,
                 advance,
             }),
