@@ -60,6 +60,8 @@ pub struct TaskTransition<'a> {
     /// history line, a comment, the board whose key counter moved, the
     /// other cards of a batch.
     pub documents: &'a [(&'a str, String, String)],
+    /// The journal's lines for the change, when it has any to write.
+    pub journal: &'a [JournalEntry],
     /// The events, in order.
     pub events: &'a [Event],
 }
@@ -760,6 +762,9 @@ impl Store {
                 "INSERT INTO documents (kind,id,json) VALUES (?1,?2,?3) ON CONFLICT(kind,id) DO UPDATE SET json=excluded.json",
                 params![kind, id, json],
             )?;
+        }
+        for entry in transition.journal {
+            self.insert_journal(entry)?;
         }
         for event in transition.events {
             self.append_event(event)?;

@@ -1396,6 +1396,17 @@ enum TaskAction {
         project: Option<String>,
         #[arg(long)]
         board: Option<String>,
+        /// The named card waits on something off the board, nobody holds
+        /// it, and what it waited on has happened: say what, and the card
+        /// is freed and taken in one change. Your words and what it
+        /// waited on are kept on the card and in the journal.
+        #[arg(
+            long,
+            value_name = "WHAT HAPPENED",
+            requires = "task",
+            conflicts_with = "take_over_from"
+        )]
+        unblock: Option<String>,
     },
     /// Move a card to a lane: anybody in its project may. It stays its holder's, unless somebody else sends it back to a waiting lane, which frees it.
     Move {
@@ -3801,6 +3812,7 @@ async fn run() -> Result<()> {
                     take_over_from,
                     project,
                     board,
+                    unblock,
                 } => {
                     let agent = sender::resolve(&client, agent)
                         .await?
@@ -3817,6 +3829,7 @@ async fn run() -> Result<()> {
                                 take_over_from,
                                 project,
                                 board,
+                                unblock,
                             })
                             .await?,
                     );

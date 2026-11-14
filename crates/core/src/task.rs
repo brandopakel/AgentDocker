@@ -14,6 +14,8 @@ pub const TITLE_CHARS: usize = 200;
 pub const ACCEPTANCE_CHARS: usize = 4000;
 pub const DESCRIPTION_CHARS: usize = 16_000;
 pub const BLOCKER_CHARS: usize = 500;
+/// What whoever takes a waiting card says happened, at most.
+pub const UNBLOCK_REASON_CHARS: usize = 500;
 pub const COMMENT_CHARS: usize = 4000;
 /// At most this many tags on a card, each at most this long.
 pub const TAGS_MAX: usize = 8;
@@ -567,6 +569,46 @@ impl Task {
         self.assignee = Some(agent.clone());
         self.updated_at = now;
         Ok(())
+    }
+
+    /// Whoever takes a card nobody holds says that what it waited on off
+    /// the board has happened. The wait is cleared, and what it was is
+    /// returned, to be kept on the card with the reason: a card that was
+    /// waiting does not start moving without a word of why. It names no
+    /// particular agent, the one that filed the card least of all: that
+    /// agent is a session's record, which ends, and a card only it could
+    /// free would wait for the person for good. A card that names a
+    /// holder is not freed this way; what it says is its holder's to
+    /// change, or the person's.
+    pub fn unblock(&mut self, reason: &str) -> Result<String, TaskError> {
+        if self.archived_at.is_some() {
+            return Err(TaskError::Archived);
+        }
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(TaskError::Invalid(
+                "say what happened: why a waiting card starts is kept on it",
+            ));
+        }
+        if reason.chars().count() > UNBLOCK_REASON_CHARS {
+            return Err(TaskError::Invalid(
+                "what happened is said in at most 500 characters",
+            ));
+        }
+        if self.assignee.is_some() {
+            return Err(TaskError::Taken {
+                assignee: self.assignee.clone(),
+                column: self.column,
+            });
+        }
+        let was = self.external_blocker.trim().to_owned();
+        if was.is_empty() {
+            return Err(TaskError::Invalid(
+                "the card waits on nothing off the board",
+            ));
+        }
+        self.external_blocker.clear();
+        Ok(was)
     }
 
     /// Explicit recovery of a card whose holder's lease lapsed: the taker
@@ -1187,6 +1229,43 @@ mod tests {
         let mut waiting = ready_card();
         waiting.external_blocker = "vendor".into();
         assert!(waiting.pull(&a, &board, false, Utc::now()).is_err());
+        // Whoever takes it may say the wait is over, and only with a
+        // reason: the wait is cleared, what it was comes back to be kept,
+        // and the card is then pulled like any other.
+        for no_reason in ["", "   "] {
+            assert!(matches!(
+                waiting.unblock(no_reason),
+                Err(TaskError::Invalid(_))
+            ));
+        }
+        assert!(matches!(
+            waiting.unblock(&"x".repeat(UNBLOCK_REASON_CHARS + 1)),
+            Err(TaskError::Invalid(_))
+        ));
+        assert_eq!(
+            waiting.external_blocker, "vendor",
+            "refusals change nothing"
+        );
+        assert_eq!(waiting.unblock(" the vendor shipped ").unwrap(), "vendor");
+        assert!(waiting.external_blocker.is_empty());
+        waiting.pull(&a, &board, false, Utc::now()).unwrap();
+        assert_eq!(waiting.assignee.as_ref(), Some(&a));
+        // Nothing to clear; and a card that names a holder is its holder's.
+        assert!(matches!(
+            ready_card().unblock("nothing was in the way"),
+            Err(TaskError::Invalid(_))
+        ));
+        let mut held = ready_card();
+        held.external_blocker = "vendor".into();
+        held.assignee = Some(b.clone());
+        assert_eq!(
+            held.unblock("the vendor shipped").unwrap_err(),
+            TaskError::Taken {
+                assignee: Some(b.clone()),
+                column: Column::Ready
+            }
+        );
+        assert_eq!(held.external_blocker, "vendor");
         // A take-over names whom the card is taken from: the wrong name,
         // or a card outside In progress/Review, takes nothing. The right
         // name passes the card where it sits — including to its own

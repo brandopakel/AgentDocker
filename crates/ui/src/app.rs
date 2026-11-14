@@ -2090,6 +2090,7 @@ impl App {
             | EventKind::TaskArchived { task, .. }
             | EventKind::TaskUnarchived { task, .. }
             | EventKind::TaskCommented { task, .. }
+            | EventKind::TaskUnblocked { task, .. }
             | EventKind::TaskCommentChanged { task, .. } => {
                 // The card that changed flashes once; an open one is read
                 // again in full.
