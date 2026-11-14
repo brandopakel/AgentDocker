@@ -6645,9 +6645,13 @@ mod tests {
                 .unwrap();
             assert!(text.len() <= CONTEXT_BYTES, "{fill}: {} bytes", text.len());
             assert!(text.contains("pause for the night"), "{text}");
+            // The full characters the room has bytes for, up to the 2,000
+            // configured, never the quarter an older daemon is asked for:
+            // the brief's allowance comes before the journal's.
             let (chars, bytes) = daemon.digest.borrow().unwrap();
-            assert_eq!(chars, 2000, "{fill}");
-            assert!(bytes.is_some_and(|b| b >= 2000), "{bytes:?}");
+            let bytes = bytes.expect("a byte bound is sent");
+            assert_eq!(chars, 2000.min(bytes), "{fill}");
+            assert!(chars > bytes / 4, "{chars} of {bytes}");
         }
     }
 
