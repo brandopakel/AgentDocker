@@ -161,7 +161,8 @@ class ToolPins(unittest.TestCase):
                 (root / "scripts/build_storage.py").write_text("print('{}')\n")
                 (root / "scripts/docs_check.py").write_text("")
                 (root / "scripts/touched_crates.py").write_text(
-                    "import sys\nopen(sys.argv[sys.argv.index('--output') + 1], 'w').write('-p\\nfixture\\n')\n")
+                    "import sys\nopen(sys.argv[sys.argv.index('--output') + 1], 'w').write('-p\\nfixture\\n')\n"
+                    "open(sys.argv[sys.argv.index('--doc-output') + 1], 'w').write('-p\\nfixture\\n')\n")
                 (root / "tests").mkdir()
                 # The gate ends with the Python suite, which must find a test.
                 (root / "tests/test_fixture.py").write_text(

@@ -16,9 +16,13 @@ untracked files that are not ignored):
 
 It prints Cargo package selectors, one per line (`-p`, then the name), or
 `--workspace` when everything is touched, or nothing when no package is;
-`--output <file>` writes them there instead. The exit status is 0 when the
-selection was made and 1 when Git or Cargo could not answer, so a caller
-never mistakes a failure for "nothing changed".
+`--output <file>` writes them there instead. `--doc-output <file>` also
+writes the selectors for the doctest step: the touched packages that have a
+library target, since only a library has doctests and Cargo refuses `--doc`
+for a selection with none (a change to the CLI alone); `--workspace` when
+everything is touched; nothing when no touched package has a library. The
+exit status is 0 when the selection was made and 1 when Git or Cargo could
+not answer, so a caller never mistakes a failure for "nothing changed".
 
     python3 scripts/touched_crates.py --base origin/main
     python3 scripts/touched_crates.py --base HEAD~1 --metadata metadata.json
@@ -38,6 +42,8 @@ WORKSPACE_WIDE = {
     "rustfmt.toml",
 }
 WORKSPACE_WIDE_DIRS = (".cargo/", ".config/")
+# The target kinds Cargo counts as a library (`Target::is_lib`).
+LIBRARY_KINDS = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
 
 
 def slashes(path):
@@ -69,6 +75,18 @@ def workspace_packages(metadata):
         }
         packages[package["name"]] = (directory.rstrip("/") + "/", deps)
     return packages
+
+
+def libraries(metadata):
+    """The workspace packages with a library target: the only ones that
+    have doctests."""
+    members = set(metadata.get("workspace_members", []))
+    return {
+        package["name"]
+        for package in metadata["packages"]
+        if package["id"] in members
+        and any(LIBRARY_KINDS & set(target.get("kind", [])) for target in package.get("targets", []))
+    }
 
 
 def dependents(packages):
@@ -153,6 +171,19 @@ def selectors(names):
     return args
 
 
+def doc_selectors(names, libs):
+    """Selectors for the doctest step: the whole workspace for None, else
+    the touched packages that have a library, possibly none."""
+    if names is None:
+        return ["--workspace"]
+    return selectors(names & libs)
+
+
+def write(path, args):
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("".join(f"{arg}\n" for arg in args))
+
+
 def main():
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
@@ -160,19 +191,22 @@ def main():
     parser.add_argument("--base", default="origin/main", help="the ref the change is measured against")
     parser.add_argument("--metadata", help="a saved `cargo metadata` JSON file instead of running cargo")
     parser.add_argument("--output", help="write the selectors to this file instead of standard output")
+    parser.add_argument("--doc-output", help="also write the doctest step's selectors to this file")
     args = parser.parse_args()
     try:
-        packages = workspace_packages(load_metadata(args.metadata))
+        metadata = load_metadata(args.metadata)
+        packages = workspace_packages(metadata)
+        libs = libraries(metadata)
         names = touched(changed_paths(args.base), packages)
     except (subprocess.CalledProcessError, OSError, KeyError, ValueError) as error:
         print(f"touched_crates: could not name the changed packages: {error}", file=sys.stderr)
         return 1
-    text = "".join(f"{arg}\n" for arg in selectors(names))
     if args.output:
-        with open(args.output, "w", encoding="utf-8") as handle:
-            handle.write(text)
+        write(args.output, selectors(names))
     else:
-        sys.stdout.write(text)
+        sys.stdout.write("".join(f"{arg}\n" for arg in selectors(names)))
+    if args.doc_output:
+        write(args.doc_output, doc_selectors(names, libs))
     return 0
 
 
