@@ -534,69 +534,64 @@ fn exclude_line(project_root: &Path, home: &Path) -> Result<Option<String>, Stri
     Ok((!line.is_empty()).then(|| line + "/"))
 }
 
-/// The rule `git check-ignore -v` says decides a path, from its line
-/// `<source>:<line>:<pattern><TAB><path>`: where the rule is written, its
-/// line there, and the rule. The source is a path and may hold a colon
-/// (a drive letter), so the line number is the first part that is all
-/// digits. Nothing when no rule speaks of the path.
-fn deciding_rule(said: &str) -> Option<(String, &str, String)> {
-    let rule = said.lines().next()?.split('\t').next()?;
-    let parts: Vec<&str> = rule.split(':').collect();
-    let at = (1..parts.len().saturating_sub(1)).find(|at| {
-        !parts[*at].is_empty() && parts[*at].bytes().all(|byte| byte.is_ascii_digit())
-    })?;
-    Some((parts[..at].join(":"), parts[at], parts[at + 1..].join(":")))
-}
-
 /// Whether git leaves the worktrees folder alone, in git's own word.
 /// The line in `info/exclude` is the least of git's ignore rules: one in
 /// a `.gitignore` the project tracks (`!*/`) wins over it, and the
 /// checkouts in the folder would then read as the project's untracked
 /// files, to be staged by the next `git add -A`. So the folder is asked
-/// about once it exists and the line is there, and a rule that keeps it
-/// in view is named, for the person to change or to go around.
+/// about once it exists and the line is there.
+///
+/// The answer is git's exit status and nothing read out of its text:
+/// `check-ignore -q` succeeds for an ignored path and fails, silently,
+/// for one that is not. The rule that keeps the folder in view is then
+/// shown as git prints it (`check-ignore -v`), for the person to read:
+/// its file may hold a colon or a number, so it is never taken apart.
 async fn kept_out_of_git(project_root: &Path, home: &Path) -> Result<(), String> {
-    let output = git(
-        project_root.to_path_buf(),
-        vec![
-            "check-ignore".into(),
-            "-v".into(),
-            "--".into(),
-            home.to_string_lossy().into_owned(),
-        ],
-    )
-    .await
-    .map_err(|e| {
+    let ask = |how: &str| {
+        git(
+            project_root.to_path_buf(),
+            vec![
+                "check-ignore".into(),
+                how.to_owned(),
+                "--".into(),
+                home.to_string_lossy().into_owned(),
+            ],
+        )
+    };
+    let around = "name another folder with `[worktrees] dir` in agentd.toml (an absolute one is outside every project), or give the worktree a path of its own";
+    let answer = ask("-q").await.map_err(|e| {
         format!(
             "git could not say whether {} is ignored: {e}",
             home.display()
         )
     })?;
-    let around = "name another folder with `[worktrees] dir` in agentd.toml (an absolute one is outside every project), or give the worktree a path of its own";
-    // The rule that decides is printed whether it ignores the folder or
-    // brings it back into view; nothing is printed when none speaks of it.
-    let Some((source, line, pattern)) = deciding_rule(&output.stdout) else {
-        // Or git could not answer, and said why.
-        let said = output.text.trim();
-        return Err(if said.is_empty() {
-            format!(
-                "git does not ignore {}, so a checkout there would read as the project's own untracked files: {around}",
-                home.display()
-            )
-        } else {
-            format!(
-                "git could not say whether {} is ignored ({said}): {around}",
-                home.display()
-            )
-        });
-    };
-    if pattern.starts_with('!') {
+    if answer.success {
+        return Ok(());
+    }
+    // Not ignored is said with no word; anything said is why git could
+    // not answer.
+    let said = answer.text.trim();
+    if !said.is_empty() {
         return Err(format!(
-            "{source} line {line} (`{pattern}`) keeps {} in git's view, so a checkout there would read as the project's own untracked files: change that rule, or {around}",
+            "git could not say whether {} is ignored ({said}): {around}",
             home.display()
         ));
     }
-    Ok(())
+    let rule = ask("-v").await.ok().and_then(|shown| {
+        let line = shown.stdout.lines().next()?;
+        let rule = line.split('\t').next()?.trim();
+        (!rule.is_empty()).then(|| rule.to_owned())
+    });
+    Err(match rule {
+        Some(rule) => format!(
+            "git does not ignore {}, so a checkout there would read as the project's own untracked files. The rule that keeps it in view, as git names it (file, line, rule): `{rule}`. Change that rule, or {around}",
+            home.display()
+        ),
+        None => format!(
+            "git does not ignore {}, so a checkout there would read as the project's own untracked files: {around}",
+            home.display()
+        ),
+    })
 }
 
 /// The folder a project's worktrees go in is reached through real
@@ -2011,7 +2006,7 @@ mod lifecycle_tests {
 
         for round in ["the line is written", "the line is there"] {
             let answer = create(&daemon, "builder", None, "agent/first").await;
-            refused(&answer, ".gitignore line 2 (`!*/`)");
+            refused(&answer, "`.gitignore:2:!*/`");
             refused(&answer, "[worktrees] dir");
             assert!(
                 !root.join(".agentdocker").exists(),
@@ -2039,7 +2034,7 @@ mod lifecycle_tests {
         std::fs::create_dir(root.join(".agentdocker")).unwrap();
         refused(
             &create(&daemon, "builder", None, "agent/first").await,
-            ".gitignore line 2",
+            ".gitignore:2:!*/",
         );
         assert!(root.join(".agentdocker").is_dir());
         assert!(!root.join(paths::PROJECT_WORKTREES).exists());
@@ -2055,6 +2050,59 @@ mod lifecycle_tests {
         .unwrap();
         let first = made(create(&daemon, "builder", None, "agent/first").await);
         assert!(!first.starts_with(&root), "{}", first.display());
+    }
+
+    /// Whether the folder is ignored is git's answer and not a reading of
+    /// its text: a rule that keeps the folder in view is found wherever
+    /// it is written, a file whose path looks like git's own `file:line:`
+    /// included, when the line is first written and when it is there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_rule_that_keeps_the_folder_in_view_is_found_in_any_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        std::fs::write(
+            daemon.home.join(agentdocker_core::config::FILE_NAME),
+            "[worktrees]\ndir = 'part:1:two/worktrees'\n",
+        )
+        .unwrap();
+        std::fs::create_dir(root.join("part:1:two")).unwrap();
+        std::fs::write(root.join("part:1:two/.gitignore"), "!worktrees/\n").unwrap();
+        run(&root, &["add", "part:1:two/.gitignore"]).await;
+        run(&root, &["commit", "-qm", "rules"]).await;
+
+        for round in ["the line is written", "the line is there"] {
+            let answer = create(&daemon, "builder", None, "agent/one").await;
+            refused(&answer, "git does not ignore");
+            refused(&answer, "`part:1:two/.gitignore:1:!worktrees/`");
+            assert!(
+                !root.join("part:1:two/worktrees").exists(),
+                "{round}: what was made for it is taken away"
+            );
+            assert_eq!(exclude_lines(&root, "/part:1:two/worktrees/"), 1, "{round}");
+        }
+        let untracked = git(
+            root.clone(),
+            vec![
+                "status".into(),
+                "--porcelain".into(),
+                "--untracked-files=all".into(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(untracked.stdout.trim(), "", "no checkout was made");
+        let listed = git(root.clone(), vec!["worktree".into(), "list".into()])
+            .await
+            .unwrap();
+        assert_eq!(listed.stdout.lines().count(), 1, "{}", listed.stdout);
+
+        // Without the rule the same folder is taken.
+        std::fs::write(root.join("part:1:two/.gitignore"), "").unwrap();
+        assert_eq!(
+            made(create(&daemon, "builder", None, "agent/one").await),
+            root.join("part:1:two/worktrees/agent-one")
+        );
     }
 
     /// A folder name is taken to the letter in the line that keeps it out
@@ -2109,33 +2157,6 @@ mod lifecycle_tests {
             "no git ignore rule can hold",
         );
         assert_eq!(untracked().await, siblings);
-    }
-
-    /// What `git check-ignore -v` prints is read for the rule that
-    /// decides: its file, its line and the rule, a colon in any of them
-    /// notwithstanding; nothing when git names no rule.
-    #[test]
-    fn the_rule_git_names_is_read_from_its_line() {
-        let read = |said: &'static str| {
-            deciding_rule(said).map(|(source, line, pattern)| (source, line.to_owned(), pattern))
-        };
-        let rule = |source: &str, line: &str, pattern: &str| {
-            Some((source.to_owned(), line.to_owned(), pattern.to_owned()))
-        };
-        assert_eq!(
-            read(".git/info/exclude:8:/.agentdocker/worktrees/\t.agentdocker/worktrees\n"),
-            rule(".git/info/exclude", "8", "/.agentdocker/worktrees/")
-        );
-        assert_eq!(
-            read(".gitignore:2:!*/\t.agentdocker/worktrees\n"),
-            rule(".gitignore", "2", "!*/")
-        );
-        assert_eq!(
-            read("C:\\work\\ignore:12:/a:b/\ta:b\n"),
-            rule("C:\\work\\ignore", "12", "/a:b/")
-        );
-        assert_eq!(read(""), None);
-        assert_eq!(read("fatal: not a git repository\n"), None);
     }
 
     /// The line itself: one folder, rooted at the project's top, with
