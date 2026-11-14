@@ -577,9 +577,6 @@ impl LeftOut {
     }
 }
 
-/// The room kept for the closing line naming what was left out.
-const LEFT_OUT_BYTES: usize = 120;
-
 /// The opening line every brief has.
 pub fn title(project: &str) -> String {
     format!(
@@ -602,7 +599,17 @@ pub fn render(brief: &Brief, now: DateTime<Utc>, max_bytes: usize) -> String {
             brief.not_covered.join(" and ")
         )
     });
-    let reserve = LEFT_OUT_BYTES + not_covered.as_ref().map_or(0, |l| l.len() + 1);
+    // The closing line at its longest, with every item of every kind left
+    // out: what is left out is never more, so its line is never longer.
+    let most = LeftOut {
+        cards: brief.groups.iter().map(|g| g.cards.len()).sum(),
+        checkpoints: brief.checkpoints.len(),
+        questions: brief.questions.len(),
+        leases: brief.leases.len(),
+        holders: brief.held_live.len(),
+    };
+    let reserve =
+        most.line().map_or(0, |l| l.len() + 1) + not_covered.as_ref().map_or(0, |l| l.len() + 1);
     let mut text = title(&brief.project);
     if text.len() + reserve > max_bytes {
         return String::new();
@@ -765,7 +772,7 @@ fn checkpoint_line(c: &CheckpointLine, reader: &Reader, now: DateTime<Utc>) -> S
     // the full list holds it.
     let read = match c.author_name {
         Some(_) => format!("`agentdocker checkpoints --as {}`", arg(c.author.as_str())),
-        None => "`agentdocker checkpoints`".to_owned(),
+        None => "`agentdocker checkpoints --all`".to_owned(),
     };
     line.push_str(&match reader {
         Reader::Agent { id, .. } if c.resumable_here => format!(
@@ -1098,7 +1105,7 @@ mod tests {
         // Its author's record is gone, so the full list is where to read it.
         let gone = person.lines().find(|l| l.starts_with("- gone:k")).unwrap();
         assert!(
-            gone.ends_with("read it: `agentdocker checkpoints`"),
+            gone.ends_with("read it: `agentdocker checkpoints --all`"),
             "{gone}"
         );
     }
@@ -1311,6 +1318,62 @@ mod tests {
             bounded(&"x".repeat(500), CHECKOUT_CHARS).chars().count(),
             CHECKOUT_CHARS
         );
+    }
+
+    /// The closing line is kept room for at its longest, every kind left
+    /// out at once: however near full the body comes, the text stays within
+    /// its bound. The reviewer's case: a hundred ended holders' cards, a
+    /// hundred live holders, ten roles' checkpoints, a hundred questions
+    /// and a hundred leases, the first card's title at every length.
+    #[test]
+    fn the_closing_line_never_takes_the_text_past_its_bound() {
+        let me = agent("me", "/work/orchard", true, &[]);
+        let roles = ["r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8", "r9"];
+        let base = || {
+            let mut agents = vec![me.clone()];
+            let mut cards = Vec::new();
+            for n in 0..100 {
+                let old = agent(&format!("old-{n}"), "/work/orchard", false, &[]);
+                let mut c = card(&format!("AD-{n}"), Column::InProgress, Some(&old));
+                c.task.title = "a".repeat(80);
+                cards.push(c);
+                agents.push(old);
+                let live = agent(&format!("live-{n}"), "/work/orchard", true, &[]);
+                cards.push(card(&format!("LV-{n}"), Column::Review, Some(&live)));
+                agents.push(live);
+            }
+            let authors: Vec<AgentRecord> = roles
+                .iter()
+                .map(|r| agent(&format!("author-{r}"), "/work/orchard", false, &[r]))
+                .collect();
+            agents.extend(authors.iter().cloned());
+            let mut records = records(agents, cards);
+            records.checkpoints = authors
+                .iter()
+                .map(|a| checkpoint(&format!("{}:k", a.spec.name), a, "/work/orchard", 1))
+                .collect();
+            records.questions = (0..100).map(|n| question(&me, &format!("q{n}?"))).collect();
+            for q in &mut records.questions {
+                q.from = "id-old-0".into();
+            }
+            records.leases = (0..100)
+                .map(|n| lease(&records.agents[1], &format!("task:coord-{n}")))
+                .collect();
+            records
+        };
+        for length in 1..40 {
+            let mut records = base();
+            records.cards[0].task.title = "a".repeat(length);
+            let brief = compose(&records, &reader(&me, None));
+            for max in [CODEX_SESSION_BYTES, SESSION_BYTES] {
+                let text = render(&brief, now(), max);
+                assert!(
+                    text.len() <= max,
+                    "title {length}, bound {max}: {} bytes",
+                    text.len()
+                );
+            }
+        }
     }
 
     /// Within every bound the text stays within it, keeps each section's

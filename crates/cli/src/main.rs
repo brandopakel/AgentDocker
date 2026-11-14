@@ -236,6 +236,10 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: Option<String>,
+        /// Every checkpoint, whoever wrote it, whatever --as or the session
+        /// says: the way to read one whose author's record is forgotten.
+        #[arg(long)]
+        all: bool,
         #[command(subcommand)]
         action: Option<CheckpointAction>,
     },
@@ -2447,8 +2451,11 @@ async fn run() -> Result<()> {
                 })
                 .await?,
         )?,
-        Command::Checkpoints { agent, action } => match action {
-            None => print_json(&client.call(&Request::Checkpoints { agent }).await?)?,
+        Command::Checkpoints { agent, all, action } => match action {
+            None => {
+                let agent = if all { None } else { agent };
+                print_json(&client.call(&Request::Checkpoints { agent }).await?)?;
+            }
             Some(CheckpointAction::Prune { older_than, agent }) => {
                 let age = agentdocker_core::config::parse_duration(&older_than)
                     .map_err(|error| anyhow!(error))?;

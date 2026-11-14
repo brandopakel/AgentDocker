@@ -684,7 +684,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `checkpoint` / `checkpoints` | Persist task context and content identity; `checkpoints prune --older-than <duration>` forgets finished sessions' old ones |
+| `checkpoint` / `checkpoints` | Persist task context and content identity; `checkpoints` lists those of `--as` or the session, `checkpoints --all` every one (whoever wrote it, a forgotten agent included); `checkpoints prune --older-than <duration>` forgets finished sessions' old ones |
 | `handoff` / `handoffs` | Hand an agent's work to another, with everything around it `--link kind:target` names what the recipient should open first; `checkpoint --link` does the same for a replacement session. |
 | `resume` | Inspect or accept a verified handoff |
 | `export` / `import` | Carry a bundle to another host |
