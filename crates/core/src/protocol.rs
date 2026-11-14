@@ -85,8 +85,12 @@ pub struct DigestRequest {
 /// are in its way ([`Request::Claim`]).
 pub const FEATURE_FRESH_CLAIM: &str = "fresh_claim";
 
+/// A journal digest bounds its text by `digest.max_bytes` as well as by
+/// its characters; a daemon that does not list it bounds characters alone.
+pub const FEATURE_DIGEST_MAX_BYTES: &str = "digest_max_bytes";
+
 /// The names a daemon of this build answers in `pong.features`.
-pub const FEATURES: &[&str] = &[FEATURE_FRESH_CLAIM];
+pub const FEATURES: &[&str] = &[FEATURE_FRESH_CLAIM, FEATURE_DIGEST_MAX_BYTES];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
