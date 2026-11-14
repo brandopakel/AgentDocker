@@ -204,6 +204,8 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         // only to some roles is read by; one that names nobody reads what is
         // for everyone.
         R::MemorySearch { from, .. } | R::MemoryProfile { from, .. } => from.as_mut(),
+        // A brief is read for its reader, whose own project it is.
+        R::Brief { from, .. } => Some(from),
         R::MarkRead { reader, .. } => reader.as_mut(),
         // A digest that moves a reader's cursor acts for that reader.
         R::Journal {

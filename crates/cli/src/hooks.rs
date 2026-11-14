@@ -998,22 +998,24 @@ pub async fn claude_code<B: Backend>(
             // is always told, and so is the memory block, whose full
             // allowance is kept for it: what it admits is what `memory_add`
             // and `memory profile --session` say a session is told. The
+            // brief of where the work stands has its own allowance, less
+            // only when the orientation leaves less, and within it its
+            // lower sections give way to its cards and checkpoints. The
             // journal digest gives way first: it is asked for only the room
-            // the memory allowance and every waiting message leave, before
-            // it is read, since reading it moves this reader past it. The
-            // messages then have what is left, and those that do not fit
-            // stay queued.
+            // the allowances and every waiting message leave, before it is
+            // read, since reading it moves this reader past it. The messages
+            // then have what is left, and those that do not fit stay queued.
             let waiting_heading = |count: &str| format!("\nMessages waiting ({count}):\n");
             let all_waiting = messages_within(&inbox, &agents, usize::MAX, waiting_heading).0;
             let memory_allowance = MEMORY_CONTEXT_BYTES + 4;
-            let room =
-                CONTEXT_BYTES.saturating_sub(text.len() + memory_allowance + all_waiting.len() + 2);
+            let brief_room = agentdocker_core::brief::SESSION_BYTES.min(
+                CONTEXT_BYTES.saturating_sub(text.len() + memory_allowance + MESSAGES_FRAME + 2),
+            );
+            let room = CONTEXT_BYTES.saturating_sub(
+                text.len() + brief_room + 2 + memory_allowance + all_waiting.len() + 2,
+            );
             let digest =
                 journal_within(backend, &me, opts.digest_entries, opts.digest_chars, room).await;
-            if !digest.is_empty() {
-                text.push_str("\n\n");
-                text.push_str(&journal_text(&digest));
-            }
             let (memory, mut said) = memory_profile(backend, &me, MEMORY_PROFILE_CHARS).await;
             let (recalled, also) = compact_memory(
                 backend,
@@ -1023,7 +1025,14 @@ pub async fn claude_code<B: Backend>(
                 (&memory, &said),
             )
             .await;
-            for part in [memory, recalled] {
+            let brief = work_brief(backend, &me, brief_room).await;
+            let journal = if digest.is_empty() {
+                String::new()
+            } else {
+                journal_text(&digest)
+            };
+            // Where the work stands comes first after the orientation.
+            for part in [brief, journal, memory, recalled] {
                 if !part.is_empty() {
                     text.push_str("\n\n");
                     text.push_str(&part);
@@ -2471,6 +2480,37 @@ fn display_name(id: &str, agents: &[AgentRecord]) -> String {
 /// characters: 10,000 characters a string, with no setting to raise it. A
 /// hook's text is held to this many bytes, never fewer than its characters.
 const CONTEXT_BYTES: usize = 9_500;
+
+/// The room a session start keeps for its messages' heading and the line
+/// naming those left queued, so the blocks before them never take it.
+const MESSAGES_FRAME: usize = 160;
+
+/// Where the work stands in this session's project
+/// ([`agentdocker_core::brief`]), within `max_bytes`: the daemon's own
+/// records, rendered here. Nothing when the session is in no project, or
+/// the daemon has no brief (an older one) or refuses it: a session start
+/// goes on without it.
+pub(crate) async fn work_brief<B: Backend>(
+    backend: &B,
+    me: &AgentRecord,
+    max_bytes: usize,
+) -> String {
+    if me.project.is_none() || max_bytes == 0 {
+        return String::new();
+    }
+    match backend
+        .call(Request::Brief {
+            from: me.id.to_string(),
+            project: None,
+        })
+        .await
+    {
+        Ok(Response::Brief { brief }) => {
+            agentdocker_core::brief::render(&brief, chrono::Utc::now(), max_bytes)
+        }
+        _ => String::new(),
+    }
+}
 
 /// The least room a session start's journal digest is asked for. A digest
 /// moves its reader past what it covers, so it is not asked for at all

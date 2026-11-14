@@ -47,6 +47,7 @@ mod access;
 mod acting;
 pub(crate) mod authorship;
 mod binding;
+pub(crate) mod brief;
 mod channels;
 mod checkouts;
 // Codex's shared server listens on a Unix socket; Windows has none.
@@ -311,6 +312,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::PlanGet { .. }
             | Request::MemorySearch { .. }
             | Request::MemoryProfile { .. }
+            | Request::Brief { .. }
             | Request::Files { .. }
             | Request::FileGet { .. }
             | Request::Usage { .. }
@@ -2828,6 +2830,7 @@ impl Daemon {
                 max_chars,
                 as_of,
             } => self.memory_profile(from, project, max_chars, as_of).await,
+            Request::Brief { from, project } => self.work_brief(&from, project.as_deref()).await,
             Request::MemoryForget { from, memory } => self.memory_forget(&from, &memory),
             Request::MemoryRetire {
                 from,

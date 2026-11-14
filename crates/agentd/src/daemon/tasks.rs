@@ -264,12 +264,15 @@ impl State {
         })
     }
 
-    fn board_of(&mut self, task: &Task) -> Result<Board, Box<Response>> {
+    pub(super) fn board_of(&mut self, task: &Task) -> Result<Board, Box<Response>> {
         self.project_board(&task.project, task.board.as_deref())
     }
 
     /// Every card of a project, archived ones too.
-    fn project_cards(&mut self, project: &ProjectId) -> Result<Vec<Task>, Box<Response>> {
+    pub(super) fn project_cards(
+        &mut self,
+        project: &ProjectId,
+    ) -> Result<Vec<Task>, Box<Response>> {
         self.store_read("project cards", |store| {
             store.documents_where::<Task>(DOCUMENT, "project", project.as_str(), PROJECT_CARDS)
         })
@@ -280,7 +283,7 @@ impl State {
         })
     }
 
-    fn card_comments(&mut self, task: &TaskId) -> Vec<Comment> {
+    pub(super) fn card_comments(&mut self, task: &TaskId) -> Vec<Comment> {
         let mut comments = self
             .store_read("card comments", |store| {
                 store.documents_where::<Comment>(COMMENT, "task", task.as_str(), 2000)
