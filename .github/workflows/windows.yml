@@ -108,8 +108,8 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         with:
-          toolchain: stable
-          components: clippy
+          toolchain: "1.100.0"
+          components: clippy, rustfmt
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           key: windows-native-foundations
@@ -275,7 +275,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0
         if: inputs.receiver_acceptance
         with:
-          toolchain: stable
+          toolchain: "1.100.0"
+          components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         if: inputs.receiver_acceptance
         with:

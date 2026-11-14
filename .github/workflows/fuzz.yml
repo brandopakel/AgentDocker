@@ -13,6 +13,11 @@ jobs:
     # minutes and the whole job about twenty-two; the limit leaves that
     # room twice over, and each campaign is bounded by its own time.
     timeout-minutes: 45
+    env:
+      # The checkout's rust-toolchain.toml names the stable every other job
+      # builds with. This job builds with nightly throughout, its plain
+      # `cargo` calls included, as it did before that file existed.
+      RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
