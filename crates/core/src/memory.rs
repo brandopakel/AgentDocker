@@ -462,6 +462,111 @@ fn rank<'a>(said: Vec<&'a Memory>, query: &str, limit: usize, min_score: f64) ->
     scored.into_iter().take(limit).map(|(_, m)| m).collect()
 }
 
+/// How much of a project's memory a new session is told in full, in
+/// characters of the memories' own text. The hooks ask for a profile of
+/// this size, and `memory_add` measures a new standing memory against it,
+/// so what the adder is told is what a session will meet.
+pub const SESSION_PROFILE_CHARS: usize = 2000;
+
+/// The first words of a memory a profile had no room for.
+pub const HEADLINE_CHARS: usize = 80;
+
+/// A standing memory a profile had no room for, by its first words: a
+/// reader is never left unaware that it exists, and can ask for it by id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeftOut {
+    pub id: String,
+    /// Its first [`HEADLINE_CHARS`] characters at most, on one line, cut
+    /// at a word and ending in `…` when there is more.
+    pub headline: String,
+    /// How long its whole text is, in characters.
+    pub chars: usize,
+}
+
+impl LeftOut {
+    pub fn of(memory: &Memory) -> Self {
+        Self {
+            id: memory.id.clone(),
+            headline: headline(&memory.text),
+            chars: memory.text.chars().count(),
+        }
+    }
+}
+
+/// The first words of `text` on one line: at most [`HEADLINE_CHARS`]
+/// characters, cut at the last space when a word would be split, with `…`
+/// when anything was cut.
+pub fn headline(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| {
+            if c.is_control() || c.is_whitespace() {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let flat = flat.trim();
+    if flat.chars().count() <= HEADLINE_CHARS {
+        return flat.to_owned();
+    }
+    let cut: String = flat.chars().take(HEADLINE_CHARS).collect();
+    let cut = match cut.rfind(' ') {
+        // A cut inside one long word keeps the letters it has.
+        Some(space) if space > HEADLINE_CHARS / 2 => &cut[..space],
+        _ => cut.as_str(),
+    };
+    format!("{}…", cut.trim_end())
+}
+
+/// Why a standing memory will be met by its first words only: what a new
+/// session is told in full had no room for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoRoom {
+    /// The size of what a new session is told in full, in characters.
+    pub budget: usize,
+    /// The standing memories told in full, and the characters they take.
+    pub told: usize,
+    pub used: usize,
+    /// The standing memories left out, the one asked about among them.
+    pub left_out: usize,
+}
+
+/// Whether the standing memory `id` has no room in what `reader` is told
+/// at the start of a session ([`SESSION_PROFILE_CHARS`]), and how full
+/// that is. `None` when it is told in full, is not standing, or is not
+/// among what `reader` is said at all.
+pub fn no_room(
+    memories: &[Memory],
+    id: &str,
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> Option<NoRoom> {
+    let told = told(memories, SESSION_PROFILE_CHARS, reader, at);
+    if !told.left_out.iter().any(|m| m.id == id) {
+        return None;
+    }
+    let full: Vec<&&Memory> = told.memories.iter().filter(|m| m.standing).collect();
+    Some(NoRoom {
+        budget: SESSION_PROFILE_CHARS,
+        told: full.len(),
+        used: full.iter().map(|m| m.text.chars().count() + 1).sum(),
+        left_out: told.left_out.len(),
+    })
+}
+
+/// A profile and what it could not hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Told<'a> {
+    /// The memories told in full, in the order they are said.
+    pub memories: Vec<&'a Memory>,
+    /// The standing memories that did not fit, the oldest first. A
+    /// standing memory is a convention or a decision, not news: one that
+    /// is left out is said by its first words rather than not at all.
+    pub left_out: Vec<&'a Memory>,
+}
+
 /// What `reader` should know first of a project's memory, as many as fit
 /// in `max_chars`: its standing memories, the oldest first, then the
 /// others, newest first.
@@ -471,13 +576,24 @@ pub fn profile<'a>(
     reader: Reader<'_>,
     at: DateTime<Utc>,
 ) -> Vec<&'a Memory> {
+    told(memories, max_chars, reader, at).memories
+}
+
+/// [`profile`], with the standing memories it had no room for.
+pub fn told<'a>(
+    memories: &'a [Memory],
+    max_chars: usize,
+    reader: Reader<'_>,
+    at: DateTime<Utc>,
+) -> Told<'a> {
     let said = current(memories, reader, at);
     let (mut standing, recent): (Vec<&Memory>, Vec<&Memory>) =
         said.into_iter().partition(|m| m.standing);
     // Oldest first; two kept at the same moment by id, as everywhere else.
     standing.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     let mut used = 0;
-    standing
+    let mut left_out = Vec::new();
+    let memories = standing
         .into_iter()
         .chain(recent)
         // One too long for what is left is passed over, not the end: the
@@ -487,10 +603,13 @@ pub fn profile<'a>(
             let fits = used + size <= max_chars;
             if fits {
                 used += size;
+            } else if memory.standing {
+                left_out.push(*memory);
             }
             fits
         })
-        .collect()
+        .collect();
+    Told { memories, left_out }
 }
 
 /// What a copy of a project's memory elsewhere must do to hold exactly its
@@ -880,6 +999,92 @@ mod tests {
         assert_eq!(remove, ["forgotten", "old"]);
         let (add, remove) = mirror_plan(&all, &["new", "kept"].map(str::to_owned).into(), now());
         assert!(add.is_empty() && remove.is_empty(), "in step");
+    }
+
+    /// A standing memory with no room is left out by name, never silently:
+    /// the profile says which, the oldest first, and a memory that is only
+    /// news is not among them.
+    #[test]
+    fn a_standing_memory_with_no_room_is_named_as_left_out() {
+        let mut all = vec![
+            memory("old", &"o".repeat(10), 0, None),
+            memory("mid", &"m".repeat(10), 1, None),
+            memory("new", &"n".repeat(10), 2, None),
+            memory("news", &"w".repeat(10), 3, None),
+        ];
+        for standing in all.iter_mut().take(3) {
+            standing.standing = true;
+        }
+        let told = told(&all, 22, Reader::Person, now());
+        let ids = |memories: &[&Memory]| -> Vec<String> {
+            memories.iter().map(|m| m.id.clone()).collect()
+        };
+        assert_eq!(ids(&told.memories), ["old", "mid"]);
+        assert_eq!(ids(&told.left_out), ["new"], "the news is not a decision");
+        let all_fit = super::told(&all, 4000, Reader::Person, now());
+        assert_eq!(all_fit.memories.len(), 4);
+        assert!(all_fit.left_out.is_empty());
+    }
+
+    /// The adder of a standing memory is told when a session will meet it
+    /// by its first words only, and how full the profile is.
+    #[test]
+    fn a_new_standing_memory_with_no_room_says_how_full_the_profile_is() {
+        let mut all = vec![
+            memory("old", &"o".repeat(SESSION_PROFILE_CHARS - 100), 0, None),
+            memory("new", &"n".repeat(200), 1, None),
+            memory("short", &"s".repeat(20), 2, None),
+            memory("news", &"w".repeat(900), 3, None),
+        ];
+        for standing in all.iter_mut().take(3) {
+            standing.standing = true;
+        }
+        assert_eq!(
+            no_room(&all, "new", Reader::Person, now()),
+            Some(NoRoom {
+                budget: SESSION_PROFILE_CHARS,
+                told: 2,
+                used: SESSION_PROFILE_CHARS - 100 + 1 + 21,
+                left_out: 1,
+            })
+        );
+        assert_eq!(
+            no_room(&all, "old", Reader::Person, now()),
+            None,
+            "told in full"
+        );
+        assert_eq!(
+            no_room(&all, "short", Reader::Person, now()),
+            None,
+            "it fits"
+        );
+        assert_eq!(
+            no_room(&all, "news", Reader::Person, now()),
+            None,
+            "not standing"
+        );
+        assert_eq!(no_room(&all, "nobody", Reader::Person, now()), None);
+    }
+
+    #[test]
+    fn a_headline_is_the_first_words_on_one_line() {
+        assert_eq!(headline("  short one\n"), "short one");
+        let long = "Decided by the person: all work on the other platform is paused until the project is released";
+        let cut = headline(long);
+        assert!(cut.ends_with('…'), "{cut}");
+        assert!(cut.chars().count() <= HEADLINE_CHARS + 1, "{cut}");
+        assert!(long.starts_with(cut.trim_end_matches('…')), "{cut}");
+        assert!(!cut.trim_end_matches('…').ends_with(' '));
+        assert_eq!(
+            headline("two\nlines\there"),
+            "two lines here",
+            "one line whatever the text held"
+        );
+        let word = "x".repeat(200);
+        assert_eq!(headline(&word).chars().count(), HEADLINE_CHARS + 1);
+        let left = LeftOut::of(&memory("m", long, 0, None));
+        assert_eq!((left.id.as_str(), left.chars), ("m", long.chars().count()));
+        assert_eq!(left.headline, cut);
     }
 
     #[test]

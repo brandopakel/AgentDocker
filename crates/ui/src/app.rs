@@ -3715,7 +3715,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 // or a failure, leaves the rest of the workspace to show.
                 // Read as the person, who reads every memory.
                 workspace.memory = match client.call(&memory_search(&project, "")) {
-                    Ok(Response::Memories { memories }) => {
+                    Ok(Response::Memories { memories, .. }) => {
                         workspace.memories = memories;
                         MemoryRead::Loaded
                     }
@@ -3793,7 +3793,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
         }
         Cmd::MemorySearch { project, query } => {
             let result = match client.call(&memory_search(&project, &query)) {
-                Ok(Response::Memories { memories }) => Ok(memories),
+                Ok(Response::Memories { memories, .. }) => Ok(memories),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),

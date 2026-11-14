@@ -1154,7 +1154,8 @@ pub enum Request {
     },
     /// What a project's agents should know first, within `max_chars`: its
     /// standing memories, the oldest first, then the others, newest first;
-    /// `as_of` as they stood then. Answers `memories`.
+    /// `as_of` as they stood then. Answers `memories`, with `left_out`
+    /// naming the standing memories that had no room.
     MemoryProfile {
         #[serde(default)]
         from: Option<String>,
@@ -2280,9 +2281,20 @@ pub enum Response {
         /// suggestion nobody made from one nobody could make.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         suggestion: Option<crate::memory::Suggestion>,
+        /// From `memory_add` of a standing memory that has no room in what
+        /// a new session is told ([`crate::memory::SESSION_PROFILE_CHARS`]):
+        /// how full that profile is, so the adder knows a session will meet
+        /// this memory by its first words only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_out: Option<crate::memory::NoRoom>,
     },
     Memories {
         memories: Vec<crate::memory::Memory>,
+        /// From `memory_profile`: the standing memories that had no room
+        /// in it, by their first words, the oldest first. A client says
+        /// them after the profile so that none goes untold in silence.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        left_out: Vec<crate::memory::LeftOut>,
     },
     /// Memories with their history: `replaced` names, for each superseded
     /// one, what replaced it.

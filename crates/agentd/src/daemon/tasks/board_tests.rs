@@ -1313,7 +1313,9 @@ async fn a_projects_memory_is_read_as_it_stood_at_a_moment() {
         min_score: None,
     };
     let found = |response: Response| match response {
-        Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
+        Response::Memories { memories, .. } => {
+            memories.into_iter().map(|m| m.id).collect::<Vec<_>>()
+        }
         other => panic!("{other:?}"),
     };
     assert!(found(d.handle(search(Some(days(20)), false)).await).is_empty());
@@ -1403,7 +1405,9 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
         min_score: None,
     };
     let found = |response: Response| match response {
-        Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
+        Response::Memories { memories, .. } => {
+            memories.into_iter().map(|m| m.id).collect::<Vec<_>>()
+        }
         other => panic!("{other:?}"),
     };
     assert_eq!(
@@ -1524,7 +1528,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         include_superseded: false,
         min_score: None,
     };
-    let Response::Memories { memories } = d.handle(search("deploys friday")).await else {
+    let Response::Memories { memories, .. } = d.handle(search("deploys friday")).await else {
         panic!()
     };
     assert_eq!(memories.len(), 1, "a peer of the project finds it");
@@ -1541,7 +1545,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         panic!("replaced")
     };
     assert_eq!(second.supersedes.as_deref(), Some(first.id.as_str()));
-    let Response::Memories { memories } = d
+    let Response::Memories { memories, .. } = d
         .handle(Request::MemoryProfile {
             from: Some(f.agent.id.to_string()),
             project: None,
@@ -1590,7 +1594,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         .await,
         Response::Ok
     ));
-    let Response::Memories { memories } = d.handle(search("mondays")).await else {
+    let Response::Memories { memories, .. } = d.handle(search("mondays")).await else {
         panic!()
     };
     assert!(memories.is_empty(), "forgotten for good");
