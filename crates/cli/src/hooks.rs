@@ -2000,7 +2000,11 @@ async fn journal_within<B: Backend>(
         return String::new();
     }
     let bytes = room - heading;
-    journal_digest(backend, me, max_entries, max_chars.min(bytes), Some(bytes)).await
+    // A character takes at most four bytes, so this many characters fit
+    // the room whatever the text: a daemon that predates `max_bytes`
+    // ignores it and bounds the characters alone, and still keeps the room.
+    let chars = max_chars.min(bytes / 4);
+    journal_digest(backend, me, max_entries, chars, Some(bytes)).await
 }
 
 async fn journal_digest<B: Backend>(
@@ -4519,7 +4523,8 @@ mod tests {
             &backend.requests()[3],
             Request::Journal { project, digest: Some(d), .. }
                 if project.is_empty() && d.reader == me.id.as_str() && d.advance
-                    && d.max_entries == 20 && d.max_chars == 2000
+                    && d.max_entries == 20 && d.max_chars <= 2000
+                    && d.max_bytes.is_some_and(|b| d.max_chars * 4 <= b)
         ));
 
         // A prompt: the digest alone is worth speaking for, within the
@@ -6208,6 +6213,9 @@ mod tests {
         /// What a digest is filled with up to its bounds, as a journal
         /// with more than fits would be; none adds nothing.
         journal_fill: Option<char>,
+        /// Bound digests in characters alone, as a daemon that predates
+        /// `max_bytes` does.
+        ignores_max_bytes: bool,
         memories: Vec<agentdocker_core::memory::Memory>,
     }
 
@@ -6218,6 +6226,7 @@ mod tests {
                 queue: RefCell::new(queue),
                 digest: RefCell::new(None),
                 journal_fill: None,
+                ignores_max_bytes: false,
                 memories: Vec::new(),
             }
         }
@@ -6251,7 +6260,10 @@ mod tests {
                         "Since you last looked (1 entry):\n- 4m ago   codex-1 [main] noted: \"parser is next\"\n",
                     );
                     if let Some(fill) = self.journal_fill {
-                        let bytes = digest.max_bytes.unwrap_or(usize::MAX);
+                        let bytes = match digest.max_bytes {
+                            Some(bytes) if !self.ignores_max_bytes => bytes,
+                            _ => usize::MAX,
+                        };
                         while text.len() + fill.len_utf8() <= bytes
                             && text.chars().count() < digest.max_chars
                         {
@@ -6361,7 +6373,10 @@ mod tests {
         let text = out["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();
-        assert!(matches!(*daemon.digest.borrow(), Some((2000, Some(_)))));
+        assert!(matches!(
+            *daemon.digest.borrow(),
+            Some((chars, Some(bytes))) if chars > 0 && chars * 4 <= bytes
+        ));
         assert!(text.contains("parser is next") && text.contains("and then this"));
         assert!(!text.contains("more message(s) queued"), "{text}");
         for request in delivery.pending.take() {
@@ -6451,7 +6466,67 @@ mod tests {
         assert!(text.contains("pause for the night"), "{text}");
         assert!(!text.contains("more message(s) queued"), "{text}");
         let (chars, bytes) = daemon.digest.borrow().unwrap();
-        assert!(bytes.is_some_and(|b| chars <= b), "{chars} {bytes:?}");
+        assert!(bytes.is_some_and(|b| chars * 4 <= b), "{chars} {bytes:?}");
+    }
+
+    /// A daemon that predates `max_bytes` ignores it and bounds a digest
+    /// in characters alone. The characters asked for already fit the room
+    /// at four bytes each, so even an emoji journal filled to them keeps
+    /// the whole text within its bound, its message told and nothing read
+    /// cut away; at a prompt, at any configured size, too.
+    #[tokio::test]
+    async fn a_daemon_ignoring_max_bytes_still_leaves_the_text_within_its_bound() {
+        use agentdocker_core::ProjectRef;
+        let mut me = agent("claude-01234567", true);
+        me.spec
+            .labels
+            .insert("session_id".into(), input("SessionStart").session_id);
+        me.project = Some(ProjectRef::directory("/work/alpha"));
+        let mut daemon = Queue::new(me.clone(), vec![message("sender", "pause for the night")]);
+        daemon.journal_fill = Some('\u{1F680}');
+        daemon.ignores_max_bytes = true;
+        let delivery = HookDelivery {
+            backend: &daemon,
+            pending: RefCell::new(Vec::new()),
+            channel_input: false,
+            channel_home: None,
+        };
+        let out = claude_code(&delivery, &input("SessionStart"), &opts())
+            .await
+            .unwrap()
+            .unwrap();
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(text.len() <= CONTEXT_BYTES, "{} bytes", text.len());
+        assert!(text.contains("AgentDocker journal"), "{text}");
+        assert!(text.contains("pause for the night"), "{text}");
+        let (chars, bytes) = daemon.digest.borrow().unwrap();
+        assert!(bytes.is_some_and(|b| chars * 4 <= b), "{chars} {bytes:?}");
+
+        let mut daemon = Queue::new(me.clone(), vec![message("sender", "pause for the night")]);
+        daemon.journal_fill = Some('\u{1F680}');
+        daemon.ignores_max_bytes = true;
+        let delivery = HookDelivery {
+            backend: &daemon,
+            pending: RefCell::new(Vec::new()),
+            channel_input: false,
+            channel_home: None,
+        };
+        let opts = ClaudeCodeArgs {
+            prompt_digest_chars: 12_000,
+            prompt_digest_entries: 50,
+            ..opts()
+        };
+        let out = claude_code(&delivery, &input("UserPromptSubmit"), &opts)
+            .await
+            .unwrap()
+            .unwrap();
+        let text = out["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(text.len() <= CONTEXT_BYTES, "{} bytes", text.len());
+        assert!(text.contains("pause for the night"), "{text}");
     }
 
     /// A prompt's journal is read within what its recall's bound and the
