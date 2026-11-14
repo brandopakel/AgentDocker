@@ -44,6 +44,11 @@ const NEXT_STEPS: usize = 2;
 pub const NOT_COVERED: &[&str] =
     &["pull requests on GitHub, which `agentdocker brief` asks GitHub for"];
 
+/// What the `not_covered` entry for GitHub's pull requests begins with,
+/// in every daemon's brief: the one entry `agentdocker brief`, having
+/// asked GitHub, takes out ([`Brief::pull_requests_supplied`]).
+pub const PULL_REQUESTS: &str = "pull requests";
+
 /// How many of a checkout's uncommitted paths a brief names.
 const DIRTY_NAMED: usize = 3;
 
@@ -104,29 +109,44 @@ pub struct Standing {
     /// prints them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dirty: Vec<String>,
-    /// The branch's upstream, when it has one.
+    /// What the commits not pushed are counted against: the branch's
+    /// upstream, else its own name on origin; none when it has neither.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub upstream: Option<String>,
-    /// The commits on HEAD its upstream does not have.
+    /// The commits on HEAD `upstream` does not have; none when there is
+    /// no `upstream` or git could not count them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unpushed: Option<usize>,
     /// The commit `origin/<branch>` names: what was pushed of the branch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pushed: Option<String>,
     /// The ref the checkout is measured against: what `origin/HEAD` names,
-    /// else `origin/main`.
+    /// else `origin/main`, else `origin/master`, else the branch the
+    /// repository's main checkout is on; none when there is none of them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base: Option<String>,
-    /// The commits on HEAD the base does not have.
+    /// The commits on HEAD the base does not have; none when there is no
+    /// base or git could not count them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unmerged: Option<usize>,
 }
 
 impl Standing {
-    /// Whether work stands in it: uncommitted paths, commits not pushed,
-    /// or commits not in the base.
+    /// Whether work stands in it, or may: uncommitted paths, commits not
+    /// pushed or not in the base, or a count nobody could take. A checkout
+    /// is clean and merged only when git said so: nothing uncommitted,
+    /// every commit in the base and, where there is an upstream, on it. An
+    /// unknown count is never read as none. One with no commit yet and
+    /// nothing uncommitted holds nothing.
     pub fn stands(&self) -> bool {
-        !self.dirty.is_empty() || self.unpushed.unwrap_or(0) > 0 || self.unmerged.unwrap_or(0) > 0
+        if !self.dirty.is_empty() {
+            return true;
+        }
+        if self.head.is_none() {
+            return false;
+        }
+        let unpushed = self.upstream.is_some() && self.unpushed != Some(0);
+        unpushed || self.unmerged != Some(0)
     }
 }
 
@@ -172,6 +192,12 @@ pub struct Records {
     pub handoffs: Vec<(String, AgentId)>,
     /// What the daemon knows of each of the project's checkouts.
     pub checkout_reads: Vec<CheckoutRecord>,
+    /// Why git could not list the project's checkouts for this brief, when
+    /// it could not: only those known before are in `checkout_reads`.
+    pub checkouts_unlisted: Option<String>,
+    /// A checkout of the project's repository, where `agentdocker brief`
+    /// asks GitHub ([`Brief::repository`]).
+    pub repository: Option<PathBuf>,
     /// The gate's word at a pushed head, by `(branch, commit, word)`.
     pub gates: Vec<(String, String, String)>,
 }
@@ -199,6 +225,22 @@ pub struct Brief {
     pub checkouts_unread: usize,
     /// What this brief does not cover.
     pub not_covered: Vec<String>,
+    /// A checkout of the project's repository, where `agentdocker brief`
+    /// asks GitHub for its pull requests: the reader's own for an agent,
+    /// else the one the person named, else one of the project's. None from
+    /// a daemon that does not say, and then GitHub is not asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<PathBuf>,
+}
+
+impl Brief {
+    /// GitHub's open pull requests were told beside this brief: the notice
+    /// that they are not in it goes, and every other notice stays (an
+    /// older daemon's for checkouts, say).
+    pub fn pull_requests_supplied(&mut self) {
+        self.not_covered
+            .retain(|entry| !entry.starts_with(PULL_REQUESTS));
+    }
 }
 
 /// A checkout where work stands, or one git could not read.
@@ -485,7 +527,18 @@ pub fn compose(records: &Records, reader: &Reader) -> Brief {
             .iter()
             .filter(|c| c.read == CheckoutRead::Unread)
             .count(),
-        not_covered: NOT_COVERED.iter().map(|s| (*s).to_owned()).collect(),
+        not_covered: records
+            .checkouts_unlisted
+            .iter()
+            .map(|reason| {
+                format!(
+                    "checkouts not known before, as git could not list them ({})",
+                    quoted(&headline(reason))
+                )
+            })
+            .chain(NOT_COVERED.iter().map(|s| (*s).to_owned()))
+            .collect(),
+        repository: records.repository.clone(),
     }
 }
 
@@ -977,18 +1030,31 @@ fn checkout_line(c: &CheckoutLine, now: DateTime<Utc>) -> String {
             named.join(", ")
         ));
     }
-    match (&standing.upstream, standing.unpushed, &standing.pushed) {
-        (Some(upstream), Some(n), _) if n > 0 => parts.push(format!(
+    // What git could not count is said, never shown as nothing.
+    match (&standing.upstream, standing.unpushed) {
+        (Some(upstream), Some(n)) if n > 0 => parts.push(format!(
             "{} not pushed to {upstream}",
             plural(n, "commit", "commits")
         )),
-        (None, _, None) if standing.branch.is_some() => parts.push("never pushed".to_owned()),
+        (Some(upstream), None) => parts.push(format!(
+            "git could not count the commits not pushed to {upstream}"
+        )),
+        (None, _) if standing.branch.is_some() && standing.head.is_some() => {
+            parts.push("never pushed".to_owned());
+        }
         _ => {}
     }
-    if let (Some(base), Some(n)) = (&standing.base, standing.unmerged)
-        && n > 0
-    {
-        parts.push(format!("{} not in {base}", plural(n, "commit", "commits")));
+    match (&standing.base, standing.unmerged) {
+        (Some(base), Some(n)) if n > 0 => {
+            parts.push(format!("{} not in {base}", plural(n, "commit", "commits")));
+        }
+        (Some(base), None) => parts.push(format!("git could not count the commits not in {base}")),
+        (None, _) if standing.head.is_some() => parts.push(
+            "no base to measure it against (no origin/HEAD, origin/main or origin/master, \
+             and the main checkout on no branch)"
+                .to_owned(),
+        ),
+        _ => {}
     }
     if let (Some(branch), Some(pushed)) = (&standing.branch, &standing.pushed) {
         let short: String = pushed.chars().take(12).collect();
@@ -1164,6 +1230,8 @@ mod tests {
             handoffs: Vec::new(),
             checkout_reads: Vec::new(),
             gates: Vec::new(),
+            checkouts_unlisted: None,
+            repository: None,
         }
     }
 
@@ -1771,6 +1839,105 @@ mod tests {
         let short = render(&brief, now(), 700);
         assert!(short.len() <= 700);
         assert!(short.contains(" checkout"), "{short}");
+    }
+
+    /// A checkout is counted clean and merged only when git said so: a
+    /// committed branch with no remote and no base, or a count git could
+    /// not take, is told with what is unknown. One with no commit and
+    /// nothing uncommitted, or merged into a local base, holds nothing. A
+    /// listing git could not give is said, and the notice of pull requests
+    /// is the only one `agentdocker brief` takes out, from a part-1
+    /// daemon's list too.
+    #[test]
+    fn unknown_or_never_pushed_work_is_never_counted_clean() {
+        let me = agent("me", "/work/orchard", true, &[]);
+        let at = now() - Duration::seconds(4);
+        let head = || Some("e".repeat(40));
+        let cases = [
+            (
+                "/work/local",
+                Standing {
+                    branch: Some("topic".into()),
+                    head: head(),
+                    ..Standing::default()
+                },
+                Some("never pushed; no base to measure it against"),
+            ),
+            (
+                "/work/uncounted",
+                Standing {
+                    branch: Some("topic".into()),
+                    head: head(),
+                    upstream: Some("origin/topic".into()),
+                    pushed: head(),
+                    base: Some("origin/main".into()),
+                    ..Standing::default()
+                },
+                Some(
+                    "git could not count the commits not pushed to origin/topic; \
+                     git could not count the commits not in origin/main",
+                ),
+            ),
+            (
+                "/work/unborn",
+                Standing {
+                    branch: Some("main".into()),
+                    ..Standing::default()
+                },
+                None,
+            ),
+            (
+                "/work/merged-locally",
+                Standing {
+                    branch: Some("done".into()),
+                    head: head(),
+                    base: Some("main".into()),
+                    unmerged: Some(0),
+                    ..Standing::default()
+                },
+                None,
+            ),
+        ];
+        let mut records = records(vec![me.clone()], Vec::new());
+        records.checkout_reads = cases
+            .iter()
+            .map(|(path, standing, _)| CheckoutRecord {
+                path: PathBuf::from(path),
+                read: CheckoutRead::Read {
+                    at,
+                    standing: standing.clone(),
+                },
+            })
+            .collect();
+        records.checkouts_unlisted = Some("git did not answer in time".into());
+        let mut brief = compose(&records, &reader(&me, None));
+        assert_eq!(brief.checkouts_clean, 2, "{:?}", brief.checkouts);
+        let text = render(&brief, now(), usize::MAX);
+        for (path, standing, said) in &cases {
+            assert_eq!(standing.stands(), said.is_some(), "{path}");
+            let line = text
+                .lines()
+                .find(|l| l.starts_with(&format!("- \"{path}\"")));
+            match said {
+                Some(said) => assert!(line.is_some_and(|l| l.contains(said)), "{path}: {text}"),
+                None => assert!(line.is_none(), "{path}: {text}"),
+            }
+        }
+        assert!(
+            text.contains(
+                "Not in this brief: checkouts not known before, as git could not list them \
+                 (\"git did not answer in time\") and pull requests on GitHub"
+            ),
+            "{text}"
+        );
+        brief.pull_requests_supplied();
+        assert_eq!(brief.not_covered.len(), 1, "{:?}", brief.not_covered);
+        assert!(brief.not_covered[0].starts_with("checkouts"));
+        // What a part-1 daemon sent.
+        brief.not_covered = vec!["checkouts".into(), "pull requests".into()];
+        brief.pull_requests_supplied();
+        assert_eq!(brief.not_covered, ["checkouts"]);
+        assert!(NOT_COVERED.iter().all(|n| n.starts_with(PULL_REQUESTS)));
     }
 
     /// Within every bound the text stays within it, keeps each section's

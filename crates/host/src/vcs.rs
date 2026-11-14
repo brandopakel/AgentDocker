@@ -100,48 +100,7 @@ pub fn subject(dir: &Path, sha: &str, timeout: std::time::Duration) -> Option<St
 /// never "there is only this one" — a caller that treats it as the
 /// latter would silently stop watching real checkouts.
 pub fn worktrees(dir: &Path, timeout: std::time::Duration) -> Vec<PathBuf> {
-    let Ok(mut child) = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["worktree", "list", "--porcelain"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-    else {
-        return Vec::new();
-    };
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => break,
-            Ok(Some(_)) | Err(_) => {
-                let _ = child.wait();
-                return Vec::new();
-            }
-            Ok(None) => {}
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Vec::new();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    let Some(mut stdout) = child.stdout.take() else {
-        return Vec::new();
-    };
-    let mut out = String::new();
-    if std::io::Read::read_to_string(&mut stdout, &mut out).is_err() {
-        return Vec::new();
-    }
-    out.lines()
-        .filter_map(|line| line.strip_prefix("worktree "))
-        .map(|path| {
-            let path = PathBuf::from(path);
-            path.canonicalize().unwrap_or(path)
-        })
-        .collect()
+    worktree_list(dir, std::time::Instant::now() + timeout).unwrap_or_default()
 }
 
 /// What kept a git read from answering.
@@ -168,91 +127,80 @@ impl std::fmt::Display for ReadError {
 
 impl std::error::Error for ReadError {}
 
-/// The most of a git command's output kept; past it the read fails.
-const OUTPUT_LIMIT: usize = 4 << 20;
-
-/// `git -C dir <args>`'s standard output, read as it comes so that a long
-/// answer never stalls the child, which is stopped at `deadline`.
+/// `git <args>`'s standard output, run in `dir` by
+/// [`crate::command::run_with_env`]: its own process group, stopped whole
+/// at `deadline` with whatever helpers git started (an fsmonitor hook,
+/// say), and its output written to files rather than pipes, so a helper
+/// that outlives git and keeps a descriptor never holds the read past git's
+/// exit. At most 4 MiB of output.
 fn git_output(
     dir: &Path,
     args: &[&str],
     deadline: std::time::Instant,
 ) -> Result<String, ReadError> {
-    use std::process::{Command, Stdio};
-    let mut child = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(ReadError::Spawn)?;
-    let drain = |pipe: Option<Box<dyn Read + Send>>, limit: usize| {
-        std::thread::spawn(move || {
-            let mut kept = Vec::new();
-            let Some(mut pipe) = pipe else {
-                return (kept, false);
-            };
-            let mut chunk = [0u8; 8192];
-            let mut over = false;
-            loop {
-                match pipe.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) if kept.len() + n <= limit => kept.extend_from_slice(&chunk[..n]),
-                    // Read on so the child is never stalled, keep no more.
-                    Ok(_) => over = true,
-                }
-            }
-            (kept, over)
-        })
-    };
-    let out = drain(
-        child
-            .stdout
-            .take()
-            .map(|p| Box::new(p) as Box<dyn Read + Send>),
-        OUTPUT_LIMIT,
-    );
-    let err = drain(
-        child
-            .stderr
-            .take()
-            .map(|p| Box::new(p) as Box<dyn Read + Send>),
-        4096,
-    );
-    let status = loop {
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(ReadError::TimedOut);
-            }
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(ReadError::Spawn(error));
-            }
+    let left = deadline.saturating_duration_since(std::time::Instant::now());
+    if left.is_zero() {
+        return Err(ReadError::TimedOut);
+    }
+    if !dir.is_dir() {
+        return Err(ReadError::Failed(format!(
+            "{} is not a directory",
+            dir.display()
+        )));
+    }
+    let argv: Vec<String> = std::iter::once("git")
+        .chain(args.iter().copied())
+        .map(str::to_owned)
+        .collect();
+    let environment = [
+        ("GIT_OPTIONAL_LOCKS", Some(std::ffi::OsStr::new("0"))),
+        ("LC_ALL", Some(std::ffi::OsStr::new("C"))),
+    ];
+    let output = match crate::command::run_with_env(dir, &argv, left, &environment) {
+        Ok(output) => output,
+        // It stops a command only at its timeout, which is our deadline.
+        Err(_) if std::time::Instant::now() >= deadline => return Err(ReadError::TimedOut),
+        Err(error) if error.kind() == std::io::ErrorKind::Other => {
+            return Err(ReadError::Failed(error.to_string()));
         }
+        Err(error) => return Err(ReadError::Spawn(error)),
     };
-    let (out, over) = out.join().unwrap_or_default();
-    let (err, _) = err.join().unwrap_or_default();
-    if !status.success() {
-        let said = String::from_utf8_lossy(&err);
+    if !output.success {
+        // The text is standard output, then standard error.
+        let said = output.text.get(output.stdout.len()..).unwrap_or_default();
         return Err(ReadError::Failed(
             said.lines().next().unwrap_or_default().trim().to_owned(),
         ));
     }
-    if over {
-        return Err(ReadError::Failed("its answer was too long".to_owned()));
-    }
-    Ok(String::from_utf8_lossy(&out).into_owned())
+    Ok(output.stdout)
+}
+
+/// The checkouts of the repository `dir` is in, as `git worktree list`
+/// gives them (the main one first), asked within `deadline`.
+pub fn worktree_list(dir: &Path, deadline: std::time::Instant) -> Result<Vec<PathBuf>, ReadError> {
+    let out = git_output(dir, &["worktree", "list", "--porcelain"], deadline)?;
+    Ok(out
+        .lines()
+        .filter_map(|line| line.strip_prefix("worktree "))
+        .map(|path| {
+            let path = PathBuf::from(path);
+            path.canonicalize().unwrap_or(path)
+        })
+        .collect())
+}
+
+/// The branch the repository's main checkout is on, as `git worktree list`
+/// gives it: none when it is detached or bare.
+fn main_checkout_branch(
+    dir: &Path,
+    deadline: std::time::Instant,
+) -> Result<Option<String>, ReadError> {
+    let out = git_output(dir, &["worktree", "list", "--porcelain"], deadline)?;
+    Ok(out
+        .split("\n\n")
+        .next()
+        .and_then(|main| main.lines().find_map(|line| line.strip_prefix("branch ")))
+        .map(|full| full.strip_prefix("refs/heads/").unwrap_or(full).to_owned()))
 }
 
 /// The paths of the checkout `dir` that differ from its HEAD: modified,
@@ -281,78 +229,95 @@ pub fn dirty_paths(dir: &Path, deadline: std::time::Instant) -> Result<Vec<Strin
 }
 
 /// Where the checkout `dir` stands, for a brief: its branch and head
-/// (read from `.git`), its uncommitted paths ([`dirty_paths`]), the
-/// commits its upstream lacks, what `origin/<branch>` names, and the
-/// commits its base lacks, the base being what `origin/HEAD` names, else
-/// `origin/main`. Local refs only, never a fetch. Every git call shares
-/// `deadline`; a question git cannot answer (no upstream, no base) is
-/// left unanswered rather than failing the read.
+/// (read from `.git`), its uncommitted paths ([`dirty_paths`]), what
+/// `origin/<branch>` names, the commits not pushed (counted against the
+/// branch's upstream, else `origin/<branch>`), and the commits its base
+/// lacks, the base being what `origin/HEAD` names, else `origin/main`,
+/// else `origin/master`, else the branch the repository's main checkout is
+/// on. Local refs only, never a fetch. Every git call shares `deadline`.
+/// A ref that is not there is an answer (no upstream, never pushed, no
+/// base); a count git could not give is left `None`, which
+/// [`agentdocker_core::brief::Standing::stands`] never reads as no work.
 pub fn standing(
     dir: &Path,
     deadline: std::time::Instant,
 ) -> Result<agentdocker_core::brief::Standing, ReadError> {
     let (branch, head) = state(dir).map_or((None, None), |s| (s.branch, s.head));
     let dirty = dirty_paths(dir, deadline)?;
+    let mut standing = agentdocker_core::brief::Standing {
+        branch,
+        head,
+        dirty,
+        ..Default::default()
+    };
+    if standing.head.is_none() {
+        // No commit yet: nothing to push or merge.
+        return Ok(standing);
+    }
     let ask = |args: &[&str]| match git_output(dir, args, deadline) {
         Ok(out) => Ok(Some(out.trim().to_owned()).filter(|s| !s.is_empty())),
         Err(ReadError::Failed(_)) => Ok(None),
         Err(error) => Err(error),
     };
-    let count = |range: &str| -> Result<Option<usize>, ReadError> {
-        Ok(ask(&["rev-list", "--count", range])?.and_then(|n| n.parse().ok()))
-    };
-    let upstream = if head.is_some() {
-        ask(&[
-            "rev-parse",
-            "--abbrev-ref",
-            "--symbolic-full-name",
-            "@{upstream}",
-        ])?
-    } else {
-        None
-    };
-    let unpushed = match &upstream {
-        Some(upstream) => count(&format!("{upstream}..HEAD"))?,
-        None => None,
-    };
-    let pushed = match &branch {
-        Some(branch) => ask(&[
+    // A ref, by its full name, when it names a commit.
+    let exists = |full: &str| -> Result<bool, ReadError> {
+        Ok(ask(&[
             "rev-parse",
             "--verify",
             "--quiet",
-            &format!("refs/remotes/origin/{branch}^{{commit}}"),
-        ])?,
-        None => None,
+            &format!("{full}^{{commit}}"),
+        ])?
+        .is_some())
     };
-    let base = match ask(&[
-        "symbolic-ref",
-        "--quiet",
-        "--short",
-        "refs/remotes/origin/HEAD",
-    ])? {
-        Some(base) => Some(base),
-        None => ask(&[
+    let count = |full: &str| -> Result<Option<usize>, ReadError> {
+        Ok(ask(&["rev-list", "--count", &format!("{full}..HEAD")])?.and_then(|n| n.parse().ok()))
+    };
+    if let Some(branch) = standing.branch.clone() {
+        let remote = format!("refs/remotes/origin/{branch}");
+        standing.pushed = ask(&[
             "rev-parse",
             "--verify",
             "--quiet",
-            "refs/remotes/origin/main",
-        ])?
-        .map(|_| "origin/main".to_owned()),
+            &format!("{remote}^{{commit}}"),
+        ])?;
+        let upstream = ask(&["rev-parse", "--symbolic-full-name", "@{upstream}"])?;
+        // What the commits not pushed are counted against: the upstream,
+        // else the branch's own name on origin.
+        let against = match upstream {
+            Some(full) => Some(full),
+            None => standing.pushed.is_some().then_some(remote),
+        };
+        if let Some(full) = against {
+            standing.unpushed = count(&full)?;
+            standing.upstream = Some(short_ref(&full));
+        }
+    }
+    let base = match ask(&["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])? {
+        Some(full) => Some(full),
+        None if exists("refs/remotes/origin/main")? => Some("refs/remotes/origin/main".to_owned()),
+        None if exists("refs/remotes/origin/master")? => {
+            Some("refs/remotes/origin/master".to_owned())
+        }
+        None => match main_checkout_branch(dir, deadline) {
+            Ok(Some(branch)) => Some(format!("refs/heads/{branch}")),
+            Ok(None) | Err(ReadError::Failed(_)) => None,
+            Err(error) => return Err(error),
+        },
     };
-    let unmerged = match (&base, &head) {
-        (Some(base), Some(_)) => count(&format!("{base}..HEAD"))?,
-        _ => None,
-    };
-    Ok(agentdocker_core::brief::Standing {
-        branch,
-        head,
-        dirty,
-        upstream,
-        unpushed,
-        pushed,
-        base,
-        unmerged,
-    })
+    if let Some(full) = base {
+        standing.unmerged = count(&full)?;
+        standing.base = Some(short_ref(&full));
+    }
+    Ok(standing)
+}
+
+/// A ref as a person names it: `origin/main` for `refs/remotes/origin/main`,
+/// `main` for `refs/heads/main`.
+fn short_ref(full: &str) -> String {
+    full.strip_prefix("refs/remotes/")
+        .or_else(|| full.strip_prefix("refs/heads/"))
+        .unwrap_or(full)
+        .to_owned()
 }
 
 /// `(git directory of this checkout, common git directory)`: equal for a
@@ -545,6 +510,15 @@ mod tests {
         );
         assert_eq!(read.unmerged, Some(3), "two, three and four");
 
+        // Pushed with no upstream set: counted against its name on origin.
+        git(home, &work, &["checkout", "-q", "-b", "plain"]);
+        git(home, &work, &["push", "-q", "origin", "plain"]);
+        commit("five");
+        let read = standing(&work, deadline()).unwrap();
+        assert_eq!(read.upstream.as_deref(), Some("origin/plain"));
+        assert_eq!(read.unpushed, Some(1));
+        assert!(read.pushed.is_some());
+
         assert!(matches!(
             dirty_paths(&work, std::time::Instant::now()),
             Err(ReadError::TimedOut)
@@ -553,6 +527,121 @@ mod tests {
             dirty_paths(&tmp.path().join("nowhere"), deadline()),
             Err(ReadError::Failed(_))
         ));
+    }
+
+    /// With no remote, the base is the branch the main checkout is on: the
+    /// main checkout is clean and merged, and a linked worktree's commits
+    /// are counted against it, never pushed and never taken for merged.
+    #[test]
+    fn a_repository_without_a_remote_is_measured_against_its_main_checkout() {
+        if !have_git() {
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let main = repo(&tmp);
+        let deadline = || std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let read = standing(&main, deadline()).unwrap();
+        assert_eq!(read.base.as_deref(), Some("main"));
+        assert_eq!(read.unmerged, Some(0));
+        assert!(!read.stands());
+        assert_eq!((read.upstream, read.pushed), (None, None));
+
+        let linked = tmp.path().join("linked");
+        git(
+            tmp.path(),
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "topic",
+                linked.to_str().unwrap(),
+            ],
+        );
+        git(
+            tmp.path(),
+            &linked,
+            &["commit", "-q", "--allow-empty", "-m", "topic"],
+        );
+        let read = standing(&linked, deadline()).unwrap();
+        assert_eq!(read.branch.as_deref(), Some("topic"));
+        assert_eq!(read.base.as_deref(), Some("main"));
+        assert_eq!(read.unmerged, Some(1));
+        assert!(read.stands(), "committed, never pushed, not merged");
+        assert_eq!(
+            (read.upstream, read.unpushed, read.pushed),
+            (None, None, None)
+        );
+        assert_eq!(
+            worktree_list(&linked, deadline()).unwrap(),
+            [main.canonicalize().unwrap(), linked.canonicalize().unwrap()]
+        );
+    }
+
+    /// A helper git starts (an fsmonitor hook, here) is stopped with git at
+    /// the deadline; one that outlives git, holding the standard error git
+    /// gave it, does not hold the read past git's exit.
+    #[cfg(unix)]
+    #[test]
+    fn a_read_is_bounded_whatever_gits_helpers_do() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::{Duration, Instant};
+        if !have_git() {
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let main = repo(&tmp);
+        let hook = tmp.path().join("fsmonitor.sh");
+        let pid_file = tmp.path().join("helper.pid");
+        let write_hook = |body: &str| {
+            fs::write(&hook, format!("#!/bin/sh\n{body}\n")).unwrap();
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        git(
+            tmp.path(),
+            &main,
+            &["config", "core.fsmonitor", hook.to_str().unwrap()],
+        );
+        let helper = || -> i32 {
+            fs::read_to_string(&pid_file)
+                .expect("git ran the hook")
+                .trim()
+                .parse()
+                .unwrap()
+        };
+        // SAFETY: signal 0 only asks whether the process is there.
+        let alive = |pid: i32| unsafe { libc::kill(pid, 0) } == 0;
+
+        // The hook waits on its helper, so git waits on the hook.
+        write_hook(&format!(
+            "sleep 30 &\necho $! > '{}'\nwait",
+            pid_file.display()
+        ));
+        let started = Instant::now();
+        let read = dirty_paths(&main, started + Duration::from_millis(500));
+        assert!(matches!(read, Err(ReadError::TimedOut)), "{read:?}");
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let pid = helper();
+        let gone = (0..300).any(|_| {
+            std::thread::sleep(Duration::from_millis(10));
+            !alive(pid)
+        });
+        assert!(gone, "the helper is stopped with git");
+
+        // The helper outlives the hook and git, keeping standard error.
+        fs::remove_file(&pid_file).unwrap();
+        write_hook(&format!(
+            "sleep 30 >/dev/null &\necho $! > '{}'\nexit 1",
+            pid_file.display()
+        ));
+        let started = Instant::now();
+        let read = dirty_paths(&main, started + Duration::from_secs(20));
+        let took = started.elapsed();
+        // SAFETY: the helper this test started, by the pid it wrote.
+        unsafe { libc::kill(helper(), libc::SIGKILL) };
+        assert!(read.is_ok(), "{read:?}");
+        assert!(took < Duration::from_secs(10), "held for {took:?}");
     }
 
     #[test]

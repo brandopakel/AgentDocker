@@ -3534,9 +3534,18 @@ impl Daemon {
     /// A project as a client names it: an absolute path inside it, or an id
     /// (any unique prefix) of a project some agent works in.
     async fn resolve_project(&self, selector: &str) -> Result<ProjectId, Box<Response>> {
+        self.resolve_project_ref(selector).await.map(|(id, _)| id)
+    }
+
+    /// [`Self::resolve_project`], with the project as found from the path
+    /// when the selector is one.
+    pub(super) async fn resolve_project_ref(
+        &self,
+        selector: &str,
+    ) -> Result<(ProjectId, Option<ProjectRef>), Box<Response>> {
         if Path::new(selector).is_absolute() {
             return match self.project_for(Some(PathBuf::from(selector)), false).await {
-                Some(project) => Ok(project.id()),
+                Some(project) => Ok((project.id(), Some(project))),
                 None => Err(Box::new(Response::error(
                     ErrorCode::Internal,
                     "project lookup failed",
@@ -3546,6 +3555,7 @@ impl Daemon {
         lock(&self.state)
             .registry
             .resolve_project(selector)
+            .map(|id| (id, None))
             .map_err(|err| Box::new(registry_error(err)))
     }
 
@@ -4195,6 +4205,14 @@ impl State {
             |store, event| store.append_event(event),
             |_| {},
         );
+    }
+
+    /// `dirs` are the project's checkouts, as git listed them just now: a
+    /// checkout no longer among them is no longer read.
+    pub(crate) fn list_checkouts(&mut self, project: &ProjectId, dirs: Vec<PathBuf>) {
+        self.checkout_reads
+            .retain(|dir, (owner, _)| owner != project || dirs.contains(dir));
+        self.project_checkouts.insert(project.clone(), dirs);
     }
 
     /// A project's checkouts: those git lists for it, and the checkout of

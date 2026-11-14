@@ -245,11 +245,7 @@ impl Daemon {
                 if dirs.is_empty() {
                     continue;
                 }
-                // A checkout the project no longer has is no longer read.
-                state
-                    .checkout_reads
-                    .retain(|dir, (project, _)| project != &id || dirs.contains(dir));
-                state.project_checkouts.insert(id.clone(), dirs.clone());
+                state.list_checkouts(&id, dirs.clone());
                 listed.push((id, dirs));
             }
         }
@@ -265,6 +261,67 @@ impl Daemon {
         for checkout in self.watch_targets() {
             self.note_checkout(&checkout).await;
         }
+    }
+
+    /// List `project`'s checkouts as git gives them now, from each
+    /// repository root `refs` name, within `deadline`, and keep the list:
+    /// the tick lists only projects with a live agent, so a brief does not
+    /// wait on it to find a checkout nobody works in. Returns why git could
+    /// not list them for a git project, when it could not; what was known
+    /// before is then kept, with anything found added.
+    pub(super) async fn list_project_checkouts(
+        &self,
+        project: &ProjectId,
+        refs: &[ProjectRef],
+        deadline: std::time::Instant,
+    ) -> Option<String> {
+        let mut roots: Vec<(PathBuf, bool)> = Vec::new();
+        for p in refs
+            .iter()
+            .filter(|p| matches!(p.source, ProjectSource::Git | ProjectSource::Agentfile))
+        {
+            if !roots.iter().any(|(root, _)| root == &p.root) {
+                roots.push((p.root.clone(), p.source == ProjectSource::Git));
+            }
+        }
+        if roots.is_empty() {
+            return None;
+        }
+        let (dirs, failure) = tokio::task::spawn_blocking(move || {
+            let mut dirs: Vec<PathBuf> = Vec::new();
+            let mut failure = None;
+            // A root that is gone (a clone deleted since) has nothing to list.
+            for (root, git) in roots.into_iter().filter(|(root, _)| root.is_dir()) {
+                match vcs::worktree_list(&root, deadline) {
+                    Ok(found) => {
+                        for dir in found {
+                            if !dirs.contains(&dir) {
+                                dirs.push(dir);
+                            }
+                        }
+                    }
+                    Err(error) if git && failure.is_none() => {
+                        failure = Some(error.to_string());
+                    }
+                    Err(_) => {}
+                }
+            }
+            (dirs, failure)
+        })
+        .await
+        .unwrap_or_else(|_| (Vec::new(), Some("the listing did not finish".to_owned())));
+        let mut state = lock(&self.state);
+        if failure.is_none() && !dirs.is_empty() {
+            state.list_checkouts(project, dirs);
+        } else {
+            let known = state.project_checkouts.entry(project.clone()).or_default();
+            for dir in dirs {
+                if !known.contains(&dir) {
+                    known.push(dir);
+                }
+            }
+        }
+        failure
     }
 
     /// Read where each of `checkouts` of `project` stands

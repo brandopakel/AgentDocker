@@ -467,7 +467,8 @@ enum Command {
     /// the person and the leases held. A session is told it at its start;
     /// an agent reads its own project's, the person any project's.
     Brief {
-        /// All of it, not the first 16 KiB.
+        /// All of it, not the first 16 KiB, with up to 2,000 open pull
+        /// requests asked of GitHub rather than 100.
         #[arg(long)]
         all: bool,
         /// The brief as JSON, exactly what the text is made from.
@@ -3187,7 +3188,6 @@ async fn run() -> Result<()> {
             project,
             from,
         } => {
-            use agentdocker_core::brief;
             let reader = sender::resolve(&client, from)
                 .await?
                 .unwrap_or_else(|| HUMAN.into());
@@ -3208,14 +3208,26 @@ async fn run() -> Result<()> {
                 bail!("the daemon gave no brief");
             };
             // GitHub's open pull requests, each with the gate's word at its
-            // head: asked here, never by the daemon or a session's hook.
-            let pulls = crate::gate::open_pulls(&client, Some(reader), project).await;
+            // head: asked here, never by the daemon or a session's hook, in
+            // a checkout of the project the brief is of.
+            let pulls = match brief.repository.clone() {
+                Some(repository) => {
+                    crate::gate::open_pulls(&client, Some(reader), project, &repository, all).await
+                }
+                None => Err(anyhow::anyhow!(
+                    "the daemon did not say where the project's repository is"
+                )),
+            };
             if pulls.is_ok() {
-                brief.not_covered.clear();
+                brief.pull_requests_supplied();
             }
             if json {
                 let pulls = match &pulls {
-                    Ok(lines) => serde_json::json!({ "lines": lines }),
+                    Ok(pulls) => serde_json::json!({
+                        "lines": pulls.lines,
+                        "asked": pulls.asked,
+                        "more": pulls.more,
+                    }),
                     Err(error) => serde_json::json!({ "error": format!("{error:#}") }),
                 };
                 println!(
@@ -3225,24 +3237,10 @@ async fn run() -> Result<()> {
                     )?
                 );
             } else {
-                let max = if all {
-                    usize::MAX
-                } else {
-                    brief::COMMAND_BYTES
-                };
-                println!("{}", brief::render(&brief, chrono::Utc::now(), max));
-                match pulls {
-                    Ok(lines) if lines.is_empty() => println!("No open pull requests on GitHub."),
-                    Ok(lines) => {
-                        println!(
-                            "Open pull requests on GitHub, asked now (titles quoted as written):"
-                        );
-                        for line in lines {
-                            println!("{line}");
-                        }
-                    }
-                    Err(error) => println!("GitHub was not asked for pull requests: {error:#}"),
-                }
+                println!(
+                    "{}",
+                    crate::gate::brief_text(&brief, &pulls, chrono::Utc::now(), all)
+                );
             }
         }
         Command::Memory(args) => {

@@ -54,12 +54,12 @@ impl Daemon {
         };
         // An agent's brief is of its own project: one naming another is
         // refused, never answered with the other's records.
-        let named = match project {
-            Some(selector) => match self.resolve_project(selector).await {
-                Ok(id) => Some(id),
+        let (named, named_ref) = match project {
+            Some(selector) => match self.resolve_project_ref(selector).await {
+                Ok((id, found)) => (Some(id), found),
                 Err(response) => return *response,
             },
-            None => None,
+            None => (None, None),
         };
         let project = match (own, named) {
             (Some(own), Some(named)) if named != own => {
@@ -93,8 +93,42 @@ impl Daemon {
             },
             Reader::Person => Reader::Person,
         };
-        // Checkouts nothing has read yet are read now, briefly; those the
-        // time does not reach are said to be unread.
+        // The project as its records and the name it was asked by give it:
+        // the reader's own first, the one named, then live records before
+        // ended ones.
+        let refs: Vec<ProjectRef> = {
+            let state = lock(&self.state);
+            let own = match &reader {
+                Reader::Agent { id, .. } => state.registry.get(id).and_then(|a| a.project.clone()),
+                Reader::Person => None,
+            };
+            let mut records: Vec<&AgentRecord> = state
+                .registry
+                .all()
+                .filter(|a| a.project.as_ref().is_some_and(|p| p.id() == project))
+                .collect();
+            records.sort_by_key(|a| !a.status.is_live());
+            own.into_iter()
+                .chain(named_ref.filter(|p| p.id() == project))
+                .chain(records.into_iter().filter_map(|a| a.project.clone()))
+                .collect()
+        };
+        // Where `agentdocker brief` asks GitHub: the reader's checkout, else
+        // the one named, else the project's first known one.
+        let repository = match &reader {
+            Reader::Agent {
+                checkout: Some(checkout),
+                ..
+            } => Some(checkout.clone()),
+            _ => refs
+                .iter()
+                .find(|p| p.source == ProjectSource::Git)
+                .map(|p| p.dir().to_path_buf()),
+        };
+        let deadline = std::time::Instant::now() + COLD_READ;
+        let unlisted = self.list_project_checkouts(&project, &refs, deadline).await;
+        // Checkouts nothing has read yet are read now, in what is left of
+        // the time; those it does not reach are said to be unread.
         let unread: Vec<PathBuf> = {
             let state = lock(&self.state);
             state
@@ -103,11 +137,14 @@ impl Daemon {
                 .filter(|dir| !state.checkout_reads.contains_key(dir))
                 .collect()
         };
-        self.read_standings(&project, unread, COLD_READ).await;
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        self.read_standings(&project, unread, left).await;
         let mut records = match self.brief_records(&project) {
             Ok(records) => records,
             Err(response) => return *response,
         };
+        records.repository = repository;
+        records.checkouts_unlisted = unlisted;
         // The gate's word at each pushed head, as `agentdocker gate` would
         // give it for that branch and commit.
         let pushed: Vec<(String, String)> = records
@@ -239,6 +276,8 @@ impl Daemon {
             handoffs,
             checkout_reads,
             gates: Vec::new(),
+            checkouts_unlisted: None,
+            repository: None,
         })
     }
 }
@@ -376,6 +415,141 @@ mod tests {
         assert_eq!(standing.dirty, ["wip.txt"]);
         assert_eq!(standing.branch.as_deref(), Some("main"));
         assert_eq!(read.checkouts_unread, 0);
+    }
+
+    /// `git` in `dir` with a fixed identity; whether it succeeded.
+    fn git_ok(dir: &std::path::Path, args: &[&str]) -> bool {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.com"])
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "-c",
+                "init.defaultBranch=main",
+            ])
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+
+    /// The brief `from` asks for, asked again while a checkout is unread
+    /// (each brief reads what the one before had no time for), so a slow
+    /// machine is not taken for a wrong answer.
+    async fn read_through(daemon: &Arc<Daemon>, from: &str, project: Option<&str>) -> Brief {
+        let ask = || Request::Brief {
+            from: from.to_owned(),
+            project: project.map(str::to_owned),
+        };
+        let mut read = brief(daemon.handle(ask()).await);
+        for _ in 0..20 {
+            if read.checkouts_unread == 0 && read.not_covered.len() == 1 {
+                break;
+            }
+            read = brief(daemon.handle(ask()).await);
+        }
+        read
+    }
+
+    /// A brief finds the project's checkouts itself, before any tick: a
+    /// linked worktree nobody registered is listed and read for a live
+    /// agent of the project, and, after a restart with nobody live, for
+    /// the person naming the project by its id or by a path in another
+    /// checkout. Where GitHub is asked from is the selected project's
+    /// checkout, never another repository's.
+    #[tokio::test]
+    async fn a_brief_finds_the_checkouts_nobody_works_in() {
+        let dir = TempDir::new().unwrap();
+        let main = dir.path().join("main");
+        let linked = dir.path().join("linked");
+        let other = dir.path().join("other");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        if !git_ok(&main, &["init", "-q"]) {
+            return;
+        }
+        assert!(git_ok(
+            &main,
+            &["commit", "-q", "--allow-empty", "-m", "root"]
+        ));
+        assert!(git_ok(
+            &main,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "topic",
+                linked.to_str().unwrap()
+            ]
+        ));
+        assert!(git_ok(
+            &linked,
+            &["commit", "-q", "--allow-empty", "-m", "topic"]
+        ));
+        std::fs::write(linked.join("wip.txt"), "not yet").unwrap();
+        assert!(git_ok(&other, &["init", "-q"]));
+        assert!(git_ok(
+            &other,
+            &["commit", "-q", "--allow-empty", "-m", "other root"]
+        ));
+        let daemon =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock")).unwrap());
+        let me = register(&daemon, "alice", &main).await;
+        let stranger = register(&daemon, "carol", &other).await;
+        let (main, linked, other) = (
+            main.canonicalize().unwrap(),
+            linked.canonicalize().unwrap(),
+            other.canonicalize().unwrap(),
+        );
+        let project = me.project.as_ref().unwrap().id();
+        let told = |read: &Brief| {
+            let line = read
+                .checkouts
+                .iter()
+                .find(|c| c.path == linked)
+                .unwrap_or_else(|| panic!("{:?}", read.checkouts));
+            let standing = line.standing.clone().unwrap();
+            assert!(!line.yours);
+            assert_eq!(standing.branch.as_deref(), Some("topic"));
+            assert_eq!(standing.dirty, ["wip.txt"]);
+            assert_eq!(
+                (standing.base.as_deref(), standing.unmerged),
+                (Some("main"), Some(1))
+            );
+        };
+
+        let read = read_through(&daemon, me.id.as_str(), None).await;
+        told(&read);
+        assert_eq!(read.repository.as_deref(), Some(main.as_path()));
+
+        // A restart, with nobody of the project live: nothing is cached.
+        for agent in [&me, &stranger] {
+            let ended = daemon
+                .handle(Request::Deregister {
+                    agent: agent.id.to_string(),
+                })
+                .await;
+            assert!(!matches!(ended, Response::Error { .. }), "{ended:?}");
+        }
+        {
+            let mut state = lock(&daemon.state);
+            state.project_checkouts.clear();
+            state.checkout_reads.clear();
+        }
+        let read = read_through(&daemon, HUMAN, Some(project.as_str())).await;
+        told(&read);
+        assert_eq!(read.repository.as_deref(), Some(main.as_path()));
+        let from_linked = linked.display().to_string();
+        let read = read_through(&daemon, HUMAN, Some(from_linked.as_str())).await;
+        told(&read);
+        assert_eq!(read.repository.as_deref(), Some(linked.as_path()));
+        let from_other = other.display().to_string();
+        let read = read_through(&daemon, HUMAN, Some(from_other.as_str())).await;
+        assert!(read.checkouts.iter().all(|c| c.path != linked), "{read:?}");
+        assert_eq!(read.repository.as_deref(), Some(other.as_path()));
     }
 
     /// An agent reads its own project's brief: its own open card first,
