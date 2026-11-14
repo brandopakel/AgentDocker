@@ -1370,6 +1370,7 @@ mod tests {
             match request {
                 Request::MemoryProfile { .. } => Ok(Response::Memories {
                     memories: self.memories.clone(),
+                    left_out: Vec::new(),
                 }),
                 other => panic!("a session start asked for {other:?}"),
             }
@@ -1436,7 +1437,7 @@ mod tests {
         assert!(delivery.acknowledgement.is_none() && delivery.continuation.is_none());
         assert!(matches!(
             &backend.requests.borrow()[..],
-            [Request::MemoryProfile { from: Some(from), project: None, max_chars: Some(800), as_of: None }]
+            [Request::MemoryProfile { from: Some(from), project: None, max_chars: Some(agentdocker_core::memory::SESSION_PROFILE_CHARS), as_of: None }]
                 if from == record.id.as_str()
         ));
 
@@ -1500,9 +1501,11 @@ mod tests {
         let backend = Mock::with(vec![
             Response::Memories {
                 memories: vec![rule.clone()],
+                left_out: Vec::new(),
             },
             Response::Memories {
                 memories: vec![freeze.clone(), rule.clone()],
+                left_out: Vec::new(),
             },
         ]);
         let compacted = Input {

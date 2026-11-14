@@ -57,8 +57,9 @@ on it with `comment_task`. Move it with `move_task`, with a `comment` saying
 why, to review when it is ready for eyes and to done when the acceptance text
 is met; file follow-up work with `create_task`, or a plan of several cards at
 once with `create_tasks`. You may move any card in your project, not only one
-you hold: its holder keeps it and is told you moved it, and a card you send
-back to Backlog or Ready is freed for the next taker. Moving a card is not
+you hold. When you move somebody else's card, its holder is told; it stays
+theirs unless you send it back to Backlog or Ready, which frees it for the next
+taker. Moving your own card back keeps it assigned to you. Moving a card is not
 taking it: to work on a card, pull one nobody holds by name first.
 
 Message kinds `pause` and `resume` are reserved for committed project lifecycle

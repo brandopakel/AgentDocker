@@ -1176,8 +1176,14 @@ enum MemoryAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
     },
-    /// What the project's agents are told first.
+    /// What the project's agents should know first: the standing
+    /// memories, then the newest, as many as fit a profile.
     Profile {
+        /// Exactly what a new session is told in full at its start, which
+        /// is less than the profile: the standing memories it tells by
+        /// their first words only are listed on stderr.
+        #[arg(long)]
+        session: bool,
         /// As they stood then: an RFC 3339 time, a date, or a span ago.
         #[arg(long, value_name = "WHEN", value_parser = parse_past)]
         as_of: Option<chrono::DateTime<chrono::Utc>>,
@@ -2212,6 +2218,47 @@ struct ClaimArgs {
 /// Reserving this costs nothing until it is touched.
 const MAIN_STACK: usize = 32 << 20;
 
+/// What the adder of a standing memory is told when a new session will
+/// meet it by its first words only: that it is too long by itself, when
+/// nothing else is in its way, or else how full what a session is told is.
+fn no_room_said(full: &agentdocker_core::memory::NoRoom) -> String {
+    use agentdocker_core::memory::SESSION_BLOCK_BYTES;
+    let limits = format!(
+        "{} characters of memories, as lines within {} bytes",
+        full.budget, SESSION_BLOCK_BYTES
+    );
+    if full.alone {
+        return format!(
+            "kept, but a new session is told it by its first words only: it is too long to be told in full at a session's start, whatever else is kept (a session is told {limits}). Supersede it with a shorter one to have it told in full"
+        );
+    }
+    format!(
+        "kept, but a new session is told it by its first words only: what a session is told in full ({limits}) has no room for it beside the {} standing {} it tells in full ({} characters); {} standing {} now told by first words only. Supersede a longer one with a shorter to make room (`agentdocker memory profile --session` shows what a session is told)",
+        full.told,
+        if full.told == 1 { "memory" } else { "memories" },
+        full.used,
+        full.left_out,
+        if full.left_out == 1 {
+            "memory is"
+        } else {
+            "memories are"
+        },
+    )
+}
+
+/// The standing memories told by their first words only, as `memory
+/// profile` lists them on stderr under `said`.
+fn left_out_said(said: &str, left_out: &[agentdocker_core::memory::LeftOut]) -> String {
+    let mut text = said.to_owned();
+    for memory in left_out {
+        text.push_str(&format!(
+            "\n  {}  {} ({} characters)",
+            memory.id, memory.headline, memory.chars
+        ));
+    }
+    text
+}
+
 /// A command ends with a status a script can branch on: the daemon's
 /// answer by its class (see [`client::exit_code`]), anything else as
 /// unexpected. The words go to stderr as they always did.
@@ -3050,6 +3097,7 @@ async fn run() -> Result<()> {
                     if let Response::Memory {
                         memory,
                         may_supersede,
+                        left_out,
                         ..
                     } = client.call(&request).await?
                     {
@@ -3061,6 +3109,9 @@ async fn run() -> Result<()> {
                                 likely.memory,
                                 likely.probability * 100.0
                             );
+                        }
+                        if let Some(full) = left_out {
+                            eprintln!("{}", no_room_said(&full));
                         }
                     }
                 }
@@ -3088,7 +3139,7 @@ async fn run() -> Result<()> {
                         min_score: None,
                     };
                     match client.call(&request).await? {
-                        Response::Memories { memories } => list(&memories, &none),
+                        Response::Memories { memories, .. } => list(&memories, &none),
                         Response::MemoryHistory { memories, replaced } => {
                             list(&memories, &replaced)
                         }
@@ -3096,22 +3147,89 @@ async fn run() -> Result<()> {
                     }
                 }
                 MemoryAction::Profile {
+                    session,
                     as_of,
                     project,
                     from,
                 } => {
-                    let request = Request::MemoryProfile {
-                        from: Some(
-                            sender::resolve(&client, from)
-                                .await?
-                                .unwrap_or_else(|| HUMAN.into()),
-                        ),
-                        project: Some(project.map_or_else(here, Ok)?),
-                        max_chars: None,
+                    use agentdocker_core::memory::{SESSION_PROFILE_CHARS, at_session_start};
+                    let reader = sender::resolve(&client, from)
+                        .await?
+                        .unwrap_or_else(|| HUMAN.into());
+                    let project = project.map_or_else(here, Ok)?;
+                    let ask = |max_chars| Request::MemoryProfile {
+                        from: Some(reader.clone()),
+                        project: Some(project.clone()),
+                        max_chars,
                         as_of,
                     };
-                    if let Response::Memories { memories } = client.call(&request).await? {
+                    let count = |n: usize| {
+                        format!(
+                            "{n} standing {}",
+                            if n == 1 { "memory" } else { "memories" }
+                        )
+                    };
+                    // What a session start asks for, and what it makes of
+                    // the answer: the same request and the same admission.
+                    let start = match client.call(&ask(Some(SESSION_PROFILE_CHARS))).await? {
+                        Response::Memories { memories, left_out } => Some((memories, left_out)),
+                        _ => None,
+                    };
+                    if session {
+                        if let Some((memories, left_out)) = start {
+                            let (full, named) = at_session_start(&memories, &left_out);
+                            let full: Vec<_> = full.into_iter().cloned().collect();
+                            list(&full, &none);
+                            // What is not told in full goes to stderr:
+                            // stdout stays a list of memories, one a line.
+                            if !named.is_empty() {
+                                eprintln!(
+                                    "{}",
+                                    left_out_said(
+                                        &format!(
+                                            "{} had no room and a new session is told of {} by first words only; `agentdocker memory search <words>` gives the text, and superseding a longer one with a shorter makes room:",
+                                            count(named.len()),
+                                            if named.len() == 1 { "it" } else { "them" },
+                                        ),
+                                        &named,
+                                    )
+                                );
+                            }
+                        }
+                    } else if let Response::Memories { memories, left_out } =
+                        client.call(&ask(None)).await?
+                    {
                         list(&memories, &none);
+                        if !left_out.is_empty() {
+                            eprintln!(
+                                "{}",
+                                left_out_said(
+                                    &format!(
+                                        "{} had no room in this profile:",
+                                        count(left_out.len()),
+                                    ),
+                                    &left_out,
+                                )
+                            );
+                        }
+                        // This list is wider than what a session is told:
+                        // say so whenever a session's start leaves out a
+                        // standing memory, in this list or not.
+                        let untold = start
+                            .map(|(memories, left_out)| {
+                                at_session_start(&memories, &left_out).1.len()
+                            })
+                            .unwrap_or(0);
+                        if untold > 0 {
+                            eprintln!(
+                                "a new session is told less than this profile: {} told there by first words only; `agentdocker memory profile --session` shows what a session is told",
+                                if untold == 1 {
+                                    "1 standing memory is".to_owned()
+                                } else {
+                                    format!("{} are", count(untold))
+                                },
+                            );
+                        }
                     }
                 }
                 MemoryAction::Forget { memory, from } => {
@@ -6548,6 +6666,53 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// The remedy fits the cause: a memory too long by itself is to be
+    /// shortened, and no older memory is blamed for it; one that is
+    /// crowded out is told how full a session's start is.
+    #[test]
+    fn the_no_room_notice_tells_too_long_from_crowded() {
+        use agentdocker_core::memory::NoRoom;
+        let alone = no_room_said(&NoRoom {
+            budget: 2000,
+            told: 0,
+            used: 0,
+            left_out: 1,
+            alone: true,
+        });
+        assert!(alone.contains("too long to be told in full"), "{alone}");
+        assert!(alone.contains("Supersede it with a shorter one"), "{alone}");
+        assert!(!alone.contains("longer one"), "{alone}");
+        let crowded = no_room_said(&NoRoom {
+            budget: 2000,
+            told: 2,
+            used: 1900,
+            left_out: 1,
+            alone: false,
+        });
+        assert!(
+            crowded.contains("beside the 2 standing memories it tells in full (1900 characters)"),
+            "{crowded}"
+        );
+        assert!(
+            crowded.contains("1 standing memory is now told by first words only"),
+            "{crowded}"
+        );
+        assert!(crowded.contains("memory profile --session"), "{crowded}");
+        // Nothing told in full and nothing too long: naming one took the
+        // room of another, and the words still read.
+        let both = no_room_said(&NoRoom {
+            budget: 2000,
+            told: 0,
+            used: 0,
+            left_out: 2,
+            alone: false,
+        });
+        assert!(
+            both.contains("beside the 0 standing memories it tells in full (0 characters); 2 standing memories are now told"),
+            "{both}"
+        );
+    }
+
     /// The runtimes table calls an earlier version's hook set outdated and
     /// names what it lacks; hooks never set up stay `no`.
     #[test]

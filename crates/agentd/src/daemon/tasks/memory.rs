@@ -187,12 +187,30 @@ impl Daemon {
         // back while it does, and nothing it writes (a failure announced)
         // can turn the kept memory into a refusal its client would retry.
         self.answer_settled();
+        // A standing memory with no room in what a new session is told is
+        // kept all the same; its adder is told, since nobody else will be.
+        let left_out = if memory.standing {
+            self.no_room(from, &memory)
+        } else {
+            None
+        };
         let (suggestion, may_supersede) = self.judge_memory(&memory.text, candidates).await;
         Response::Memory {
             memory,
             may_supersede,
             suggestion: Some(suggestion),
+            left_out,
         }
+    }
+
+    /// Whether a memory just kept has no room in what its adder would be
+    /// told at the start of a session. A read that fails says nothing: the
+    /// memory is kept either way.
+    fn no_room(self: &Arc<Self>, from: &str, kept: &memory::Memory) -> Option<memory::NoRoom> {
+        let mut state = lock(&self.state);
+        let reading = state.reading(Some(from), &kept.project).ok()?;
+        let memories = state.project_memories(&kept.project).ok()?;
+        memory::no_room(&memories, &kept.id, reading.reader(), Utc::now())
     }
 
     /// Keep a memory under the state lock, with the current memories it may
@@ -361,6 +379,7 @@ impl Daemon {
             .into_iter()
             .cloned()
             .collect(),
+            left_out: Vec::new(),
         }
     }
 
@@ -386,16 +405,19 @@ impl Daemon {
                 Err(response) => return *response,
             }
         };
+        let told = memory::told(
+            &memories,
+            max_chars.unwrap_or(4000).clamp(1, 64_000),
+            reading.reader(),
+            as_of.map_or_else(Utc::now, |at| at.min(Utc::now())),
+        );
         Response::Memories {
-            memories: memory::profile(
-                &memories,
-                max_chars.unwrap_or(4000).clamp(1, 64_000),
-                reading.reader(),
-                as_of.map_or_else(Utc::now, |at| at.min(Utc::now())),
-            )
-            .into_iter()
-            .cloned()
-            .collect(),
+            left_out: told
+                .left_out
+                .iter()
+                .map(|m| memory::LeftOut::of(m))
+                .collect(),
+            memories: told.memories.into_iter().cloned().collect(),
         }
     }
 

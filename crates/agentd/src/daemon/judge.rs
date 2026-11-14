@@ -1995,6 +1995,7 @@ mod tests {
             memory,
             may_supersede,
             suggestion,
+            ..
         } = response
         else {
             panic!("{response:?}");
@@ -2064,7 +2065,7 @@ mod tests {
             assert!(!sent.contains(private), "{private} went out: {sent}");
         }
         assert_eq!(new.supersedes, None);
-        let Response::Memories { memories } = daemon
+        let Response::Memories { memories, .. } = daemon
             .handle(Request::MemorySearch {
                 from: Some("author".into()),
                 project: None,
