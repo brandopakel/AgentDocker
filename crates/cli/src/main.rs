@@ -2221,7 +2221,32 @@ struct ClaimArgs {
     /// decides is whether the sum fits its capacity.
     #[arg(long)]
     amount: Option<u64>,
+    /// Only a new lease will do: one you already hold is in the way like
+    /// anybody else's, and is not renewed. For a slot one process at a
+    /// time may use (the machine's build slot): a second worker claiming
+    /// as the same agent then waits, with `--wait`, or is refused,
+    /// instead of being told it holds what the first one holds.
+    #[arg(long)]
+    fresh: bool,
 }
+
+/// The seconds a claim asks the daemon to wait. The first ask carries the
+/// whole wait, however long building the request took: taking the time
+/// already spent off it and rounding down would turn `--wait 1` into no
+/// wait at all. A later ask, after a fresh claim met the agent's own
+/// lease, carries what is left in whole seconds, rounded down, so the
+/// daemon is never asked to wait past the deadline.
+fn claim_wait_secs(wait: std::time::Duration, elapsed: std::time::Duration, first: bool) -> u64 {
+    if first {
+        wait.as_secs()
+    } else {
+        wait.saturating_sub(elapsed).as_secs()
+    }
+}
+
+/// How long a fresh claim waits before asking again while another worker
+/// of the same agent holds the lease.
+const FRESH_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Stack for the thread that does the work. Clap's derived parser for
 /// this many commands and the one future behind every command want more
@@ -5291,22 +5316,66 @@ async fn run() -> Result<()> {
             let agent = sender::resolve(&client, args.agent)
                 .await?
                 .context("claim as an agent: give --as, or run from an agent's session")?;
-            let request = Request::Claim {
-                agent,
-                resource: resource_key(&args.resource),
-                amount: args.amount,
-                mode: if args.shared {
-                    LeaseMode::Shared
-                } else {
-                    LeaseMode::Exclusive
-                },
-                ttl_secs: args.ttl,
-                note: args.note,
-                wait_secs: args.wait,
-                priority: args.priority,
-                automatic: false,
+            let resource = resource_key(&args.resource);
+            if args.fresh {
+                // A daemon that does not know the word ignores it and
+                // renews the lease another worker holds, and its answer
+                // reads as a grant. Asked first, where nothing is changed
+                // by asking.
+                let knows = matches!(
+                    client.call(&Request::Ping).await?,
+                    Response::Pong { features, .. }
+                        if features.iter().any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM)
+                );
+                if !knows {
+                    bail!(
+                        "the running daemon does not know a fresh claim: it is older than this command and would renew a lease you already hold instead. Nothing was claimed. `agentdocker daemon restart` switches to the installed build once no agent work is running"
+                    );
+                }
+            }
+            let started = std::time::Instant::now();
+            let wait = std::time::Duration::from_secs(args.wait);
+            let mut first = true;
+            let answer = loop {
+                let request = Request::Claim {
+                    agent: agent.clone(),
+                    resource: resource.clone(),
+                    amount: args.amount,
+                    mode: if args.shared {
+                        LeaseMode::Shared
+                    } else {
+                        LeaseMode::Exclusive
+                    },
+                    ttl_secs: args.ttl,
+                    note: args.note.clone(),
+                    wait_secs: claim_wait_secs(wait, started.elapsed(), first),
+                    priority: args.priority,
+                    automatic: false,
+                    fresh: args.fresh,
+                };
+                first = false;
+                let response = client.call_raw(&request).await?;
+                // Another worker of this same agent holds it. The daemon
+                // queues no agent behind itself, so the wait is kept here:
+                // ask again until it is spent.
+                let own = matches!(
+                    &response,
+                    Response::Error { code: agentdocker_core::ErrorCode::Conflict, details: Some(details), .. }
+                        if details["own"] == true
+                );
+                // Asked again only while some of the wait is left, after
+                // a pause no longer than what is left of it: the last
+                // answer inside the wait is the one that stands.
+                let left = wait.saturating_sub(started.elapsed());
+                if own && !left.is_zero() {
+                    tokio::time::sleep(FRESH_RETRY.min(left)).await;
+                    if !wait.saturating_sub(started.elapsed()).is_zero() {
+                        continue;
+                    }
+                }
+                break client::into_result(response)?;
             };
-            if let Response::Lease { lease } = client.call(&request).await? {
+            if let Response::Lease { lease } = answer {
                 println!("{}", lease.id);
             }
         }
@@ -6716,6 +6785,33 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A claim's first ask carries the whole wait it was given, whatever
+    /// time has already passed; only a later ask carries what is left,
+    /// and never more than that.
+    #[test]
+    fn a_claims_first_ask_carries_its_whole_wait() {
+        use std::time::Duration;
+        let spent = Duration::from_micros(1);
+        for wait in [1, 2, 600] {
+            assert_eq!(
+                claim_wait_secs(Duration::from_secs(wait), spent, true),
+                wait
+            );
+        }
+        assert_eq!(claim_wait_secs(Duration::from_secs(0), spent, true), 0);
+        // Later asks: what is left, rounded down, and nothing once spent.
+        let wait = Duration::from_secs(10);
+        assert_eq!(
+            claim_wait_secs(wait, Duration::from_millis(2_100), false),
+            7
+        );
+        assert_eq!(
+            claim_wait_secs(wait, Duration::from_millis(9_600), false),
+            0
+        );
+        assert_eq!(claim_wait_secs(wait, Duration::from_secs(11), false), 0);
+    }
+
     /// The remedy fits the cause: a memory too long by itself is to be
     /// shortened, and no older memory is blamed for it; one that is
     /// crowded out is told how full a session's start is.

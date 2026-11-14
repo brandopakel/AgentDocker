@@ -445,6 +445,7 @@ mod tests {
                     executable: None,
                     experimental: None,
                     judge: None,
+                    features: Vec::new(),
                 },
             ] {
                 let (stream, _) = listener.accept().unwrap();

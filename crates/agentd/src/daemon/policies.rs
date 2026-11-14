@@ -453,6 +453,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await;
         assert!(
@@ -573,6 +574,7 @@ mod tests {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         };
         std::fs::write(daemon.home.join("policy.toml"), "[[rule] broken").unwrap();
         let mut events = daemon.subscribe_events();

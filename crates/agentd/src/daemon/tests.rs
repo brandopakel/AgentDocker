@@ -3897,6 +3897,7 @@ async fn a_refused_claim_names_the_holder() {
         wait_secs: 0,
         priority: 0,
         automatic: false,
+        fresh: false,
     };
     assert!(matches!(
         daemon.handle(claim(&writer, "path:/work/src")).await,
@@ -3916,6 +3917,116 @@ async fn a_refused_claim_names_the_holder() {
             writer.id.short()
         )
     );
+}
+
+/// Two workers that claim the build slot as one agent are kept apart: the
+/// second fresh claim is refused, at once even when it would wait, with
+/// the first one's lease named as the asker's own; the first hold is
+/// neither renewed nor ended by it. A plain claim still renews. Once the
+/// slot is released the second worker's fresh claim takes it.
+#[tokio::test]
+async fn a_fresh_claim_keeps_two_workers_of_one_agent_apart() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let builder = register(&daemon, "builder", None).await;
+    let claim = |fresh: bool, wait_secs: u64| Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Exclusive,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs,
+        priority: 0,
+        automatic: false,
+        fresh,
+    };
+    // A client asks before it relies on a fresh claim: a daemon that did
+    // not know the word would renew instead, and say nothing.
+    let Response::Pong { features, .. } = daemon.handle(Request::Ping).await else {
+        panic!("ping")
+    };
+    assert!(
+        features
+            .iter()
+            .any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM),
+        "{features:?}"
+    );
+    let Response::Lease { lease: first } = daemon.handle(claim(true, 0)).await else {
+        panic!("the first worker takes the slot")
+    };
+    // The other mode on the same slot is this agent's own conflict too.
+    let shared = Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Shared,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs: 0,
+        priority: 0,
+        automatic: false,
+        fresh: true,
+    };
+    assert!(matches!(
+        daemon.handle(shared).await,
+        Response::Error { code: ErrorCode::Conflict, details: Some(details), .. } if details["own"] == true
+    ));
+    for wait_secs in [0, 30] {
+        let asked = std::time::Instant::now();
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = daemon.handle(claim(true, wait_secs)).await
+        else {
+            panic!("the second worker is not told it holds the slot")
+        };
+        assert_eq!(code, ErrorCode::Conflict);
+        assert!(
+            message.contains("already held by this agent")
+                && message.contains(&first.id.to_string()),
+            "{message}"
+        );
+        let details = details.expect("which lease is in the way");
+        assert_eq!(details["own"], true);
+        assert_eq!(details["held_by"][0]["id"], first.id.to_string());
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(5),
+            "an agent is not queued behind itself"
+        );
+    }
+    let Response::Leases { leases } = daemon
+        .handle(Request::Leases {
+            agent: None,
+            resource: Some("task:local-cargo-campaign".into()),
+        })
+        .await
+    else {
+        panic!("leases")
+    };
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].expires_at, first.expires_at, "not renewed");
+    // A plain claim is the holder extending its own hold, as before.
+    let Response::Lease { lease: renewed } = daemon.handle(claim(false, 0)).await else {
+        panic!("a plain claim renews")
+    };
+    assert_eq!(renewed.id, first.id);
+    assert!(matches!(
+        daemon
+            .handle(Request::Release {
+                agent: builder.id.to_string(),
+                lease: first.id.clone(),
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await,
+        Response::Ok | Response::Lease { .. } | Response::Leases { .. }
+    ));
+    let Response::Lease { lease: second } = daemon.handle(claim(true, 0)).await else {
+        panic!("the slot is free for the second worker")
+    };
+    assert_ne!(second.id, first.id);
 }
 
 #[tokio::test]
@@ -3940,6 +4051,7 @@ async fn a_clean_shutdown_hands_the_leases_back_and_says_it_did() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await
     else {
@@ -4119,6 +4231,7 @@ async fn claim_waiting_at(
             wait_secs,
             priority,
             automatic: false,
+            fresh: false,
         })
         .await
 }
@@ -4635,6 +4748,7 @@ async fn a_granted_wait_is_not_picked_to_break_a_later_ring() {
         wait_secs,
         priority,
         automatic: false,
+        fresh: false,
     };
     let mut events = daemon.subscribe_events();
     let hold = hold_claim(&daemon, super::waiting::ClaimPoint::Answered, &alpha.id);
@@ -7158,6 +7272,7 @@ async fn a_quota_is_spent_by_several_agents_until_it_runs_out() {
                     wait_secs: 0,
                     priority: 0,
                     automatic: false,
+                    fresh: false,
                 })
                 .await
         }
@@ -7213,6 +7328,7 @@ async fn a_quota_nobody_set_a_capacity_for_is_unlimited() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await;
     assert!(matches!(response, Response::Lease { .. }), "{response:?}");
@@ -7406,6 +7522,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await
     else {
@@ -7850,6 +7967,7 @@ async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await
 }
@@ -9035,6 +9153,7 @@ async fn claim_wait_acquires_when_the_holder_releases() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    fresh: false,
                 })
                 .await
         })
@@ -9071,6 +9190,7 @@ async fn claim_wait_gives_up_at_the_deadline() {
             wait_secs: 1,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await;
     assert!(started.elapsed() >= std::time::Duration::from_secs(1));
@@ -10866,6 +10986,7 @@ async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    fresh: false,
                 })
                 .await
         })
@@ -13082,6 +13203,7 @@ async fn reject_lease_transition(operation: &str) {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await
     };

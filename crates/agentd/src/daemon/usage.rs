@@ -1489,6 +1489,7 @@ mod tests {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         };
 
         // The first card: pulled, worked on, released.

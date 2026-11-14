@@ -17,24 +17,43 @@ args = sys.argv[1:]
 with open(log, "a") as f: f.write(" ".join(args) + "\n")
 cmd = args[0] if args else ""
 def held_rows():
+    head = "LEASE ID  RESOURCE  HOLDER  MODE  EXPIRES  NOTE\n"
     if mode in ("held", "held-then-conflict"):
-        return "LEASE ID  RESOURCE  HOLDER\nother001  task:local-cargo-campaign  somebody\n"
-    if mode == "preheld":
-        return "LEASE ID  RESOURCE  HOLDER\nlease-known  task:local-cargo-campaign  abc\n"
-    return "LEASE ID  RESOURCE  HOLDER\n"
+        return head + "other001  task:local-cargo-campaign  somebody  exclusive  in 20m\n"
+    if mode in ("preheld", "own-held"):
+        return head + "lease-known  task:local-cargo-campaign  abc  exclusive  in 20m\n"
+    if mode == "own-shared":
+        return head + "lease-known  task:local-cargo-campaign  abc  shared  in 20m\n"
+    return head
 if cmd == "ping": sys.exit(0)
 if cmd == "leases": sys.stdout.write(held_rows()); sys.exit(0)
 if cmd == "register":
     if mode == "register-fails": sys.stderr.write("Error: the project is paused (paused)\n"); sys.exit(4)
     print("transient-id"); sys.exit(0)
+if cmd == "renew" and os.environ.get("FAKE_RENEW_REFUSED"):
+    sys.stderr.write("Error: lease " + args[1] + " belongs to somebody, not abc (forbidden)\n"); sys.exit(5)
 if cmd == "renew":
+    # In the scenarios that name a lease, only the one held can be renewed.
+    if mode == "own-held" and args[1] != "lease-known":
+        sys.stderr.write("Error: lease " + args[1] + " not found (not_found)\n"); sys.exit(4)
     marker = os.environ.get("FAKE_RENEW_AFTER")
     if mode == "renew-fails" and (not marker or os.path.exists(marker)):
         sys.stderr.write("Error: no such lease (not_found)\n"); sys.exit(4)
     sys.exit(0)
 if cmd in ("release", "deregister"): sys.exit(0)
+if cmd == "claim" and "--help" in args:
+    # A CLI that knows a fresh claim says so in its help; an older one does not.
+    print("Usage: agentdocker claim [OPTIONS] <RESOURCE>" + ("\n      --fresh  Only a new lease will do" if os.environ.get("FAKE_FRESH") else ""))
+    sys.exit(0)
 if cmd == "claim":
     has_as = "--as" in args
+    if "--fresh" in args and os.environ.get("FAKE_OLD_DAEMON"):
+        # The CLI asks the daemon before a fresh claim; an older one is refused there.
+        sys.stderr.write("Error: the running daemon does not know a fresh claim: it is older than this command and would renew a lease you already hold instead. Nothing was claimed.\n"); sys.exit(1)
+    if mode == "own-held":
+        if "--fresh" in args:
+            sys.stderr.write("Error: task:local-cargo-campaign is already held by this agent (lease lease-known): a fresh claim waits for it to be released (conflict)\n"); sys.exit(3)
+        print("lease-known"); sys.exit(0)
     if mode in ("known", "preheld", "renew-fails"): print("lease-known"); sys.exit(0)
     if mode == "register-fails":
         sys.stderr.write("Error: give --as\n"); sys.exit(2)
@@ -100,7 +119,8 @@ class VerifyCampaign(unittest.TestCase):
             "AGENTDOCKER_AGENT_ID": "abc", "AGENTDOCKER_SOCKET": "/tmp/s.sock",
             "AGENTDOCKER_AGENT_NAME": "me", "AGENTDOCKER_CLAUDE_CHANNEL_INPUT": "1"})
         self.assertEqual(result.returncode, 0, result.stderr)
-        claim = next(c for c in calls if c.startswith("claim"))
+        # The first `claim` call only asks the CLI whether it knows `--fresh`.
+        claim = next(c for c in calls if c.startswith("claim task:"))
         self.assertIn("--as abc", claim)
         self.assertIn("--socket /tmp/s.sock", claim)
         self.assertIn("release lease-known --as abc", " ".join(calls))
@@ -155,6 +175,102 @@ class VerifyCampaign(unittest.TestCase):
         self.assertIn("renew lease-known --as abc", joined)
         self.assertNotIn("release", joined)
         self.assertEqual(self.steps, 2)
+
+    def test_the_slot_is_claimed_fresh_where_the_cli_knows_how(self):
+        # One build at a time, whoever the builders claim as: the claim
+        # says a lease this agent already holds does not count.
+        result, calls, _ = self.run_verify("known", {"AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        claim = next(c for c in calls if c.startswith("claim task:"))
+        self.assertIn("--fresh", claim)
+        self.assertIn("release lease-known --as abc", "\n".join(calls))
+        # An older CLI is asked as before.
+        result, calls, _ = self.run_verify("known", {"AGENTDOCKER_AGENT_ID": "abc"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("--fresh", next(c for c in calls if c.startswith("claim task:")))
+
+    def test_another_run_of_the_same_agent_holds_the_slot_and_this_one_does_not_build(self):
+        result, calls, cargo_env = self.run_verify("own-held", {"AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1"})
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("held by another run of this same agent", result.stderr)
+        self.assertIn("AGENTDOCKER_CAMPAIGN_LEASE=<its lease id>", result.stderr)
+        self.assertEqual(cargo_env, "", "cargo ran beside the other run")
+        self.assertNotIn("release", "\n".join(calls), "the other run's lease is not this one's to release")
+
+    def test_a_lease_the_caller_names_is_worked_inside_and_never_released(self):
+        result, calls, cargo_env = self.run_verify("own-held", {
+            "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "AGENTDOCKER_CAMPAIGN_LEASE": "lease-known"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("inside the caller's own hold", result.stderr)
+        joined = "\n".join(calls)
+        # Renewing the named lease is the proof that it is this agent's:
+        # nothing is claimed, so nothing of another worker's can be taken
+        # for it, and nothing is released.
+        self.assertIn("renew lease-known --as abc", joined)
+        self.assertNotIn("claim", joined)
+        self.assertNotIn("release", joined)
+        self.assertNotEqual(cargo_env, "", "the run went on to cargo")
+
+    def test_a_named_lease_that_is_not_held_stops_the_run_whoever_holds_the_slot_now(self):
+        # The lease the caller names lapsed, and another of the agent's
+        # workers has the slot (as lease-known): no claim is made that it
+        # could be answered with, no cargo runs, nothing is released.
+        result, calls, cargo_env = self.run_verify("own-held", {
+            "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "AGENTDOCKER_CAMPAIGN_LEASE": "lease-of-mine"})
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("names lease-of-mine, which is not an exclusive lease on task:local-cargo-campaign", result.stderr)
+        self.assertEqual(cargo_env, "")
+        joined = "\n".join(calls)
+        self.assertNotIn("claim", joined)
+        self.assertNotIn("release", joined)
+        # The slot's own exclusive lease, but another agent's: only its
+        # holder can renew it, and the refusal stops the run.
+        result, calls, cargo_env = self.run_verify("held", {
+            "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "FAKE_RENEW_REFUSED": "1",
+            "AGENTDOCKER_CAMPAIGN_LEASE": "other001"})
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("names other001, which this agent does not hold", result.stderr)
+        self.assertEqual(cargo_env, "")
+        joined = "\n".join(calls)
+        self.assertIn("renew other001 --as abc", joined)
+        self.assertNotIn("claim", joined)
+        self.assertNotIn("release", joined)
+
+    def test_a_named_lease_must_be_the_build_slots_own_and_exclusive(self):
+        # Any lease this agent holds would renew: one on an unrelated path
+        # while somebody else has the slot, or a shared hold of the slot,
+        # says nothing about holding it. Neither is renewed, claimed for,
+        # or built under.
+        for mode, named in (("held", "lease-on-an-unrelated-path"), ("own-shared", "lease-known")):
+            result, calls, cargo_env = self.run_verify(mode, {
+                "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "AGENTDOCKER_CAMPAIGN_LEASE": named})
+            self.assertEqual(result.returncode, 75, f"{mode}: {result.stderr}")
+            self.assertIn("not an exclusive lease on task:local-cargo-campaign", result.stderr)
+            self.assertEqual(cargo_env, "", f"{mode}: cargo ran without the slot")
+            joined = "\n".join(calls)
+            for never in ("renew", "claim", "release"):
+                self.assertNotIn(never, joined, f"{mode}: {never}")
+
+    def test_a_daemon_older_than_the_cli_is_claimed_plainly_and_a_held_lease_is_kept(self):
+        # The CLI knows `--fresh` and the running daemon does not: the CLI
+        # refuses the fresh claim with nothing claimed, and the run falls
+        # back to a plain one. The lease this agent already held is then
+        # the caller's own, as before the word existed: never released.
+        result, calls, cargo_env = self.run_verify("preheld", {
+            "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "FAKE_OLD_DAEMON": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already yours", result.stderr)
+        claims = [c for c in calls if c.startswith("claim task:")]
+        self.assertEqual(len(claims), 2, claims)
+        self.assertIn("--fresh", claims[0])
+        self.assertNotIn("--fresh", claims[1])
+        self.assertNotIn("release", "\n".join(calls))
+        self.assertNotEqual(cargo_env, "")
+        # With nothing held before, the plain claim's lease is this run's.
+        result, calls, _ = self.run_verify("known", {
+            "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "FAKE_OLD_DAEMON": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("release lease-known --as abc", "\n".join(calls))
 
     def test_a_lost_slot_stops_the_run_and_its_whole_tree(self):
         # The first renewal fails at once: the step in flight is ended with

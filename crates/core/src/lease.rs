@@ -265,9 +265,16 @@ impl Lease {
     }
 
     /// Would this lease stop `requester` from taking `mode` on `resource`?
+    /// An agent's own leases do not stop it.
     fn blocks(&self, requester: &AgentId, mode: LeaseMode, resource: &ResourceKey) -> bool {
-        self.holder != *requester
-            && self.resource.overlaps(resource)
+        self.holder != *requester && self.conflicts(mode, resource)
+    }
+
+    /// Whether this lease and a claim of `mode` on `resource` cannot both
+    /// stand, whoever makes the claim: they overlap, and one of them is
+    /// exclusive.
+    fn conflicts(&self, mode: LeaseMode, resource: &ResourceKey) -> bool {
+        self.resource.overlaps(resource)
             && (self.mode == LeaseMode::Exclusive || mode == LeaseMode::Exclusive)
     }
 }
@@ -330,6 +337,14 @@ pub struct ClaimRequest {
     pub note: Option<String>,
     /// An adapter's automatic lease, not one the agent asked for.
     pub automatic: bool,
+    /// Only a new lease will do: a lease the holder already has is in the
+    /// way exactly as anybody else's would be (the same resource, one
+    /// over or under it, in whichever mode makes the two conflict), and
+    /// nothing is renewed. For a resource one process at a time may use,
+    /// whoever its workers claim as: two of one agent's workers would
+    /// otherwise both be told they hold it, and the first to release
+    /// would end the other's hold.
+    pub fresh: bool,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -343,7 +358,8 @@ impl LeaseTable {
     }
 
     /// Take a lease, or learn who is in the way. Claiming a resource you
-    /// already hold in the same mode renews it instead of failing.
+    /// already hold in the same mode renews it instead of failing, unless
+    /// the claim asks for a fresh lease ([`ClaimRequest::fresh`]).
     pub fn claim(
         &mut self,
         resource: ResourceKey,
@@ -361,6 +377,7 @@ impl LeaseTable {
                 ttl,
                 note,
                 automatic: false,
+                fresh: false,
             },
             now,
         )
@@ -380,10 +397,24 @@ impl LeaseTable {
             ttl,
             note,
             automatic,
+            fresh,
         } = request;
         self.expire(now);
 
-        if let Some(existing) = self
+        if fresh {
+            // Every lease in the way, the holder's own among them: what
+            // would stop another agent stops this claim.
+            let mut held_by: Vec<Lease> = self
+                .leases
+                .values()
+                .filter(|l| l.conflicts(mode, &resource))
+                .cloned()
+                .collect();
+            if !held_by.is_empty() {
+                held_by.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+                return Err(LeaseError::Conflict { resource, held_by });
+            }
+        } else if let Some(existing) = self
             .leases
             .values_mut()
             .find(|l| l.holder == holder && l.resource == resource && l.mode == mode)
@@ -613,6 +644,7 @@ mod tests {
                         ttl,
                         note: None,
                         automatic,
+                        fresh: false,
                     },
                     now,
                 )
@@ -646,6 +678,7 @@ mod tests {
                     ttl,
                     note: None,
                     automatic: true,
+                    fresh: false,
                 },
                 now,
             )
@@ -659,6 +692,7 @@ mod tests {
                     ttl,
                     note: None,
                     automatic: false,
+                    fresh: false,
                 },
                 now,
             )
@@ -673,6 +707,7 @@ mod tests {
                     ttl,
                     note: None,
                     automatic: true,
+                    fresh: false,
                 },
                 now,
             )
@@ -970,6 +1005,112 @@ mod tests {
         assert_eq!(renewed.expires_at, later + ttl());
         assert_eq!(renewed.note.as_deref(), Some("still on it"));
         assert_eq!(t.len(), 1);
+    }
+
+    /// A fresh claim does not count a lease its holder already has: it is
+    /// refused as anybody else's claim would be, names that lease as the
+    /// one in the way, and renews nothing. Two workers claiming as one
+    /// agent are then never both told they hold the resource. Once it is
+    /// released, a fresh claim takes it, as a new lease.
+    #[test]
+    fn a_fresh_claim_is_not_answered_with_a_lease_the_holder_already_has() {
+        let mut t = LeaseTable::new();
+        let now = Utc::now();
+        let fresh = |note: &str| ClaimRequest {
+            resource: key("task:slot"),
+            holder: agent("a"),
+            mode: LeaseMode::Exclusive,
+            ttl: ttl(),
+            note: Some(note.to_owned()),
+            automatic: false,
+            fresh: true,
+        };
+        let Claimed::New(first) = t.claim_as(fresh("first worker"), now).unwrap() else {
+            panic!("nothing held it")
+        };
+        let later = now + Duration::seconds(30);
+        let Err(LeaseError::Conflict { held_by, .. }) = t.claim_as(fresh("second worker"), later)
+        else {
+            panic!("the holder's own lease is in the way")
+        };
+        assert_eq!(held_by, std::slice::from_ref(&first));
+        let kept = t.get(&first.id).unwrap();
+        assert_eq!(kept.expires_at, now + ttl(), "not renewed");
+        assert_eq!(kept.note.as_deref(), Some("first worker"), "nor renamed");
+        assert_eq!(t.len(), 1);
+        // Somebody else's fresh claim is the ordinary conflict.
+        let other = ClaimRequest {
+            holder: agent("b"),
+            ..fresh("another agent")
+        };
+        assert!(matches!(
+            t.claim_as(other, later),
+            Err(LeaseError::Conflict { .. })
+        ));
+        t.release(&first.id, &agent("a")).unwrap();
+        let Claimed::New(second) = t.claim_as(fresh("second worker"), later).unwrap() else {
+            panic!("free again")
+        };
+        assert_ne!(second.id, first.id);
+    }
+
+    /// A fresh claim is stopped by any lease of its holder that would stop
+    /// another agent: one over or under the resource, and one in the other
+    /// mode. Two shared holds do not conflict, for one holder as for two.
+    #[test]
+    fn a_fresh_claim_meets_its_holders_overlapping_leases_and_other_modes() {
+        let now = Utc::now();
+        let ask = |resource: &str, mode: LeaseMode, fresh: bool| ClaimRequest {
+            resource: key(resource),
+            holder: agent("a"),
+            mode,
+            ttl: ttl(),
+            note: None,
+            automatic: false,
+            fresh,
+        };
+        let refused = |held: (&str, LeaseMode), wanted: (&str, LeaseMode)| {
+            let mut t = LeaseTable::new();
+            let first = t.claim_as(ask(held.0, held.1, true), now).unwrap();
+            let answer = t.claim_as(ask(wanted.0, wanted.1, true), now);
+            assert_eq!(t.len(), usize::from(answer.is_ok()) + 1);
+            match answer {
+                Err(LeaseError::Conflict { held_by, .. }) => {
+                    assert_eq!(held_by, std::slice::from_ref(first.lease()));
+                    true
+                }
+                Ok(Claimed::New(_)) => false,
+                other => panic!("{other:?}"),
+            }
+        };
+        use LeaseMode::{Exclusive, Shared};
+        // Under and over an exclusive hold.
+        assert!(refused(
+            ("path:/repo/src", Exclusive),
+            ("path:/repo/src/main.rs", Exclusive)
+        ));
+        assert!(refused(
+            ("path:/repo/src/main.rs", Exclusive),
+            ("path:/repo/src", Exclusive)
+        ));
+        // The other mode on the same resource, either way round.
+        assert!(refused(("task:slot", Exclusive), ("task:slot", Shared)));
+        assert!(refused(("task:slot", Shared), ("task:slot", Exclusive)));
+        // Shared beside shared stands, as it does for two agents.
+        assert!(!refused(("task:slot", Shared), ("task:slot", Shared)));
+        // Something else entirely is free.
+        assert!(!refused(
+            ("task:slot", Exclusive),
+            ("task:other", Exclusive)
+        ));
+        // A plain claim is unchanged: the holder's own leases do not stop it.
+        let mut t = LeaseTable::new();
+        t.claim_as(ask("path:/repo/src", Exclusive, false), now)
+            .unwrap();
+        assert!(matches!(
+            t.claim_as(ask("path:/repo/src/main.rs", Exclusive, false), now),
+            Ok(Claimed::New(_))
+        ));
     }
 
     #[test]

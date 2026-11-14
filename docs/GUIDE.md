@@ -643,7 +643,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `claim` | Claim a lease on `path:`, `branch:`, `task:`, or anything |
+| `claim` | Claim a lease on `path:`, `branch:`, `task:`, or anything. Claiming what you already hold renews it; `--fresh` asks for a new lease only, so a lease you already hold that would stop another agent (on the resource, over or under it, in a conflicting mode) is in the way too (with `--wait` the command asks again until it is released or the wait is spent; a daemon older than the command is told apart by asking it, and nothing is claimed from one): for a slot one process at a time may use, whoever its workers claim as |
 | `renew` / `release` | Extend or give up a lease you hold |
 | `request-release <resource>` | Ask whoever holds it to let go: each holder gets a `release_request` message with your `--reason`; the answer comes back to you as a `release_response` message. Asking again for the same resource repeats the pending request rather than sending another |
 | `respond-release <request>` | Answer a release request put to you, by its message id: `--accept --summary "…"` has the daemon release those leases for you and journal the summary; `--decline --reason "…"` keeps them and says why |
@@ -1622,8 +1622,18 @@ Current behaviour that the sections above do not already state, by area.
   holder's, so `git commit` there is journaled as that agent's rather than
   `external`. `claim`, `renew` and `release` act as this session without
   `--as`. `scripts/verify.sh` takes the machine's `task:local-cargo-campaign`
-  lease for its run, keeps one the caller already held, renews either while
-  the run lasts, and stops instead of starting on top of another campaign —
+  lease for its run as a fresh one (`claim --fresh`), so a second run under
+  the same identity waits behind the first instead of being answered with
+  its lease and building beside it; it works inside a lease the caller
+  holds on purpose when that lease is named
+  (`AGENTDOCKER_CAMPAIGN_LEASE=<lease id>`): it checks that the named
+  lease is an exclusive one on the build slot and renews it, which only
+  its holder can, never releases it, and does not start when either is
+  refused (a lease on something else, a shared hold and a lapsed id all
+  stop the run); where the running daemon is
+  older than the CLI and does not know a fresh claim, the CLI refuses it
+  with nothing claimed and the run claims as it did before; it
+  renews either while the run lasts, and stops instead of starting on top of another campaign —
   before the first step, or at whichever step a renewal fails, ending only
   the processes that step started; when the daemon cannot tell which
   session is calling, the run registers itself as an agent (`verify-<pid>`,

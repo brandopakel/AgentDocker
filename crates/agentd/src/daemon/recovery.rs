@@ -810,6 +810,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await;
         assert!(
@@ -1112,6 +1113,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await;
         let next = lock(&daemon.state).next_seq;
@@ -1291,6 +1293,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await;
         assert!(matches!(

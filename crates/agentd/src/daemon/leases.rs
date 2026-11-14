@@ -12,6 +12,7 @@ pub(super) struct ClaimArgs {
     pub wait_secs: u64,
     pub priority: Priority,
     pub automatic: bool,
+    pub fresh: bool,
 }
 
 impl Daemon {
@@ -25,6 +26,7 @@ impl Daemon {
             wait_secs,
             priority,
             automatic,
+            fresh,
         } = args;
         if !wait::valid_priority(priority) {
             return Response::error(
@@ -177,6 +179,7 @@ impl Daemon {
                                 ttl: ttl(ttl_secs),
                                 note: note.clone(),
                                 automatic,
+                                fresh,
                             },
                             now,
                         )
@@ -233,6 +236,34 @@ impl Daemon {
                         Err(err) => match err {
                             // Said by whom, by name: the holder is somebody the
                             // person can go and talk to, and an id is not a name.
+                            // A fresh claim with a lease of the asker's own
+                            // in its way: another worker of the same agent
+                            // holds it. Answered at once, whatever wait was
+                            // asked and whoever else is in the way too: an
+                            // agent queued behind itself is a ring of one,
+                            // and the asker's client asks again instead.
+                            LeaseError::Conflict { held_by, .. }
+                                if fresh && held_by.iter().any(|l| l.holder == holder) =>
+                            {
+                                // Its own leases are named; any of other
+                                // agents in the way too are in the details.
+                                let own: Vec<String> = held_by
+                                    .iter()
+                                    .filter(|l| l.holder == holder)
+                                    .map(|l| l.id.to_string())
+                                    .collect();
+                                break 'attempt Err((
+                                    Response::Error {
+                                        code: ErrorCode::Conflict,
+                                        message: format!(
+                                            "{resource} is already held by this agent (lease {}): a fresh claim waits for it to be released",
+                                            own.join(", ")
+                                        ),
+                                        details: Some(json!({ "own": true, "held_by": held_by })),
+                                    },
+                                    gone,
+                                ));
+                            }
                             LeaseError::Conflict { held_by, .. } => {
                                 let holders = held_by
                                     .iter()
