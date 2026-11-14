@@ -324,15 +324,25 @@ case "${1:-check}" in
     fuzz_lock_current
     # The selection is a checked step of its own: a Git or Cargo failure
     # stops the run, and only a successful empty answer means nothing to test.
-    step python3 scripts/touched_crates.py --base "$base" --output "$campaign_dir/packages"
+    step python3 scripts/touched_crates.py --base "$base" --output "$campaign_dir/packages" \
+      --doc-output "$campaign_dir/doc-packages"
     selectors=()
     while IFS= read -r line; do [ -n "$line" ] && selectors+=("$line"); done < "$campaign_dir/packages"
+    # Only a library has doctests, and Cargo refuses `--doc` for a selection
+    # with none, so the doctest step takes the selected packages that have
+    # one: none at all for a change to the CLI alone.
+    doc_selectors=()
+    while IFS= read -r line; do [ -n "$line" ] && doc_selectors+=("$line"); done < "$campaign_dir/doc-packages"
     if [ "${#selectors[@]}" -eq 0 ]; then
       echo "verify.sh quick: no workspace package changed since ${base:0:12}; no Cargo build, Clippy or tests run" >&2
     else
       step cargo clippy --locked "${selectors[@]}" --all-targets -- -D warnings
       step cargo nextest run --locked "${selectors[@]}" --profile ci
-      step cargo test --locked "${selectors[@]}" --doc
+      if [ "${#doc_selectors[@]}" -eq 0 ]; then
+        echo "verify.sh quick: no selected package has a library target, so there are no doctests to run" >&2
+      else
+        step cargo test --locked "${doc_selectors[@]}" --doc
+      fi
     fi
     step python3 -m unittest discover -s tests
     ;;
