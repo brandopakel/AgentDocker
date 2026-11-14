@@ -19,6 +19,7 @@ pub mod http;
 pub mod net;
 pub mod oauth;
 pub mod service;
+pub mod state;
 pub mod tunnel;
 
 use std::collections::HashMap;
@@ -29,7 +30,7 @@ use agentdocker_core::agent::{
     CONNECTOR_LABEL, GENERATED_NAME, NAME_LABEL, SURFACE_LABEL, UNVERIFIED_SURFACE,
 };
 use agentdocker_core::{AgentSpec, ErrorCode, Request, Response};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::Utc;
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
@@ -41,6 +42,7 @@ use crate::mcp::native_identity::names_codex_conversation;
 use crate::mcp::{Identity, McpServer};
 use http::{Request as HttpRequest, Response as HttpResponse, escape_html, field};
 use oauth::{AgentIdentity, AuthorizeRefusal, OAuthError, Store, Vendor};
+use state::{StateError, StateFile};
 
 /// Wrong pairing codes one source may type within `STRIKE_WINDOW` before
 /// it is refused for the rest of it: nobody types the code wrong this often.
@@ -259,21 +261,6 @@ fn load_store(path: &Path) -> Result<Store> {
     }
 }
 
-/// Write the whole store, privately, and only ever whole.
-fn save_store(path: &Path, store: &Store) -> Result<()> {
-    let parent = path.parent().context("state path has no parent")?;
-    std::fs::create_dir_all(parent)?;
-    let temporary = parent.join(format!(".state.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, serde_json::to_vec_pretty(store)?)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&temporary, std::fs::Permissions::from_mode(0o600))?;
-    }
-    std::fs::rename(&temporary, path)?;
-    Ok(())
-}
-
 /// The public address, checked: HTTPS, or plain HTTP only on loopback for
 /// a trial without a tunnel.
 fn public_url(raw: &str) -> Result<String> {
@@ -314,8 +301,14 @@ pub struct Connector<B> {
     extra_callbacks: Vec<String>,
     /// The pairing code and every guess at it, under one lock.
     gate: Mutex<Gate>,
+    /// The store as this process holds it: clients and grants as the
+    /// state file has them, plus codes and access tokens, which live only
+    /// here. The state file's lock is always taken before this one.
     store: Mutex<Store>,
-    state_path: Option<PathBuf>,
+    /// Where clients and grants are kept, and the lock every change to them
+    /// and every authorization from them is made under; none in a bare
+    /// connector, whose store is all in memory.
+    state: Option<StateFile>,
     servers: Mutex<HashMap<String, Arc<McpServer<B>>>>,
     /// The header the tunnel writes the client's address into, when known.
     client_ip_header: Option<String>,
@@ -399,7 +392,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 strikes: HashMap::new(),
             }),
             store: Mutex::new(store),
-            state_path,
+            state: state_path.map(|path| StateFile::at(&path)),
             servers: Mutex::new(HashMap::new()),
             client_ip_header: None,
             tickets: Mutex::new(HashMap::new()),
@@ -678,11 +671,33 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             .map_err(|_| {
                 OAuthError::new("invalid_client", "the metadata fetch did not finish")
             })??;
-        {
-            let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-            store.admit_metadata_client(client_id, &document, &self.extra_callbacks, Utc::now())?;
+        let admitted = self.under_state(
+            |store| {
+                let before = store.clients.get(client_id).cloned();
+                store
+                    .admit_metadata_client(client_id, &document, &self.extra_callbacks, Utc::now())
+                    .map(|_| before)
+            },
+            |store, admitted| {
+                if let Ok(before) = admitted {
+                    match before {
+                        Some(before) => store.clients.insert(client_id.to_owned(), before.clone()),
+                        None => store.clients.remove(client_id),
+                    };
+                }
+            },
+        );
+        match admitted {
+            Ok(Ok(_)) => {}
+            Ok(Err(error)) => return Err(error),
+            Err(error) => {
+                eprintln!("agentdocker connector: admitting {client_id} refused: {error}");
+                return Err(OAuthError::new(
+                    "temporarily_unavailable",
+                    format!("the connector cannot keep its state just now ({error})"),
+                ));
+            }
         }
-        self.persist();
         eprintln!("agentdocker connector: admitted the client metadata document at {client_id}");
         Ok(())
     }
@@ -691,17 +706,82 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         format!("{}/mcp", self.public_url)
     }
 
-    fn persist(&self) {
-        let Some(path) = &self.state_path else {
-            return;
+    /// Waiting `wait` for the state's lock, for tests of a lock held long.
+    #[cfg(test)]
+    fn with_state_wait(mut self, wait: std::time::Duration) -> Self {
+        self.state = self.state.map(|file| file.waiting(wait));
+        self
+    }
+
+    /// Change the store under the state file's lock, from the file as it is
+    /// now: what another process revoked there is taken in first, then
+    /// `change` runs, then the store is published durably before the lock
+    /// goes. When the file cannot be locked, read or written, `undo` puts
+    /// back what `change` did (it runs only if `change` did) and the caller
+    /// answers that it is unavailable: nothing is reported done that is not
+    /// kept.
+    fn under_state<T>(
+        &self,
+        change: impl FnOnce(&mut Store) -> T,
+        undo: impl FnOnce(&mut Store, &T),
+    ) -> Result<T, StateError> {
+        let Some(file) = &self.state else {
+            let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            return Ok(change(&mut store));
         };
-        let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(error) = save_store(path, &store) {
-            eprintln!(
-                "agentdocker connector: could not save {}: {error:#}",
-                path.display()
-            );
+        let held = file.lock()?;
+        let disk = file.read(&held, false)?;
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.import_revocations(&disk);
+        let outcome = change(&mut store);
+        if let Err(error) = file.publish(&held, &store) {
+            undo(&mut store, &outcome);
+            // The refused change had already replaced the file: put back
+            // what is kept, so the file says what memory says and a restart
+            // never honours a token that was not handed out.
+            if let StateError::Unsynced(_) = error {
+                match file.publish(&held, &store) {
+                    Ok(()) => {}
+                    Err(again @ StateError::Unsynced(_)) => eprintln!(
+                        "agentdocker connector: the refused change is taken back out of the state file, not yet durably: {again}"
+                    ),
+                    Err(again) => eprintln!(
+                        "agentdocker connector: a refused change stays in the state file until its next save: {again}"
+                    ),
+                }
+            }
+            return Err(error);
         }
+        Ok(outcome)
+    }
+
+    /// The grant behind a bearer token, decided under the state file's
+    /// lock against the file as it is now, so a grant `connector revoke`
+    /// ended is refused whether or not the daemon has heard.
+    fn authorize(&self, bearer: &str) -> Result<Option<(String, oauth::Grant)>, StateError> {
+        let held = match &self.state {
+            Some(file) => {
+                let held = file.lock()?;
+                Some((file.read(&held, false)?, held))
+            }
+            None => None,
+        };
+        let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((disk, _held)) = &held {
+            store.import_revocations(disk);
+        }
+        Ok(store.authenticate(bearer, Utc::now()))
+    }
+
+    /// A state that could not be read or kept: said in the log, and to the
+    /// client as a refusal to try again, never as a success.
+    fn unavailable(&self, what: &str, error: &StateError) -> HttpResponse {
+        eprintln!("agentdocker connector: {what} refused: {error}");
+        HttpResponse::json(
+            503,
+            &json!({"error": "temporarily_unavailable", "error_description": format!("the connector cannot keep its state just now ({error}); try again")}),
+        )
+        .header("Retry-After", "5")
     }
 
     /// One request in, one response out. Nothing here holds the store
@@ -809,22 +889,29 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 .json(),
             );
         };
-        let outcome = {
-            let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-            if !store.make_room(MAX_CLIENTS, Utc::now()) {
-                return HttpResponse::json(
-                    429,
-                    &json!({"error": "too_many_clients", "error_description": "this connector holds as many registered clients as it will; try again in a few minutes"}),
-                );
-            }
-            store.register_client(&body, &self.extra_callbacks, Utc::now())
-        };
+        let outcome = self.under_state(
+            |store| {
+                if !store.make_room(MAX_CLIENTS, Utc::now()) {
+                    return None;
+                }
+                Some(store.register_client(&body, &self.extra_callbacks, Utc::now()))
+            },
+            |store, outcome| {
+                if let Some(Ok(reply)) = outcome
+                    && let Some(id) = reply["client_id"].as_str()
+                {
+                    store.clients.remove(id);
+                }
+            },
+        );
         match outcome {
-            Ok(reply) => {
-                self.persist();
-                HttpResponse::json(201, &reply)
-            }
-            Err(error) => HttpResponse::json(400, &error.json()),
+            Ok(Some(Ok(reply))) => HttpResponse::json(201, &reply),
+            Ok(Some(Err(error))) => HttpResponse::json(400, &error.json()),
+            Ok(None) => HttpResponse::json(
+                429,
+                &json!({"error": "too_many_clients", "error_description": "this connector holds as many registered clients as it will; try again in a few minutes"}),
+            ),
+            Err(error) => self.unavailable("a registration", &error),
         }
     }
 
@@ -849,6 +936,21 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
 
     fn refuse_authorization(&self, refusal: AuthorizeRefusal) -> HttpResponse {
         match refusal {
+            // The connector could not keep its state: the client is fine,
+            // and the same request may succeed in a moment.
+            AuthorizeRefusal::Page(error) if error.code == "temporarily_unavailable" => {
+                HttpResponse::html(
+                    503,
+                    page(
+                        "Try again in a moment",
+                        &format!(
+                            "<p>{}</p><p>Nothing was changed. Reload this page in a moment; if it keeps happening, the connector's output on the machine that runs it says why.</p>",
+                            escape_html(&error.description)
+                        ),
+                    ),
+                )
+                .header("Retry-After", "5")
+            }
             AuthorizeRefusal::Page(error) => HttpResponse::html(
                 400,
                 page(
@@ -1199,8 +1301,23 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                                 identity.id,
                                 consent.project.display()
                             );
-                            let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-                            Ok(store.issue(&consent, identity, Utc::now()))
+                            let agent = identity.id.clone();
+                            match self.under_state(
+                                |store| store.issue(&consent, identity, Utc::now()),
+                                |store, issued| {
+                                    if let Some(grant) = store.grant_of(issued) {
+                                        store.restore(&grant, None, issued);
+                                    }
+                                },
+                            ) {
+                                Ok(issued) => Ok(issued),
+                                Err(error) => {
+                                    // The grant was not kept, so nothing can
+                                    // reach the agent made for it: end it.
+                                    let _ = self.backend.call(Request::Deregister { agent }).await;
+                                    return self.unavailable("a token exchange", &error);
+                                }
+                            }
                         }
                         Err(error) => {
                             eprintln!(
@@ -1216,10 +1333,25 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                     },
                 }
             }
-            Some("refresh_token") => {
-                let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-                store.refresh(&form, Utc::now())
-            }
+            // Under the state file's lock: a grant `connector revoke` ended
+            // is refused here, and the rotated token is durable before it
+            // is handed out.
+            Some("refresh_token") => match self.under_state(
+                |store| {
+                    let before = store.refreshing(&form);
+                    store
+                        .refresh(&form, Utc::now())
+                        .map(|issued| (issued, before))
+                },
+                |store, refreshed| {
+                    if let Ok((issued, Some((grant, before)))) = refreshed {
+                        store.restore(grant, Some(before.clone()), issued);
+                    }
+                },
+            ) {
+                Ok(refreshed) => refreshed.map(|(issued, _)| issued),
+                Err(error) => return self.unavailable("a token refresh", &error),
+            },
             Some(other) => Err(OAuthError {
                 code: "unsupported_grant_type",
                 description: format!("{other} is not issued here"),
@@ -1230,10 +1362,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
             }),
         };
         match outcome {
-            Ok(issued) => {
-                self.persist();
-                HttpResponse::json(200, &issued.json())
-            }
+            Ok(issued) => HttpResponse::json(200, &issued.json()),
             Err(error) => HttpResponse::json(400, &error.json()),
         }
     }
@@ -1260,9 +1389,9 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         let Some(bearer) = request.bearer() else {
             return self.unauthorized("a bearer token is required");
         };
-        let grant = {
-            let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-            store.authenticate(bearer, Utc::now())
+        let grant = match self.authorize(bearer) {
+            Ok(grant) => grant,
+            Err(error) => return self.unavailable("an MCP request", &error),
         };
         let Some((grant_id, grant)) = grant else {
             return self.unauthorized("the token is unknown, expired or revoked");
@@ -1282,11 +1411,18 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 code: ErrorCode::NotFound,
                 ..
             }) => {
-                {
-                    let mut store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-                    store.revoke(&grant_id, Utc::now());
+                // Refused whether or not the end is kept: the daemon said so.
+                if let Err(error) = self.under_state(
+                    |store| {
+                        store.revoke(&grant_id, Utc::now());
+                    },
+                    |_, _| {},
+                ) {
+                    eprintln!(
+                        "agentdocker connector: ending the grant of {} was not saved: {error}",
+                        grant.agent_name
+                    );
                 }
-                self.persist();
                 self.servers
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -1339,8 +1475,14 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                 }
             }
         }
-        if new_client {
-            self.persist();
+        // A client new to the grant is worth saving. Bookkeeping, not
+        // authorization: a save that fails is logged and the request goes
+        // on, and the next save carries it.
+        if new_client && let Err(error) = self.under_state(|_| {}, |_, _| {}) {
+            eprintln!(
+                "agentdocker connector: a new client of {} was not saved: {error}",
+                grant.agent_name
+            );
         }
         if messages(&incoming).any(|message| {
             message["method"] == "tools/call"
@@ -1497,7 +1639,12 @@ async fn serve(
     let home = agentdocker_host::dirs::home();
     let _owner = claim_home(&home)?;
     let path = state_path();
-    let store = load_store(&path)?;
+    // Under the state's lock, and made if there was none: from here on a
+    // missing state file is a fault the connector refuses on, never an
+    // empty store.
+    let store = StateFile::at(&path)
+        .initialize()
+        .with_context(|| format!("cannot open the connector state at {}", path.display()))?;
     // A connector killed before it could clear its Funnel left it
     // publishing a loopback port nothing serves; clear it first.
     clear_stale_funnel(&home, args.tailscale.as_deref()).await?;
@@ -1884,7 +2031,7 @@ async fn grants(client: &Client) -> Result<()> {
     }
     let mut rows = Vec::new();
     for (id, grant) in &store.grants {
-        let status = if grant.revoked_at.is_some() {
+        let status = if !grant.active() {
             "revoked".to_owned()
         } else {
             match client
@@ -1968,32 +2115,109 @@ fn clients_seen_lines(store: &Store, now: chrono::DateTime<Utc>) -> Vec<String> 
     lines
 }
 
-/// End a connector agent: tokens first, then the daemon's record. A
-/// serving connector notices on that agent's next request.
+/// End a connector agent's access, then its record in the daemon, and say
+/// what each half came to. Access first, under the state file's lock and
+/// from the file as it is now, published durably before it is said: every
+/// request that begins after this returns is refused, whether or not the
+/// daemon is told. Then the daemon is asked to finish the agent, and its
+/// answer keeps its class in the exit status. Run again on a grant already
+/// revoked, it keeps the moment it was revoked and asks the daemon again.
 async fn revoke(client: &Client, reference: &str) -> Result<()> {
-    let path = state_path();
-    let mut store = load_store(&path)?;
-    let Some((grant_id, grant)) = store.grant_for_agent(reference) else {
-        bail!("no active connector agent named `{reference}`; see `agentdocker connector grants`");
+    let file = StateFile::at(&state_path());
+    let named = reference.to_owned();
+    let revoked = tokio::task::spawn_blocking(move || file.revoke(&named, Utc::now()))
+        .await
+        .context("the revocation did not finish")??;
+    let who = format!("{} ({})", revoked.agent_name, revoked.agent_id);
+    if revoked.already {
+        eprintln!(
+            "{who}: access was already revoked at {}",
+            revoked
+                .at
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        );
+    } else {
+        eprintln!("{who}: access revoked");
+    }
+    let deregister = client
+        .call_raw(&Request::Deregister {
+            agent: revoked.agent_id.clone(),
+        })
+        .await;
+    // The daemon refuses to finish an agent that is already over: ask
+    // whether that is why.
+    let inspect = match &deregister {
+        Ok(Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }) => Some(
+            client
+                .call_raw(&Request::Inspect {
+                    agent: revoked.agent_id.clone(),
+                })
+                .await,
+        ),
+        _ => None,
     };
-    let agent_id = grant.agent_id.clone();
-    let name = grant.agent_name.clone();
-    store.revoke(&grant_id, Utc::now());
-    save_store(&path, &store)?;
-    match client
-        .call(&Request::Deregister { agent: agent_id })
-        .await?
-    {
-        Response::Ok | Response::Agent { .. } => {}
-        Response::Error {
+    let done = daemon_half(&who, deregister, inspect)?;
+    eprintln!("{who}: {done}");
+    Ok(())
+}
+
+/// What the daemon's half of a revoke came to, from its answer to
+/// `deregister` and, when that was `invalid`, to `inspect`. Done is the
+/// agent finished now, already over, or unknown to the daemon. Anything
+/// else is an error that says access is revoked and what the daemon did
+/// not do, carrying the daemon's refusal (so the exit status is its
+/// class) or, when the answer was lost or made no sense, nothing more:
+/// deregistration unconfirmed.
+fn daemon_half(
+    who: &str,
+    deregister: Result<Response>,
+    inspect: Option<Result<Response>>,
+) -> Result<&'static str> {
+    let refused = |code, message, details| {
+        anyhow::Error::new(crate::client::RemoteError {
+            code,
+            message,
+            details,
+        })
+        .context(format!(
+            "{who}: access revoked; the daemon did not finish the agent"
+        ))
+    };
+    match deregister {
+        Ok(Response::Agent { .. } | Response::Ok) => Ok("the agent is marked finished"),
+        Ok(Response::Error {
             code: ErrorCode::NotFound,
             ..
-        } => {}
-        Response::Error { message, .. } => eprintln!("tokens revoked; the daemon said: {message}"),
-        _ => {}
+        }) => Ok("the daemon holds no record of the agent; nothing is left to finish"),
+        Ok(Response::Error {
+            code: ErrorCode::Invalid,
+            message,
+            details,
+        }) => match inspect {
+            Some(Ok(Response::Agent { agent })) if !agent.status.is_live() => {
+                Ok("the agent had already finished")
+            }
+            Some(Ok(Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            })) => Ok("the daemon holds no record of the agent; nothing is left to finish"),
+            _ => Err(refused(ErrorCode::Invalid, message, details)),
+        },
+        Ok(Response::Error {
+            code,
+            message,
+            details,
+        }) => Err(refused(code, message, details)),
+        Ok(other) => Err(anyhow!(
+            "{who}: access revoked; deregistration unconfirmed: the daemon answered {other:?}"
+        )),
+        Err(error) => {
+            Err(error.context(format!("{who}: access revoked; deregistration unconfirmed")))
+        }
     }
-    eprintln!("{name}: access revoked and the agent marked finished");
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2133,6 +2357,14 @@ mod tests {
     /// Consent and redeem a code for a generated name, as a vendor would,
     /// and return the access token.
     async fn connected(connector: &Connector<Shared>, callback: &str) -> String {
+        connected_tokens(connector, callback).await["access_token"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// Both tokens of a fresh consent, as the token endpoint answered.
+    async fn connected_tokens(connector: &Connector<Shared>, callback: &str) -> Value {
         let registered = json_body(
             &connector
                 .handle(post(
@@ -2168,7 +2400,7 @@ mod tests {
             .1
             .clone();
         let code = location.split("code=").nth(1).unwrap().to_owned();
-        let issued = json_body(
+        json_body(
             &connector
                 .handle(post(
                     "/token",
@@ -2177,8 +2409,7 @@ mod tests {
                     None,
                 ))
                 .await,
-        );
-        issued["access_token"].as_str().unwrap().to_owned()
+        )
     }
 
     #[tokio::test]
@@ -3616,7 +3847,8 @@ mod tests {
                 Utc::now(),
             )
             .unwrap();
-        save_store(&path, &store).unwrap();
+        let file = StateFile::at(&path);
+        file.publish(&file.lock().unwrap(), &store).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -3676,6 +3908,8 @@ mod tests {
     async fn clients_are_fingerprinted_and_a_codex_call_is_refused_without_a_heartbeat() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("connector/state.json");
+        // As `serve` starts: the state file made before anything is served.
+        StateFile::at(&path).initialize().unwrap();
         let mock = Arc::new(Mock::with(vec![
             live_agent("chatgpt-connector-fixture"), // Register
             live_agent("chatgpt-connector-fixture"), // Inspect before initialize
@@ -3817,5 +4051,541 @@ mod tests {
             "most recent first"
         );
         assert!(clients_seen_lines(&Store::default(), now).is_empty());
+    }
+
+    /// A connector over a state file in `dir`, made as `serve` makes it,
+    /// waiting a tenth of a second for the state's lock; with the switch
+    /// that takes its daemon down, and the file as a second process sees it.
+    fn on_disk(
+        dir: &Path,
+        responses: Vec<Response>,
+    ) -> (
+        Connector<Shared>,
+        Arc<Mock>,
+        Arc<std::sync::atomic::AtomicBool>,
+        StateFile,
+    ) {
+        let mock = Arc::new(Mock::with(responses));
+        let down = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let file = StateFile::at(&dir.join("connector/state.json"));
+        let store = file.initialize().unwrap();
+        let connector = Connector::new(
+            Shared(mock.clone(), down.clone()),
+            "https://x.trycloudflare.com".into(),
+            Some(agentdocker_core::ProjectRef {
+                root: "/p/orchard".into(),
+                worktree: None,
+                fingerprint: None,
+                source: agentdocker_core::ProjectSource::Directory,
+            }),
+            vec![],
+            "ABCD-EFGH".into(),
+            store,
+            Some(file.path().to_owned()),
+        )
+        .with_state_wait(std::time::Duration::from_millis(100));
+        (connector, mock, down, file)
+    }
+
+    /// The file as another process reads it, under the lock.
+    fn on_file(file: &StateFile) -> Store {
+        let held = file.lock().unwrap();
+        file.read(&held, false).unwrap()
+    }
+
+    fn refresh_with(token: &str) -> HttpRequest {
+        post(
+            "/token",
+            "application/x-www-form-urlencoded",
+            &format!("grant_type=refresh_token&refresh_token={token}"),
+            None,
+        )
+    }
+
+    fn ping(access: &str) -> HttpRequest {
+        post(
+            "/mcp",
+            "application/json",
+            r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#,
+            Some(access),
+        )
+    }
+
+    /// `connector revoke` from another process, with the daemon down: the
+    /// cached refresh token is refused and nothing new is issued, the
+    /// access token is refused without asking the daemon, and a serving
+    /// write afterwards (a registration) keeps the grant revoked.
+    #[tokio::test]
+    async fn a_revoke_ends_refresh_and_tools_at_once_daemon_or_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let (connector, mock, down, file) = on_disk(dir.path(), vec![live_agent("revoked-one")]);
+        let issued = connected_tokens(&connector, "https://claude.ai/api/mcp/auth_callback").await;
+        let (access, refresh) = (
+            issued["access_token"].as_str().unwrap(),
+            issued["refresh_token"].as_str().unwrap(),
+        );
+        let revoked = StateFile::at(file.path())
+            .revoke("revoked-one", Utc::now())
+            .unwrap();
+        assert!(!revoked.already);
+        down.store(true, Ordering::Relaxed);
+        let asked = mock.requests().len();
+
+        let refused = connector.handle(refresh_with(refresh)).await;
+        assert_eq!(refused.status, 400);
+        assert_eq!(json_body(&refused)["error"], "invalid_grant");
+        let refused = connector.handle(ping(access)).await;
+        assert_eq!(refused.status, 401);
+        assert_eq!(mock.requests().len(), asked, "the daemon was not asked");
+
+        let registered = connector
+            .handle(post(
+                "/register",
+                "application/json",
+                r#"{"redirect_uris":["https://claude.ai/api/mcp/auth_callback"]}"#,
+                None,
+            ))
+            .await;
+        assert_eq!(registered.status, 201);
+        let kept = on_file(&file);
+        let grant = &kept.grants[&revoked.grant_id];
+        assert_eq!(
+            grant.revoked_at(),
+            Some(revoked.at),
+            "the serving write kept it"
+        );
+        assert_eq!(grant.state, oauth::GrantState::Revoked { at: revoked.at });
+        assert_eq!(kept.clients.len(), 2, "and kept its own change");
+    }
+
+    /// A refresh before the revoke hands out tokens; the revoke after it
+    /// ends them both, whichever is used next.
+    #[tokio::test]
+    async fn a_revoke_after_a_refresh_ends_the_tokens_it_handed_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let (connector, _mock, down, file) = on_disk(dir.path(), vec![live_agent("refreshed")]);
+        let issued = connected_tokens(&connector, "https://claude.ai/api/mcp/auth_callback").await;
+        let rotated = connector
+            .handle(refresh_with(issued["refresh_token"].as_str().unwrap()))
+            .await;
+        assert_eq!(rotated.status, 200);
+        let rotated = json_body(&rotated);
+        StateFile::at(file.path())
+            .revoke("refreshed", Utc::now())
+            .unwrap();
+        down.store(true, Ordering::Relaxed);
+        assert_eq!(
+            connector
+                .handle(ping(rotated["access_token"].as_str().unwrap()))
+                .await
+                .status,
+            401
+        );
+        assert_eq!(
+            connector
+                .handle(refresh_with(rotated["refresh_token"].as_str().unwrap()))
+                .await
+                .status,
+            400
+        );
+    }
+
+    /// A revoke waits for a writer holding the lock and changes only its
+    /// grant in what that writer published: both survive, in that order.
+    #[tokio::test]
+    async fn a_revoke_waits_for_the_lock_and_keeps_what_the_holder_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let (connector, _mock, _down, file) = on_disk(dir.path(), vec![live_agent("waited")]);
+        connected(&connector, "https://claude.ai/api/mcp/auth_callback").await;
+        let held = file.lock().unwrap();
+        let path = file.path().to_owned();
+        let revoking =
+            std::thread::spawn(move || StateFile::at(&path).revoke("waited", Utc::now()));
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!revoking.is_finished(), "the revoke waits for the lock");
+        // What a serving write does under the lock: read, change, publish.
+        let mut store = file.read(&held, false).unwrap();
+        store
+            .register_client(
+                &json!({"redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"]}),
+                &[],
+                Utc::now(),
+            )
+            .unwrap();
+        file.publish(&held, &store).unwrap();
+        drop(held);
+        let revoked = revoking.join().unwrap().unwrap();
+        let after = on_file(&file);
+        assert!(!after.grants[&revoked.grant_id].active());
+        assert_eq!(
+            after.clients.len(),
+            2,
+            "the holder's client survived the revoke"
+        );
+    }
+
+    /// A grant, a rotation and a registration the server makes while
+    /// another grant is revoked all survive the revoke.
+    #[tokio::test]
+    async fn the_server_s_own_changes_survive_a_revoke_of_another_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let (connector, _mock, _down, file) = on_disk(
+            dir.path(),
+            vec![live_agent("first-agent"), live_agent("second-agent")],
+        );
+        connected(&connector, "https://claude.ai/api/mcp/auth_callback").await;
+        StateFile::at(file.path())
+            .revoke("first-agent", Utc::now())
+            .unwrap();
+        let second = connected_tokens(&connector, "https://claude.ai/api/mcp/auth_callback").await;
+        let rotated = connector
+            .handle(refresh_with(second["refresh_token"].as_str().unwrap()))
+            .await;
+        assert_eq!(rotated.status, 200);
+        let kept = on_file(&file);
+        let by_name = |name: &str| {
+            kept.grants
+                .values()
+                .find(|g| g.agent_name == name)
+                .unwrap()
+                .clone()
+        };
+        assert!(!by_name("first-agent").active());
+        let second = by_name("second-agent");
+        assert!(second.active());
+        assert_eq!(
+            second.state,
+            oauth::GrantState::Active {
+                refresh_hash: Some(oauth::hash(
+                    json_body(&rotated)["refresh_token"].as_str().unwrap()
+                ))
+            },
+            "the rotation was published"
+        );
+        assert_eq!(kept.clients.len(), 2);
+    }
+
+    /// Whatever keeps the state from being locked, read or kept refuses:
+    /// no token, no tool call, nothing said done; and a refused refresh
+    /// leaves the refresh token as it was, so it works once the fault is
+    /// gone.
+    #[tokio::test]
+    async fn a_state_that_cannot_be_locked_read_or_kept_refuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let (connector, _mock, _down, file) = on_disk(
+            dir.path(),
+            vec![
+                live_agent("faulted"),
+                live_agent("faulted"),
+                live_agent("faulted"),
+            ],
+        );
+        let issued = connected_tokens(&connector, "https://claude.ai/api/mcp/auth_callback").await;
+        let (access, refresh) = (
+            issued["access_token"].as_str().unwrap().to_owned(),
+            issued["refresh_token"].as_str().unwrap().to_owned(),
+        );
+        let good = std::fs::read(file.path()).unwrap();
+        let refuses = |why: &'static str| {
+            let connector = &connector;
+            let (access, refresh) = (access.clone(), refresh.clone());
+            async move {
+                let answer = connector.handle(refresh_with(&refresh)).await;
+                assert_eq!(answer.status, 503, "{why}: refresh");
+                assert_eq!(json_body(&answer)["error"], "temporarily_unavailable");
+                assert_eq!(
+                    connector.handle(ping(&access)).await.status,
+                    503,
+                    "{why}: mcp"
+                );
+            }
+        };
+
+        let held = file.lock().unwrap();
+        refuses("lock held").await;
+        drop(held);
+
+        std::fs::write(file.path(), "{broken").unwrap();
+        refuses("corrupt").await;
+
+        std::fs::remove_file(file.path()).unwrap();
+        refuses("missing").await;
+        std::fs::write(file.path(), &good).unwrap();
+
+        // Permissions bind everyone but root, who reads and writes anyway.
+        #[cfg(unix)]
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } != 0 {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |path: &Path, mode| {
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap()
+            };
+            mode(file.path(), 0o000);
+            refuses("unreadable").await;
+            mode(file.path(), 0o600);
+
+            // The file reads but cannot be replaced: the refresh is refused
+            // and undone, while a tool call, which writes nothing, goes on.
+            let folder = file.path().parent().unwrap().to_owned();
+            mode(&folder, 0o500);
+            let answer = connector.handle(refresh_with(&refresh)).await;
+            mode(&folder, 0o700);
+            assert_eq!(answer.status, 503, "publish failing");
+            assert_eq!(
+                std::fs::read(file.path()).unwrap(),
+                good,
+                "the old file stands"
+            );
+
+            // The file is replaced but its folder cannot be synced: the
+            // refresh is refused, and the rotation it wrote is taken back
+            // out, so a fresh read of the file, as after a restart, still
+            // honours the refresh token the client holds.
+            mode(&folder, 0o300);
+            let answer = connector.handle(refresh_with(&refresh)).await;
+            let kept = on_file(&file);
+            mode(&folder, 0o700);
+            assert_eq!(answer.status, 503, "sync failing");
+            let form = [
+                ("grant_type".to_owned(), "refresh_token".to_owned()),
+                ("refresh_token".to_owned(), refresh.clone()),
+            ];
+            assert!(
+                kept.refreshing(&form).is_some(),
+                "the file still holds the refresh token the client has"
+            );
+        }
+
+        let answer = connector.handle(refresh_with(&refresh)).await;
+        assert_eq!(answer.status, 200, "the token was never spent");
+        assert!(on_file(&file).grants.values().all(oauth::Grant::active));
+    }
+
+    /// A revoke that replaces the file but cannot sync its folder says the
+    /// revocation is written and not durable, and how to finish. Run again
+    /// while that lasts it says the same, keeping the first moment; once
+    /// the state can be saved it publishes before it says done.
+    #[cfg(unix)]
+    #[test]
+    fn a_revoke_not_made_durable_says_so_and_a_retry_finishes_it() {
+        use std::os::unix::fs::PermissionsExt;
+        // Root syncs a folder it cannot read all the same.
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let file = StateFile::at(&dir.path().join("connector/state.json"));
+        let mut store = Store::default();
+        store.issue(
+            &oauth::Consent {
+                vendor: Vendor::Claude,
+                client_id: "c".into(),
+                agent_name: "unsynced".into(),
+                generated: false,
+                project: "/p/orchard".into(),
+            },
+            AgentIdentity {
+                id: "a1".into(),
+                name: "unsynced".into(),
+                runtime: "claude".into(),
+                project: "/p/orchard".into(),
+            },
+            Utc::now(),
+        );
+        file.publish(&file.lock().unwrap(), &store).unwrap();
+        let folder = file.path().parent().unwrap().to_owned();
+        let mode = |mode| {
+            std::fs::set_permissions(&folder, std::fs::Permissions::from_mode(mode)).unwrap()
+        };
+        let first: chrono::DateTime<Utc> = "2026-09-17T22:00:00Z".parse().unwrap();
+
+        mode(0o300);
+        let unsynced = file.revoke("unsynced", first);
+        let again = file.revoke("unsynced", first + chrono::Duration::hours(1));
+        let kept = on_file(&file);
+        mode(0o700);
+
+        let said = unsynced.as_ref().unwrap_err().to_string();
+        assert!(
+            said.contains("written but not confirmed durable")
+                && said.contains("agentdocker connector revoke a1"),
+            "{said}"
+        );
+        let Err(state::RevokeError::NotDurable(revoked, state::StateError::Unsynced(_))) = unsynced
+        else {
+            panic!("{unsynced:?}")
+        };
+        assert!(!revoked.already);
+        assert_eq!(revoked.at, first);
+        assert_eq!(
+            kept.grants[&revoked.grant_id].revoked_at(),
+            Some(first),
+            "the file holds the revocation, so the server refuses the grant"
+        );
+        let Err(state::RevokeError::NotDurable(retried, _)) = again else {
+            panic!("a retry that could not publish said it was done: {again:?}")
+        };
+        assert!(retried.already);
+        assert_eq!(retried.at, first);
+
+        let finished = file
+            .revoke("unsynced", first + chrono::Duration::hours(2))
+            .unwrap();
+        assert!(finished.already);
+        assert_eq!(finished.at, first);
+    }
+
+    /// A metadata client whose admission the state cannot keep is told to
+    /// try again, as registration and tokens are: a 503 page, not a
+    /// refusal that reads as permanent; the same request then goes on.
+    #[tokio::test]
+    async fn a_metadata_client_is_told_to_try_again_when_the_state_cannot_be_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let (connector, _mock, _down, file) = on_disk(dir.path(), vec![]);
+        let fetcher: Arc<cimd::Fetcher> = Arc::new(|url: &str| {
+            Ok(json!({
+                "client_id": url,
+                "client_name": "ChatGPT",
+                "redirect_uris": ["https://chatgpt.com/connector_platform_oauth_redirect"],
+                "token_endpoint_auth_method": "none",
+            }))
+        });
+        let connector = connector.with_fetcher(fetcher);
+        let authorize = || {
+            get(&format!(
+                "/authorize?response_type=code&client_id=https%3A%2F%2Fchatgpt.com%2Foauth%2Fclient.json&redirect_uri=https%3A%2F%2Fchatgpt.com%2Fconnector_platform_oauth_redirect&code_challenge={}&code_challenge_method=S256&state=s",
+                oauth::s256(&"v".repeat(60))
+            ))
+        };
+
+        let held = file.lock().unwrap();
+        let answer = connector.handle(authorize()).await;
+        drop(held);
+        let body = String::from_utf8_lossy(&answer.body).into_owned();
+        assert_eq!(answer.status, 503, "{body}");
+        assert!(
+            answer
+                .headers
+                .iter()
+                .any(|(name, value)| name.eq_ignore_ascii_case("retry-after") && value == "5")
+        );
+        assert!(
+            body.contains("Try again in a moment") && !body.contains("Only a client registered"),
+            "{body}"
+        );
+        assert!(on_file(&file).clients.is_empty(), "nothing was admitted");
+
+        assert_eq!(connector.handle(authorize()).await.status, 200);
+    }
+
+    /// `connector revoke` is durable and happens once: a fresh reader of
+    /// the file sees it, as after a crash; revoking again keeps the moment
+    /// and says it was already revoked; a name nobody has is not found,
+    /// in a home where nothing ever connected too.
+    #[test]
+    fn a_revoke_is_durable_and_kept_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = StateFile::at(&dir.path().join("connector/state.json"));
+        assert!(matches!(
+            file.revoke("nobody", Utc::now()),
+            Err(state::RevokeError::NoGrant(_))
+        ));
+        let mut store = Store::default();
+        store.issue(
+            &oauth::Consent {
+                vendor: Vendor::Claude,
+                client_id: "c".into(),
+                agent_name: "kept-once".into(),
+                generated: false,
+                project: "/p/orchard".into(),
+            },
+            AgentIdentity {
+                id: "a1".into(),
+                name: "kept-once".into(),
+                runtime: "claude".into(),
+                project: "/p/orchard".into(),
+            },
+            Utc::now(),
+        );
+        file.publish(&file.lock().unwrap(), &store).unwrap();
+        let first: chrono::DateTime<Utc> = "2026-09-17T22:00:00Z".parse().unwrap();
+        let revoked = file.revoke("kept-once", first).unwrap();
+        assert!(!revoked.already);
+        assert_eq!(revoked.agent_id, "a1");
+        let fresh = StateFile::at(file.path());
+        assert_eq!(
+            on_file(&fresh).grants[&revoked.grant_id].revoked_at(),
+            Some(first)
+        );
+        let bytes = std::fs::read(file.path()).unwrap();
+        let again = file
+            .revoke("a1", first + chrono::Duration::hours(1))
+            .unwrap();
+        assert!(again.already);
+        assert_eq!(again.at, first);
+        assert_eq!(
+            std::fs::read(file.path()).unwrap(),
+            bytes,
+            "nothing rewritten"
+        );
+    }
+
+    /// The daemon's half of a revoke keeps the class of what happened in
+    /// the exit status; done is finished now, already over, or unknown.
+    #[test]
+    fn each_daemon_answer_to_a_revoke_keeps_its_exit_class() {
+        use crate::client::exit_code_for;
+        let error = |code| {
+            Ok(Response::Error {
+                code,
+                message: "said".into(),
+                details: None,
+            })
+        };
+        let over = || {
+            let Response::Agent { mut agent } = live_agent("over") else {
+                unreachable!()
+            };
+            agent.status = AgentStatus::Exited { code: Some(0) };
+            Ok(Response::Agent { agent })
+        };
+        for (deregister, inspect) in [
+            (Ok(live_agent("done")), None),
+            (Ok(Response::Ok), None),
+            (error(ErrorCode::NotFound), None),
+            (error(ErrorCode::Invalid), Some(over())),
+            (error(ErrorCode::Invalid), Some(error(ErrorCode::NotFound))),
+        ] {
+            assert!(daemon_half("agent (a1)", deregister, inspect).is_ok());
+        }
+        for (deregister, inspect, class) in [
+            (
+                error(ErrorCode::Invalid),
+                Some(Ok(live_agent("managed"))),
+                2,
+            ),
+            (error(ErrorCode::Forbidden), None, 5),
+            (error(ErrorCode::IdentityMismatch), None, 5),
+            (error(ErrorCode::Paused), None, 5),
+            (error(ErrorCode::Conflict), None, 4),
+            (error(ErrorCode::Internal), None, 1),
+            (error(ErrorCode::Unconfirmed), None, 1),
+            (error(ErrorCode::Unavailable), None, 6),
+            (
+                Ok(Response::Agents {
+                    agents: vec![],
+                    aliases: Default::default(),
+                }),
+                None,
+                1,
+            ),
+            (Err(anyhow!("connection reset")), None, 1),
+        ] {
+            let failed = daemon_half("agent (a1)", deregister, inspect).unwrap_err();
+            let said = format!("{failed:#}");
+            assert!(said.starts_with("agent (a1): access revoked; "), "{said}");
+            assert_eq!(exit_code_for(&failed), class, "{said}");
+        }
     }
 }

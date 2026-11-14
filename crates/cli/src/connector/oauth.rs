@@ -202,6 +202,7 @@ impl Client {
 /// One consent: one agent identity, whichever client of the account uses
 /// it, and the refresh token that keeps it reachable across access tokens.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(from = "GrantWire", into = "GrantWire")]
 pub struct Grant {
     pub agent_id: String,
     pub agent_name: String,
@@ -210,21 +211,129 @@ pub struct Grant {
     pub client_id: String,
     pub vendor: Vendor,
     pub created_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub refresh_hash: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: GrantState,
     pub last_used_at: Option<DateTime<Utc>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<DateTime<Utc>>,
     /// What the clients using this grant said about their software, the
     /// last [`super::clients::MAX_SEEN`] distinct ones.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub clients_seen: Vec<super::clients::Seen>,
+}
+
+/// Whether a grant still admits its tokens. Revocation is final: nothing
+/// makes a revoked grant active again, and of two views of one grant the
+/// revoked one wins.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GrantState {
+    /// Its tokens work; the refresh token's hash, once tokens were issued.
+    Active { refresh_hash: Option<String> },
+    /// Ended at this moment, its refresh token forgotten.
+    Revoked { at: DateTime<Utc> },
+}
+
+/// A grant as `state.json` keeps it: [`GrantState`] is a view on the two
+/// keys `refresh_hash` and `revoked_at`, in the order they always had, so
+/// the file's bytes are what they were. A `revoked_at` wins over any
+/// `refresh_hash` beside it.
+#[derive(Serialize, Deserialize)]
+struct GrantWire {
+    agent_id: String,
+    agent_name: String,
+    runtime: String,
+    project: PathBuf,
+    client_id: String,
+    vendor: Vendor,
+    created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    refresh_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_used_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    revoked_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    clients_seen: Vec<super::clients::Seen>,
+}
+
+impl From<GrantWire> for Grant {
+    fn from(wire: GrantWire) -> Self {
+        Self {
+            agent_id: wire.agent_id,
+            agent_name: wire.agent_name,
+            runtime: wire.runtime,
+            project: wire.project,
+            client_id: wire.client_id,
+            vendor: wire.vendor,
+            created_at: wire.created_at,
+            state: GrantState::of(wire.refresh_hash, wire.revoked_at),
+            last_used_at: wire.last_used_at,
+            clients_seen: wire.clients_seen,
+        }
+    }
+}
+
+impl From<Grant> for GrantWire {
+    fn from(grant: Grant) -> Self {
+        let (refresh_hash, revoked_at) = grant.state.keys();
+        Self {
+            agent_id: grant.agent_id,
+            agent_name: grant.agent_name,
+            runtime: grant.runtime,
+            project: grant.project,
+            client_id: grant.client_id,
+            vendor: grant.vendor,
+            created_at: grant.created_at,
+            refresh_hash,
+            last_used_at: grant.last_used_at,
+            revoked_at,
+            clients_seen: grant.clients_seen,
+        }
+    }
+}
+
+impl GrantState {
+    /// The state the two stored keys say: revoked whenever `revoked_at`
+    /// is there, whatever else is.
+    pub fn of(refresh_hash: Option<String>, revoked_at: Option<DateTime<Utc>>) -> Self {
+        match revoked_at {
+            Some(at) => Self::Revoked { at },
+            None => Self::Active { refresh_hash },
+        }
+    }
+
+    /// The two stored keys, `(refresh_hash, revoked_at)`.
+    pub fn keys(self) -> (Option<String>, Option<DateTime<Utc>>) {
+        match self {
+            Self::Active { refresh_hash } => (refresh_hash, None),
+            Self::Revoked { at } => (None, Some(at)),
+        }
+    }
 }
 
 impl Grant {
     pub fn active(&self) -> bool {
-        self.revoked_at.is_none()
+        matches!(self.state, GrantState::Active { .. })
+    }
+
+    /// When it was revoked, if it was.
+    pub fn revoked_at(&self) -> Option<DateTime<Utc>> {
+        match self.state {
+            GrantState::Revoked { at } => Some(at),
+            GrantState::Active { .. } => None,
+        }
+    }
+
+    /// The refresh token's hash, while the grant is active.
+    fn refresh_hash(&self) -> Option<&str> {
+        match &self.state {
+            GrantState::Active { refresh_hash } => refresh_hash.as_deref(),
+            GrantState::Revoked { .. } => None,
+        }
+    }
+
+    /// End it at `at`, or keep the moment it already ended: revocation
+    /// happens once and is never undone.
+    fn end(&mut self, at: DateTime<Utc>) {
+        if self.active() {
+            self.state = GrantState::Revoked { at };
+        }
     }
 }
 
@@ -892,9 +1001,8 @@ impl Store {
                 client_id: consent.client_id.clone(),
                 vendor: consent.vendor,
                 created_at: now,
-                refresh_hash: None,
+                state: GrantState::Active { refresh_hash: None },
                 last_used_at: None,
-                revoked_at: None,
                 clients_seen: Vec::new(),
             },
         );
@@ -935,7 +1043,7 @@ impl Store {
         let Some((id, grant)) = self
             .grants
             .iter()
-            .find(|(_, g)| g.refresh_hash.as_deref() == Some(wanted.as_str()))
+            .find(|(_, g)| g.refresh_hash() == Some(wanted.as_str()))
         else {
             return Err(OAuthError::new(
                 "invalid_grant",
@@ -962,7 +1070,9 @@ impl Store {
         }
         let access_token = random_token();
         let refresh_token = random_token();
-        grant.refresh_hash = Some(hash(&refresh_token));
+        grant.state = GrantState::Active {
+            refresh_hash: Some(hash(&refresh_token)),
+        };
         grant.last_used_at = Some(now);
         self.access.insert(
             hash(&access_token),
@@ -995,25 +1105,88 @@ impl Store {
         Some((id, grant.clone()))
     }
 
-    /// End a grant: its tokens stop working at once.
+    /// End a grant: its tokens stop working at once. One already ended
+    /// keeps the moment it ended.
     pub fn revoke(&mut self, grant_id: &str, now: DateTime<Utc>) -> Option<Grant> {
         let grant = self.grants.get_mut(grant_id)?;
-        grant.revoked_at.get_or_insert(now);
-        grant.refresh_hash = None;
+        grant.end(now);
         self.access.retain(|_, a| a.grant != grant_id);
         Some(grant.clone())
     }
 
-    /// The grant for an agent, by its id or name.
-    pub fn grant_for_agent(&self, reference: &str) -> Option<(String, &Grant)> {
+    /// Take in the revocations another view of the store holds (the file
+    /// another process revoked in): each grant revoked there is revoked
+    /// here, at the moment it was, and loses its tokens; one this store
+    /// has never held is kept as it is there. Nothing here becomes active.
+    /// The grants revoked by this.
+    pub fn import_revocations(&mut self, other: &Store) -> Vec<String> {
+        let mut ended = Vec::new();
+        for (id, theirs) in &other.grants {
+            let Some(at) = theirs.revoked_at() else {
+                continue;
+            };
+            match self.grants.get_mut(id) {
+                Some(ours) if ours.active() => {
+                    ours.end(at);
+                    self.access.retain(|_, a| a.grant != *id);
+                    ended.push(id.clone());
+                }
+                Some(_) => {}
+                None => {
+                    self.grants.insert(id.clone(), theirs.clone());
+                }
+            }
+        }
+        ended
+    }
+
+    /// Put a grant back as it was before a change that could not be kept,
+    /// and forget the access token that change handed out. A grant revoked
+    /// meanwhile stays revoked.
+    pub fn restore(&mut self, grant_id: &str, before: Option<Grant>, issued: &Issued) {
+        self.access.remove(&hash(&issued.access_token));
+        match before {
+            Some(mut before) => {
+                if let Some(at) = self.grants.get(grant_id).and_then(Grant::revoked_at) {
+                    before.end(at);
+                }
+                self.grants.insert(grant_id.to_owned(), before);
+            }
+            None => {
+                self.grants.remove(grant_id);
+            }
+        }
+    }
+
+    /// The grant behind a refresh token, if any: the one a refresh would
+    /// rotate.
+    pub fn refreshing(&self, form: &[(String, String)]) -> Option<(String, Grant)> {
+        let wanted = hash(field(form, "refresh_token")?);
         self.grants
             .iter()
-            .find(|(id, g)| {
-                g.active()
-                    && (g.agent_id == reference
-                        || g.agent_name == reference
-                        || id.as_str() == reference)
+            .find(|(_, g)| g.refresh_hash() == Some(wanted.as_str()))
+            .map(|(id, g)| (id.clone(), g.clone()))
+    }
+
+    /// The grant `issue` made for an access token it handed out.
+    pub fn grant_of(&self, issued: &Issued) -> Option<String> {
+        self.access
+            .get(&hash(&issued.access_token))
+            .map(|access| access.grant.clone())
+    }
+
+    /// The grant for an agent, by its id or name or the grant's id: an
+    /// active one first, else the latest revoked one, so revoking again
+    /// finds what was revoked.
+    pub fn grant_for_agent(&self, reference: &str) -> Option<(String, &Grant)> {
+        let matching = || {
+            self.grants.iter().filter(move |(id, g)| {
+                g.agent_id == reference || g.agent_name == reference || id.as_str() == reference
             })
+        };
+        matching()
+            .find(|(_, g)| g.active())
+            .or_else(|| matching().max_by_key(|(_, g)| g.created_at))
             .map(|(id, g)| (id.clone(), g))
     }
 
@@ -1290,7 +1463,7 @@ mod tests {
         assert!(store.authenticate(&second.access_token, now()).is_some());
 
         let revoked = store.revoke(&grant_id, now()).unwrap();
-        assert!(revoked.revoked_at.is_some());
+        assert!(revoked.revoked_at().is_some());
         assert!(store.authenticate(&first.access_token, now()).is_none());
         assert!(store.authenticate(&second.access_token, now()).is_none());
         let after = store.refresh(
@@ -1301,7 +1474,14 @@ mod tests {
             now(),
         );
         assert_eq!(after.unwrap_err().code, "invalid_grant");
-        assert!(store.grant_for_agent("claude-connector-ab12").is_none());
+        // Still found, so a second revoke can finish its daemon half, but
+        // only as revoked.
+        assert_eq!(
+            store
+                .grant_for_agent("claude-connector-ab12")
+                .map(|(id, g)| (id, g.active())),
+            Some((grant_id.clone(), false))
+        );
         assert_eq!(
             store
                 .refresh(&pairs("grant_type=refresh_token"), now())
@@ -1446,9 +1626,8 @@ mod tests {
                 client_id: "granted".into(),
                 vendor: Vendor::Claude,
                 created_at: now,
-                refresh_hash: None,
+                state: GrantState::Active { refresh_hash: None },
                 last_used_at: None,
-                revoked_at: None,
                 clients_seen: Vec::new(),
             },
         );
@@ -1732,5 +1911,149 @@ mod tests {
 
     fn redeem_consent(store: &mut Store, form: &str) -> Consent {
         store.redeem_code(&pairs(form), now()).unwrap()
+    }
+
+    fn grant_in(state: GrantState) -> Grant {
+        Grant {
+            agent_id: "a".into(),
+            agent_name: "claude-connector-test".into(),
+            runtime: "claude".into(),
+            project: "/p/orchard".into(),
+            client_id: "c".into(),
+            vendor: Vendor::Claude,
+            created_at: now(),
+            state,
+            last_used_at: None,
+            clients_seen: Vec::new(),
+        }
+    }
+
+    /// The state is a view on the two keys the file has always had: every
+    /// pair reads as one state, a `revoked_at` winning over a hash beside
+    /// it, and a grant writes back the bytes it was read from.
+    #[test]
+    fn a_grant_s_state_is_a_view_on_its_two_stored_keys() {
+        let at = now() + chrono::Duration::minutes(5);
+        let hash = Some("h".to_owned());
+        for (refresh_hash, revoked_at, state, written) in [
+            (
+                None,
+                None,
+                GrantState::Active { refresh_hash: None },
+                (None, None),
+            ),
+            (
+                hash.clone(),
+                None,
+                GrantState::Active {
+                    refresh_hash: hash.clone(),
+                },
+                (hash.clone(), None),
+            ),
+            (None, Some(at), GrantState::Revoked { at }, (None, Some(at))),
+            (
+                hash.clone(),
+                Some(at),
+                GrantState::Revoked { at },
+                (None, Some(at)),
+            ),
+        ] {
+            let read = GrantState::of(refresh_hash.clone(), revoked_at);
+            assert_eq!(read, state, "{refresh_hash:?} {revoked_at:?}");
+            assert_eq!(read.clone().keys(), written);
+            assert_eq!(grant_in(read.clone()).active(), revoked_at.is_none());
+        }
+        for state in [
+            GrantState::Active { refresh_hash: None },
+            GrantState::Active {
+                refresh_hash: hash.clone(),
+            },
+            GrantState::Revoked { at },
+        ] {
+            let bytes = serde_json::to_vec_pretty(&grant_in(state.clone())).unwrap();
+            let text = String::from_utf8(bytes.clone()).unwrap();
+            assert!(!text.contains("\"state\""), "{text}");
+            let back: Grant = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(back.state, state);
+            assert_eq!(serde_json::to_vec_pretty(&back).unwrap(), bytes);
+        }
+        // The keys keep their place: refresh_hash, last_used_at, revoked_at.
+        let mut used = grant_in(GrantState::Active {
+            refresh_hash: hash.clone(),
+        });
+        used.last_used_at = Some(at);
+        let text = serde_json::to_string(&used).unwrap();
+        assert!(
+            text.find("refresh_hash").unwrap() < text.find("last_used_at").unwrap(),
+            "{text}"
+        );
+    }
+
+    /// Revocation is final: another view's revocation is taken in at the
+    /// moment it was made, a later one never moves it, an active view never
+    /// undoes it, and taking it in drops the grant's access tokens.
+    #[test]
+    fn no_view_of_the_store_makes_a_revoked_grant_active() {
+        let first = now() + chrono::Duration::minutes(1);
+        let later = now() + chrono::Duration::minutes(9);
+        let mut serving = Store::default();
+        let issued = serving.issue(
+            &Consent {
+                vendor: Vendor::Claude,
+                client_id: "c".into(),
+                agent_name: "claude-connector-test".into(),
+                generated: false,
+                project: "/p/orchard".into(),
+            },
+            AgentIdentity {
+                id: "a".into(),
+                name: "claude-connector-test".into(),
+                runtime: "claude".into(),
+                project: "/p/orchard".into(),
+            },
+            now(),
+        );
+        let grant = serving.grants.keys().next().unwrap().clone();
+        let stale = Store {
+            grants: serving.grants.clone(),
+            ..Store::default()
+        };
+        let mut revoked = Store {
+            grants: serving.grants.clone(),
+            ..Store::default()
+        };
+        revoked.revoke(&grant, first);
+        assert!(serving.authenticate(&issued.access_token, now()).is_some());
+        assert_eq!(
+            serving.import_revocations(&revoked),
+            std::slice::from_ref(&grant)
+        );
+        assert!(serving.authenticate(&issued.access_token, now()).is_none());
+        // Every order of taking in, revoking again and taking in a stale view.
+        for _ in 0..3 {
+            assert!(serving.import_revocations(&stale).is_empty());
+            serving.revoke(&grant, later);
+            assert!(serving.import_revocations(&revoked).is_empty());
+            assert_eq!(serving.grants[&grant].revoked_at(), Some(first));
+        }
+        let mut copy = Store {
+            grants: stale.grants.clone(),
+            ..Store::default()
+        };
+        copy.import_revocations(&serving);
+        assert_eq!(copy.grants[&grant].revoked_at(), Some(first));
+        // A refresh or a restore after it does not bring it back.
+        let refresh = format!(
+            "grant_type=refresh_token&refresh_token={}",
+            issued.refresh_token
+        );
+        assert!(serving.refresh(&pairs(&refresh), later).is_err());
+        let before = stale.grants[&grant].clone();
+        serving.restore(&grant, Some(before), &issued);
+        assert_eq!(serving.grants[&grant].revoked_at(), Some(first));
+        // A grant only the other view holds is kept as it is there.
+        let mut empty = Store::default();
+        empty.import_revocations(&revoked);
+        assert_eq!(empty.grants[&grant].revoked_at(), Some(first));
     }
 }
