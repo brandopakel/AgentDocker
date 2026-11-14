@@ -1887,6 +1887,130 @@ async fn any_agent_of_the_project_retires_a_memory_and_forgetting_that_brings_it
     ));
 }
 
+/// The journal is everyone's: read by any agent of the project and told
+/// to new sessions with no reader's roles applied. Retiring a memory said
+/// to one role therefore puts neither its words nor the reason there, in
+/// the entry or in the event that carries it: only its id, for those who
+/// can read its history. A memory said to everyone keeps both.
+#[tokio::test]
+async fn retiring_a_memory_said_to_a_role_keeps_its_words_out_of_the_journal() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    assert!(matches!(
+        d.handle(Request::RoleAssign {
+            from: HUMAN.into(),
+            agent: f.peer.id.to_string(),
+            add: vec!["reviewer".into()],
+            remove: vec![],
+        })
+        .await,
+        Response::Agent { .. }
+    ));
+    let add = |text: &str, roles: &[&str]| Request::MemoryAdd {
+        from: f.agent.id.to_string(),
+        project: None,
+        text: text.into(),
+        links: vec![],
+        supersedes: None,
+        standing: true,
+        forget_after: None,
+        roles: roles.iter().map(|r| (*r).to_owned()).collect(),
+        valid_from: None,
+    };
+    let keep = |request: Request| async move {
+        match d.handle(request).await {
+            Response::Memory { memory, .. } => memory,
+            other => panic!("{other:?}"),
+        }
+    };
+    let scoped = keep(add(
+        "Embargoed findings sit in the vault folder",
+        &["reviewer"],
+    ))
+    .await;
+    let open = keep(add("Deploys go out on Fridays", &[])).await;
+    let mut events = d.subscribe_events();
+
+    // The agent that kept it does not hold the role: to it, it is not there.
+    assert!(matches!(
+        d.handle(Request::MemoryRetire {
+            from: f.agent.id.to_string(),
+            memory: scoped.id.clone(),
+            reason: "guessing".into(),
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+    let retirement = keep(Request::MemoryRetire {
+        from: f.peer.id.to_string(),
+        memory: scoped.id.clone(),
+        reason: "the vault moved to the escrow share".into(),
+    })
+    .await;
+    assert_eq!(retirement.roles, ["reviewer"]);
+    keep(Request::MemoryRetire {
+        from: f.peer.id.to_string(),
+        memory: open.id.clone(),
+        reason: "deploys moved to a release train".into(),
+    })
+    .await;
+
+    let journal = |reader: Option<&AgentRecord>| Request::Journal {
+        project: f.work.clone(),
+        since_seq: None,
+        until_seq: None,
+        agent: None,
+        branch: None,
+        kind: None,
+        path: None,
+        grep: None,
+        limit: 50,
+        digest: reader.map(|reader| agentdocker_core::protocol::DigestRequest {
+            reader: reader.id.to_string(),
+            max_entries: 50,
+            max_chars: 8000,
+            all_branches: true,
+            advance: false,
+        }),
+    };
+    let Response::Journal { entries, .. } = d.handle(journal(None)).await else {
+        panic!("journal")
+    };
+    let mut carried = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let EventKind::JournalAppended { entry } = event.kind {
+            carried.push(entry.summary);
+        }
+    }
+    // What an agent without the role is told at its next session start.
+    let digest = match d.handle(journal(Some(&f.agent))).await {
+        Response::Digest { digest, .. } => format!("{digest:?}"),
+        other => panic!("{other:?}"),
+    };
+    let lines: Vec<String> = entries.iter().map(|e| e.summary.clone()).collect();
+    for said in lines.iter().chain(&carried).chain([&digest]) {
+        for secret in ["Embargoed", "vault", "escrow"] {
+            assert!(!said.contains(secret), "{secret}: {said}");
+        }
+    }
+    for said in [&lines, &carried] {
+        let of_scoped: Vec<&String> = said.iter().filter(|l| l.contains(&scoped.id)).collect();
+        assert_eq!(of_scoped.len(), 1, "{said:?}");
+        assert!(of_scoped[0].contains("said to reviewer only"), "{said:?}");
+        // One said to everyone is told in full.
+        assert!(
+            said.iter().any(|l| l.contains(&open.id)
+                && l.contains("Deploys go out on Fridays")
+                && l.ends_with("deploys moved to a release train")),
+            "{said:?}"
+        );
+    }
+    assert!(digest.contains(&scoped.id), "{digest}");
+}
+
 /// `mine` is the person's cards and those held by the agents they launched:
 /// for the person, or a reader who names nobody. An agent asking means its
 /// own, as `me` does; a holder nobody says the person launched is not

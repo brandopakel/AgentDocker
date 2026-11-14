@@ -27,15 +27,26 @@ fn memory_doc(memory: &Memory) -> Doc {
     doc(kind_of(memory), memory.id.clone(), memory)
 }
 
-/// The journal's line for a retirement: which memory, by its first words,
-/// and why.
+/// The journal's line for a retirement. The journal is read by everyone
+/// in the project and told to new sessions, with no reader's roles
+/// applied, so it says only what everyone may read: for a memory said to
+/// everyone, its first words and the reason; for one said to some roles,
+/// its id alone, with which roles can read the rest in its history.
 fn retired_summary(retired: &Memory, retirement: &Memory) -> String {
-    format!(
-        "retired memory {} (\"{}\"): {}",
-        retired.id,
-        memory::headline(&retired.text),
-        retirement.text
-    )
+    if retired.roles.is_empty() {
+        format!(
+            "retired memory {} (\"{}\"): {}",
+            retired.id,
+            memory::headline(&retired.text),
+            retirement.text
+        )
+    } else {
+        format!(
+            "retired memory {}, one said to {} only: its text and the reason are in its history, for those who can read it",
+            retired.id,
+            retired.roles.join(", ")
+        )
+    }
 }
 
 /// Who reads a project's memory, by a request's `from`: the person, or an
