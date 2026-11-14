@@ -681,9 +681,10 @@ impl Daemon {
         });
     }
 
-    /// A linked worktree of the agent's repository, made for it under the
-    /// daemon's sibling worktree directory, on a branch named after it: `agent/<name>`, or with
-    /// its id appended when that is taken by an earlier run.
+    /// A linked worktree of the agent's repository, made for it in the
+    /// project's worktrees folder (inside the project unless the daemon's
+    /// settings say otherwise), on a branch named after it: `agent/<name>`,
+    /// or with its id appended when that is taken by an earlier run.
     pub(super) async fn isolate(&self, record: &AgentRecord) -> Result<PathBuf, Box<Response>> {
         let Some(workdir) = record.spec.workdir.clone() else {
             return Err(Box::new(Response::invalid(
@@ -711,15 +712,10 @@ impl Daemon {
                 "agent name `{name}` cannot name a worktree and branch: use letters, digits, '-', '_' and '.', not starting with '-' or '.', without '..' or a '.lock' ending"
             ))));
         }
-        let dir = paths::worktree_dir(&self.home).join(base.id().short());
-        if let Err(err) = std::fs::create_dir_all(&dir) {
-            return Err(Box::new(Response::error(
-                ErrorCode::StorageUnavailable,
-                format!("cannot create {}: {err}", dir.display()),
-            )));
-        }
+        let home = self.worktree_place(&base)?;
+        self.worktree_make(&home).await?;
+        let dir = &home.dir;
         let root = project::canonical(base.dir());
-        let dir = project::canonical(&dir);
         let candidates = [
             (dir.join(&name), format!("agent/{name}")),
             (
@@ -732,7 +728,7 @@ impl Daemon {
             if path.exists() {
                 continue;
             }
-            match worktrees::add_worktree(root.clone(), &path, &branch, None).await {
+            match worktrees::add_worktree(root.clone(), &path, &branch, None, Some(&home)).await {
                 Ok(()) => {
                     let (copied, trouble) =
                         worktrees::copy_includes(root.clone(), path.clone()).await;

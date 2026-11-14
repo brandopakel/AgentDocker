@@ -139,7 +139,7 @@ async fn create_worktree(
     match daemon
         .handle(Request::WorktreeCreate {
             agent: agent.to_string(),
-            path: path.to_string_lossy().into_owned(),
+            path: Some(path.to_string_lossy().into_owned()),
             branch: branch.into(),
             from: None,
             seed_build: Vec::new(),

@@ -23,7 +23,7 @@ A machine that has never built this needs, before its first gate: rustup, which 
 - Every daemon state change emits an `EventKind`. New behaviour = new event variant.
 - Protocol changes: update `protocol.rs`, the table in `docs/ARCHITECTURE.md`, and the CLI in the same PR.
 - Errors returned to clients use `ErrorCode`; add a variant rather than overloading `Internal`.
-- When several agents share a checkout through AgentDocker, work in your own worktree (`agentdocker worktree-create --branch <name> [--from <ref>] <path>`) and hold `path:` on what you edit, released with a summary when done.
+- When several agents share a checkout through AgentDocker, work in your own worktree (`agentdocker worktree-create --branch <name> [--from <ref>]`, which puts it in the project's own worktrees folder, `.agentdocker/worktrees/<name>`, kept out of git) and hold `path:` on what you edit, released with a summary when done. Hold files and folders of your own checkout, never the project's root: a path lease covers everything under its folder, the worktrees inside the project included.
 - Nothing personal belongs in the tree: no home paths, host or machine names, account details, session or agent ids from a real run, or trial evidence. Fixtures use made-up names.
 
 ## Documentation contract

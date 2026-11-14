@@ -120,7 +120,12 @@ pub enum Request {
     Images,
     WorktreeCreate {
         agent: String,
-        path: String,
+        /// Where the new checkout goes. Absent, it goes in the project's
+        /// own worktrees folder, in a folder named for the branch: inside
+        /// the project ([`crate::paths::PROJECT_WORKTREES`]) unless the
+        /// daemon's settings name another place.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
         branch: String,
         /// The start point: a branch, tag or commit of the repository;
         /// the agent's HEAD when absent.
@@ -2577,6 +2582,35 @@ fn default_human() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `worktree_create` names a path only when the caller wants one: a
+    /// request without it reads, and one made without it sends none, so
+    /// an older daemon refuses it as lacking a field instead of guessing.
+    #[test]
+    fn a_worktree_is_asked_for_with_or_without_a_path() {
+        let asked =
+            serde_json::json!({"op":"worktree_create","agent":"agent-1","branch":"agent/fix"});
+        let request: Request = serde_json::from_value(asked.clone()).unwrap();
+        assert!(
+            matches!(&request, Request::WorktreeCreate { path: None, branch, .. } if branch == "agent/fix"),
+            "{request:?}"
+        );
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("path")
+                .is_none(),
+            "no path is sent when none was named"
+        );
+        let mut placed = asked;
+        placed["path"] = "/work/fix".into();
+        let request: Request = serde_json::from_value(placed.clone()).unwrap();
+        assert!(
+            matches!(&request, Request::WorktreeCreate { path: Some(path), .. } if path == "/work/fix"),
+            "{request:?}"
+        );
+        assert_eq!(serde_json::to_value(&request).unwrap()["path"], "/work/fix");
+    }
 
     #[test]
     fn old_send_responses_keep_readiness_unknown() {

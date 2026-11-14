@@ -7438,6 +7438,159 @@ async fn a_commit_in_a_worktree_nobody_registered_still_reaches_the_journal() {
     );
 }
 
+/// The same promise for a worktree in the project's own folder. The main
+/// checkout's watch reaches it, and the line that keeps the folder out of
+/// git hides it from the main checkout's changes, so it has to be watched
+/// as a checkout of its own: from the moment the sweep finds it, with
+/// nobody registered in it, and still once an agent that worked there has
+/// ended while the main checkout stays live.
+#[tokio::test]
+async fn a_worktree_inside_the_project_is_watched_whoever_is_in_it() {
+    if !have_git() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("kept.txt"), "one\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "t"],
+        vec!["config", "user.email", "t@example.com"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["add", "."],
+        vec!["commit", "-q", "-m", "root"],
+    ] {
+        assert!(git(dir.path(), &repo, &args), "{args:?}");
+    }
+    let daemon = open(&dir);
+    daemon.expect_watcher();
+    tokio::spawn(crate::watcher::run(
+        daemon.clone(),
+        std::time::Duration::from_millis(100),
+        std::time::Duration::from_millis(50),
+    ));
+    register_in(&daemon, "home", &repo).await;
+    let Response::Worktree { path: nested, .. } = daemon
+        .handle(Request::WorktreeCreate {
+            agent: "home".into(),
+            path: None,
+            branch: "side".into(),
+            from: None,
+            seed_build: Vec::new(),
+        })
+        .await
+    else {
+        panic!("no worktree")
+    };
+    assert_eq!(
+        nested,
+        project::canonical(&repo)
+            .join(paths::PROJECT_WORKTREES)
+            .join("side")
+    );
+
+    // Watched, and its ledger kept, with nobody registered in it.
+    let covered = async || {
+        daemon.refresh_project_checkouts().await;
+        let targets: Vec<_> = daemon.watch_targets().into_iter().map(|c| c.dir).collect();
+        assert!(
+            targets.contains(&nested),
+            "the nested checkout is a target of its own: {targets:?}"
+        );
+        eventually(async || {
+            lock(&daemon.state)
+                .ledger_since
+                .contains_key(&nested)
+                .then_some(())
+        })
+        .await;
+    };
+    // An edit there is that checkout's own change, under its own path;
+    // a commit there is its own commit.
+    let seen = async |text: &str, message: &str| {
+        // Only what is recorded from here on counts for this round.
+        let before = ledger(&daemon, &repo, None)
+            .await
+            .iter()
+            .map(|change| change.seq)
+            .max()
+            .unwrap_or(0);
+        let mut attempt = 0;
+        let change = eventually(async || {
+            attempt += 1;
+            std::fs::write(nested.join("kept.txt"), format!("{text} {attempt}\n")).unwrap();
+            ledger(&daemon, &repo, None)
+                .await
+                .into_iter()
+                .find(|change| {
+                    change.seq > before && change.checkout.as_deref() == Some(nested.as_path())
+                })
+        })
+        .await;
+        assert_eq!(change.path, Path::new("kept.txt"), "{change:?}");
+        assert!(git(dir.path(), &nested, &["add", "."]));
+        assert!(git(dir.path(), &nested, &["commit", "-q", "-m", message]));
+        let entry = eventually(async || {
+            let Response::Journal { entries, .. } = daemon
+                .handle(Request::Journal {
+                    project: repo.display().to_string(),
+                    agent: None,
+                    since_seq: None,
+                    until_seq: None,
+                    branch: None,
+                    kind: Some("commit".into()),
+                    path: None,
+                    grep: None,
+                    limit: 10,
+                    digest: None,
+                })
+                .await
+            else {
+                panic!("journal failed")
+            };
+            entries
+                .into_iter()
+                .find(|entry| entry.summary.contains(message))
+        })
+        .await;
+        assert_eq!(
+            entry.checkout.as_deref(),
+            Some(nested.as_path()),
+            "{message}: attributed to the checkout it happened in"
+        );
+    };
+    covered().await;
+    seen("changed with nobody in it", "work nobody registered").await;
+
+    // An agent comes to work there and ends; the main checkout stays live.
+    let side = register_in(&daemon, "side", &nested).await;
+    assert!(matches!(
+        daemon
+            .handle(Request::Deregister {
+                agent: side.id.to_string()
+            })
+            .await,
+        Response::Agent { .. }
+    ));
+    covered().await;
+    seen(
+        "changed after its agent ended",
+        "work after its agent ended",
+    )
+    .await;
+
+    // None of it was ever the main checkout's, under the folder's path.
+    let main = project::canonical(&repo);
+    assert!(
+        ledger(&daemon, &repo, None).await.iter().all(|change| {
+            change.checkout.as_deref() != Some(main.as_path())
+                || !change.path.starts_with(".agentdocker")
+        }),
+        "the main checkout never records the folder's files"
+    );
+}
+
 /// A commit made with git alone in a private checkout is still
 /// somebody's: the agent the daemon created the worktree for, or the
 /// agent holding the checkout under an exclusive `path:` lease. Only a
@@ -7473,7 +7626,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
     } = daemon
         .handle(Request::WorktreeCreate {
             agent: "writer".into(),
-            path: made.to_string_lossy().into_owned(),
+            path: Some(made.to_string_lossy().into_owned()),
             branch: "made-branch".into(),
             from: Some(root_sha.clone()),
             seed_build: Vec::new(),
@@ -7487,7 +7640,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
         daemon
             .handle(Request::WorktreeCreate {
                 agent: "writer".into(),
-                path: dir.path().join("bad").to_string_lossy().into_owned(),
+                path: Some(dir.path().join("bad").to_string_lossy().into_owned()),
                 branch: "bad-branch".into(),
                 from: Some("--output=/tmp/x".into()),
                 seed_build: Vec::new(),
@@ -12107,10 +12260,30 @@ async fn run_isolate_gives_the_agent_its_own_worktree_and_branch() {
         .workdir
         .clone()
         .expect("workdir moved to the worktree");
-    let worktrees = project::canonical(&paths::worktree_dir(&daemon.home));
+    // Inside the project, in its own worktrees folder, which the
+    // repository's exclude file keeps out of git: the main checkout does
+    // not see the new one as untracked files.
+    let worktrees = project::canonical(&repo).join(paths::PROJECT_WORKTREES);
     assert!(worktree.starts_with(&worktrees), "{}", worktree.display());
     assert!(worktree.ends_with("writer"), "{}", worktree.display());
     assert!(worktree.join(".git").exists(), "a linked worktree");
+    let excluded = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert!(
+        excluded
+            .lines()
+            .any(|line| line == "/.agentdocker/worktrees/"),
+        "{excluded}"
+    );
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "the main checkout stays clean: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
     assert!(agent.spec.isolate);
     let project = agent.project.clone().expect("in a project");
     assert_eq!(
