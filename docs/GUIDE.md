@@ -556,6 +556,8 @@ each one by pid.
 | `webhook deliveries <name>` | A webhook sink's latest attempts to post, oldest first: the event, which attempt, whether it was delivered, will be retried (and when) or was given up, the receiver's status code or a word for why there was none, and how long it took; `--limit` (up to 200), `--json` |
 | `ping` | Check the daemon is reachable |
 
+An agent that has ended shows the exit code that was recorded for it: `exited (0)`, `exited (1)`. `exited (code unknown)` means no code was recorded, and says nothing of why the process ended: the daemon found a process it only watches (a registered or adopted session) gone without seeing it end, or the process ended without a code, as one ended by a signal does. `up` says the same of an entry as `exited with unknown code`; an entry waiting for that one to exit 0 is not started, since an unknown code is not a 0.
+
 ### Start, adopt and stop
 
 | Command | What it does |

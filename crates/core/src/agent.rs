@@ -300,7 +300,7 @@ impl fmt::Display for AgentStatus {
             Self::Running => f.write_str("running"),
             Self::Stopping => f.write_str("stopping"),
             Self::Exited { code: Some(code) } => write!(f, "exited ({code})"),
-            Self::Exited { code: None } => f.write_str("exited (signal)"),
+            Self::Exited { code: None } => f.write_str("exited (code unknown)"),
             Self::Failed { reason } => write!(f, "failed: {reason}"),
         }
     }
@@ -860,6 +860,17 @@ impl AgentRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An exit with no recorded code says only that: the process may have
+    /// been found gone without anyone seeing it end, and a missing code
+    /// names no cause. A recorded code is shown as it is, zero included.
+    #[test]
+    fn an_exit_without_a_recorded_code_claims_no_cause() {
+        let shown = |code| AgentStatus::Exited { code }.to_string();
+        assert_eq!(shown(None), "exited (code unknown)");
+        assert_eq!(shown(Some(0)), "exited (0)");
+        assert_eq!(shown(Some(137)), "exited (137)");
+    }
 
     /// A stop is marked on the run it was asked of, outlives the exit,
     /// and is not the next run's; a record written without the mark reads
