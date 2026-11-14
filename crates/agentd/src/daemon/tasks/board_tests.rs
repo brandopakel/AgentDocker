@@ -1972,6 +1972,7 @@ async fn retiring_a_memory_said_to_a_role_keeps_its_words_out_of_the_journal() {
             reader: reader.id.to_string(),
             max_entries: 50,
             max_chars: 8000,
+            max_bytes: None,
             all_branches: true,
             advance: false,
         }),

@@ -5590,6 +5590,7 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
                         .unwrap_or_else(|| "user".to_owned()),
                     max_entries: args.limit,
                     max_chars: 100_000,
+                    max_bytes: None,
                     all_branches: args.all_branches,
                     advance: args.ack,
                 }),

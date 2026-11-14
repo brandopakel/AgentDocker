@@ -5257,6 +5257,7 @@ impl State {
         let budget = DigestBudget {
             max_entries: request.max_entries,
             max_chars: request.max_chars,
+            max_bytes: request.max_bytes,
         };
         let digest = render_digest(&entries, cursor, &reader, budget, now);
         if request.advance && !digest.text.is_empty() {
