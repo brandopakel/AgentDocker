@@ -46,7 +46,10 @@ none; it becomes yours, in progress, and nobody else can take it. A card you
 name may sit in any open lane (one the person asked you to work on, or one an
 agent that has ended left behind) and is yours when nobody holds it; if it is
 refused, the answer says why: somebody holds it (pull another), it waits on
-another card or on something off the board, or its holder's hold has lapsed. The pull holds the
+another card or on something off the board, or its holder's hold has lapsed. When a card nobody
+holds waits on something off the board and you know it has happened, name the card and say what
+happened in `unblock`: it is freed and taken in one change and your words stay on it; do not say
+so on a guess. The pull holds the
 card as a `task:<id>` lease for four hours: `renew` it during longer work
 (pulling your own held card renews it too); your exit releases it. A card
 whose holder's lease has lapsed is refused with `hold: lapsed`: take it over

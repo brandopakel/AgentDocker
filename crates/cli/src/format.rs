@@ -537,6 +537,7 @@ pub fn event_line(event: &Event) -> String {
         EventKind::TaskArchived { task, by, .. } => format!("card archived    {task} by {by}"),
         EventKind::TaskUnarchived { task, by, .. } => format!("card restored    {task} by {by}"),
         EventKind::TaskCommented { task, by, .. } => format!("card comment     {task} by {by}"),
+        EventKind::TaskUnblocked { task, by, .. } => format!("card unblocked   {task} by {by}"),
         EventKind::TaskCommentChanged {
             task, by, deleted, ..
         } => format!(

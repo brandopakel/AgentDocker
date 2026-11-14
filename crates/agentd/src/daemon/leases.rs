@@ -12,6 +12,7 @@ pub(super) struct ClaimArgs {
     pub wait_secs: u64,
     pub priority: Priority,
     pub automatic: bool,
+    pub fresh: bool,
 }
 
 impl Daemon {
@@ -25,6 +26,7 @@ impl Daemon {
             wait_secs,
             priority,
             automatic,
+            fresh,
         } = args;
         if !wait::valid_priority(priority) {
             return Response::error(
@@ -177,6 +179,7 @@ impl Daemon {
                                 ttl: ttl(ttl_secs),
                                 note: note.clone(),
                                 automatic,
+                                fresh,
                             },
                             now,
                         )
@@ -233,6 +236,34 @@ impl Daemon {
                         Err(err) => match err {
                             // Said by whom, by name: the holder is somebody the
                             // person can go and talk to, and an id is not a name.
+                            // A fresh claim with a lease of the asker's own
+                            // in its way: another worker of the same agent
+                            // holds it. Answered at once, whatever wait was
+                            // asked and whoever else is in the way too: an
+                            // agent queued behind itself is a ring of one,
+                            // and the asker's client asks again instead.
+                            LeaseError::Conflict { held_by, .. }
+                                if fresh && held_by.iter().any(|l| l.holder == holder) =>
+                            {
+                                // Its own leases are named; any of other
+                                // agents in the way too are in the details.
+                                let own: Vec<String> = held_by
+                                    .iter()
+                                    .filter(|l| l.holder == holder)
+                                    .map(|l| l.id.to_string())
+                                    .collect();
+                                break 'attempt Err((
+                                    Response::Error {
+                                        code: ErrorCode::Conflict,
+                                        message: format!(
+                                            "{resource} is already held by this agent (lease {}): a fresh claim waits for it to be released",
+                                            own.join(", ")
+                                        ),
+                                        details: Some(json!({ "own": true, "held_by": held_by })),
+                                    },
+                                    gone,
+                                ));
+                            }
                             LeaseError::Conflict { held_by, .. } => {
                                 let holders = held_by
                                     .iter()
@@ -543,6 +574,39 @@ impl State {
             }
             Err(err) => lease_error(err),
         }
+    }
+
+    /// Release the leases `reference` holds on exactly `resource`, which is
+    /// already the daemon's own spelling of it ([`Daemon::localise`]). A
+    /// lease on a folder is not a lease on a file in it, nor the other way
+    /// round: only the resource itself is released, and holding nothing on
+    /// it is `not_found`, with whatever is held around it left in place.
+    pub(super) fn release_resource(
+        &mut self,
+        reference: &str,
+        resource: &ResourceKey,
+        summary: Option<String>,
+        source: SummarySource,
+    ) -> Response {
+        let holder = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        self.expire_leases();
+        let released: Vec<Lease> = self
+            .leases
+            .by_holder(&holder)
+            .into_iter()
+            .filter(|l| l.resource == *resource)
+            .cloned()
+            .collect();
+        if released.is_empty() {
+            return Response::not_found(format!(
+                "you hold no lease on {resource}; `leases` lists what is held"
+            ));
+        }
+        let released = self.finish_release(&holder, released, summary, source);
+        Response::Leases { leases: released }
     }
 
     pub(super) fn release_all(

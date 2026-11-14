@@ -2273,6 +2273,10 @@ impl Daemon {
                 executable: agentdocker_host::procinfo::executable_path().ok(),
                 experimental: Some(crate::config::experimental(&self.home)),
                 judge: Some(self.judge_status()),
+                features: agentdocker_core::protocol::FEATURES
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
             },
             Request::DaemonProcess => {
                 let state = lock(&self.state);
@@ -2631,6 +2635,7 @@ impl Daemon {
                 take_over_from,
                 project,
                 board,
+                unblock,
             } => {
                 self.task_pull(
                     &agent,
@@ -2638,6 +2643,7 @@ impl Daemon {
                     take_over_from.as_deref(),
                     project.as_deref(),
                     board.as_deref(),
+                    unblock.as_deref(),
                 )
                 .await
             }
@@ -3115,6 +3121,7 @@ impl Daemon {
                 wait_secs,
                 priority,
                 automatic,
+                fresh,
             } => {
                 self.claim(
                     &agent,
@@ -3127,6 +3134,7 @@ impl Daemon {
                         wait_secs,
                         priority,
                         automatic,
+                        fresh,
                     },
                 )
                 .await
@@ -3144,6 +3152,28 @@ impl Daemon {
             } => {
                 self.flush_release_watcher(&agent, Some(&lease)).await;
                 lock(&self.state).release(&agent, &lease, summary, summary_source)
+            }
+            Request::ReleaseResource {
+                agent,
+                resource,
+                summary,
+                summary_source,
+            } => {
+                self.flush_release_watcher(&agent, None).await;
+                // The resource as a claim of it would be keyed: a path made
+                // physical, a `file:` alias resolved in the holder's project.
+                let holder = match self.resolve(&agent) {
+                    Ok(id) => id,
+                    Err(response) => return *response,
+                };
+                let key = match self
+                    .localise(ResourceKey::new(resource), Some(&holder), false)
+                    .await
+                {
+                    Ok(key) => key,
+                    Err(response) => return *response,
+                };
+                lock(&self.state).release_resource(&agent, &key, summary, summary_source)
             }
             Request::ReleaseAll {
                 agent,

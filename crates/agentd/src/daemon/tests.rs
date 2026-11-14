@@ -2909,6 +2909,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             take_over_from: None,
             project: None,
             board: None,
+            unblock: None,
         })
         .await
     else {
@@ -3897,6 +3898,7 @@ async fn a_refused_claim_names_the_holder() {
         wait_secs: 0,
         priority: 0,
         automatic: false,
+        fresh: false,
     };
     assert!(matches!(
         daemon.handle(claim(&writer, "path:/work/src")).await,
@@ -3916,6 +3918,116 @@ async fn a_refused_claim_names_the_holder() {
             writer.id.short()
         )
     );
+}
+
+/// Two workers that claim the build slot as one agent are kept apart: the
+/// second fresh claim is refused, at once even when it would wait, with
+/// the first one's lease named as the asker's own; the first hold is
+/// neither renewed nor ended by it. A plain claim still renews. Once the
+/// slot is released the second worker's fresh claim takes it.
+#[tokio::test]
+async fn a_fresh_claim_keeps_two_workers_of_one_agent_apart() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let builder = register(&daemon, "builder", None).await;
+    let claim = |fresh: bool, wait_secs: u64| Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Exclusive,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs,
+        priority: 0,
+        automatic: false,
+        fresh,
+    };
+    // A client asks before it relies on a fresh claim: a daemon that did
+    // not know the word would renew instead, and say nothing.
+    let Response::Pong { features, .. } = daemon.handle(Request::Ping).await else {
+        panic!("ping")
+    };
+    assert!(
+        features
+            .iter()
+            .any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM),
+        "{features:?}"
+    );
+    let Response::Lease { lease: first } = daemon.handle(claim(true, 0)).await else {
+        panic!("the first worker takes the slot")
+    };
+    // The other mode on the same slot is this agent's own conflict too.
+    let shared = Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Shared,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs: 0,
+        priority: 0,
+        automatic: false,
+        fresh: true,
+    };
+    assert!(matches!(
+        daemon.handle(shared).await,
+        Response::Error { code: ErrorCode::Conflict, details: Some(details), .. } if details["own"] == true
+    ));
+    for wait_secs in [0, 30] {
+        let asked = std::time::Instant::now();
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = daemon.handle(claim(true, wait_secs)).await
+        else {
+            panic!("the second worker is not told it holds the slot")
+        };
+        assert_eq!(code, ErrorCode::Conflict);
+        assert!(
+            message.contains("already held by this agent")
+                && message.contains(&first.id.to_string()),
+            "{message}"
+        );
+        let details = details.expect("which lease is in the way");
+        assert_eq!(details["own"], true);
+        assert_eq!(details["held_by"][0]["id"], first.id.to_string());
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(5),
+            "an agent is not queued behind itself"
+        );
+    }
+    let Response::Leases { leases } = daemon
+        .handle(Request::Leases {
+            agent: None,
+            resource: Some("task:local-cargo-campaign".into()),
+        })
+        .await
+    else {
+        panic!("leases")
+    };
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].expires_at, first.expires_at, "not renewed");
+    // A plain claim is the holder extending its own hold, as before.
+    let Response::Lease { lease: renewed } = daemon.handle(claim(false, 0)).await else {
+        panic!("a plain claim renews")
+    };
+    assert_eq!(renewed.id, first.id);
+    assert!(matches!(
+        daemon
+            .handle(Request::Release {
+                agent: builder.id.to_string(),
+                lease: first.id.clone(),
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await,
+        Response::Ok | Response::Lease { .. } | Response::Leases { .. }
+    ));
+    let Response::Lease { lease: second } = daemon.handle(claim(true, 0)).await else {
+        panic!("the slot is free for the second worker")
+    };
+    assert_ne!(second.id, first.id);
 }
 
 #[tokio::test]
@@ -3940,6 +4052,7 @@ async fn a_clean_shutdown_hands_the_leases_back_and_says_it_did() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await
     else {
@@ -4119,6 +4232,7 @@ async fn claim_waiting_at(
             wait_secs,
             priority,
             automatic: false,
+            fresh: false,
         })
         .await
 }
@@ -4635,6 +4749,7 @@ async fn a_granted_wait_is_not_picked_to_break_a_later_ring() {
         wait_secs,
         priority,
         automatic: false,
+        fresh: false,
     };
     let mut events = daemon.subscribe_events();
     let hold = hold_claim(&daemon, super::waiting::ClaimPoint::Answered, &alpha.id);
@@ -7158,6 +7273,7 @@ async fn a_quota_is_spent_by_several_agents_until_it_runs_out() {
                     wait_secs: 0,
                     priority: 0,
                     automatic: false,
+                    fresh: false,
                 })
                 .await
         }
@@ -7213,6 +7329,7 @@ async fn a_quota_nobody_set_a_capacity_for_is_unlimited() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await;
     assert!(matches!(response, Response::Lease { .. }), "{response:?}");
@@ -7406,6 +7523,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await
     else {
@@ -7850,6 +7968,7 @@ async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await
 }
@@ -9035,6 +9154,7 @@ async fn claim_wait_acquires_when_the_holder_releases() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    fresh: false,
                 })
                 .await
         })
@@ -9071,6 +9191,7 @@ async fn claim_wait_gives_up_at_the_deadline() {
             wait_secs: 1,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await;
     assert!(started.elapsed() >= std::time::Duration::from_secs(1));
@@ -10841,6 +10962,124 @@ async fn aliases_and_root_claims_conflict_for_outsiders_without_project_markers(
     assert_eq!(leases.len(), 1);
 }
 
+/// A lease is released by the resource it is on, and by that resource
+/// alone. The lease on a folder is not released by naming a file in it,
+/// nor a file's by naming its folder: either is `not_found` and what is
+/// held stays held. Another spelling of the resource (a `file:` alias, a
+/// path with `..` in it) releases it though other leases of the holder
+/// overlap it, and nobody releases a lease by a name they do not hold.
+#[tokio::test]
+async fn a_lease_is_released_by_the_exact_resource_it_is_on() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = dir.path().join("checkout");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::write(checkout.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let owner = register_in(&daemon, "owner", &checkout).await;
+    register(&daemon, "other", None).await;
+    let folder = format!("path:{}", checkout.join("src").display());
+    let file = format!("path:{}", checkout.join("src/main.rs").display());
+    let project = owner.project.as_ref().unwrap().id();
+    let d = &daemon;
+    let take = |resource: String| async move {
+        match claim(d, "owner", &resource).await {
+            Response::Lease { lease } => lease.id,
+            other => panic!("{resource}: {other:?}"),
+        }
+    };
+    let release = |agent: &str, resource: String| Request::ReleaseResource {
+        agent: agent.to_owned(),
+        resource,
+        summary: None,
+        summary_source: Default::default(),
+    };
+    let released = |response: Response| match response {
+        Response::Leases { leases } => leases.into_iter().map(|l| l.id).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    let held = || async {
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: Some("owner".into()),
+                resource: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        leases.into_iter().map(|l| l.id).collect::<Vec<_>>()
+    };
+    let not_found = |response: Response| {
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+    };
+
+    // The folder alone: naming a file in it releases nothing.
+    let on_folder = take(folder.clone()).await;
+    not_found(daemon.handle(release("owner", file.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // Folder and file: an alias of the file releases the file's lease and
+    // only that, though the folder's lease overlaps it.
+    let on_file = take(file.clone()).await;
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", format!("file:{project}/src/main.rs")))
+                .await
+        ),
+        [on_file]
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // The file alone: naming its folder releases nothing.
+    assert_eq!(
+        released(daemon.handle(release("owner", folder.clone())).await),
+        [on_folder]
+    );
+    let on_file = take(file.clone()).await;
+    not_found(daemon.handle(release("owner", folder.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_file));
+
+    // Another spelling of the same path is the same resource.
+    let roundabout = format!("path:{}", checkout.join("src/../src/main.rs").display());
+    assert_eq!(
+        released(daemon.handle(release("owner", roundabout)).await),
+        [on_file]
+    );
+    assert!(held().await.is_empty());
+
+    // A task by its name; and a name is no key to somebody else's lease.
+    let on_task = take("task:slot".to_owned()).await;
+    not_found(
+        daemon
+            .handle(release("other", "task:slot".to_owned()))
+            .await,
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_task));
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", "task:slot".to_owned()))
+                .await
+        ),
+        [on_task]
+    );
+    not_found(
+        daemon
+            .handle(release("owner", "task:slot".to_owned()))
+            .await,
+    );
+}
+
 #[tokio::test]
 async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
     let dir = TempDir::new().unwrap();
@@ -10866,6 +11105,7 @@ async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    fresh: false,
                 })
                 .await
         })
@@ -13082,6 +13322,7 @@ async fn reject_lease_transition(operation: &str) {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await
     };

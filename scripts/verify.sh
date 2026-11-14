@@ -10,15 +10,34 @@ python3 scripts/build_storage.py
 # pointing elsewhere (a private or test daemon), on CI, or with no daemon
 # answering at all, it runs without the lease. AGENTDOCKER_CAMPAIGN_LEASE=off
 # skips it too, for a caller that already holds the lease through its own
-# tools. Where a daemon answers, the run holds the lease or does not run:
+# tools, and AGENTDOCKER_CAMPAIGN_LEASE=<lease id> names a lease the caller
+# took on purpose for this run to work inside (see below). Where a daemon
+# answers, the run holds the lease or does not run:
 # a lease somebody else holds past the wait, or a run the daemon will not
 # let hold one, stops before any cargo process exists, and says why.
 #
 # The lease needs an agent to hold it. A session's own identity is used
 # when the daemon knows it (AGENTDOCKER_AGENT_ID, or the process the CLI
 # can tell it is); otherwise this run registers itself as an agent for its
-# duration — `verify-<pid>`, external, ended when the run ends. A lease the
-# caller already holds is kept and never released here. Whichever it is,
+# duration — `verify-<pid>`, external, ended when the run ends.
+#
+# The lease this run takes is a fresh one (`claim --fresh`): the slot is
+# for one build at a time, whoever the builders claim as, so a lease the
+# same agent already holds is another of its workers building, and this
+# run waits behind it like behind anybody else's. A plain claim would be
+# answered with that worker's lease, both would build at once, and the
+# first to finish would end the other's hold. A caller that holds the slot
+# on purpose and wants this run inside that hold names its lease in
+# AGENTDOCKER_CAMPAIGN_LEASE: the run checks that the lease of that id is
+# an exclusive one on the build slot and renews it, which only its holder
+# can (nothing is claimed, so no other worker's lease can be taken for
+# it), keeps renewing it while it lasts, never releases it, and does not
+# start when either is refused. With a CLI too old
+# to know `--fresh`, or one newer than the running daemon (the CLI asks
+# the daemon and refuses the fresh claim, with nothing claimed), the claim
+# is plain and a lease the agent held before this run is taken for the
+# caller's own, as it always was.
+# Whichever it is,
 # the lease is renewed while the run lasts, since a cold gate outlives a
 # TTL; a renewal that fails means the slot is no longer this run's, and
 # the run stops rather than build on top of whoever has it now.
@@ -45,9 +64,37 @@ campaign_cli() {
 campaign_holders() {
   campaign_cli leases --resource task:local-cargo-campaign 2>/dev/null | tail -n +2 || true
 }
+# Claim the slot as `campaign_as`, fresh when `campaign_fresh` says so,
+# leaving the claim's output in `campaign_claimed`. A CLI that knows a
+# fresh claim refuses one, with nothing claimed, when the running daemon
+# is older and would renew instead: the claim is then made plain, as it
+# was before the word existed.
+campaign_as=()
+campaign_fresh=()
+campaign_claimed=""
+campaign_claim() {
+  local ttl="$1" mode="$2" status=0
+  campaign_claimed="$(campaign_cli claim task:local-cargo-campaign ${campaign_as[@]+"${campaign_as[@]}"} \
+      ${campaign_fresh[@]+"${campaign_fresh[@]}"} --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
+      --note "scripts/verify.sh $mode in $PWD" 2>&1)" || status=$?
+  if [ "$status" -ne 0 ] && [ ${#campaign_fresh[@]} -gt 0 ]; then
+    case "$campaign_claimed" in
+      *"does not know a fresh claim"*)
+        campaign_fresh=()
+        status=0
+        campaign_claimed="$(campaign_cli claim task:local-cargo-campaign ${campaign_as[@]+"${campaign_as[@]}"} \
+            --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
+            --note "scripts/verify.sh $mode in $PWD" 2>&1)" || status=$? ;;
+    esac
+  fi
+  return "$status"
+}
 campaign_start() {
   local mode="$1"
-  [ "${AGENTDOCKER_CAMPAIGN_LEASE:-on}" = "off" ] && return 0
+  # `on` (take the slot), `off` (do not), or the id of a lease the caller
+  # holds on purpose for this run.
+  local named="${AGENTDOCKER_CAMPAIGN_LEASE:-on}"
+  [ "$named" = "off" ] && return 0
   # Whatever this run decides covers the scripts it runs in turn (the
   # Python suite drives fixture campaigns through this file); a nested
   # run must not negotiate the slot against its own parent.
@@ -60,55 +107,94 @@ campaign_start() {
   campaign_cli ping >/dev/null 2>&1 || return 0
   local ttl=1800
   case "$mode" in bench|coverage|fuzz) ttl=3600 ;; esac
-  # The ids on the resource before asking: a claim by an agent that
-  # already holds it renews that lease and answers with the same id, and
-  # a lease that was the caller's before this run stays the caller's.
-  local before
-  before="$(campaign_holders | awk '{print $1}')"
   # `as` is `--as <agent>` when an identity is known, empty otherwise;
   # the expansion below is the form macOS's bash 3.2 accepts under set -u.
-  local output as=()
-  [ -n "$campaign_agent" ] && as=(--as "$campaign_agent")
-  if ! output="$(campaign_cli claim task:local-cargo-campaign ${as[@]+"${as[@]}"} \
-      --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
-      --note "scripts/verify.sh $mode in $PWD" 2>&1)"; then
-    case "$output" in
-      *"give --as"*|*"specify the sender"*|*"--as <AGENT>"*|*"no agent matches"*)
-        # Nobody to claim as: this run becomes an agent of its own for as
-        # long as it lasts, and holds the lease itself. A daemon that will
-        # not have it is a daemon that will not have this run.
-        local registered
-        if ! registered="$(campaign_cli register --name "verify-$$" --runtime custom \
-            --pid "$$" --workdir "$PWD" --label campaign=verify.sh 2>&1)"; then
-          echo "verify.sh: cannot tell which agent this is and could not register as one (${registered%%$'\n'*}); not starting cargo unheld (if the lease is yours through other means, run with AGENTDOCKER_CAMPAIGN_LEASE=off)." >&2
+  local output
+  campaign_as=()
+  [ -n "$campaign_agent" ] && campaign_as=(--as "$campaign_agent")
+  local renewing
+  if [ "$named" != "on" ]; then
+    # The caller holds the slot on purpose and names its lease. Two things
+    # make that true, and neither is a claim. The lease of that id is the
+    # build slot's own, held exclusively: an id never changes what it is a
+    # lease on, so reading it is no race, and any other lease of the
+    # agent's (a path, a shared hold) would renew just as well and say
+    # nothing about the slot. And renewing it succeeds: a renewal fails
+    # for a lease that lapsed, was released, or is somebody else's.
+    if ! campaign_holders | awk -v id="$named" \
+        '$1 == id && $2 == "task:local-cargo-campaign" && $4 == "exclusive" { found = 1 } END { exit !found }'; then
+      echo "verify.sh: AGENTDOCKER_CAMPAIGN_LEASE names $named, which is not an exclusive lease on task:local-cargo-campaign (it lapsed, was released, or is a lease on something else); not starting cargo. Unset it to have this run take the slot itself." >&2
+      campaign_holders >&2
+      exit 75
+    fi
+    if ! output="$(campaign_cli renew "$named" ${campaign_as[@]+"${campaign_as[@]}"} --ttl "$ttl" 2>&1)"; then
+      echo "verify.sh: AGENTDOCKER_CAMPAIGN_LEASE names $named, which this agent does not hold (it lapsed, was released, or is another agent's); not starting cargo. Unset it to have this run take the slot itself." >&2
+      echo "$output" >&2
+      campaign_holders >&2
+      exit 75
+    fi
+    renewing="$named"
+    echo "verify.sh: running inside the caller's own hold of task:local-cargo-campaign ($named); renewed, not released here" >&2
+  else
+    # The ids on the resource before asking. They matter only for a plain
+    # claim, which an agent that already holds the slot has answered with
+    # the lease it holds: one that was there before is not this run's to
+    # release.
+    local before
+    before="$(campaign_holders | awk '{print $1}')"
+    # A fresh lease where the installed CLI knows the word; the daemon is
+    # asked by the claim itself, which refuses, with nothing claimed, when
+    # the running daemon is older than the CLI.
+    campaign_fresh=()
+    if campaign_cli claim --help 2>/dev/null | grep -q -e '--fresh'; then
+      campaign_fresh=(--fresh)
+    fi
+    if ! campaign_claim "$ttl" "$mode"; then
+      output="$campaign_claimed"
+      case "$output" in
+        *"give --as"*|*"specify the sender"*|*"--as <AGENT>"*|*"no agent matches"*)
+          # Nobody to claim as: this run becomes an agent of its own for as
+          # long as it lasts, and holds the lease itself. A daemon that will
+          # not have it is a daemon that will not have this run.
+          local registered
+          if ! registered="$(campaign_cli register --name "verify-$$" --runtime custom \
+              --pid "$$" --workdir "$PWD" --label campaign=verify.sh 2>&1)"; then
+            echo "verify.sh: cannot tell which agent this is and could not register as one (${registered%%$'\n'*}); not starting cargo unheld (if the lease is yours through other means, run with AGENTDOCKER_CAMPAIGN_LEASE=off)." >&2
+            campaign_holders >&2
+            exit 75
+          fi
+          campaign_agent="$registered"
+          campaign_transient="$campaign_agent"
+          echo "verify.sh: registered as verify-$$ ($campaign_agent) for this run" >&2
+          campaign_as=(--as "$campaign_agent")
+          if ! campaign_claim "$ttl" "$mode"; then
+            echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
+            echo "$campaign_claimed" >&2
+            campaign_holders >&2
+            exit 75
+          fi ;;
+        *"already held by this agent"*)
+          echo "verify.sh: task:local-cargo-campaign is held by another run of this same agent; not starting cargo beside it. If that hold is this run's own, name it: AGENTDOCKER_CAMPAIGN_LEASE=<its lease id>." >&2
+          echo "$output" >&2
           campaign_holders >&2
-          exit 75
-        fi
-        campaign_agent="$registered"
-        campaign_transient="$campaign_agent"
-        echo "verify.sh: registered as verify-$$ ($campaign_agent) for this run" >&2
-        as=(--as "$campaign_agent")
-        if ! output="$(campaign_cli claim task:local-cargo-campaign ${as[@]+"${as[@]}"} \
-            --ttl "$ttl" --wait "${AGENTDOCKER_CAMPAIGN_WAIT:-600}" \
-            --note "scripts/verify.sh $mode in $PWD" 2>&1)"; then
+          exit 75 ;;
+        *)
           echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
           echo "$output" >&2
           campaign_holders >&2
-          exit 75
-        fi ;;
-      *)
-        echo "verify.sh: task:local-cargo-campaign is held by another campaign; not starting cargo on top of it." >&2
-        echo "$output" >&2
-        campaign_holders >&2
-        exit 75 ;;
-    esac
-  fi
-  local renewing="$output"
-  if grep -qx "$output" <<<"$before"; then
-    echo "verify.sh: task:local-cargo-campaign was already yours ($output); renewed, not released here" >&2
-  else
-    campaign_lease="$output"
-    echo "verify.sh: holding task:local-cargo-campaign ($campaign_lease) for this $mode run" >&2
+          exit 75 ;;
+      esac
+    fi
+    output="$campaign_claimed"
+    renewing="$output"
+    if [ ${#campaign_fresh[@]} -eq 0 ] && grep -qx "$output" <<<"$before"; then
+      # A plain claim, answered with a lease that was already there: the
+      # caller's own, as far as an older CLI or daemon can say.
+      echo "verify.sh: task:local-cargo-campaign was already yours ($output); renewed, not released here" >&2
+    else
+      campaign_lease="$output"
+      echo "verify.sh: holding task:local-cargo-campaign ($campaign_lease) for this $mode run" >&2
+    fi
   fi
   # Renewed at a third of the TTL, so a long run never lets it lapse under
   # a running cargo. A renewal that fails means the slot is somebody
@@ -123,7 +209,7 @@ campaign_start() {
     while :; do
       sleep "$every" & nap=$!
       wait "$nap" || exit 0
-      if ! campaign_cli renew "$renewing" ${as[@]+"${as[@]}"} --ttl "$ttl" >/dev/null 2>&1; then
+      if ! campaign_cli renew "$renewing" ${campaign_as[@]+"${campaign_as[@]}"} --ttl "$ttl" >/dev/null 2>&1; then
         # The loss is written down, so the run sees it before its next
         # step whatever is running now; the step in flight, if any, is
         # ended with everything it started.

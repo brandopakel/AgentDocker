@@ -866,6 +866,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await
         else {

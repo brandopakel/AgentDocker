@@ -1489,6 +1489,7 @@ mod tests {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         };
 
         // The first card: pulled, worked on, released.
@@ -1502,6 +1503,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             })
             .await
         else {
@@ -1683,6 +1685,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             })
             .await
         else {

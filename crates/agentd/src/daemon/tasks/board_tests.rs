@@ -2012,6 +2012,236 @@ async fn retiring_a_memory_said_to_a_role_keeps_its_words_out_of_the_journal() {
     assert!(digest.contains(&scoped.id), "{digest}");
 }
 
+/// A card nobody holds that waits on something off the board is freed by
+/// whoever takes it, with a reason: any agent of the card's project, not
+/// the one that filed it in particular, whose session may be long gone.
+/// What it waited on, what happened and who said so are kept on the card
+/// and in the journal and told as an event, all with the pull or not at
+/// all. A refusal changes nothing.
+#[tokio::test]
+async fn whoever_takes_an_unheld_card_says_its_wait_is_over() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let filed = |title: &str, blocker: &str| {
+        let mut filing = create(&f.agent.id.to_string(), &f.work, title, Some("ready"), &[]);
+        if let Request::TaskCreate {
+            external_blocker, ..
+        } = &mut filing
+        {
+            *external_blocker = blocker.into();
+        }
+        filing
+    };
+    let pull = |agent: &AgentRecord, task: &Task, unblock: Option<&str>| Request::TaskPull {
+        agent: agent.id.to_string(),
+        task: Some(task.id.to_string()),
+        take_over_from: None,
+        project: None,
+        board: None,
+        unblock: unblock.map(str::to_owned),
+    };
+    let refused = |response: Response, code: ErrorCode| {
+        assert!(
+            matches!(&response, Response::Error { code: got, .. } if *got == code),
+            "{response:?}"
+        );
+    };
+    let waiting = card(
+        d.handle(filed("Ship the importer", "the vendor's sign-off"))
+            .await,
+    );
+    let read = || async {
+        match d
+            .handle(Request::TaskGet {
+                task: waiting.id.to_string(),
+            })
+            .await
+        {
+            Response::TaskDetail {
+                task,
+                comments,
+                history,
+                ..
+            } => (task, comments, history),
+            other => panic!("{other:?}"),
+        }
+    };
+
+    // As it stands nobody takes it, not the agent that filed it either;
+    // saying nothing of what happened is no reason; and an agent of
+    // another project does not say so here.
+    refused(
+        d.handle(pull(&f.agent, &waiting, None)).await,
+        ErrorCode::Invalid,
+    );
+    refused(
+        d.handle(pull(&f.peer, &waiting, Some("  "))).await,
+        ErrorCode::Invalid,
+    );
+    let elsewhere = std::path::Path::new(&f.work).join("another-project");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let Response::Agent { agent: outsider } = d
+        .handle(Request::Register {
+            spec: AgentSpec {
+                name: "outsider".into(),
+                workdir: Some(elsewhere),
+                ..Default::default()
+            },
+            pid: None,
+            session: None,
+        })
+        .await
+    else {
+        panic!("registered")
+    };
+    refused(
+        d.handle(pull(&outsider, &waiting, Some("it shipped")))
+            .await,
+        ErrorCode::Forbidden,
+    );
+    let (task, comments, _) = read().await;
+    assert_eq!(task.external_blocker, "the vendor's sign-off");
+    assert!(
+        task.assignee.is_none() && comments.is_empty(),
+        "nothing changed"
+    );
+
+    // The peer, which did not file it, takes it and says what happened.
+    let mut events = d.subscribe_events();
+    let Response::TaskDetail {
+        task: taken, lease, ..
+    } = d
+        .handle(pull(
+            &f.peer,
+            &waiting,
+            Some("the vendor signed off this morning"),
+        ))
+        .await
+    else {
+        panic!("taken")
+    };
+    assert_eq!(taken.assignee.as_ref(), Some(&f.peer.id));
+    assert_eq!(taken.column, Column::InProgress);
+    assert!(taken.external_blocker.is_empty() && lease.is_some());
+    let (_, comments, history) = read().await;
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].author, f.peer.id.to_string());
+    for kept in [
+        "the vendor's sign-off",
+        "the vendor signed off this morning",
+    ] {
+        assert!(comments[0].body.contains(kept), "{}", comments[0].body);
+    }
+    assert!(
+        history
+            .iter()
+            .any(|e| matches!(&e.action, TaskAction::Pulled { .. })),
+        "{history:?}"
+    );
+    assert!(
+        history.iter().any(
+            |e| matches!(&e.action, TaskAction::Commented { comment } if *comment == comments[0].id)
+        ),
+        "{history:?}"
+    );
+    let mut told = Vec::new();
+    let mut journaled = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        match event.kind {
+            EventKind::TaskUnblocked {
+                task,
+                by,
+                was,
+                reason,
+                ..
+            } => told.push((task, by, was, reason)),
+            EventKind::JournalAppended { entry } => journaled.push(entry),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        told,
+        [(
+            waiting.id.clone(),
+            f.peer.id.to_string(),
+            "the vendor's sign-off".to_owned(),
+            "the vendor signed off this morning".to_owned()
+        )]
+    );
+    assert_eq!(journaled.len(), 1, "{journaled:?}");
+    assert_eq!(journaled[0].agent.as_ref(), Some(&f.peer.id));
+    assert!(
+        journaled[0].summary.contains("said its wait is over")
+            && journaled[0]
+                .summary
+                .ends_with("the vendor signed off this morning"),
+        "{}",
+        journaled[0].summary
+    );
+    let Response::Journal { entries, .. } = d
+        .handle(Request::Journal {
+            project: f.work.clone(),
+            since_seq: None,
+            until_seq: None,
+            agent: None,
+            branch: None,
+            kind: None,
+            path: None,
+            grep: Some("said its wait is over".into()),
+            limit: 20,
+            digest: None,
+        })
+        .await
+    else {
+        panic!("journal")
+    };
+    assert_eq!(entries.len(), 1, "kept, with its place in the journal");
+    assert_eq!(entries[0].seq, journaled[0].seq);
+
+    // Its holder taking it again renews it, and has nothing to unblock; a
+    // card that waits on nothing is not unblocked; one somebody holds is
+    // its holder's.
+    assert!(matches!(
+        d.handle(pull(&f.peer, &waiting, Some("again"))).await,
+        Response::TaskDetail { .. }
+    ));
+    let free = card(d.handle(filed("Write the changelog", "")).await);
+    refused(
+        d.handle(pull(&f.peer, &free, Some("nothing was in the way")))
+            .await,
+        ErrorCode::Invalid,
+    );
+    refused(
+        d.handle(pull(&f.agent, &waiting, Some("mine now"))).await,
+        ErrorCode::Conflict,
+    );
+    // Not with a take-over, and not without a card named.
+    refused(
+        d.handle(Request::TaskPull {
+            agent: f.agent.id.to_string(),
+            task: None,
+            take_over_from: None,
+            project: None,
+            board: None,
+            unblock: Some("anything".into()),
+        })
+        .await,
+        ErrorCode::Invalid,
+    );
+    refused(
+        d.handle(Request::TaskPull {
+            agent: f.agent.id.to_string(),
+            task: Some(waiting.id.to_string()),
+            take_over_from: Some(f.peer.id.to_string()),
+            project: None,
+            board: None,
+            unblock: Some("anything".into()),
+        })
+        .await,
+        ErrorCode::Invalid,
+    );
+}
+
 /// `mine` is the person's cards and those held by the agents they launched:
 /// for the person, or a reader who names nobody. An agent asking means its
 /// own, as `me` does; a holder nobody says the person launched is not

@@ -306,6 +306,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             })
             .await;
         assert!(!matches!(pulled, Response::Error { .. }), "{pulled:?}");
