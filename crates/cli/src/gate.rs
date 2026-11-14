@@ -565,6 +565,29 @@ pub async fn open_pulls(
     })
 }
 
+/// `text` as one POSIX shell word meaning exactly it, whole: as it is when
+/// it needs no quoting, else in single quotes, inside which the shell
+/// expands nothing (`$(…)`, backticks, `$VAR` stay text), a quote in it
+/// closed, escaped and reopened. None when it holds a control character
+/// or any space but a plain one (a line break among them), which a command
+/// told on one line cannot carry as itself.
+fn shell_word(text: &str) -> Option<String> {
+    if text.is_empty()
+        || text
+            .chars()
+            .any(|c| c.is_control() || (c.is_whitespace() && c != ' '))
+    {
+        return None;
+    }
+    if text
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_./:@+=,".contains(c))
+    {
+        return Some(text.to_owned());
+    }
+    Some(format!("'{}'", text.replace('\'', "'\\''")))
+}
+
 /// The line that says which open pull requests are not told, when any are
 /// not: `left` for room, and those GitHub was not asked for. The way to
 /// the rest names the project (`whole`, [`agentdocker_core::brief::all_command`])
@@ -585,10 +608,18 @@ fn pulls_left_out(left: usize, pulls: &Pulls, whole: &str, all: bool) -> Option<
         return None;
     }
     let how = if all {
-        format!(
-            "`cd {} && gh pr list --state open --limit <n>` lists the rest, without the gate's word",
-            agentdocker_core::brief::arg(&pulls.repository.display().to_string())
-        )
+        let gh = "gh pr list --state open --limit <n>";
+        // An absolute path only: `cd` would take a leading `-` for an option.
+        let dir = Some(&pulls.repository).filter(|dir| dir.is_absolute());
+        match dir.and_then(|dir| dir.to_str()).and_then(shell_word) {
+            Some(dir) => format!("`cd {dir} && {gh}` lists the rest, without the gate's word"),
+            // No command that would mean another place: the path, as data.
+            None => format!(
+                "`{gh}`, run in the checkout at {} (a path no shell word here holds exactly), \
+                 lists the rest, without the gate's word",
+                serde_json::to_string(&pulls.repository.to_string_lossy()).unwrap_or_default()
+            ),
+        }
     } else {
         format!("`{whole}` lists up to {PULLS_ASKED_ALL}")
     };
@@ -950,6 +981,60 @@ mod tests {
             pulls_text(&unasked, whole, false, usize::MAX),
             "GitHub was not asked for pull requests: \"gh failed: not logged in\""
         );
+    }
+
+    /// The way past `--all` names the checkout as one exact shell word,
+    /// however long and whatever shell syntax its name holds: run, it
+    /// selects that very directory and expands nothing. A path no word can
+    /// hold on one line (a line break) or a relative one gets no command,
+    /// only the path, as data.
+    #[cfg(unix)]
+    #[test]
+    fn the_way_past_all_is_an_exact_shell_word_or_no_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let odd = root.join("it's $(touch ran) `touch ran` $HOME");
+        let long = odd.join("d".repeat(120)).join("e".repeat(120));
+        std::fs::create_dir_all(&long).unwrap();
+        assert!(long.as_os_str().len() > 200);
+        for dir in [&odd, &long] {
+            let word = shell_word(dir.to_str().unwrap()).unwrap();
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("cd {word} && pwd -P"))
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{word}: {out:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim_end_matches('\n'),
+                dir.to_str().unwrap()
+            );
+        }
+        assert!(!root.join("ran").exists(), "nothing was substituted");
+        let line = |repository: &str| {
+            let pulls = Pulls {
+                lines: vec!["- #1 \"t\": approved".into()],
+                asked: 1,
+                more: true,
+                repository: PathBuf::from(repository),
+            };
+            pulls_left_out(0, &pulls, "agentdocker brief --all", true).unwrap()
+        };
+        let long = long.to_str().unwrap();
+        let told = line(long);
+        assert!(
+            told.contains(&format!("`cd {} && gh pr list", shell_word(long).unwrap())),
+            "{told}"
+        );
+        let broken = line("/work/a\n$(touch ran)");
+        assert!(!broken.contains("cd "), "{broken}");
+        assert!(
+            broken.contains(r#"run in the checkout at "/work/a\n$(touch ran)""#),
+            "{broken}"
+        );
+        assert!(!line("work/relative").contains("cd "));
+        assert_eq!(shell_word("/work/a\u{2028}b"), None);
     }
 
     /// The command's text, the brief and the pull requests together, stays

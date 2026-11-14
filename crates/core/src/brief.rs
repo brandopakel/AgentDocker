@@ -1169,7 +1169,7 @@ fn bounded(text: &str, max: usize) -> String {
 /// is when it is a plain word, single-quoted for a shell when it holds a
 /// space or a quote, and quoted as data when it holds a control character,
 /// which no command line should be built from.
-pub fn arg(text: &str) -> String {
+fn arg(text: &str) -> String {
     let text = bounded(text, CHECKOUT_CHARS);
     if !text.is_empty()
         && text
