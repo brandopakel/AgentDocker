@@ -2909,6 +2909,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             take_over_from: None,
             project: None,
             board: None,
+            unblock: None,
         })
         .await
     else {

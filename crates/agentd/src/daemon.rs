@@ -2623,6 +2623,7 @@ impl Daemon {
                 take_over_from,
                 project,
                 board,
+                unblock,
             } => {
                 self.task_pull(
                     &agent,
@@ -2630,6 +2631,7 @@ impl Daemon {
                     take_over_from.as_deref(),
                     project.as_deref(),
                     board.as_deref(),
+                    unblock.as_deref(),
                 )
                 .await
             }

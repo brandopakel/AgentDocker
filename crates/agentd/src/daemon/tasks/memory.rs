@@ -599,6 +599,7 @@ impl Daemon {
         // The journal's line is the retiring agent's; the person's
         // retirement is told by its event alone, as the person's other
         // changes are.
+        let previous_seq = state.journal_seq.clone();
         let entry = state
             .registry
             .resolve(&actor.id)
@@ -644,6 +645,8 @@ impl Daemon {
             },
         );
         if committed != Persisted::Committed {
+            // The journal's place was taken for a line that was not kept.
+            state.journal_seq = previous_seq;
             return state.write_failure().unwrap_or_else(|| {
                 Response::error(
                     ErrorCode::StorageUnavailable,

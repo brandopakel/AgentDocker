@@ -1503,6 +1503,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             })
             .await
         else {
@@ -1684,6 +1685,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             })
             .await
         else {

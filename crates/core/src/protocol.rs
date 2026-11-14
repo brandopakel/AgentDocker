@@ -843,6 +843,15 @@ pub enum Request {
         project: Option<String>,
         #[serde(default)]
         board: Option<String>,
+        /// What happened to end the named card's wait on something off the
+        /// board: the wait is cleared and the card taken in one change,
+        /// with these words and what it waited on kept on the card, in the
+        /// journal and in `task_unblocked`. For a card nobody holds, by an
+        /// agent of its project: no agent in particular, since the one
+        /// that filed the card is a session that ends. `invalid` without
+        /// words, for a card that waits on nothing, or with a take-over.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unblock: Option<String>,
     },
     /// Move a card: its assignee may, the person always may. Answers
     /// `task`, or `forbidden`. `to` names a lane by slug, name or
