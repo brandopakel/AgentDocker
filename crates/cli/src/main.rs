@@ -5303,7 +5303,24 @@ async fn run() -> Result<()> {
                 .await?
                 .context("claim as an agent: give --as, or run from an agent's session")?;
             let resource = resource_key(&args.resource);
+            if args.fresh {
+                // A daemon that does not know the word ignores it and
+                // renews the lease another worker holds, and its answer
+                // reads as a grant. Asked first, where nothing is changed
+                // by asking.
+                let knows = matches!(
+                    client.call(&Request::Ping).await?,
+                    Response::Pong { features, .. }
+                        if features.iter().any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM)
+                );
+                if !knows {
+                    bail!(
+                        "the running daemon does not know a fresh claim: it is older than this command and would renew a lease you already hold instead. Nothing was claimed. `agentdocker daemon restart` switches to the installed build once no agent work is running"
+                    );
+                }
+            }
             let started = std::time::Instant::now();
+            let wait = std::time::Duration::from_secs(args.wait);
             let answer = loop {
                 let request = Request::Claim {
                     agent: agent.clone(),
@@ -5317,7 +5334,7 @@ async fn run() -> Result<()> {
                     ttl_secs: args.ttl,
                     note: args.note.clone(),
                     // What is left of the wait, when this is a later ask.
-                    wait_secs: args.wait.saturating_sub(started.elapsed().as_secs()),
+                    wait_secs: wait.saturating_sub(started.elapsed()).as_secs(),
                     priority: args.priority,
                     automatic: false,
                     fresh: args.fresh,
@@ -5331,9 +5348,15 @@ async fn run() -> Result<()> {
                     Response::Error { code: agentdocker_core::ErrorCode::Conflict, details: Some(details), .. }
                         if details["own"] == true
                 );
-                if own && started.elapsed().as_secs() < args.wait {
-                    tokio::time::sleep(FRESH_RETRY).await;
-                    continue;
+                // Asked again only while some of the wait is left, after
+                // a pause no longer than what is left of it: the last
+                // answer inside the wait is the one that stands.
+                let left = wait.saturating_sub(started.elapsed());
+                if own && !left.is_zero() {
+                    tokio::time::sleep(FRESH_RETRY.min(left)).await;
+                    if !wait.saturating_sub(started.elapsed()).is_zero() {
+                        continue;
+                    }
                 }
                 break client::into_result(response)?;
             };

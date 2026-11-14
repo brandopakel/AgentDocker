@@ -236,16 +236,22 @@ impl Daemon {
                         Err(err) => match err {
                             // Said by whom, by name: the holder is somebody the
                             // person can go and talk to, and an id is not a name.
-                            // A fresh claim met by the asker's own lease:
-                            // another worker of the same agent holds it.
-                            // Answered at once, whatever wait was asked: an
+                            // A fresh claim with a lease of the asker's own
+                            // in its way: another worker of the same agent
+                            // holds it. Answered at once, whatever wait was
+                            // asked and whoever else is in the way too: an
                             // agent queued behind itself is a ring of one,
                             // and the asker's client asks again instead.
                             LeaseError::Conflict { held_by, .. }
-                                if fresh && held_by.iter().all(|l| l.holder == holder) =>
+                                if fresh && held_by.iter().any(|l| l.holder == holder) =>
                             {
-                                let own: Vec<String> =
-                                    held_by.iter().map(|l| l.id.to_string()).collect();
+                                // Its own leases are named; any of other
+                                // agents in the way too are in the details.
+                                let own: Vec<String> = held_by
+                                    .iter()
+                                    .filter(|l| l.holder == holder)
+                                    .map(|l| l.id.to_string())
+                                    .collect();
                                 break 'attempt Err((
                                     Response::Error {
                                         code: ErrorCode::Conflict,

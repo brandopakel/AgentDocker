@@ -3941,9 +3941,37 @@ async fn a_fresh_claim_keeps_two_workers_of_one_agent_apart() {
         automatic: false,
         fresh,
     };
+    // A client asks before it relies on a fresh claim: a daemon that did
+    // not know the word would renew instead, and say nothing.
+    let Response::Pong { features, .. } = daemon.handle(Request::Ping).await else {
+        panic!("ping")
+    };
+    assert!(
+        features
+            .iter()
+            .any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM),
+        "{features:?}"
+    );
     let Response::Lease { lease: first } = daemon.handle(claim(true, 0)).await else {
         panic!("the first worker takes the slot")
     };
+    // The other mode on the same slot is this agent's own conflict too.
+    let shared = Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Shared,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs: 0,
+        priority: 0,
+        automatic: false,
+        fresh: true,
+    };
+    assert!(matches!(
+        daemon.handle(shared).await,
+        Response::Error { code: ErrorCode::Conflict, details: Some(details), .. } if details["own"] == true
+    ));
     for wait_secs in [0, 30] {
         let asked = std::time::Instant::now();
         let Response::Error {

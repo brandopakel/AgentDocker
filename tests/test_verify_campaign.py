@@ -28,6 +28,9 @@ if cmd == "register":
     if mode == "register-fails": sys.stderr.write("Error: the project is paused (paused)\n"); sys.exit(4)
     print("transient-id"); sys.exit(0)
 if cmd == "renew":
+    # In the scenarios that name a lease, only the one held can be renewed.
+    if mode == "own-held" and args[1] != "lease-known":
+        sys.stderr.write("Error: lease " + args[1] + " not found (not_found)\n"); sys.exit(4)
     marker = os.environ.get("FAKE_RENEW_AFTER")
     if mode == "renew-fails" and (not marker or os.path.exists(marker)):
         sys.stderr.write("Error: no such lease (not_found)\n"); sys.exit(4)
@@ -39,6 +42,9 @@ if cmd == "claim" and "--help" in args:
     sys.exit(0)
 if cmd == "claim":
     has_as = "--as" in args
+    if "--fresh" in args and os.environ.get("FAKE_OLD_DAEMON"):
+        # The CLI asks the daemon before a fresh claim; an older one is refused there.
+        sys.stderr.write("Error: the running daemon does not know a fresh claim: it is older than this command and would renew a lease you already hold instead. Nothing was claimed.\n"); sys.exit(1)
     if mode == "own-held":
         if "--fresh" in args:
             sys.stderr.write("Error: task:local-cargo-campaign is already held by this agent (lease lease-known): a fresh claim waits for it to be released (conflict)\n"); sys.exit(3)
@@ -191,17 +197,48 @@ class VerifyCampaign(unittest.TestCase):
             "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "AGENTDOCKER_CAMPAIGN_LEASE": "lease-known"})
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("inside the caller's own hold", result.stderr)
-        self.assertNotIn("--fresh", next(c for c in calls if c.startswith("claim task:")))
-        self.assertNotIn("release", "\n".join(calls))
+        joined = "\n".join(calls)
+        # Renewing the named lease is the proof that it is this agent's:
+        # nothing is claimed, so nothing of another worker's can be taken
+        # for it, and nothing is released.
+        self.assertIn("renew lease-known --as abc", joined)
+        self.assertNotIn("claim", joined)
+        self.assertNotIn("release", joined)
         self.assertNotEqual(cargo_env, "", "the run went on to cargo")
-        # Naming a lease that is not the one this agent holds the slot by:
-        # the holder is another of its runs.
+
+    def test_a_named_lease_that_is_not_held_stops_the_run_whoever_holds_the_slot_now(self):
+        # The lease the caller names lapsed, and another of the agent's
+        # workers has the slot (as lease-known): no claim is made that it
+        # could be answered with, no cargo runs, nothing is released.
         result, calls, cargo_env = self.run_verify("own-held", {
             "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "AGENTDOCKER_CAMPAIGN_LEASE": "lease-of-mine"})
         self.assertEqual(result.returncode, 75, result.stderr)
-        self.assertIn("another of its runs is building", result.stderr)
+        self.assertIn("names lease-of-mine, which this agent does not hold", result.stderr)
         self.assertEqual(cargo_env, "")
+        joined = "\n".join(calls)
+        self.assertNotIn("claim", joined)
+        self.assertNotIn("release", joined)
+
+    def test_a_daemon_older_than_the_cli_is_claimed_plainly_and_a_held_lease_is_kept(self):
+        # The CLI knows `--fresh` and the running daemon does not: the CLI
+        # refuses the fresh claim with nothing claimed, and the run falls
+        # back to a plain one. The lease this agent already held is then
+        # the caller's own, as before the word existed: never released.
+        result, calls, cargo_env = self.run_verify("preheld", {
+            "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "FAKE_OLD_DAEMON": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("already yours", result.stderr)
+        claims = [c for c in calls if c.startswith("claim task:")]
+        self.assertEqual(len(claims), 2, claims)
+        self.assertIn("--fresh", claims[0])
+        self.assertNotIn("--fresh", claims[1])
         self.assertNotIn("release", "\n".join(calls))
+        self.assertNotEqual(cargo_env, "")
+        # With nothing held before, the plain claim's lease is this run's.
+        result, calls, _ = self.run_verify("known", {
+            "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "FAKE_OLD_DAEMON": "1"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("release lease-known --as abc", "\n".join(calls))
 
     def test_a_lost_slot_stops_the_run_and_its_whole_tree(self):
         # The first renewal fails at once: the step in flight is ended with

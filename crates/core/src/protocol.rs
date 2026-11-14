@@ -76,6 +76,13 @@ pub struct DigestRequest {
     pub advance: bool,
 }
 
+/// A claim's `fresh` is honoured: the claimer's own conflicting leases
+/// are in its way ([`Request::Claim`]).
+pub const FEATURE_FRESH_CLAIM: &str = "fresh_claim";
+
+/// The names a daemon of this build answers in `pong.features`.
+pub const FEATURES: &[&str] = &[FEATURE_FRESH_CLAIM];
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -1368,12 +1375,15 @@ pub enum Request {
         /// asked for holds until it releases it or the TTL runs out.
         #[serde(default)]
         automatic: bool,
-        /// Only a new lease will do: one the agent already holds is in
-        /// the way like anybody else's and is not renewed. Answered
-        /// `conflict` at once, with `details.own`, however long the claim
-        /// would wait: the agent is not queued behind itself. For a
-        /// resource one process at a time may use, whoever its workers
-        /// claim as.
+        /// Only a new lease will do: a lease the agent already holds that
+        /// would stop another agent (the same resource, one over or under
+        /// it, a conflicting mode) is in this claim's way too, and nothing
+        /// is renewed. Answered `conflict` at once, with `details.own`,
+        /// however long the claim would wait: the agent is not queued
+        /// behind itself. For a resource one process at a time may use,
+        /// whoever its workers claim as. A daemon that does not list
+        /// [`FEATURE_FRESH_CLAIM`] in `pong.features` ignores this field
+        /// and renews: ask before relying on it.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         fresh: bool,
     },
@@ -2053,6 +2063,14 @@ pub enum Response {
         /// Absent from a daemon older than the judge.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         judge: Option<crate::judgment::JudgeStatus>,
+        /// What this daemon knows how to do beyond what every daemon does
+        /// ([`FEATURES`]). A request field a daemon does not know is one it
+        /// ignores without a word, so a client that depends on such a field
+        /// being honoured asks here first: a name that is missing means the
+        /// daemon would do the old thing. Empty from a daemon older than
+        /// the list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        features: Vec<String>,
     },
     DaemonProcess {
         pid: u32,

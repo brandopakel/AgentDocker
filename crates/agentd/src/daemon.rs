@@ -2261,6 +2261,10 @@ impl Daemon {
                 executable: agentdocker_host::procinfo::executable_path().ok(),
                 experimental: Some(crate::config::experimental(&self.home)),
                 judge: Some(self.judge_status()),
+                features: agentdocker_core::protocol::FEATURES
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
             },
             Request::DaemonProcess => {
                 let state = lock(&self.state);
