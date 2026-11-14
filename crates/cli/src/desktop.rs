@@ -1422,14 +1422,16 @@ fn run_unix(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
     };
     let report = perform(
         &layout,
-        active,
-        source,
-        candidate,
-        preview,
-        local_preview,
-        expect_release,
-        expect_current,
-        socket,
+        Install {
+            active,
+            source,
+            candidate,
+            preview,
+            local_preview,
+            expect_release,
+            expect_current,
+            socket,
+        },
     )?;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
@@ -1441,12 +1443,11 @@ fn required_state_schema(active: Option<&Activation>, home: &Path) -> Result<u32
         .max(agentd::stored_state_schema(home)?.unwrap_or(0)))
 }
 
-/// Check, preview and, unless `preview`, install one inspected candidate:
-/// the part of an install that does not care where the payload came from.
-/// Returns the report the command prints.
-#[allow(clippy::too_many_arguments)]
-fn perform(
-    layout: &Layout,
+/// One inspected candidate and what its installation must find: the
+/// active installation it replaces, the release and artifact a preview
+/// said it would be (`expect_release`, `expect_current`), whether this is
+/// only a preview, and the daemon socket to tell afterwards.
+struct Install {
     active: Option<Activation>,
     source: PathBuf,
     candidate: Release,
@@ -1455,7 +1456,22 @@ fn perform(
     expect_release: Option<String>,
     expect_current: Option<String>,
     socket: Option<PathBuf>,
-) -> Result<serde_json::Value> {
+}
+
+/// Check, preview and, unless `preview`, install one inspected candidate:
+/// the part of an install that does not care where the payload came from.
+/// Returns the report the command prints.
+fn perform(layout: &Layout, install: Install) -> Result<serde_json::Value> {
+    let Install {
+        active,
+        source,
+        candidate,
+        preview,
+        local_preview,
+        expect_release,
+        expect_current,
+        socket,
+    } = install;
     if let Some(expected) = expect_release {
         ensure!(
             expected == candidate.id,

@@ -14,6 +14,24 @@ pub(super) fn install_dirs(home: &Path, os: &str) -> Vec<PathBuf> {
     if os != "windows" {
         paths.extend(["/usr/local/bin", "/usr/bin", "/bin"].map(PathBuf::from));
     }
+    // Docker CLI plugins (`docker agent` runs the `docker-agent` binary in
+    // one of these), which are seldom on PATH: the person's own directory,
+    // which Docker Agent's installation notes name, then the directories
+    // the Docker CLI searches for system-wide plugins.
+    paths.push(home.join(".docker/cli-plugins"));
+    if os == "windows" {
+        paths.push(PathBuf::from(r"C:\Program Files\Docker\cli-plugins"));
+    } else {
+        paths.extend(
+            [
+                "/usr/local/lib/docker/cli-plugins",
+                "/usr/local/libexec/docker/cli-plugins",
+                "/usr/lib/docker/cli-plugins",
+                "/usr/libexec/docker/cli-plugins",
+            ]
+            .map(PathBuf::from),
+        );
+    }
     paths.into_iter().filter(|p| p.is_absolute()).collect()
 }
 
@@ -406,6 +424,18 @@ mod tests {
         assert!(
             !install_dirs(Path::new("/home/fixture"), "linux")
                 .contains(&PathBuf::from("/opt/homebrew/bin"))
+        );
+        // Docker Agent installs as a Docker CLI plugin, off PATH.
+        for os in ["macos", "linux", "windows"] {
+            assert!(
+                install_dirs(Path::new("/home/fixture"), os)
+                    .contains(&PathBuf::from("/home/fixture/.docker/cli-plugins")),
+                "{os}"
+            );
+        }
+        assert!(
+            install_dirs(Path::new("/home/fixture"), "linux")
+                .contains(&PathBuf::from("/usr/libexec/docker/cli-plugins"))
         );
     }
 

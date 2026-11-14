@@ -350,6 +350,7 @@ async fn one_identity_survives_both_halves_and_keeps_what_it_was_given() {
             payload: json!({"text": "still here?"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(matches!(delivered, Response::Sent { .. }), "{delivered:?}");
@@ -699,6 +700,7 @@ async fn a_session_that_comes_back_takes_up_its_ended_record() {
             question: "still there?".to_owned(),
             presentation: None,
             timeout_secs: 600,
+            form: Default::default(),
         })
         .await
     else {
@@ -2417,6 +2419,9 @@ async fn ask_returns_the_answer_that_names_it() {
                     from: None,
                     message: id,
                     text: "yes".to_owned(),
+                    choices: Vec::new(),
+                    note: None,
+                    other: None,
                 })
                 .await
         })
@@ -2428,6 +2433,7 @@ async fn ask_returns_the_answer_that_names_it() {
             to: "user".to_owned(),
             question: "ship it?".to_owned(),
             timeout_secs: 10,
+            form: Default::default(),
         })
         .await;
     let Response::Answer { from, text, .. } = response else {
@@ -2464,6 +2470,7 @@ async fn ask_times_out_rather_than_waiting_forever() {
             to: "user".to_owned(),
             question: "anyone there?".to_owned(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -2501,6 +2508,7 @@ async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
             to: "user".to_owned(),
             question: "   ".to_owned(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -2519,6 +2527,9 @@ async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
             from: None,
             message: MessageId::from("nosuchquestion".to_owned()),
             text: "hello?".to_owned(),
+            choices: Vec::new(),
+            note: None,
+            other: None,
         })
         .await;
     assert!(
@@ -2553,6 +2564,7 @@ async fn questions_are_listed_only_for_whoever_was_asked() {
                     to: "user".to_owned(),
                     question: "for the human".to_owned(),
                     timeout_secs: 30,
+                    form: Default::default(),
                 })
                 .await
         })
@@ -2568,6 +2580,7 @@ async fn questions_are_listed_only_for_whoever_was_asked() {
                     to: beta,
                     question: "for beta".to_owned(),
                     timeout_secs: 30,
+                    form: Default::default(),
                 })
                 .await
         })
@@ -2619,6 +2632,7 @@ async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does
             payload: json!({ "text": "look at this" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     let notice = notices.try_recv().expect("a person is worth interrupting");
@@ -2646,12 +2660,158 @@ async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does
             payload: json!({ "text": "carry on" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(
         notices.try_recv().is_err(),
         "a program has no desktop to interrupt"
     );
+}
+
+/// A sender whose answer was lost sends again with the same key: the
+/// daemon answers as it first did, with the same message id, and the
+/// recipient has the message once. Another sender's same key is its own
+/// send, and a refused key is refused before anything is queued.
+#[tokio::test]
+async fn a_repeated_idempotency_key_replays_the_first_answer_and_queues_nothing() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sender = register(&daemon, "sender", distinct_pid()).await;
+    let other = register(&daemon, "other", distinct_pid()).await;
+    let reader = register(&daemon, "reader", distinct_pid()).await;
+    let send = |from: &AgentRecord, key: &str| Request::Send {
+        from: from.id.to_string(),
+        to: reader.id.to_string(),
+        kind: "chat".to_owned(),
+        payload: json!({ "text": "once" }),
+        reply_to: None,
+        links: Vec::new(),
+        idempotency_key: Some(key.to_owned()),
+    };
+
+    // The first answer is dropped on the way back; the retry carries the
+    // same key.
+    let first = daemon.handle(send(&sender, "send-1")).await;
+    let Response::Sent { message, .. } = &first else {
+        panic!("{first:?}");
+    };
+    let again = daemon.handle(send(&sender, "send-1")).await;
+    assert_eq!(again, first, "the first answer, unchanged");
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(
+        messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        vec![message],
+        "queued once"
+    );
+
+    // The same key from another sender is another send.
+    let theirs = daemon.handle(send(&other, "send-1")).await;
+    assert!(matches!(&theirs, Response::Sent { message: id, .. } if id != message));
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(messages.len(), 2);
+
+    // A refusal is not remembered: the retry is judged afresh.
+    let mut refused = send(&sender, "send-2");
+    if let Request::Send { to, .. } = &mut refused {
+        *to = "nobody-here".to_owned();
+    }
+    assert!(matches!(
+        daemon.handle(refused).await,
+        Response::Error { .. }
+    ));
+    assert!(
+        lock(&daemon.state)
+            .keyed_sends
+            .lookup(&sender.id.to_string(), "send-2", Utc::now())
+            .is_none()
+    );
+
+    // A key that is not one bounded line is refused before routing.
+    assert!(matches!(
+        daemon.handle(send(&sender, " padded")).await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+}
+
+/// A keyed retry is answered before its destination is resolved again:
+/// after a lost answer the recipient may have been renamed, or removed,
+/// and the message the retry repeats is queued all the same.
+#[tokio::test]
+async fn a_keyed_retry_is_answered_after_its_recipient_is_renamed_or_removed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sender = register(&daemon, "sender", distinct_pid()).await;
+    let reader = register(&daemon, "reader", distinct_pid()).await;
+    let send = |key: &str| Request::Send {
+        from: sender.id.to_string(),
+        to: "reader".to_owned(),
+        kind: "chat".to_owned(),
+        payload: json!({ "text": "once" }),
+        reply_to: None,
+        links: Vec::new(),
+        idempotency_key: Some(key.to_owned()),
+    };
+
+    // The answer is lost on the way back, and the recipient is renamed
+    // before the retry: its old name no longer reaches it.
+    let first = daemon.handle(send("send-1")).await;
+    let Response::Sent { message, .. } = &first else {
+        panic!("{first:?}");
+    };
+    let renamed = daemon
+        .handle(Request::Rename {
+            agent: reader.id.to_string(),
+            name: "renamed-reader".to_owned(),
+        })
+        .await;
+    assert!(matches!(renamed, Response::Agent { .. }), "{renamed:?}");
+    let fresh = daemon.handle(send("send-2")).await;
+    assert!(
+        matches!(fresh, Response::Error { .. }),
+        "a new send by the old name is refused: {fresh:?}"
+    );
+
+    let again = daemon.handle(send("send-1")).await;
+    assert_eq!(again, first, "the first answer, unchanged");
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(
+        messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        vec![message],
+        "queued once"
+    );
+
+    // And once the recipient is gone altogether.
+    let ended = lock(&daemon.state).deregister(&reader.id.to_string());
+    assert!(matches!(ended, Response::Agent { .. }), "{ended:?}");
+    assert_eq!(daemon.handle(send("send-1")).await, first);
 }
 
 // ----- snapshot restore ----------------------------------------------
@@ -2712,6 +2872,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             question: "still there?".to_owned(),
             presentation: None,
             timeout_secs: 600,
+            form: Default::default(),
         })
         .await
     else {
@@ -2748,6 +2909,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             take_over_from: None,
             project: None,
             board: None,
+            unblock: None,
         })
         .await
     else {
@@ -2763,6 +2925,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             payload: json!({"text": "still for you"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
     else {
@@ -3196,6 +3359,7 @@ async fn a_relaunch_that_cannot_start_answers_and_leaves_the_record_ended() {
             payload: json!({"text": "waiting"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
     else {
@@ -3734,6 +3898,7 @@ async fn a_refused_claim_names_the_holder() {
         wait_secs: 0,
         priority: 0,
         automatic: false,
+        fresh: false,
     };
     assert!(matches!(
         daemon.handle(claim(&writer, "path:/work/src")).await,
@@ -3753,6 +3918,116 @@ async fn a_refused_claim_names_the_holder() {
             writer.id.short()
         )
     );
+}
+
+/// Two workers that claim the build slot as one agent are kept apart: the
+/// second fresh claim is refused, at once even when it would wait, with
+/// the first one's lease named as the asker's own; the first hold is
+/// neither renewed nor ended by it. A plain claim still renews. Once the
+/// slot is released the second worker's fresh claim takes it.
+#[tokio::test]
+async fn a_fresh_claim_keeps_two_workers_of_one_agent_apart() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let builder = register(&daemon, "builder", None).await;
+    let claim = |fresh: bool, wait_secs: u64| Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Exclusive,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs,
+        priority: 0,
+        automatic: false,
+        fresh,
+    };
+    // A client asks before it relies on a fresh claim: a daemon that did
+    // not know the word would renew instead, and say nothing.
+    let Response::Pong { features, .. } = daemon.handle(Request::Ping).await else {
+        panic!("ping")
+    };
+    assert!(
+        features
+            .iter()
+            .any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM),
+        "{features:?}"
+    );
+    let Response::Lease { lease: first } = daemon.handle(claim(true, 0)).await else {
+        panic!("the first worker takes the slot")
+    };
+    // The other mode on the same slot is this agent's own conflict too.
+    let shared = Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Shared,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs: 0,
+        priority: 0,
+        automatic: false,
+        fresh: true,
+    };
+    assert!(matches!(
+        daemon.handle(shared).await,
+        Response::Error { code: ErrorCode::Conflict, details: Some(details), .. } if details["own"] == true
+    ));
+    for wait_secs in [0, 30] {
+        let asked = std::time::Instant::now();
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = daemon.handle(claim(true, wait_secs)).await
+        else {
+            panic!("the second worker is not told it holds the slot")
+        };
+        assert_eq!(code, ErrorCode::Conflict);
+        assert!(
+            message.contains("already held by this agent")
+                && message.contains(&first.id.to_string()),
+            "{message}"
+        );
+        let details = details.expect("which lease is in the way");
+        assert_eq!(details["own"], true);
+        assert_eq!(details["held_by"][0]["id"], first.id.to_string());
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(5),
+            "an agent is not queued behind itself"
+        );
+    }
+    let Response::Leases { leases } = daemon
+        .handle(Request::Leases {
+            agent: None,
+            resource: Some("task:local-cargo-campaign".into()),
+        })
+        .await
+    else {
+        panic!("leases")
+    };
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].expires_at, first.expires_at, "not renewed");
+    // A plain claim is the holder extending its own hold, as before.
+    let Response::Lease { lease: renewed } = daemon.handle(claim(false, 0)).await else {
+        panic!("a plain claim renews")
+    };
+    assert_eq!(renewed.id, first.id);
+    assert!(matches!(
+        daemon
+            .handle(Request::Release {
+                agent: builder.id.to_string(),
+                lease: first.id.clone(),
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await,
+        Response::Ok | Response::Lease { .. } | Response::Leases { .. }
+    ));
+    let Response::Lease { lease: second } = daemon.handle(claim(true, 0)).await else {
+        panic!("the slot is free for the second worker")
+    };
+    assert_ne!(second.id, first.id);
 }
 
 #[tokio::test]
@@ -3777,6 +4052,7 @@ async fn a_clean_shutdown_hands_the_leases_back_and_says_it_did() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await
     else {
@@ -3835,6 +4111,7 @@ async fn a_question_has_to_reach_somebody_who_can_answer_it() {
             to: "topic:reviews".into(),
             question: "anyone?".into(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -3881,6 +4158,9 @@ async fn an_answer_that_races_the_question_still_lands() {
                                 from: Some(human.id.to_string()),
                                 message: envelope.id,
                                 text: "at once".to_owned(),
+                                choices: Vec::new(),
+                                note: None,
+                                other: None,
                             })
                             .await,
                     );
@@ -3895,6 +4175,7 @@ async fn an_answer_that_races_the_question_still_lands() {
             to: "user".into(),
             question: "now?".into(),
             timeout_secs: 10,
+            form: Default::default(),
         })
         .await;
     let answered = racing.await.unwrap().expect("the question was published");
@@ -3951,6 +4232,7 @@ async fn claim_waiting_at(
             wait_secs,
             priority,
             automatic: false,
+            fresh: false,
         })
         .await
 }
@@ -4467,6 +4749,7 @@ async fn a_granted_wait_is_not_picked_to_break_a_later_ring() {
         wait_secs,
         priority,
         automatic: false,
+        fresh: false,
     };
     let mut events = daemon.subscribe_events();
     let hold = hold_claim(&daemon, super::waiting::ClaimPoint::Answered, &alpha.id);
@@ -6937,6 +7220,7 @@ deny = ["send:all"]
             payload: json!({ "text": "everyone!" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(matches!(
@@ -6960,6 +7244,7 @@ deny = ["send:all"]
                 payload: json!({ "text": "just you" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -6988,6 +7273,7 @@ async fn a_quota_is_spent_by_several_agents_until_it_runs_out() {
                     wait_secs: 0,
                     priority: 0,
                     automatic: false,
+                    fresh: false,
                 })
                 .await
         }
@@ -7043,6 +7329,7 @@ async fn a_quota_nobody_set_a_capacity_for_is_unlimited() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await;
     assert!(matches!(response, Response::Lease { .. }), "{response:?}");
@@ -7236,6 +7523,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await
     else {
@@ -7680,6 +7968,7 @@ async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await
 }
@@ -7724,6 +8013,7 @@ async fn failed_removal_retains_memory_and_never_reports_success() {
                 payload: json!({"text":"retain if removal fails"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7785,6 +8075,7 @@ async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing
                     payload: json!({"text":"retain after failed drain"}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None
                 })
                 .await,
             Response::Sent { .. }
@@ -7848,6 +8139,7 @@ async fn failed_inbox_touch_does_not_acknowledge_messages() {
                 payload: json!({"text":"retain after failed touch"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7893,6 +8185,7 @@ async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery()
                     payload: json!({"text":text}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None
                 })
                 .await,
             Response::Sent { .. }
@@ -8065,6 +8358,7 @@ async fn inbox_byte_pressure_survives_restart_and_acknowledgement_releases_capac
         payload,
         reply_to: None,
         links: Vec::new(),
+        idempotency_key: None,
     };
     for _ in 0..7 {
         assert!(matches!(
@@ -8317,6 +8611,7 @@ async fn inbox_ack_is_idempotent_and_preserves_new_arrivals() {
                 payload: json!({"text": text}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
     }
@@ -8376,6 +8671,7 @@ async fn state_survives_restart() {
             payload: json!({ "text": "hello" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     drop(daemon);
@@ -8452,6 +8748,7 @@ async fn remove_forgets_agent_and_inbox() {
             payload: json!({ "text": "late" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     daemon
@@ -8666,6 +8963,7 @@ async fn restore_retires_half_spawned_agents_and_orphaned_leases() {
             holder,
             mode: LeaseMode::Exclusive,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + Duration::hours(1),
             note: None,
@@ -8757,6 +9055,7 @@ fn ambiguous_live_names_refuse_before_recovery_changes_any_record_or_lease() {
         holder: second.id.clone(),
         mode: LeaseMode::Exclusive,
         acquired_at: now,
+        held_since: None,
         change_seq: None,
         expires_at: now + Duration::hours(1),
         note: None,
@@ -8827,9 +9126,9 @@ async fn recycled_pid_is_not_mistaken_for_the_agent() {
 
 #[test]
 fn invalid_pids_are_never_alive() {
-    assert!(!process_exists(0));
-    assert!(!process_exists(u32::MAX));
-    assert!(process_exists(std::process::id()));
+    assert!(!procinfo::alive(0));
+    assert!(!procinfo::alive(u32::MAX));
+    assert!(procinfo::alive(std::process::id()));
 }
 
 #[tokio::test]
@@ -8855,6 +9154,7 @@ async fn claim_wait_acquires_when_the_holder_releases() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    fresh: false,
                 })
                 .await
         })
@@ -8891,6 +9191,7 @@ async fn claim_wait_gives_up_at_the_deadline() {
             wait_secs: 1,
             priority: 0,
             automatic: false,
+            fresh: false,
         })
         .await;
     assert!(started.elapsed() >= std::time::Duration::from_secs(1));
@@ -9111,6 +9412,7 @@ async fn send(daemon: &Arc<Daemon>, from: &str, to: &str) -> Response {
             payload: json!({ "text": "hi" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
 }
@@ -9670,6 +9972,7 @@ async fn the_person_sees_where_their_message_stands_with_each_agent() {
                 payload: json!({"text": "on it"}),
                 reply_to: Some(message.clone()),
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -9902,6 +10205,7 @@ async fn an_agent_reaches_only_its_own_project_and_the_person() {
                 to: "far".into(),
                 question: "?".into(),
                 timeout_secs: 1,
+                form: Default::default(),
             })
             .await,
     );
@@ -10407,7 +10711,7 @@ async fn discover_finds_known_runtimes_and_adopt_registers_them() {
         adopted.project.as_ref().map(|p| p.root.clone()),
         Some(project.canonicalize().unwrap())
     );
-    assert!(process_exists(pid));
+    assert!(procinfo::alive(pid));
 
     // Registered pids disappear from discovery, and cannot be adopted twice.
     let found = match daemon.handle(Request::Discover).await {
@@ -10536,7 +10840,7 @@ async fn a_runtime_helper_is_not_discovered_and_cannot_be_adopted() {
     };
     assert!(agents.iter().all(|a| a.pid != Some(pid)));
     drop(child);
-    assert!(!process_exists(pid), "the guard reaps the fake");
+    assert!(!procinfo::alive(pid), "the guard reaps the fake");
 }
 
 fn drain_vcs(events: &mut broadcast::Receiver<Event>) -> Vec<Option<String>> {
@@ -10658,6 +10962,124 @@ async fn aliases_and_root_claims_conflict_for_outsiders_without_project_markers(
     assert_eq!(leases.len(), 1);
 }
 
+/// A lease is released by the resource it is on, and by that resource
+/// alone. The lease on a folder is not released by naming a file in it,
+/// nor a file's by naming its folder: either is `not_found` and what is
+/// held stays held. Another spelling of the resource (a `file:` alias, a
+/// path with `..` in it) releases it though other leases of the holder
+/// overlap it, and nobody releases a lease by a name they do not hold.
+#[tokio::test]
+async fn a_lease_is_released_by_the_exact_resource_it_is_on() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = dir.path().join("checkout");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::write(checkout.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let owner = register_in(&daemon, "owner", &checkout).await;
+    register(&daemon, "other", None).await;
+    let folder = format!("path:{}", checkout.join("src").display());
+    let file = format!("path:{}", checkout.join("src/main.rs").display());
+    let project = owner.project.as_ref().unwrap().id();
+    let d = &daemon;
+    let take = |resource: String| async move {
+        match claim(d, "owner", &resource).await {
+            Response::Lease { lease } => lease.id,
+            other => panic!("{resource}: {other:?}"),
+        }
+    };
+    let release = |agent: &str, resource: String| Request::ReleaseResource {
+        agent: agent.to_owned(),
+        resource,
+        summary: None,
+        summary_source: Default::default(),
+    };
+    let released = |response: Response| match response {
+        Response::Leases { leases } => leases.into_iter().map(|l| l.id).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    let held = || async {
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: Some("owner".into()),
+                resource: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        leases.into_iter().map(|l| l.id).collect::<Vec<_>>()
+    };
+    let not_found = |response: Response| {
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+    };
+
+    // The folder alone: naming a file in it releases nothing.
+    let on_folder = take(folder.clone()).await;
+    not_found(daemon.handle(release("owner", file.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // Folder and file: an alias of the file releases the file's lease and
+    // only that, though the folder's lease overlaps it.
+    let on_file = take(file.clone()).await;
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", format!("file:{project}/src/main.rs")))
+                .await
+        ),
+        [on_file]
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // The file alone: naming its folder releases nothing.
+    assert_eq!(
+        released(daemon.handle(release("owner", folder.clone())).await),
+        [on_folder]
+    );
+    let on_file = take(file.clone()).await;
+    not_found(daemon.handle(release("owner", folder.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_file));
+
+    // Another spelling of the same path is the same resource.
+    let roundabout = format!("path:{}", checkout.join("src/../src/main.rs").display());
+    assert_eq!(
+        released(daemon.handle(release("owner", roundabout)).await),
+        [on_file]
+    );
+    assert!(held().await.is_empty());
+
+    // A task by its name; and a name is no key to somebody else's lease.
+    let on_task = take("task:slot".to_owned()).await;
+    not_found(
+        daemon
+            .handle(release("other", "task:slot".to_owned()))
+            .await,
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_task));
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", "task:slot".to_owned()))
+                .await
+        ),
+        [on_task]
+    );
+    not_found(
+        daemon
+            .handle(release("owner", "task:slot".to_owned()))
+            .await,
+    );
+}
+
 #[tokio::test]
 async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
     let dir = TempDir::new().unwrap();
@@ -10683,6 +11105,7 @@ async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    fresh: false,
                 })
                 .await
         })
@@ -10939,6 +11362,7 @@ async fn claim_expiration_removes_storage_and_emits_once() {
         holder: owner.id,
         mode: LeaseMode::Exclusive,
         acquired_at: now - Duration::seconds(5),
+        held_since: None,
         change_seq: None,
         expires_at: now - Duration::seconds(1),
         note: None,
@@ -12539,6 +12963,7 @@ async fn digest_for(
                 reader: reader.to_owned(),
                 max_entries: budget.max_entries,
                 max_chars: budget.max_chars,
+                max_bytes: None,
                 all_branches: false,
                 advance,
             }),
@@ -12897,6 +13322,7 @@ async fn reject_lease_transition(operation: &str) {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await
     };

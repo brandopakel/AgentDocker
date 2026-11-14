@@ -447,6 +447,7 @@ mod tests {
                             ..ExperimentalConfig::default()
                         }),
                         judge: None,
+                        features: Vec::new(),
                     },
                     other => panic!("unexpected request {other:?}"),
                 };
