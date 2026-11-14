@@ -32,18 +32,43 @@ def installs(text):
 
 def toolchain_steps(text):
     """Every step of a workflow that installs a Rust toolchain: the
-    version it names and the components it asks for, in file order."""
+    version it names and the components it asks for, in file order. Both
+    are read from the step's own `with` mapping and nowhere else, so an
+    `env` of the step, or a later step, cannot stand in for an input."""
     found = []
     lines = text.splitlines()
+
+    def column(line):
+        return len(line) - len(line.lstrip())
+
+    def blank(line):
+        return not line.strip() or line.lstrip().startswith("#")
+
     for at, line in enumerate(lines):
-        if "dtolnay/rust-toolchain@" not in line:
+        if "dtolnay/rust-toolchain@" not in line or blank(line):
             continue
-        step = len(line) - len(line.lstrip())
-        version, components = None, []
-        for inner in lines[at + 1:]:
-            indent = len(inner) - len(inner.lstrip())
-            if inner.strip() and indent <= step:
+        # The column the step's keys sit at: two past its dash.
+        keys = column(line) + 2 if line.lstrip().startswith("- ") else column(line)
+        start = at
+        while start > 0 and not (column(lines[start]) == keys - 2 and lines[start].lstrip().startswith("- ")):
+            start -= 1
+        step = [lines[start].replace("- ", "  ", 1)]
+        for inner in lines[start + 1:]:
+            if not blank(inner) and column(inner) < keys:
                 break
+            step.append(inner)
+        version, components, inside, inputs = None, [], False, None
+        for inner in step:
+            if blank(inner):
+                continue
+            if column(inner) == keys:
+                inside = inner.strip() == "with:"
+                continue
+            if not inside:
+                continue
+            inputs = column(inner) if inputs is None else inputs
+            if column(inner) != inputs:
+                continue
             key, _, value = inner.strip().partition(":")
             if key == "toolchain":
                 version = value.strip().strip("\"'")
@@ -51,6 +76,33 @@ def toolchain_steps(text):
                 components = [name.strip() for name in value.split(",") if name.strip()]
         found.append((version, components))
     return found
+
+
+def unpinned(workflows, channel, wanted):
+    """What is wrong with the Rust the workflows install, given the
+    version and components rust-toolchain.toml names: one line for each
+    step that installs another version, or leaves a component out. Nightly
+    is the fuzzing workflow's alone, whose job says so for every Cargo
+    call."""
+    problems, pinned = [], 0
+    for name, text in sorted(workflows.items()):
+        for version, components in toolchain_steps(text):
+            if version == "nightly" and name == "fuzz.yml":
+                if "RUSTUP_TOOLCHAIN: nightly" not in text:
+                    problems.append(f"{name} installs nightly but its job does not set RUSTUP_TOOLCHAIN: "
+                                    "the toolchain file would decide its plain cargo calls")
+                continue
+            if version != channel:
+                problems.append(f"{name} installs Rust {version}; rust-toolchain.toml names {channel}")
+                continue
+            pinned += 1
+            for component in wanted:
+                if component not in components:
+                    problems.append(f"{name} installs Rust {version} without {component}, which "
+                                    "rust-toolchain.toml lists: the first Cargo run would have to fetch it")
+    if not pinned:
+        problems.append("no workflow installs the pinned Rust")
+    return problems
 
 
 def pins():
@@ -75,29 +127,52 @@ class ToolPins(unittest.TestCase):
                 self.assertEqual(version, pinned[tool], f"{place.relative_to(ROOT)} installs {tool} at {version}; scripts/tool_pins.txt pins {pinned[tool]}")
         self.assertEqual(stated, set(pinned), "a pinned tool that nothing installs, or the reverse")
 
+    def workflows(self):
+        return {place.name: place.read_text() for place in sorted((ROOT / ".github/workflows").glob("*.yml"))}
+
+    def toolchain_file(self):
+        pinned = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]
+        return pinned["channel"], pinned["components"]
+
     def test_every_workflow_installs_the_rust_the_toolchain_file_names(self):
         # One Rust for the local gates and for CI: a workflow that asked
         # for `stable` would build with whatever was released last, and a
         # new release could fail main with no change of ours.
-        pinned = tomllib.loads((ROOT / "rust-toolchain.toml").read_text())["toolchain"]
-        channel, wanted = pinned["channel"], pinned["components"]
+        channel, wanted = self.toolchain_file()
         self.assertRegex(channel, r"^[0-9]+\.[0-9]+\.[0-9]+$", "rust-toolchain.toml names one version, not a channel that moves")
-        seen = 0
-        for place in sorted((ROOT / ".github/workflows").glob("*.yml")):
-            for version, components in toolchain_steps(place.read_text()):
-                where = place.relative_to(ROOT)
-                if version == "nightly":
-                    continue
-                seen += 1
-                self.assertEqual(version, channel, f"{where} installs Rust {version}; rust-toolchain.toml names {channel}")
-                for component in wanted:
-                    self.assertIn(component, components,
-                                  f"{where} installs Rust {version} without {component}, which rust-toolchain.toml lists: "
-                                  "the first Cargo run would have to fetch it")
-        self.assertTrue(seen, "no workflow installs the pinned Rust")
+        self.assertEqual(unpinned(self.workflows(), channel, wanted), [])
 
-    def test_a_toolchain_step_is_read_with_its_version_and_components(self):
-        text = ("      - uses: dtolnay/rust-toolchain@abc # master\n"
+    def test_a_workflow_that_drifts_from_the_toolchain_file_is_refused(self):
+        channel, wanted = self.toolchain_file()
+        real = self.workflows()
+        quoted = f'toolchain: "{channel}"'
+        self.assertIn(quoted, real["ci.yml"])
+
+        def with_ci(text):
+            return {**real, "ci.yml": text}
+
+        # Back to the channel that moves, in one step of one workflow.
+        drifted = unpinned(with_ci(real["ci.yml"].replace(quoted, "toolchain: stable", 1)), channel, wanted)
+        self.assertEqual(drifted, [f"ci.yml installs Rust stable; rust-toolchain.toml names {channel}"])
+        # Nightly is the fuzzing workflow's, not CI's.
+        nightly = unpinned(with_ci(real["ci.yml"].replace(quoted, "toolchain: nightly", 1)), channel, wanted)
+        self.assertEqual(nightly, [f"ci.yml installs Rust nightly; rust-toolchain.toml names {channel}"])
+        # A component the file lists, left out of a step.
+        bare = unpinned(with_ci(real["ci.yml"].replace("components: rustfmt, clippy", "components: rustfmt", 1)), channel, wanted)
+        self.assertEqual(len(bare), 1, bare)
+        self.assertIn("without clippy", bare[0])
+        # The fuzz job must say nightly for all of its Cargo calls.
+        silent = {**real, "fuzz.yml": real["fuzz.yml"].replace("RUSTUP_TOOLCHAIN: nightly", "RUSTUP_TOOLCHAIN: other")}
+        self.assertTrue(any("RUSTUP_TOOLCHAIN" in problem for problem in unpinned(silent, channel, wanted)))
+        # An input is an input: an `env` of the same name does not pin.
+        masked = real["ci.yml"].replace(
+            f"          {quoted}\n", "          toolchain: stable\n", 1).replace(
+            "      - uses: Swatinem/rust-cache", f"        env:\n          toolchain: \"{channel}\"\n      - uses: Swatinem/rust-cache", 1)
+        self.assertIn(f"ci.yml installs Rust stable; rust-toolchain.toml names {channel}", unpinned(with_ci(masked), channel, wanted))
+
+    def test_a_toolchain_step_is_read_from_its_with_mapping_only(self):
+        text = ("    steps:\n"
+                "      - uses: dtolnay/rust-toolchain@abc # master\n"
                 "        with:\n"
                 "          toolchain: \"1.2.3\"\n"
                 "          components: llvm-tools-preview, rustfmt, clippy\n"
@@ -108,9 +183,29 @@ class ToolPins(unittest.TestCase):
                 "          toolchain: nightly\n"
                 "      - run: cargo build\n"
                 "        with:\n"
-                "          toolchain: not-a-toolchain-step\n")
+                "          toolchain: not-a-toolchain-step\n"
+                # An env of the same names is not an input, before or after.
+                "      - uses: dtolnay/rust-toolchain@abc\n"
+                "        env:\n"
+                "          components: clippy\n"
+                "        with:\n"
+                "          toolchain: stable\n"
+                "        env2:\n"
+                "          toolchain: \"1.2.3\"\n"
+                # A step that opens with its name, and one whose inputs come first.
+                "      - name: Install Rust\n"
+                "        uses: dtolnay/rust-toolchain@abc\n"
+                "        with:\n"
+                "          toolchain: 4.5.6\n"
+                "          components: rustfmt\n"
+                "      - with:\n"
+                "          toolchain: 7.8.9\n"
+                "        uses: dtolnay/rust-toolchain@abc\n"
+                "      # - uses: dtolnay/rust-toolchain@abc, in a comment\n"
+                "      - run: echo done\n")
         self.assertEqual(toolchain_steps(text),
-                         [("1.2.3", ["llvm-tools-preview", "rustfmt", "clippy"]), ("nightly", [])])
+                         [("1.2.3", ["llvm-tools-preview", "rustfmt", "clippy"]), ("nightly", []),
+                          ("stable", []), ("4.5.6", ["rustfmt"]), ("7.8.9", [])])
 
     def test_an_install_is_found_however_its_options_are_ordered(self):
         self.assertEqual(installs("run: cargo install cargo-nextest --locked --version 0.9.142"),
