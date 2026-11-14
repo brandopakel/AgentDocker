@@ -38,6 +38,24 @@ impl Drop for Committing<'_> {
     }
 }
 
+/// Holds a linked worktree marked as being removed for as long as it
+/// lives, and lets go however the removal ends. The mark itself is made
+/// by the step that found the worktree idle, under the state lock it
+/// looked under, so that being idle and being reserved are one step.
+///
+/// Dropping it takes the state lock, so it must never be dropped by a
+/// holder of a state guard.
+struct Removing<'a> {
+    daemon: &'a Daemon,
+    path: PathBuf,
+}
+
+impl Drop for Removing<'_> {
+    fn drop(&mut self) {
+        lock(&self.daemon.state).removing.remove(&self.path);
+    }
+}
+
 /// The subject of a commit message: what a journal line can carry.
 fn first_line(message: &str) -> &str {
     message.lines().next().unwrap_or("").trim()
@@ -911,6 +929,13 @@ impl Daemon {
     /// the main folder is never removed, nor the checkout the asker
     /// stands in, nor one a live agent works in, nor one in which
     /// anybody holds a path or whose branch anybody holds.
+    ///
+    /// Git takes several commands to remove a worktree, and the state
+    /// lock is not held across them. So the look that finds the worktree
+    /// idle also marks it as being removed ([`Removing`]), and until the
+    /// removal has ended a record that would come to work there and a
+    /// claim in it, over it or on its branch are refused: nobody is told
+    /// they have a checkout that is about to go.
     pub(super) async fn worktree_remove_named(
         &self,
         reference: &str,
@@ -980,9 +1005,18 @@ impl Daemon {
                 "you are working in that worktree: ask from another checkout once you have left it",
             );
         }
-        {
+        // Found idle and reserved in one step: from here until the
+        // removal has ended, whichever way, nobody new comes to work
+        // there and nothing there, nor its branch, is claimed.
+        let _removing = {
             let mut state = lock(&self.state);
             state.expire_leases();
+            if state.removing.contains_key(&target) {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "that worktree is being removed already",
+                );
+            }
             let working = state.registry.live().find(|record| {
                 record.id != agent
                     && record.project.as_ref().is_some_and(|project| {
@@ -1035,6 +1069,19 @@ impl Daemon {
                         lease.resource
                     ),
                 );
+            }
+            state.removing.insert(target.clone(), target_branch.clone());
+            Removing {
+                daemon: self,
+                path: target.clone(),
+            }
+        };
+        #[cfg(test)]
+        {
+            let hold = lock(&self.removal_hold).take();
+            if let Some(hold) = hold {
+                hold.wait().await;
+                hold.wait().await;
             }
         }
         match remove_finished(main, target.clone()).await {
@@ -2558,6 +2605,105 @@ mod lifecycle_tests {
             "{}",
             branches.stdout
         );
+    }
+
+    /// Git takes several commands to remove a worktree, and the daemon
+    /// does not hold its state while they run. The look that finds the
+    /// worktree idle reserves it in the same step: with the removal
+    /// stopped between that look and git, nobody registers there and
+    /// nothing in it, over it or on its branch is claimed, by anybody;
+    /// the rest of the project is not held up; and the reservation ends
+    /// with the removal, whether it removed the worktree or refused to.
+    #[tokio::test]
+    async fn nobody_enters_a_worktree_while_it_is_being_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        register(&daemon, "bystander", &tmp.path().join("repo")).await;
+        let target = made(create(&daemon, "builder", None, "agent/going").await);
+        let enter = async |name: &str, workdir: &Path| {
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: name.into(),
+                        workdir: Some(workdir.to_path_buf()),
+                        ..AgentSpec::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await
+        };
+        let claim = async |who: &str, resource: &str| {
+            request(
+                &daemon,
+                serde_json::json!({"op": "claim", "agent": who, "resource": resource}),
+            )
+            .await
+        };
+
+        let hold = Arc::new(tokio::sync::Barrier::new(2));
+        *lock(&daemon.removal_hold) = Some(hold.clone());
+        let removal = tokio::spawn({
+            let (daemon, target) = (daemon.clone(), target.clone());
+            async move { remove(&daemon, "builder", Some(&target), None).await }
+        });
+        // The removal has found the worktree idle and reserved it; git has
+        // not been asked yet.
+        hold.wait().await;
+        assert!(target.exists());
+        answered(
+            &enter("late", &target).await,
+            ErrorCode::Conflict,
+            "is being removed",
+        );
+        let inside = format!("path:{}", target.join("src/lib.rs").display());
+        let over = format!("path:{}", target.parent().unwrap().display());
+        for resource in [inside.as_str(), over.as_str(), "branch:agent/going"] {
+            for who in ["bystander", "builder"] {
+                answered(
+                    &claim(who, resource).await,
+                    ErrorCode::Conflict,
+                    "is being removed",
+                );
+            }
+        }
+        answered(
+            &remove(&daemon, "bystander", Some(&target), None).await,
+            ErrorCode::Conflict,
+            "being removed already",
+        );
+        // The rest of the project is not held up.
+        let elsewhere = format!("path:{}", root.join("src/lib.rs").display());
+        let granted = claim("bystander", &elsewhere).await;
+        assert!(!matches!(granted, Response::Error { .. }), "{granted:?}");
+
+        hold.wait().await;
+        let answer = removal.await.unwrap();
+        assert!(
+            matches!(&answer, Response::WorktreeRemoved { path, .. } if *path == target),
+            "{answer:?}"
+        );
+        assert!(!target.exists());
+        // Its reservation went with it.
+        let granted = claim("bystander", "branch:agent/going").await;
+        assert!(!matches!(granted, Response::Error { .. }), "{granted:?}");
+
+        // A removal that is refused lets go as well.
+        let kept = made(create(&daemon, "builder", None, "agent/kept").await);
+        std::fs::write(kept.join("note.txt"), "unsaved").unwrap();
+        answered(
+            &remove(&daemon, "builder", Some(&kept), None).await,
+            ErrorCode::Conflict,
+            "uncommitted or untracked",
+        );
+        let granted = claim(
+            "bystander",
+            &format!("path:{}", kept.join("src/lib.rs").display()),
+        )
+        .await;
+        assert!(!matches!(granted, Response::Error { .. }), "{granted:?}");
+        let entered = enter("late", &kept).await;
+        assert!(matches!(entered, Response::Agent { .. }), "{entered:?}");
     }
 
     /// `git worktree list --porcelain -z` as the removal reads it: each

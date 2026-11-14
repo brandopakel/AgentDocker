@@ -383,6 +383,11 @@ pub struct Daemon {
     /// lock that commits it, met twice. Never held across an await.
     #[cfg(test)]
     register_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test's pause in a worktree's removal, after the step that found
+    /// it idle and reserved it and before git is asked, met twice. Never
+    /// held across an await.
+    #[cfg(test)]
+    removal_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     /// A test's hold on one agent's claim at one point of its wait
     /// (`waiting::ClaimPoint`), so another claim can act in between. Taken
     /// once; never held across an await.
@@ -555,6 +560,13 @@ struct State {
     /// without this it writes its own guessed-at entry for a commit the
     /// daemon is about to record properly.
     committing: std::collections::BTreeSet<PathBuf>,
+    /// Linked worktrees being removed right now, each with the branch
+    /// checked out in it. The step that found one idle put it here, and
+    /// until its removal has ended, whichever way, nobody new comes to
+    /// work in it and nothing in it, nor its branch, is claimed: git takes
+    /// several commands to remove a worktree, and an agent let in between
+    /// them would lose the checkout it was just told it had.
+    removing: BTreeMap<PathBuf, Option<String>>,
     /// A shared installation pin per binding that has a launch descriptor,
     /// held for the binding's life so the release its controller runs
     /// from is not pruned while the controller is dead and waiting to be
@@ -1764,6 +1776,7 @@ impl Daemon {
                 worktree_creators: HashMap::new(),
                 project_checkouts: HashMap::new(),
                 committing: std::collections::BTreeSet::new(),
+                removing: BTreeMap::new(),
                 controller_pins: HashMap::new(),
                 question_waiters: HashSet::new(),
                 held_answers: HashMap::new(),
@@ -1802,6 +1815,8 @@ impl Daemon {
             relaunch_hold: Mutex::new(None),
             #[cfg(test)]
             register_hold: Mutex::new(None),
+            #[cfg(test)]
+            removal_hold: Mutex::new(None),
             #[cfg(test)]
             claim_hold: Mutex::new(None),
             #[cfg(test)]
@@ -5883,6 +5898,49 @@ impl State {
         }
     }
 
+    /// The refusal for a record that would come to work in a worktree
+    /// being removed ([`State::removing`]). Every way a record becomes a
+    /// live agent goes through [`State::insert_record_announcing`], which
+    /// asks this: a registration, a launch, a resumption, a session that
+    /// says it has moved there.
+    fn removal_refuses_record(&self, record: &AgentRecord) -> Option<Response> {
+        if self.removing.is_empty() {
+            return None;
+        }
+        let dir = record
+            .project
+            .as_ref()
+            .map(|project| project.dir().to_path_buf())
+            .or_else(|| record.spec.workdir.clone())?;
+        let dir = project::canonical(&dir);
+        let path = self.removing.keys().find(|path| dir.starts_with(path))?;
+        Some(Response::error(
+            ErrorCode::Conflict,
+            format!(
+                "{} is being removed: nobody new comes to work there",
+                path.display()
+            ),
+        ))
+    }
+
+    /// The refusal for a claim on a path in or over a worktree being
+    /// removed, or on its branch ([`State::removing`]).
+    fn removal_refuses_claim(&self, resource: &ResourceKey) -> Option<Response> {
+        let (path, _) = self.removing.iter().find(|(path, branch)| {
+            resource.overlaps(&ResourceKey::new(format!("path:{}", path.display())))
+                || branch
+                    .as_ref()
+                    .is_some_and(|branch| *resource == ResourceKey::new(format!("branch:{branch}")))
+        })?;
+        Some(Response::error(
+            ErrorCode::Conflict,
+            format!(
+                "{} is being removed: nothing in it, nor its branch, is claimed until that has ended",
+                path.display()
+            ),
+        ))
+    }
+
     fn insert_record(&mut self, record: AgentRecord) -> Response {
         self.insert_record_announcing(record, true, None)
     }
@@ -5911,6 +5969,9 @@ impl State {
     ) -> Response {
         if let Some(error) = self.write_failure() {
             return error;
+        }
+        if let Some(refusal) = self.removal_refuses_record(&record) {
+            return refusal;
         }
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);
