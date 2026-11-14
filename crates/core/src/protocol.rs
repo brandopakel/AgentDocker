@@ -81,6 +81,17 @@ pub struct DigestRequest {
     pub advance: bool,
 }
 
+/// A claim's `fresh` is honoured: the claimer's own conflicting leases
+/// are in its way ([`Request::Claim`]).
+pub const FEATURE_FRESH_CLAIM: &str = "fresh_claim";
+
+/// A journal digest bounds its text by `digest.max_bytes` as well as by
+/// its characters; a daemon that does not list it bounds characters alone.
+pub const FEATURE_DIGEST_MAX_BYTES: &str = "digest_max_bytes";
+
+/// The names a daemon of this build answers in `pong.features`.
+pub const FEATURES: &[&str] = &[FEATURE_FRESH_CLAIM, FEATURE_DIGEST_MAX_BYTES];
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Request {
@@ -832,6 +843,15 @@ pub enum Request {
         project: Option<String>,
         #[serde(default)]
         board: Option<String>,
+        /// What happened to end the named card's wait on something off the
+        /// board: the wait is cleared and the card taken in one change,
+        /// with these words and what it waited on kept on the card, in the
+        /// journal and in `task_unblocked`. For a card nobody holds, by an
+        /// agent of its project: no agent in particular, since the one
+        /// that filed the card is a session that ends. `invalid` without
+        /// words, for a card that waits on nothing, or with a take-over.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unblock: Option<String>,
     },
     /// Move a card: its assignee may, the person always may. Answers
     /// `task`, or `forbidden`. `to` names a lane by slug, name or
@@ -1382,6 +1402,17 @@ pub enum Request {
         /// asked for holds until it releases it or the TTL runs out.
         #[serde(default)]
         automatic: bool,
+        /// Only a new lease will do: a lease the agent already holds that
+        /// would stop another agent (the same resource, one over or under
+        /// it, a conflicting mode) is in this claim's way too, and nothing
+        /// is renewed. Answered `conflict` at once, with `details.own`,
+        /// however long the claim would wait: the agent is not queued
+        /// behind itself. For a resource one process at a time may use,
+        /// whoever its workers claim as. A daemon that does not list
+        /// [`FEATURE_FRESH_CLAIM`] in `pong.features` ignores this field
+        /// and renews: ask before relying on it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fresh: bool,
     },
     Renew {
         agent: String,
@@ -1398,6 +1429,21 @@ pub enum Request {
         summary: Option<String>,
         /// `explicit` (the default) is journaled even when nothing was
         /// held; `transcript` only describes leases actually released.
+        #[serde(default)]
+        summary_source: SummarySource,
+    },
+    /// Release the leases an agent holds on exactly this resource, named
+    /// as `claim` takes it (a `path:`, or a `file:` alias the daemon turns
+    /// into the same physical path). A lease over or under the resource is
+    /// another resource's and is left alone: which lease a name stands for
+    /// is the daemon's to say, since only it knows a resource's own
+    /// spelling. Answers `leases` with what was released, `not_found` when
+    /// the agent holds none there.
+    ReleaseResource {
+        agent: String,
+        resource: String,
+        #[serde(default)]
+        summary: Option<String>,
         #[serde(default)]
         summary_source: SummarySource,
     },
@@ -2059,6 +2105,14 @@ pub enum Response {
         /// Absent from a daemon older than the judge.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         judge: Option<crate::judgment::JudgeStatus>,
+        /// What this daemon knows how to do beyond what every daemon does
+        /// ([`FEATURES`]). A request field a daemon does not know is one it
+        /// ignores without a word, so a client that depends on such a field
+        /// being honoured asks here first: a name that is missing means the
+        /// daemon would do the old thing. Empty from a daemon older than
+        /// the list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        features: Vec<String>,
     },
     DaemonProcess {
         pid: u32,
@@ -2629,6 +2683,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             }
         );
         let back = serde_json::to_string(&req).unwrap();

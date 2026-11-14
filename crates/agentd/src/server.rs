@@ -1730,6 +1730,7 @@ mod tests {
             priority: 0,
             note: Some("x".repeat(1024 * 1024)),
             automatic: false,
+            fresh: false,
         })
         .unwrap()
             + "\n";
@@ -1792,6 +1793,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await;
         let mut events = daemon.subscribe_events();

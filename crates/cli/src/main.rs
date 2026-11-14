@@ -868,7 +868,11 @@ enum Command {
         /// Agent id, name or unique prefix (defaults to this session).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
-        #[arg(required_unless_present = "all")]
+        /// The lease's id, as `claim` printed it, or the resource it is
+        /// on, as `claim` took it (`task:local-cargo-campaign`, a path).
+        /// A word of hex digits alone is read as a lease id: write a file
+        /// of such a name as `./abc` or `path:abc`.
+        #[arg(required_unless_present = "all", value_name = "LEASE|RESOURCE")]
         lease: Option<String>,
         /// Release every lease this agent holds.
         #[arg(long, conflicts_with = "lease")]
@@ -1372,7 +1376,8 @@ enum TaskAction {
         /// Who files it (defaults to you, or the session this runs in).
         from: Option<String>,
         /// A typed reference, `kind:target` (repeatable, at most 16):
-        /// path, commit, pr, url, task, message or memory.
+        /// path, commit, pr, url, task (a card's key or id), message or
+        /// memory.
         #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
         links: Vec<agentdocker_core::Link>,
         #[command(flatten)]
@@ -1413,6 +1418,17 @@ enum TaskAction {
         project: Option<String>,
         #[arg(long)]
         board: Option<String>,
+        /// The named card waits on something off the board, nobody holds
+        /// it, and what it waited on has happened: say what, and the card
+        /// is freed and taken in one change. Your words and what it
+        /// waited on are kept on the card and in the journal.
+        #[arg(
+            long,
+            value_name = "WHAT HAPPENED",
+            requires = "task",
+            conflicts_with = "take_over_from"
+        )]
+        unblock: Option<String>,
     },
     /// Move a card to a lane: anybody in its project may. It stays its holder's, unless somebody else sends it back to a waiting lane, which frees it.
     Move {
@@ -1921,7 +1937,8 @@ struct SendArgs {
     #[arg(long, conflicts_with = "text")]
     json: Option<String>,
     /// A typed reference beside the text, `kind:target` (repeatable, at
-    /// most 16): path, commit, pr, url, task, message or memory.
+    /// most 16): path, commit, pr, url, task (a card's key or id), message
+    /// or memory.
     #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
     links: Vec<agentdocker_core::Link>,
     /// Your own token for this one send (a UUID, say): repeating the
@@ -2011,8 +2028,65 @@ fn role_tools(tools: Option<Vec<String>>, all_tools: bool) -> Result<Option<Vec<
     Ok(Some(tools))
 }
 
+/// A link as the command line writes it. A task link may name its card
+/// by the key a person reads on the board (`task:AD-12`); it is stored by
+/// the card's id, which [`card_links`] looks up before the link is sent.
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
+    if let Some(key) = text.strip_prefix("task:")
+        && card_key(key)
+    {
+        return Ok(agentdocker_core::Link::new(
+            agentdocker_core::LinkKind::Task,
+            key,
+        ));
+    }
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
+}
+
+/// Whether `release` was given a resource rather than a lease's id: an id
+/// is a run of hex digits, and a resource has a kind (`task:…`) or is a
+/// path. A lease id must stay unambiguous, so a bare word of hex digits
+/// is always an id, even where `claim` would take it for a file of that
+/// name: `./abc` or `path:abc` says the file.
+fn names_a_resource(text: &str) -> bool {
+    text.contains([':', '/', '.']) || !text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether a task link's target reads as a card's key, `<board>-<number>`,
+/// rather than as its id (hex digits, which have no dash).
+fn card_key(target: &str) -> bool {
+    target.rsplit_once('-').is_some_and(|(board, number)| {
+        !board.is_empty()
+            && board
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+/// The links as they are sent: each task link that named its card by key
+/// names it by id instead. A key no card has is the daemon's `not_found`,
+/// before anything is sent.
+async fn card_links(
+    client: &Client,
+    mut links: Vec<agentdocker_core::Link>,
+) -> Result<Vec<agentdocker_core::Link>> {
+    for link in &mut links {
+        if link.kind != agentdocker_core::LinkKind::Task || !card_key(&link.target) {
+            continue;
+        }
+        let found = client
+            .call(&Request::TaskGet {
+                task: link.target.clone(),
+            })
+            .await
+            .with_context(|| format!("the link task:{} names no card", link.target))?;
+        if let Response::TaskDetail { task, .. } = found {
+            link.target = task.id.to_string();
+        }
+    }
+    Ok(links)
 }
 
 /// A moment from the command line: an RFC 3339 time, or a span from now
@@ -2243,7 +2317,32 @@ struct ClaimArgs {
     /// decides is whether the sum fits its capacity.
     #[arg(long)]
     amount: Option<u64>,
+    /// Only a new lease will do: one you already hold is in the way like
+    /// anybody else's, and is not renewed. For a slot one process at a
+    /// time may use (the machine's build slot): a second worker claiming
+    /// as the same agent then waits, with `--wait`, or is refused,
+    /// instead of being told it holds what the first one holds.
+    #[arg(long)]
+    fresh: bool,
 }
+
+/// The seconds a claim asks the daemon to wait. The first ask carries the
+/// whole wait, however long building the request took: taking the time
+/// already spent off it and rounding down would turn `--wait 1` into no
+/// wait at all. A later ask, after a fresh claim met the agent's own
+/// lease, carries what is left in whole seconds, rounded down, so the
+/// daemon is never asked to wait past the deadline.
+fn claim_wait_secs(wait: std::time::Duration, elapsed: std::time::Duration, first: bool) -> u64 {
+    if first {
+        wait.as_secs()
+    } else {
+        wait.saturating_sub(elapsed).as_secs()
+    }
+}
+
+/// How long a fresh claim waits before asking again while another worker
+/// of the same agent holds the lease.
+const FRESH_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Stack for the thread that does the work. Clap's derived parser for
 /// this many commands and the one future behind every command want more
@@ -2420,6 +2519,7 @@ async fn run() -> Result<()> {
             links,
             release_leases,
         }) => {
+            let links = card_links(&client, links).await?;
             let response = client
                 .call(&Request::Checkpoint {
                     agent,
@@ -2477,6 +2577,7 @@ async fn run() -> Result<()> {
             transfer_leases,
             key,
         }) => {
+            let links = card_links(&client, links).await?;
             let request = Request::Handoff {
                 agent,
                 to: Some(to),
@@ -3690,6 +3791,7 @@ async fn run() -> Result<()> {
                     links,
                     fields,
                 } => {
+                    let links = card_links(&client, links).await?;
                     let request = Request::TaskCreate {
                         from: sender::resolve(&client, from)
                             .await?
@@ -3773,6 +3875,7 @@ async fn run() -> Result<()> {
                     take_over_from,
                     project,
                     board,
+                    unblock,
                 } => {
                     let agent = sender::resolve(&client, agent)
                         .await?
@@ -3789,6 +3892,7 @@ async fn run() -> Result<()> {
                                 take_over_from,
                                 project,
                                 board,
+                                unblock,
                             })
                             .await?,
                     );
@@ -3845,6 +3949,7 @@ async fn run() -> Result<()> {
                             Some(given)
                         }
                     };
+                    let links = card_links(&client, links).await?;
                     let request = Request::TaskUpdate {
                         agent: sender::resolve(&client, agent)
                             .await?
@@ -4933,7 +5038,7 @@ async fn run() -> Result<()> {
                 kind: args.kind,
                 payload,
                 reply_to: args.reply_to.map(MessageId::from),
-                links: args.links,
+                links: card_links(&client, args.links).await?,
                 idempotency_key: args.idempotency_key,
             };
             match client.call(&request).await? {
@@ -5354,22 +5459,66 @@ async fn run() -> Result<()> {
             let agent = sender::resolve(&client, args.agent)
                 .await?
                 .context("claim as an agent: give --as, or run from an agent's session")?;
-            let request = Request::Claim {
-                agent,
-                resource: resource_key(&args.resource),
-                amount: args.amount,
-                mode: if args.shared {
-                    LeaseMode::Shared
-                } else {
-                    LeaseMode::Exclusive
-                },
-                ttl_secs: args.ttl,
-                note: args.note,
-                wait_secs: args.wait,
-                priority: args.priority,
-                automatic: false,
+            let resource = resource_key(&args.resource);
+            if args.fresh {
+                // A daemon that does not know the word ignores it and
+                // renews the lease another worker holds, and its answer
+                // reads as a grant. Asked first, where nothing is changed
+                // by asking.
+                let knows = matches!(
+                    client.call(&Request::Ping).await?,
+                    Response::Pong { features, .. }
+                        if features.iter().any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM)
+                );
+                if !knows {
+                    bail!(
+                        "the running daemon does not know a fresh claim: it is older than this command and would renew a lease you already hold instead. Nothing was claimed. `agentdocker daemon restart` switches to the installed build once no agent work is running"
+                    );
+                }
+            }
+            let started = std::time::Instant::now();
+            let wait = std::time::Duration::from_secs(args.wait);
+            let mut first = true;
+            let answer = loop {
+                let request = Request::Claim {
+                    agent: agent.clone(),
+                    resource: resource.clone(),
+                    amount: args.amount,
+                    mode: if args.shared {
+                        LeaseMode::Shared
+                    } else {
+                        LeaseMode::Exclusive
+                    },
+                    ttl_secs: args.ttl,
+                    note: args.note.clone(),
+                    wait_secs: claim_wait_secs(wait, started.elapsed(), first),
+                    priority: args.priority,
+                    automatic: false,
+                    fresh: args.fresh,
+                };
+                first = false;
+                let response = client.call_raw(&request).await?;
+                // Another worker of this same agent holds it. The daemon
+                // queues no agent behind itself, so the wait is kept here:
+                // ask again until it is spent.
+                let own = matches!(
+                    &response,
+                    Response::Error { code: agentdocker_core::ErrorCode::Conflict, details: Some(details), .. }
+                        if details["own"] == true
+                );
+                // Asked again only while some of the wait is left, after
+                // a pause no longer than what is left of it: the last
+                // answer inside the wait is the one that stands.
+                let left = wait.saturating_sub(started.elapsed());
+                if own && !left.is_zero() {
+                    tokio::time::sleep(FRESH_RETRY.min(left)).await;
+                    if !wait.saturating_sub(started.elapsed()).is_zero() {
+                        continue;
+                    }
+                }
+                break client::into_result(response)?;
             };
-            if let Response::Lease { lease } = client.call(&request).await? {
+            if let Response::Lease { lease } = answer {
                 println!("{}", lease.id);
             }
         }
@@ -5408,13 +5557,33 @@ async fn run() -> Result<()> {
                     }
                 }
             } else if let Some(lease) = lease {
-                let request = Request::Release {
-                    agent,
-                    lease: LeaseId::from(lease.as_str()),
-                    summary,
-                    summary_source: agentdocker_core::SummarySource::Explicit,
-                };
-                client.call(&request).await?;
+                // A lease by its id, or by what it is on: the name `claim`
+                // took, which is the one a person has to hand. Which lease
+                // that name stands for is the daemon's to say: it alone
+                // knows a resource's own spelling, and a lease over or
+                // under the resource is not it.
+                if names_a_resource(&lease) {
+                    let request = Request::ReleaseResource {
+                        agent,
+                        resource: resource_key(&lease),
+                        summary,
+                        summary_source: agentdocker_core::SummarySource::Explicit,
+                    };
+                    if let Response::Leases { leases } = client.call(&request).await? {
+                        for lease in leases {
+                            // Which lease the name stood for.
+                            println!("{}", lease.id);
+                        }
+                    }
+                } else {
+                    let request = Request::Release {
+                        agent,
+                        lease: LeaseId::from(lease.as_str()),
+                        summary,
+                        summary_source: agentdocker_core::SummarySource::Explicit,
+                    };
+                    client.call(&request).await?;
+                }
             }
         }
         Command::RequestRelease {
@@ -6779,6 +6948,78 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A claim's first ask carries the whole wait it was given, whatever
+    /// time has already passed; only a later ask carries what is left,
+    /// and never more than that.
+    #[test]
+    fn a_claims_first_ask_carries_its_whole_wait() {
+        use std::time::Duration;
+        let spent = Duration::from_micros(1);
+        for wait in [1, 2, 600] {
+            assert_eq!(
+                claim_wait_secs(Duration::from_secs(wait), spent, true),
+                wait
+            );
+        }
+        assert_eq!(claim_wait_secs(Duration::from_secs(0), spent, true), 0);
+        // Later asks: what is left, rounded down, and nothing once spent.
+        let wait = Duration::from_secs(10);
+        assert_eq!(
+            claim_wait_secs(wait, Duration::from_millis(2_100), false),
+            7
+        );
+        assert_eq!(
+            claim_wait_secs(wait, Duration::from_millis(9_600), false),
+            0
+        );
+        assert_eq!(claim_wait_secs(wait, Duration::from_secs(11), false), 0);
+    }
+
+    /// A task link names its card by id or by the key a person reads on
+    /// the board; a key is told from an id by its dash, and is kept as
+    /// written until the card's id is looked up.
+    #[test]
+    fn a_task_link_may_name_its_card_by_key() {
+        let key = parse_link("task:AD-12").unwrap();
+        assert_eq!(
+            (key.kind, key.target.as_str()),
+            (agentdocker_core::LinkKind::Task, "AD-12")
+        );
+        assert!(card_key("AD-12") && card_key("WEB-APP-7"));
+        // An id, or its prefix, is checked as before and is no key.
+        let id = parse_link("task:5fd54785dd77").unwrap();
+        assert_eq!(id.target, "5fd54785dd77");
+        for not_a_key in ["5fd54785dd77", "AD-", "-12", "AD-1x", "AD 12"] {
+            assert!(!card_key(not_a_key), "{not_a_key}");
+        }
+        assert!(parse_link("task:zz").is_err(), "neither an id nor a key");
+        assert!(parse_link("task:AD-1x").is_err());
+        // Other kinds are untouched.
+        assert!(parse_link("pr:#12").is_ok() && parse_link("pr:AD-12").is_err());
+    }
+
+    /// `release` takes the resource `claim` took as well as a lease's id.
+    #[test]
+    fn release_tells_a_resource_from_a_lease_id() {
+        for resource in [
+            "task:local-cargo-campaign",
+            "path:/work/src",
+            "src/main.rs",
+            "branch:main",
+            "notes",
+        ] {
+            assert!(names_a_resource(resource), "{resource}");
+        }
+        // A word of hex digits alone is a lease id, also where it could
+        // name a file; the file is said with a path's own marks.
+        for id in ["7106a6106c95", "557b785683e8", "abc", "deadbeef"] {
+            assert!(!names_a_resource(id), "{id}");
+        }
+        for file in ["./abc", "path:abc", "deadbeef.rs"] {
+            assert!(names_a_resource(file), "{file}");
+        }
+    }
+
     /// The remedy fits the cause: a memory too long by itself is to be
     /// shortened, and no older memory is blamed for it; one that is
     /// crowded out is told how full a session's start is.

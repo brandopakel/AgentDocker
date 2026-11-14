@@ -683,6 +683,7 @@ pub(super) async fn claim_edits<B: Backend>(
                 wait_secs: 0,
                 priority: 0,
                 automatic: true,
+                fresh: false,
             })
             .await?;
         if let Response::Error {

@@ -1414,6 +1414,7 @@ mod fence_tests {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            fresh: false,
         }
     }
 
@@ -2023,6 +2024,7 @@ mod fence_tests {
                         note: None,
                         amount: None,
                         automatic: false,
+                        fresh: false,
                     })
                     .await
             }
@@ -2064,6 +2066,7 @@ mod fence_tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await
         else {

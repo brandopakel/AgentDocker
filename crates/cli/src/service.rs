@@ -842,6 +842,7 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     executable,
                     experimental,
                     judge,
+                    ..
                 }) => {
                     println!(
                         "daemon    agentd {version} up {} at {}{}",
