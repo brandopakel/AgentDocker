@@ -7473,7 +7473,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
     } = daemon
         .handle(Request::WorktreeCreate {
             agent: "writer".into(),
-            path: made.to_string_lossy().into_owned(),
+            path: Some(made.to_string_lossy().into_owned()),
             branch: "made-branch".into(),
             from: Some(root_sha.clone()),
             seed_build: Vec::new(),
@@ -7487,7 +7487,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
         daemon
             .handle(Request::WorktreeCreate {
                 agent: "writer".into(),
-                path: dir.path().join("bad").to_string_lossy().into_owned(),
+                path: Some(dir.path().join("bad").to_string_lossy().into_owned()),
                 branch: "bad-branch".into(),
                 from: Some("--output=/tmp/x".into()),
                 seed_build: Vec::new(),
@@ -12107,10 +12107,30 @@ async fn run_isolate_gives_the_agent_its_own_worktree_and_branch() {
         .workdir
         .clone()
         .expect("workdir moved to the worktree");
-    let worktrees = project::canonical(&paths::worktree_dir(&daemon.home));
+    // Inside the project, in its own worktrees folder, which the
+    // repository's exclude file keeps out of git: the main checkout does
+    // not see the new one as untracked files.
+    let worktrees = project::canonical(&repo).join(paths::PROJECT_WORKTREES);
     assert!(worktree.starts_with(&worktrees), "{}", worktree.display());
     assert!(worktree.ends_with("writer"), "{}", worktree.display());
     assert!(worktree.join(".git").exists(), "a linked worktree");
+    let excluded = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert!(
+        excluded
+            .lines()
+            .any(|line| line == "/.agentdocker/worktrees/"),
+        "{excluded}"
+    );
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "the main checkout stays clean: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
     assert!(agent.spec.isolate);
     let project = agent.project.clone().expect("in a project");
     assert_eq!(

@@ -343,7 +343,7 @@ Where the ledger records every file change, the journal records what happened an
 
 ### Worktrees and overlap
 
-`agentdocker run --isolate --name writer -- codex …` launches an agent in a linked worktree of its own (branch `agent/writer`, under the daemon home), or `agentdocker worktree-create --as writer ../agent-work --branch agent/work` creates an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Commit the source's changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration and `--apply` prepares an uncommitted merge to review with Git.
+`agentdocker run --isolate --name writer -- codex …` launches an agent in a linked worktree of its own (branch `agent/writer`, in the project's worktrees folder, `.agentdocker/worktrees/`, which is kept out of git), or `agentdocker worktree-create --as writer --branch agent/work` creates an independent checkout by hand in the same folder and prints its path. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Commit the source's changes and run `validate`; `integrate --as writer <that path> --validation <id>` previews integration and `--apply` prepares an uncommitted merge to review with Git.
 
 ### Sessions: run an interactive agent, and attach to it
 

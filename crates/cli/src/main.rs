@@ -108,13 +108,18 @@ enum Command {
     },
     /// List retained image build records, including finished sessions.
     Images,
-    /// Create a new linked checkout and branch without changing existing files.
+    /// Create a new linked checkout and branch without changing existing
+    /// files. With no path it goes in the project's own worktrees folder,
+    /// in a folder named for the branch.
     WorktreeCreate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
-        /// New checkout path, which becomes its physical identifier.
-        path: String,
+        /// Where the new checkout goes, when not in the project's
+        /// worktrees folder (`.agentdocker/worktrees/<branch>` inside the
+        /// project, unless the daemon's `[worktrees] dir` says otherwise).
+        /// Outside the checkout, or inside that folder.
+        path: Option<String>,
         #[arg(long)]
         /// Name of the new branch.
         branch: String,
@@ -7052,6 +7057,37 @@ mod tests {
             .expect("a parsing thread")
             .join()
             .expect("parsing does not panic")
+    }
+
+    /// `worktree-create` needs a branch and no path: the daemon then puts
+    /// the checkout in the project's worktrees folder. A path is still
+    /// taken when given.
+    #[test]
+    fn a_worktree_is_created_with_or_without_a_path() {
+        let path_of = |parsed: super::Cli| match parsed.command {
+            super::Command::WorktreeCreate { path, branch, .. } => {
+                assert_eq!(branch, "agent/fix");
+                path
+            }
+            _ => panic!("not worktree-create"),
+        };
+        let line = ["agentdocker", "worktree-create", "--as", "agent-1"];
+        let parsed = parse_cli([line[0], line[1], line[2], line[3], "--branch", "agent/fix"]);
+        assert_eq!(path_of(parsed.unwrap()), None);
+        let parsed = parse_cli([
+            line[0],
+            line[1],
+            line[2],
+            line[3],
+            "--branch",
+            "agent/fix",
+            "../fix",
+        ]);
+        assert_eq!(path_of(parsed.unwrap()), Some("../fix".to_owned()));
+        assert!(
+            parse_cli([line[0], line[1], line[2], line[3]]).is_err(),
+            "a branch is always named"
+        );
     }
 
     /// `roles set --tools a,b` names a role's tools, each one the MCP

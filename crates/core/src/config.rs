@@ -46,6 +46,55 @@ pub struct DaemonConfig {
     /// unless the person names judgments here.
     #[serde(default)]
     pub judge: JudgeConfig,
+    /// Where the checkouts made for agents go, when not inside each
+    /// project.
+    #[serde(default)]
+    pub worktrees: WorktreesConfig,
+}
+
+/// Where the checkouts made for agents go (`worktree-create` without a
+/// path, an isolated launch).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreesConfig {
+    /// The folder for them. Absent, each project keeps its own inside
+    /// itself ([`crate::paths::PROJECT_WORKTREES`]). A relative folder is
+    /// another place inside each project; an absolute one is one place
+    /// for every project, each in a folder of its own there.
+    #[serde(default)]
+    pub dir: Option<std::path::PathBuf>,
+}
+
+impl WorktreesConfig {
+    /// The folder the checkouts of the project at `root` go in. `project`
+    /// keeps projects apart under an absolute folder. A relative folder
+    /// stays inside the project and out of its git directory: anything
+    /// else is a broken setting, said rather than guessed at.
+    pub fn home(
+        &self,
+        root: &std::path::Path,
+        project: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        use std::path::Component;
+        match &self.dir {
+            None => Ok(root.join(crate::paths::PROJECT_WORKTREES)),
+            Some(dir) if dir.is_absolute() => Ok(dir.join(project)),
+            Some(dir) => {
+                let mut parts = dir.components();
+                let leaves = dir.as_os_str().is_empty()
+                    || !dir.components().all(|c| matches!(c, Component::Normal(_)));
+                let in_git =
+                    matches!(parts.next(), Some(Component::Normal(first)) if first == ".git");
+                if leaves || in_git {
+                    return Err(format!(
+                        "worktrees.dir: `{}` is not a folder inside a project (no `.`, no `..`, not under `.git`); give one, or an absolute path",
+                        dir.display()
+                    ));
+                }
+                Ok(root.join(dir))
+            }
+        }
+    }
 }
 
 /// The experimental switches. Each is off until the file turns it on,
@@ -859,6 +908,37 @@ mod tests {
 
     /// The mirror is off unless turned on, names its projects, keeps its
     /// key in an absolute file and talks https (or http to this machine).
+    #[test]
+    fn worktrees_go_inside_the_project_unless_the_setting_says_where() {
+        use std::path::{Path, PathBuf};
+        let root = Path::new("/work/app");
+        let at = |text: &str| {
+            toml::from_str::<DaemonConfig>(text)
+                .unwrap()
+                .worktrees
+                .home(root, "abc123")
+        };
+        assert_eq!(
+            at(""),
+            Ok(PathBuf::from("/work/app/.agentdocker/worktrees")),
+            "inside the project by default"
+        );
+        assert_eq!(
+            at("[worktrees]\ndir = \"checkouts\"\n"),
+            Ok(PathBuf::from("/work/app/checkouts"))
+        );
+        assert_eq!(
+            at("[worktrees]\ndir = \"/srv/checkouts\"\n"),
+            Ok(PathBuf::from("/srv/checkouts/abc123")),
+            "one place for every project, each apart"
+        );
+        for broken in ["..", "../beside", "a/../b", "./a", ".git/worktrees", ""] {
+            let text = format!("[worktrees]\ndir = \"{broken}\"\n");
+            assert!(at(&text).is_err(), "{broken}");
+        }
+        assert!(toml::from_str::<DaemonConfig>("[worktrees]\nfolder = \"x\"\n").is_err());
+    }
+
     #[test]
     fn the_memory_mirror_is_off_unless_turned_on_and_checked_when_it_is() {
         let key = std::env::temp_dir().join("supermemory.key");
