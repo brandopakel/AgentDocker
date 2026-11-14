@@ -1167,10 +1167,21 @@ pub enum Request {
         as_of: Option<chrono::DateTime<chrono::Utc>>,
     },
     /// Forget a memory for good: its author's or the person's to do.
-    /// Answers `ok`.
+    /// Forgetting a retirement brings back the memory it retired, and is
+    /// that memory's author's to do as well. Answers `ok`.
     MemoryForget {
         from: String,
         memory: String,
+    },
+    /// Retire a memory, with a reason: it is no longer said, stays in the
+    /// history with who retired it and why, and comes back when the
+    /// retirement is forgotten. Anybody working in the memory's project
+    /// who can read it may, and the person. Answers `memory` with the
+    /// retirement, a record of its own that is never said.
+    MemoryRetire {
+        from: String,
+        memory: String,
+        reason: String,
     },
     /// One plan in full, with the cards that carry it out. Answers
     /// `plan`.

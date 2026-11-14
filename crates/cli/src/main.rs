@@ -1192,9 +1192,21 @@ enum MemoryAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
     },
-    /// Forget a memory for good: your own, or any as the person.
+    /// Forget a memory for good: your own, or any as the person. Forgetting
+    /// a retirement brings back the memory it retired.
     Forget {
         memory: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// Retire a memory that is no longer true: it stops being said and
+    /// stays in the history with your reason. Any agent of the project
+    /// may, and the person; it is undone by forgetting the retirement.
+    Retire {
+        memory: String,
+        /// Why it no longer holds; the history keeps it.
+        #[arg(long)]
+        reason: String,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
     },
@@ -3059,7 +3071,18 @@ async fn run() -> Result<()> {
                         .unwrap_or_default();
                     let gone = replaced
                         .get(&memory.id)
-                        .map(|r| format!("  superseded by {} on {}", r.by, r.at.format("%Y-%m-%d")))
+                        .map(|r| match &r.retired {
+                            Some(retired) => format!(
+                                "  retired by {} on {} ({}): {}",
+                                retired.by,
+                                r.at.format("%Y-%m-%d"),
+                                r.by,
+                                retired.reason.replace('\n', " ")
+                            ),
+                            None => {
+                                format!("  superseded by {} on {}", r.by, r.at.format("%Y-%m-%d"))
+                            }
+                        })
                         .unwrap_or_default();
                     println!(
                         "{}  {}  {}{since}{gone}",
@@ -3240,6 +3263,32 @@ async fn run() -> Result<()> {
                         memory,
                     };
                     client.call(&request).await?;
+                }
+                MemoryAction::Retire {
+                    memory,
+                    reason,
+                    from,
+                } => {
+                    let request = Request::MemoryRetire {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        memory,
+                        reason,
+                    };
+                    if let Response::Memory {
+                        memory: retirement, ..
+                    } = client.call(&request).await?
+                    {
+                        // The retirement's id on stdout, as `add` prints
+                        // the id of what it kept; how to undo it beside.
+                        println!("{}", retirement.id);
+                        eprintln!(
+                            "retired {}; `agentdocker memory forget {}` brings it back",
+                            retirement.supersedes.as_deref().unwrap_or("it"),
+                            retirement.id
+                        );
+                    }
                 }
             }
         }

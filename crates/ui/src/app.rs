@@ -2131,12 +2131,15 @@ impl App {
             | EventKind::PlanChanged { .. }
             | EventKind::ProjectFileChanged { .. }
             | EventKind::MemoryAdded { .. }
-            | EventKind::MemoryForgotten { .. } => {
+            | EventKind::MemoryForgotten { .. }
+            | EventKind::MemoryRetired { .. } => {
                 // Every saved search may now answer differently: each is asked
                 // again when its project is on view, this one at once.
                 if matches!(
                     event.kind,
-                    EventKind::MemoryAdded { .. } | EventKind::MemoryForgotten { .. }
+                    EventKind::MemoryAdded { .. }
+                        | EventKind::MemoryForgotten { .. }
+                        | EventKind::MemoryRetired { .. }
                 ) {
                     for form in self.shell.memory.values_mut() {
                         if !form.query.trim().is_empty() {

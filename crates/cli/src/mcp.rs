@@ -1376,11 +1376,12 @@ impl<B: Backend> McpServer<B> {
                     .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
                 self.forward(request).await
             }
-            "add_memory" | "search_memory" | "get_profile" | "forget_memory" => {
+            "add_memory" | "search_memory" | "get_profile" | "forget_memory" | "retire_memory" => {
                 let op = match name {
                     "add_memory" => "memory_add",
                     "search_memory" => "memory_search",
                     "get_profile" => "memory_profile",
+                    "retire_memory" => "memory_retire",
                     _ => "memory_forget",
                 };
                 let mut object = arguments
@@ -2665,6 +2666,9 @@ fn annotations(name: &str) -> Value {
         // back), a channel closed for good, a memory gone. Doing it again
         // changes nothing more.
         "archive_task" | "close_channel" | "forget_memory" => (false, true, true, false),
+        // A memory no longer said, kept in the history and brought back by
+        // forgetting the retirement: nothing is destroyed.
+        "retire_memory" => (false, false, false, false),
         // Changes files in a checkout: an uncommitted merge.
         "integrate_worktree" => (false, true, false, false),
         // The gate is a reading; a verdict is one more word on record.
@@ -3547,13 +3551,26 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "forget_memory",
-            "description": "Forget a memory for good: one you kept. The person can forget any.",
+            "description": "Forget a memory for good: one you kept. The person can forget any. Forgetting a retirement brings back the memory it retired.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "memory": { "type": "string", "description": "The memory's id." }
                 },
                 "required": ["memory"],
+                "additionalProperties": false
+            }
+        }),
+        json!({
+            "name": "retire_memory",
+            "description": "Retire a memory of this project that is no longer true, whoever kept it: it is no longer said to anyone, and stays in the history with your reason. Prefer add_memory with `supersedes` when there is a newer fact to put in its place. Answers the retirement, whose id forget_memory takes to bring the memory back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "memory": { "type": "string", "description": "The memory's id." },
+                    "reason": { "type": "string", "description": "Why it no longer holds." }
+                },
+                "required": ["memory", "reason"],
                 "additionalProperties": false
             }
         }),
@@ -4863,7 +4880,8 @@ mod tests {
                 "add_memory",
                 "search_memory",
                 "get_profile",
-                "forget_memory"
+                "forget_memory",
+                "retire_memory"
             ]
         );
         assert!(tools.iter().all(|t| t["inputSchema"]["type"] == "object"));
