@@ -134,6 +134,14 @@ impl Daemon {
         let checkpoints = state.read_store("checkpoint", |store| {
             store.documents::<Checkpoint>("checkpoint", None)
         })?;
+        // Whom each handoff of a checkpoint is addressed to, by its id.
+        let handoffs = state
+            .read_store("handoff", |store| {
+                store.documents::<agentdocker_core::handoff::HandoffBundle>("handoff", None)
+            })?
+            .into_iter()
+            .filter_map(|bundle| bundle.to.map(|to| (bundle.id, to)))
+            .collect();
         let mut checkouts = state
             .project_checkouts
             .get(project)
@@ -163,6 +171,7 @@ impl Daemon {
             checkouts,
             questions,
             leases,
+            handoffs,
         })
     }
 }
