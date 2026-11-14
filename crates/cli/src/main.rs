@@ -2230,6 +2230,20 @@ struct ClaimArgs {
     fresh: bool,
 }
 
+/// The seconds a claim asks the daemon to wait. The first ask carries the
+/// whole wait, however long building the request took: taking the time
+/// already spent off it and rounding down would turn `--wait 1` into no
+/// wait at all. A later ask, after a fresh claim met the agent's own
+/// lease, carries what is left in whole seconds, rounded down, so the
+/// daemon is never asked to wait past the deadline.
+fn claim_wait_secs(wait: std::time::Duration, elapsed: std::time::Duration, first: bool) -> u64 {
+    if first {
+        wait.as_secs()
+    } else {
+        wait.saturating_sub(elapsed).as_secs()
+    }
+}
+
 /// How long a fresh claim waits before asking again while another worker
 /// of the same agent holds the lease.
 const FRESH_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -5321,6 +5335,7 @@ async fn run() -> Result<()> {
             }
             let started = std::time::Instant::now();
             let wait = std::time::Duration::from_secs(args.wait);
+            let mut first = true;
             let answer = loop {
                 let request = Request::Claim {
                     agent: agent.clone(),
@@ -5333,12 +5348,12 @@ async fn run() -> Result<()> {
                     },
                     ttl_secs: args.ttl,
                     note: args.note.clone(),
-                    // What is left of the wait, when this is a later ask.
-                    wait_secs: wait.saturating_sub(started.elapsed()).as_secs(),
+                    wait_secs: claim_wait_secs(wait, started.elapsed(), first),
                     priority: args.priority,
                     automatic: false,
                     fresh: args.fresh,
                 };
+                first = false;
                 let response = client.call_raw(&request).await?;
                 // Another worker of this same agent holds it. The daemon
                 // queues no agent behind itself, so the wait is kept here:
@@ -6769,6 +6784,33 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A claim's first ask carries the whole wait it was given, whatever
+    /// time has already passed; only a later ask carries what is left,
+    /// and never more than that.
+    #[test]
+    fn a_claims_first_ask_carries_its_whole_wait() {
+        use std::time::Duration;
+        let spent = Duration::from_micros(1);
+        for wait in [1, 2, 600] {
+            assert_eq!(
+                claim_wait_secs(Duration::from_secs(wait), spent, true),
+                wait
+            );
+        }
+        assert_eq!(claim_wait_secs(Duration::from_secs(0), spent, true), 0);
+        // Later asks: what is left, rounded down, and nothing once spent.
+        let wait = Duration::from_secs(10);
+        assert_eq!(
+            claim_wait_secs(wait, Duration::from_millis(2_100), false),
+            7
+        );
+        assert_eq!(
+            claim_wait_secs(wait, Duration::from_millis(9_600), false),
+            0
+        );
+        assert_eq!(claim_wait_secs(wait, Duration::from_secs(11), false), 0);
+    }
+
     /// The remedy fits the cause: a memory too long by itself is to be
     /// shortened, and no older memory is blamed for it; one that is
     /// crowded out is told how full a session's start is.

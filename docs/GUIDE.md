@@ -1626,9 +1626,11 @@ Current behaviour that the sections above do not already state, by area.
   the same identity waits behind the first instead of being answered with
   its lease and building beside it; it works inside a lease the caller
   holds on purpose when that lease is named
-  (`AGENTDOCKER_CAMPAIGN_LEASE=<lease id>`): it renews the named lease,
-  which fails for one this agent does not hold, never releases it, and
-  does not start when the renewal is refused; where the running daemon is
+  (`AGENTDOCKER_CAMPAIGN_LEASE=<lease id>`): it checks that the named
+  lease is an exclusive one on the build slot and renews it, which only
+  its holder can, never releases it, and does not start when either is
+  refused (a lease on something else, a shared hold and a lapsed id all
+  stop the run); where the running daemon is
   older than the CLI and does not know a fresh claim, the CLI refuses it
   with nothing claimed and the run claims as it did before; it
   renews either while the run lasts, and stops instead of starting on top of another campaign —

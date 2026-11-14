@@ -28,10 +28,11 @@ python3 scripts/build_storage.py
 # answered with that worker's lease, both would build at once, and the
 # first to finish would end the other's hold. A caller that holds the slot
 # on purpose and wants this run inside that hold names its lease in
-# AGENTDOCKER_CAMPAIGN_LEASE: the run renews that lease, which is the proof
-# that the agent holds it (nothing is claimed, so no other worker's lease
-# can be taken for it), keeps renewing it while it lasts, never releases
-# it, and does not start when the renewal is refused. With a CLI too old
+# AGENTDOCKER_CAMPAIGN_LEASE: the run checks that the lease of that id is
+# an exclusive one on the build slot and renews it, which only its holder
+# can (nothing is claimed, so no other worker's lease can be taken for
+# it), keeps renewing it while it lasts, never releases it, and does not
+# start when either is refused. With a CLI too old
 # to know `--fresh`, or one newer than the running daemon (the CLI asks
 # the daemon and refuses the fresh claim, with nothing claimed), the claim
 # is plain and a lease the agent held before this run is taken for the
@@ -113,11 +114,19 @@ campaign_start() {
   [ -n "$campaign_agent" ] && campaign_as=(--as "$campaign_agent")
   local renewing
   if [ "$named" != "on" ]; then
-    # The caller holds the slot on purpose and names its lease. Renewing
-    # that lease is the proof: a renewal fails for one that lapsed, was
-    # released, or is somebody else's, and it claims nothing. A list of
-    # holders read beforehand could not say whose a lease is by the time
-    # a claim is answered.
+    # The caller holds the slot on purpose and names its lease. Two things
+    # make that true, and neither is a claim. The lease of that id is the
+    # build slot's own, held exclusively: an id never changes what it is a
+    # lease on, so reading it is no race, and any other lease of the
+    # agent's (a path, a shared hold) would renew just as well and say
+    # nothing about the slot. And renewing it succeeds: a renewal fails
+    # for a lease that lapsed, was released, or is somebody else's.
+    if ! campaign_holders | awk -v id="$named" \
+        '$1 == id && $2 == "task:local-cargo-campaign" && $4 == "exclusive" { found = 1 } END { exit !found }'; then
+      echo "verify.sh: AGENTDOCKER_CAMPAIGN_LEASE names $named, which is not an exclusive lease on task:local-cargo-campaign (it lapsed, was released, or is a lease on something else); not starting cargo. Unset it to have this run take the slot itself." >&2
+      campaign_holders >&2
+      exit 75
+    fi
     if ! output="$(campaign_cli renew "$named" ${campaign_as[@]+"${campaign_as[@]}"} --ttl "$ttl" 2>&1)"; then
       echo "verify.sh: AGENTDOCKER_CAMPAIGN_LEASE names $named, which this agent does not hold (it lapsed, was released, or is another agent's); not starting cargo. Unset it to have this run take the slot itself." >&2
       echo "$output" >&2

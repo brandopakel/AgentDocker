@@ -17,16 +17,21 @@ args = sys.argv[1:]
 with open(log, "a") as f: f.write(" ".join(args) + "\n")
 cmd = args[0] if args else ""
 def held_rows():
+    head = "LEASE ID  RESOURCE  HOLDER  MODE  EXPIRES  NOTE\n"
     if mode in ("held", "held-then-conflict"):
-        return "LEASE ID  RESOURCE  HOLDER\nother001  task:local-cargo-campaign  somebody\n"
+        return head + "other001  task:local-cargo-campaign  somebody  exclusive  in 20m\n"
     if mode in ("preheld", "own-held"):
-        return "LEASE ID  RESOURCE  HOLDER\nlease-known  task:local-cargo-campaign  abc\n"
-    return "LEASE ID  RESOURCE  HOLDER\n"
+        return head + "lease-known  task:local-cargo-campaign  abc  exclusive  in 20m\n"
+    if mode == "own-shared":
+        return head + "lease-known  task:local-cargo-campaign  abc  shared  in 20m\n"
+    return head
 if cmd == "ping": sys.exit(0)
 if cmd == "leases": sys.stdout.write(held_rows()); sys.exit(0)
 if cmd == "register":
     if mode == "register-fails": sys.stderr.write("Error: the project is paused (paused)\n"); sys.exit(4)
     print("transient-id"); sys.exit(0)
+if cmd == "renew" and os.environ.get("FAKE_RENEW_REFUSED"):
+    sys.stderr.write("Error: lease " + args[1] + " belongs to somebody, not abc (forbidden)\n"); sys.exit(5)
 if cmd == "renew":
     # In the scenarios that name a lease, only the one held can be renewed.
     if mode == "own-held" and args[1] != "lease-known":
@@ -213,11 +218,38 @@ class VerifyCampaign(unittest.TestCase):
         result, calls, cargo_env = self.run_verify("own-held", {
             "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "AGENTDOCKER_CAMPAIGN_LEASE": "lease-of-mine"})
         self.assertEqual(result.returncode, 75, result.stderr)
-        self.assertIn("names lease-of-mine, which this agent does not hold", result.stderr)
+        self.assertIn("names lease-of-mine, which is not an exclusive lease on task:local-cargo-campaign", result.stderr)
         self.assertEqual(cargo_env, "")
         joined = "\n".join(calls)
         self.assertNotIn("claim", joined)
         self.assertNotIn("release", joined)
+        # The slot's own exclusive lease, but another agent's: only its
+        # holder can renew it, and the refusal stops the run.
+        result, calls, cargo_env = self.run_verify("held", {
+            "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "FAKE_RENEW_REFUSED": "1",
+            "AGENTDOCKER_CAMPAIGN_LEASE": "other001"})
+        self.assertEqual(result.returncode, 75, result.stderr)
+        self.assertIn("names other001, which this agent does not hold", result.stderr)
+        self.assertEqual(cargo_env, "")
+        joined = "\n".join(calls)
+        self.assertIn("renew other001 --as abc", joined)
+        self.assertNotIn("claim", joined)
+        self.assertNotIn("release", joined)
+
+    def test_a_named_lease_must_be_the_build_slots_own_and_exclusive(self):
+        # Any lease this agent holds would renew: one on an unrelated path
+        # while somebody else has the slot, or a shared hold of the slot,
+        # says nothing about holding it. Neither is renewed, claimed for,
+        # or built under.
+        for mode, named in (("held", "lease-on-an-unrelated-path"), ("own-shared", "lease-known")):
+            result, calls, cargo_env = self.run_verify(mode, {
+                "AGENTDOCKER_AGENT_ID": "abc", "FAKE_FRESH": "1", "AGENTDOCKER_CAMPAIGN_LEASE": named})
+            self.assertEqual(result.returncode, 75, f"{mode}: {result.stderr}")
+            self.assertIn("not an exclusive lease on task:local-cargo-campaign", result.stderr)
+            self.assertEqual(cargo_env, "", f"{mode}: cargo ran without the slot")
+            joined = "\n".join(calls)
+            for never in ("renew", "claim", "release"):
+                self.assertNotIn(never, joined, f"{mode}: {never}")
 
     def test_a_daemon_older_than_the_cli_is_claimed_plainly_and_a_held_lease_is_kept(self):
         # The CLI knows `--fresh` and the running daemon does not: the CLI
