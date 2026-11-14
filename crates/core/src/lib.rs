@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod agentfile;
 pub mod board;
+pub mod brief;
 pub mod change;
 pub mod config;
 pub mod conversation;
