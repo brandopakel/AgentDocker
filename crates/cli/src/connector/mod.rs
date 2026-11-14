@@ -736,9 +736,10 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
         let outcome = change(&mut store);
         if let Err(error) = file.publish(&held, &store) {
             undo(&mut store, &outcome);
-            // The refused change had already replaced the file: put back
-            // what is kept, so the file says what memory says and a restart
-            // never honours a token that was not handed out.
+            // The refused change had already replaced the file: try to put
+            // back what is kept, so the file says what memory says and a
+            // restart honours no token that was not handed out. That save
+            // can fail too; the log then says which state the file is in.
             if let StateError::Unsynced(_) = error {
                 match file.publish(&held, &store) {
                     Ok(()) => {}
@@ -944,7 +945,7 @@ impl<B: Backend + Clone + Send + Sync + 'static> Connector<B> {
                     page(
                         "Try again in a moment",
                         &format!(
-                            "<p>{}</p><p>Nothing was changed. Reload this page in a moment; if it keeps happening, the connector's output on the machine that runs it says why.</p>",
+                            "<p>{}</p><p>The connector did not go on with this request. Reload this page in a moment; if it keeps happening, the connector's output on the machine that runs it says why.</p>",
                             escape_html(&error.description)
                         ),
                     ),
