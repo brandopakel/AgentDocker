@@ -234,7 +234,9 @@ pub fn dirty_paths(dir: &Path, deadline: std::time::Instant) -> Result<Vec<Strin
 /// branch's upstream, else `origin/<branch>`), and the commits its base
 /// lacks, the base being what `origin/HEAD` names, else `origin/main`,
 /// else `origin/master`, else the branch the repository's main checkout is
-/// on. Local refs only, never a fetch. Every git call shares `deadline`.
+/// on, which is marked local (`base_is_local`): being in it is no sign of
+/// having been pushed. Local refs only, never a fetch. Every git call
+/// shares `deadline`.
 /// A ref that is not there is an answer (no upstream, never pushed, no
 /// base); a count git could not give is left `None`, which
 /// [`agentdocker_core::brief::Standing::stands`] never reads as no work.
@@ -280,7 +282,10 @@ pub fn standing(
             "--quiet",
             &format!("{remote}^{{commit}}"),
         ])?;
-        let upstream = ask(&["rev-parse", "--symbolic-full-name", "@{upstream}"])?;
+        // An upstream that is a branch of this repository (`branch.<b>.remote
+        // = .`) is no remote: what is on it was never pushed.
+        let upstream = ask(&["rev-parse", "--symbolic-full-name", "@{upstream}"])?
+            .filter(|full| full.starts_with("refs/remotes/"));
         // What the commits not pushed are counted against: the upstream,
         // else the branch's own name on origin.
         let against = match upstream {
@@ -306,6 +311,7 @@ pub fn standing(
     };
     if let Some(full) = base {
         standing.unmerged = count(&full)?;
+        standing.base_is_local = full.starts_with("refs/heads/");
         standing.base = Some(short_ref(&full));
     }
     Ok(standing)
@@ -529,9 +535,10 @@ mod tests {
         ));
     }
 
-    /// With no remote, the base is the branch the main checkout is on: the
-    /// main checkout is clean and merged, and a linked worktree's commits
-    /// are counted against it, never pushed and never taken for merged.
+    /// With no remote, the base is the branch the main checkout is on,
+    /// marked local: the main checkout is merged into it but never pushed,
+    /// so its work still stands, and a linked worktree's commits are
+    /// counted against it, never pushed and not merged.
     #[test]
     fn a_repository_without_a_remote_is_measured_against_its_main_checkout() {
         if !have_git() {
@@ -543,7 +550,9 @@ mod tests {
         let read = standing(&main, deadline()).unwrap();
         assert_eq!(read.base.as_deref(), Some("main"));
         assert_eq!(read.unmerged, Some(0));
-        assert!(!read.stands());
+        assert!(read.base_is_local);
+        assert!(!read.on_remote());
+        assert!(read.stands(), "merged into itself, but never pushed");
         assert_eq!((read.upstream, read.pushed), (None, None));
 
         let linked = tmp.path().join("linked");

@@ -1593,7 +1593,8 @@ Current behaviour that the sections above do not already state, by area.
   stands (uncommitted paths, commits not pushed or a branch never pushed,
   commits not yet in the base, and at a pushed branch's head what the review
   gate says), as git said when it last read them. A checkout is counted clean
-  only when git said so; what git could not count is said. The brief finds
+  only when git said so: a branch with no remote counts as never pushed, even
+  merged into the main checkout's branch; what git could not count is said. The brief finds
   the project's checkouts itself, so a worktree nobody works in is told even
   when no agent of the project is running. Quoted text in it is what
   agents and you wrote. An agent reads its own project's; you read the
@@ -1603,7 +1604,8 @@ Current behaviour that the sections above do not already state, by area.
   of the project the brief is of, not the directory you are in) for the open
   pull requests and says what the gate says at each one's head: the first
   100, or 2,000 with `--all`, saying when GitHub has more, within the same
-  16 KiB as the rest. A session's start and the `get_brief` tool never ask
+  16 KiB as the rest. What it leaves out it offers by a command that names
+  the project, so it means the same in any directory. A session's start and the `get_brief` tool never ask
   GitHub, and say so. The `get_brief` tool
   gives a session the brief's text.
 

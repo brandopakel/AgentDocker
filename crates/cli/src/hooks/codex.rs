@@ -1449,6 +1449,7 @@ mod tests {
             checkouts_unread: 0,
             not_covered: vec!["pull requests".into()],
             repository: None,
+            project_id: None,
         });
         let delivery = session_start(&backend, &input("SessionStart"), &record).await;
         let text = delivery.output["hookSpecificOutput"]["additionalContext"]

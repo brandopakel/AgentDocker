@@ -285,7 +285,7 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentdocker_core::brief::{Brief, Whose};
+    use agentdocker_core::brief::{Brief, Whose, render};
     use tempfile::TempDir;
 
     async fn register(daemon: &Arc<Daemon>, name: &str, workdir: &std::path::Path) -> AgentRecord {
@@ -524,6 +524,16 @@ mod tests {
         let read = read_through(&daemon, me.id.as_str(), None).await;
         told(&read);
         assert_eq!(read.repository.as_deref(), Some(main.as_path()));
+        // The main checkout, committed with no remote, is merged into its
+        // own branch only: never pushed, so told, from git's read to the
+        // text.
+        let text = render(&read, Utc::now(), usize::MAX);
+        let quoted = serde_json::to_string(&main.display().to_string()).unwrap();
+        let line = text
+            .lines()
+            .find(|l| l.starts_with(&format!("- {quoted} (yours) on main at ")))
+            .unwrap_or_else(|| panic!("{text}"));
+        assert!(line.contains(": never pushed; read "), "{line}");
 
         // A restart, with nobody of the project live: nothing is cached.
         for agent in [&me, &stranger] {
@@ -550,6 +560,18 @@ mod tests {
         let read = read_through(&daemon, HUMAN, Some(from_other.as_str())).await;
         assert!(read.checkouts.iter().all(|c| c.path != linked), "{read:?}");
         assert_eq!(read.repository.as_deref(), Some(other.as_path()));
+        // What it leaves out for room, the person is told to ask for by the
+        // other project's id, which means it from any directory.
+        let whole = render(&read, Utc::now(), usize::MAX);
+        let short = render(&read, Utc::now(), whole.len() - 1);
+        let other_id = stranger.project.as_ref().unwrap().id();
+        assert!(
+            short.contains(&format!(
+                "; `agentdocker brief --all --project {}` shows them.",
+                other_id.as_str()
+            )),
+            "{short}"
+        );
     }
 
     /// An agent reads its own project's brief: its own open card first,

@@ -129,15 +129,19 @@ pub struct Standing {
     /// base or git could not count them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unmerged: Option<usize>,
+    /// The base is a branch of this repository (the main checkout's), not
+    /// a remote's: being in it says nothing of what was pushed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub base_is_local: bool,
 }
 
 impl Standing {
     /// Whether work stands in it, or may: uncommitted paths, commits not
-    /// pushed or not in the base, or a count nobody could take. A checkout
-    /// is clean and merged only when git said so: nothing uncommitted,
-    /// every commit in the base and, where there is an upstream, on it. An
-    /// unknown count is never read as none. One with no commit yet and
-    /// nothing uncommitted holds nothing.
+    /// on a remote, commits not in the base, or a count nobody could take.
+    /// A checkout is clean and merged only when git said so: nothing
+    /// uncommitted, every commit in the base, and every commit on a remote
+    /// ([`Self::on_remote`]). An unknown count is never read as none. One
+    /// with no commit yet and nothing uncommitted holds nothing.
     pub fn stands(&self) -> bool {
         if !self.dirty.is_empty() {
             return true;
@@ -145,8 +149,17 @@ impl Standing {
         if self.head.is_none() {
             return false;
         }
-        let unpushed = self.upstream.is_some() && self.unpushed != Some(0);
-        unpushed || self.unmerged != Some(0)
+        !self.on_remote() || self.unmerged != Some(0)
+    }
+
+    /// Whether git said every commit on HEAD is on a remote: none not
+    /// pushed to the upstream, or, with no upstream, every one in a base
+    /// that is a remote's. A local base says nothing of it.
+    pub fn on_remote(&self) -> bool {
+        match &self.upstream {
+            Some(_) => self.unpushed == Some(0),
+            None => self.base.is_some() && !self.base_is_local && self.unmerged == Some(0),
+        }
     }
 }
 
@@ -225,6 +238,9 @@ pub struct Brief {
     pub checkouts_unread: usize,
     /// What this brief does not cover.
     pub not_covered: Vec<String>,
+    /// The project's id, which names it to `--project` from anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     /// A checkout of the project's repository, where `agentdocker brief`
     /// asks GitHub for its pull requests: the reader's own for an agent,
     /// else the one the person named, else one of the project's. None from
@@ -539,6 +555,7 @@ pub fn compose(records: &Records, reader: &Reader) -> Brief {
             .chain(NOT_COVERED.iter().map(|s| (*s).to_owned()))
             .collect(),
         repository: records.repository.clone(),
+        project_id: Some(records.project.as_str().to_owned()),
     }
 }
 
@@ -777,7 +794,7 @@ struct LeftOut {
 }
 
 impl LeftOut {
-    fn line(&self) -> Option<String> {
+    fn line(&self, all: &str) -> Option<String> {
         let parts: Vec<String> = [
             (self.cards, "card"),
             (self.checkouts, "checkout"),
@@ -792,10 +809,20 @@ impl LeftOut {
         .collect();
         (!parts.is_empty()).then(|| {
             format!(
-                "Left out for room: {}; `agentdocker brief --all` shows them.",
+                "Left out for room: {}; `{all}` shows them.",
                 parts.join(", ")
             )
         })
+    }
+}
+
+/// The command that tells `brief` whole: for the person, of the project
+/// it is of (`--project <id>`), so it means the same wherever it is run;
+/// an agent's brief is of its own project wherever it runs.
+pub fn all_command(brief: &Brief) -> String {
+    match (&brief.reader, &brief.project_id) {
+        (Reader::Person, Some(id)) => format!("agentdocker brief --all --project {}", arg(id)),
+        _ => "agentdocker brief --all".to_owned(),
     }
 }
 
@@ -811,9 +838,9 @@ pub fn title(project: &str) -> String {
 /// in a working lane), the newest checkpoints, the questions waiting on the
 /// person, the leases held, and a count of the cards live agents hold.
 /// Within a section, a line that does not fit ends it, so what is told
-/// keeps its order; what is left is counted in a closing line naming
-/// `agentdocker brief --all`. Nothing at all when even the opening line
-/// does not fit.
+/// keeps its order; what is left is counted in a closing line naming the
+/// command that tells it whole ([`all_command`]). Nothing at all when even
+/// the opening line does not fit.
 pub fn render(brief: &Brief, now: DateTime<Utc>, max_bytes: usize) -> String {
     let not_covered = (!brief.not_covered.is_empty())
         .then(|| format!("Not in this brief: {}.", brief.not_covered.join(" and ")));
@@ -827,8 +854,9 @@ pub fn render(brief: &Brief, now: DateTime<Utc>, max_bytes: usize) -> String {
         leases: brief.leases.len(),
         holders: brief.held_live.len(),
     };
-    let reserve =
-        most.line().map_or(0, |l| l.len() + 1) + not_covered.as_ref().map_or(0, |l| l.len() + 1);
+    let all = all_command(brief);
+    let reserve = most.line(&all).map_or(0, |l| l.len() + 1)
+        + not_covered.as_ref().map_or(0, |l| l.len() + 1);
     let mut text = title(&brief.project);
     if text.len() + reserve > max_bytes {
         return String::new();
@@ -969,7 +997,7 @@ pub fn render(brief: &Brief, now: DateTime<Utc>, max_bytes: usize) -> String {
         text.push('\n');
         text.push_str(&line);
     }
-    if let Some(line) = left.line() {
+    if let Some(line) = left.line(&all) {
         text.push('\n');
         text.push_str(&line);
     }
@@ -1039,8 +1067,12 @@ fn checkout_line(c: &CheckoutLine, now: DateTime<Utc>) -> String {
         (Some(upstream), None) => parts.push(format!(
             "git could not count the commits not pushed to {upstream}"
         )),
-        (None, _) if standing.branch.is_some() && standing.head.is_some() => {
-            parts.push("never pushed".to_owned());
+        (None, _) if standing.head.is_some() && !standing.on_remote() => {
+            parts.push(if standing.branch.is_some() {
+                "never pushed".to_owned()
+            } else {
+                "not on any remote".to_owned()
+            });
         }
         _ => {}
     }
@@ -1137,7 +1169,7 @@ fn bounded(text: &str, max: usize) -> String {
 /// is when it is a plain word, single-quoted for a shell when it holds a
 /// space or a quote, and quoted as data when it holds a control character,
 /// which no command line should be built from.
-fn arg(text: &str) -> String {
+pub fn arg(text: &str) -> String {
     let text = bounded(text, CHECKOUT_CHARS);
     if !text.is_empty()
         && text
@@ -1843,11 +1875,13 @@ mod tests {
 
     /// A checkout is counted clean and merged only when git said so: a
     /// committed branch with no remote and no base, or a count git could
-    /// not take, is told with what is unknown. One with no commit and
-    /// nothing uncommitted, or merged into a local base, holds nothing. A
-    /// listing git could not give is said, and the notice of pull requests
-    /// is the only one `agentdocker brief` takes out, from a part-1
-    /// daemon's list too.
+    /// not take, is told with what is unknown, and one merged into a local
+    /// base only is still never pushed, detached or not. One with no commit
+    /// and nothing uncommitted, or merged into a remote's base, holds
+    /// nothing. A listing git could not give is said, and the notice of
+    /// pull requests is the only one `agentdocker brief` takes out, from a
+    /// part-1 daemon's list too. The person's way to the whole brief names
+    /// the project; an agent's is its own.
     #[test]
     fn unknown_or_never_pushed_work_is_never_counted_clean() {
         let me = agent("me", "/work/orchard", true, &[]);
@@ -1892,6 +1926,29 @@ mod tests {
                     branch: Some("done".into()),
                     head: head(),
                     base: Some("main".into()),
+                    unmerged: Some(0),
+                    base_is_local: true,
+                    ..Standing::default()
+                },
+                Some("never pushed; read"),
+            ),
+            (
+                "/work/detached-locally",
+                Standing {
+                    head: head(),
+                    base: Some("main".into()),
+                    unmerged: Some(0),
+                    base_is_local: true,
+                    ..Standing::default()
+                },
+                Some("detached at eeeeeeeeeeee: not on any remote; read"),
+            ),
+            (
+                "/work/merged-on-remote",
+                Standing {
+                    branch: Some("done".into()),
+                    head: head(),
+                    base: Some("origin/main".into()),
                     unmerged: Some(0),
                     ..Standing::default()
                 },
@@ -1938,6 +1995,13 @@ mod tests {
         brief.pull_requests_supplied();
         assert_eq!(brief.not_covered, ["checkouts"]);
         assert!(NOT_COVERED.iter().all(|n| n.starts_with(PULL_REQUESTS)));
+
+        assert_eq!(all_command(&brief), "agentdocker brief --all");
+        brief.reader = Reader::Person;
+        let all = format!("agentdocker brief --all --project {}", project().as_str());
+        assert_eq!(all_command(&brief), all);
+        let short = render(&brief, now(), 600);
+        assert!(short.contains(&format!("`{all}` shows them.")), "{short}");
     }
 
     /// Within every bound the text stays within it, keeps each section's
