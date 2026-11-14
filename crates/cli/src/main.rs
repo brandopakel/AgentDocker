@@ -848,6 +848,8 @@ enum Command {
         agent: Option<String>,
         /// The lease's id, as `claim` printed it, or the resource it is
         /// on, as `claim` took it (`task:local-cargo-campaign`, a path).
+        /// A word of hex digits alone is read as a lease id: write a file
+        /// of such a name as `./abc` or `path:abc`.
         #[arg(required_unless_present = "all", value_name = "LEASE|RESOURCE")]
         lease: Option<String>,
         /// Release every lease this agent holds.
@@ -2010,7 +2012,9 @@ fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
 
 /// Whether `release` was given a resource rather than a lease's id: an id
 /// is a run of hex digits, and a resource has a kind (`task:…`) or is a
-/// path.
+/// path. A lease id must stay unambiguous, so a bare word of hex digits
+/// is always an id, even where `claim` would take it for a file of that
+/// name: `./abc` or `path:abc` says the file.
 fn names_a_resource(text: &str) -> bool {
     text.contains([':', '/', '.']) || !text.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -5478,52 +5482,22 @@ async fn run() -> Result<()> {
                 }
             } else if let Some(lease) = lease {
                 // A lease by its id, or by what it is on: the name `claim`
-                // took, which is the one a person has to hand.
+                // took, which is the one a person has to hand. Which lease
+                // that name stands for is the daemon's to say: it alone
+                // knows a resource's own spelling, and a lease over or
+                // under the resource is not it.
                 if names_a_resource(&lease) {
-                    let resource = resource_key(&lease);
-                    let held = match client
-                        .call(&Request::Leases {
-                            agent: Some(agent.clone()),
-                            resource: Some(resource.clone()),
-                        })
-                        .await?
-                    {
-                        Response::Leases { leases } => leases,
-                        _ => Vec::new(),
+                    let request = Request::ReleaseResource {
+                        agent,
+                        resource: resource_key(&lease),
+                        summary,
+                        summary_source: agentdocker_core::SummarySource::Explicit,
                     };
-                    // The resource's own leases, not those over or under
-                    // it; a single lease answered under another spelling
-                    // of the same resource is the one meant.
-                    let exact: Vec<&agentdocker_core::Lease> = held
-                        .iter()
-                        .filter(|l| l.resource.as_str() == resource)
-                        .collect();
-                    let chosen = match (exact.as_slice(), held.as_slice()) {
-                        ([], [only]) => vec![only],
-                        (exact, _) => exact.to_vec(),
-                    };
-                    if chosen.is_empty() {
-                        // The class the daemon gives a lease id it does
-                        // not know, so a script branches on one status.
-                        return Err(client::RemoteError {
-                            code: agentdocker_core::ErrorCode::NotFound,
-                            message: format!(
-                                "you hold no lease on {resource}; `agentdocker leases` lists what is held"
-                            ),
-                            details: None,
+                    if let Response::Leases { leases } = client.call(&request).await? {
+                        for lease in leases {
+                            // Which lease the name stood for.
+                            println!("{}", lease.id);
                         }
-                        .into());
-                    }
-                    for lease in chosen {
-                        let request = Request::Release {
-                            agent: agent.clone(),
-                            lease: lease.id.clone(),
-                            summary: summary.clone(),
-                            summary_source: agentdocker_core::SummarySource::Explicit,
-                        };
-                        client.call(&request).await?;
-                        // Which lease the name stood for.
-                        println!("{}", lease.id);
                     }
                 } else {
                     let request = Request::Release {
@@ -6960,8 +6934,13 @@ mod tests {
         ] {
             assert!(names_a_resource(resource), "{resource}");
         }
-        for id in ["7106a6106c95", "557b785683e8"] {
+        // A word of hex digits alone is a lease id, also where it could
+        // name a file; the file is said with a path's own marks.
+        for id in ["7106a6106c95", "557b785683e8", "abc", "deadbeef"] {
             assert!(!names_a_resource(id), "{id}");
+        }
+        for file in ["./abc", "path:abc", "deadbeef.rs"] {
+            assert!(names_a_resource(file), "{file}");
         }
     }
 

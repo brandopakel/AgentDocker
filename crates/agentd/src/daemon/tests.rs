@@ -10961,6 +10961,124 @@ async fn aliases_and_root_claims_conflict_for_outsiders_without_project_markers(
     assert_eq!(leases.len(), 1);
 }
 
+/// A lease is released by the resource it is on, and by that resource
+/// alone. The lease on a folder is not released by naming a file in it,
+/// nor a file's by naming its folder: either is `not_found` and what is
+/// held stays held. Another spelling of the resource (a `file:` alias, a
+/// path with `..` in it) releases it though other leases of the holder
+/// overlap it, and nobody releases a lease by a name they do not hold.
+#[tokio::test]
+async fn a_lease_is_released_by_the_exact_resource_it_is_on() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = dir.path().join("checkout");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::write(checkout.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let owner = register_in(&daemon, "owner", &checkout).await;
+    register(&daemon, "other", None).await;
+    let folder = format!("path:{}", checkout.join("src").display());
+    let file = format!("path:{}", checkout.join("src/main.rs").display());
+    let project = owner.project.as_ref().unwrap().id();
+    let d = &daemon;
+    let take = |resource: String| async move {
+        match claim(d, "owner", &resource).await {
+            Response::Lease { lease } => lease.id,
+            other => panic!("{resource}: {other:?}"),
+        }
+    };
+    let release = |agent: &str, resource: String| Request::ReleaseResource {
+        agent: agent.to_owned(),
+        resource,
+        summary: None,
+        summary_source: Default::default(),
+    };
+    let released = |response: Response| match response {
+        Response::Leases { leases } => leases.into_iter().map(|l| l.id).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    let held = || async {
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: Some("owner".into()),
+                resource: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        leases.into_iter().map(|l| l.id).collect::<Vec<_>>()
+    };
+    let not_found = |response: Response| {
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+    };
+
+    // The folder alone: naming a file in it releases nothing.
+    let on_folder = take(folder.clone()).await;
+    not_found(daemon.handle(release("owner", file.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // Folder and file: an alias of the file releases the file's lease and
+    // only that, though the folder's lease overlaps it.
+    let on_file = take(file.clone()).await;
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", format!("file:{project}/src/main.rs")))
+                .await
+        ),
+        [on_file]
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // The file alone: naming its folder releases nothing.
+    assert_eq!(
+        released(daemon.handle(release("owner", folder.clone())).await),
+        [on_folder]
+    );
+    let on_file = take(file.clone()).await;
+    not_found(daemon.handle(release("owner", folder.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_file));
+
+    // Another spelling of the same path is the same resource.
+    let roundabout = format!("path:{}", checkout.join("src/../src/main.rs").display());
+    assert_eq!(
+        released(daemon.handle(release("owner", roundabout)).await),
+        [on_file]
+    );
+    assert!(held().await.is_empty());
+
+    // A task by its name; and a name is no key to somebody else's lease.
+    let on_task = take("task:slot".to_owned()).await;
+    not_found(
+        daemon
+            .handle(release("other", "task:slot".to_owned()))
+            .await,
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_task));
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", "task:slot".to_owned()))
+                .await
+        ),
+        [on_task]
+    );
+    not_found(
+        daemon
+            .handle(release("owner", "task:slot".to_owned()))
+            .await,
+    );
+}
+
 #[tokio::test]
 async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
     let dir = TempDir::new().unwrap();
