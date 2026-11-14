@@ -2001,11 +2001,34 @@ async fn journal_within<B: Backend>(
         return String::new();
     }
     let bytes = room - heading;
-    // A character takes at most four bytes, so this many characters fit
-    // the room whatever the text: a daemon that predates `max_bytes`
-    // ignores it and bounds the characters alone, and still keeps the room.
-    let chars = max_chars.min(bytes / 4);
+    // A character takes at most four bytes, so a quarter as many characters
+    // as the room has bytes fit it whatever the text, on a daemon that
+    // predates `max_bytes` and bounds the characters alone. A daemon that
+    // says it bounds the bytes too is asked for the characters the room
+    // has bytes for. It is asked only when the quarter would cut the
+    // digest short.
+    let full = max_chars.min(bytes);
+    let chars = if full > bytes / 4
+        && daemon_lists(
+            backend,
+            agentdocker_core::protocol::FEATURE_DIGEST_MAX_BYTES,
+        )
+        .await
+    {
+        full
+    } else {
+        max_chars.min(bytes / 4)
+    };
     journal_digest(backend, me, max_entries, chars, Some(bytes)).await
+}
+
+/// Whether the daemon says, in `pong.features`, that it honours `feature`.
+/// A daemon older than the list, or one that does not answer, does not.
+async fn daemon_lists<B: Backend>(backend: &B, feature: &str) -> bool {
+    matches!(
+        backend.call(Request::Ping).await,
+        Ok(Response::Pong { features, .. }) if features.iter().any(|f| f == feature)
+    )
 }
 
 async fn journal_digest<B: Backend>(
@@ -3188,6 +3211,17 @@ mod tests {
         );
     }
 
+    /// A daemon's answer to `ping`, listing `features`.
+    fn pong(features: &[&str]) -> Response {
+        serde_json::from_value(json!({
+            "type": "pong",
+            "version": "test",
+            "uptime_secs": 1,
+            "features": features,
+        }))
+        .unwrap()
+    }
+
     fn digest_reply(text: &str) -> Response {
         use agentdocker_core::{Digest, ProjectRef};
         Response::Digest {
@@ -3753,6 +3787,7 @@ mod tests {
             Response::Messages {
                 messages: Vec::new(),
             },
+            pong(&[agentdocker_core::protocol::FEATURE_DIGEST_MAX_BYTES]),
             digest_reply("Since you last looked (1 entry):\n- 4m ago   codex-1 noted: x\n"),
             Response::Memories {
                 memories: vec![kept.clone()],
@@ -3777,7 +3812,7 @@ mod tests {
             "one quoted line per memory, with its id and author: {text}"
         );
         assert!(matches!(
-            &backend.requests()[4],
+            &backend.requests()[5],
             Request::MemoryProfile { from: Some(from), max_chars: Some(MEMORY_PROFILE_CHARS), .. }
                 if from == me.id.as_str()
         ));
@@ -3830,6 +3865,7 @@ mod tests {
             Response::Messages {
                 messages: Vec::new(),
             },
+            pong(&[agentdocker_core::protocol::FEATURE_DIGEST_MAX_BYTES]),
             digest_reply(""),
             Response::Memories {
                 memories: vec![start.clone()],
@@ -3997,6 +4033,7 @@ mod tests {
                 Response::Messages {
                     messages: Vec::new(),
                 },
+                pong(&[agentdocker_core::protocol::FEATURE_DIGEST_MAX_BYTES]),
                 digest_reply(""),
                 Response::Memories {
                     memories: vec![rule.clone()],
@@ -4040,7 +4077,7 @@ mod tests {
         assert_eq!(told, [rule.id.clone(), freeze.id.clone()]);
         assert!(text.len() < 6 * 1024);
         assert!(matches!(
-            &backend.requests()[5],
+            &backend.requests()[6],
             Request::MemorySearch { query, min_score: Some(_), .. }
                 if query == "why does the deploy freeze on Fridays"
         ));
@@ -4234,6 +4271,7 @@ mod tests {
             Response::Messages {
                 messages: vec![waiting.clone()],
             },
+            pong(&[agentdocker_core::protocol::FEATURE_DIGEST_MAX_BYTES]),
             digest_reply("Since you last looked (1 entry):\n- 4m ago   codex-1 noted: x\n"),
             Response::Memories {
                 memories: vec![rule.clone(), news.clone()],
@@ -4263,7 +4301,7 @@ mod tests {
         assert!(once.contains(waiting.id.as_str()), "{once}");
         assert!(!once.contains("Project memory") && !once.contains("AgentDocker journal"));
         assert!(matches!(
-            &backend.requests()[4],
+            &backend.requests()[5],
             Request::MemoryProfile { from: Some(from), max_chars: Some(MEMORY_PROFILE_CHARS), .. }
                 if from == me.id.as_str()
         ));
@@ -4506,6 +4544,7 @@ mod tests {
             Response::Messages {
                 messages: Vec::new(),
             },
+            pong(&[agentdocker_core::protocol::FEATURE_DIGEST_MAX_BYTES]),
             digest_reply(
                 "Since you last looked (1 entry):\n- 4m ago   codex-1 [main] noted: \"parser is next\"\n",
             ),
@@ -4521,12 +4560,14 @@ mod tests {
         assert!(text.contains("AgentDocker journal"), "{text}");
         assert!(text.contains("parser is next"), "{text}");
         assert!(matches!(
-            &backend.requests()[3],
+            &backend.requests()[4],
             Request::Journal { project, digest: Some(d), .. }
                 if project.is_empty() && d.reader == me.id.as_str() && d.advance
-                    && d.max_entries == 20 && d.max_chars <= 2000
-                    && d.max_bytes.is_some_and(|b| d.max_chars * 4 <= b)
+                    && d.max_entries == 20 && d.max_chars == 2000
+                    && d.max_bytes.is_some_and(|b| b >= 2000)
         ));
+        // Asked first whether the daemon bounds a digest's bytes.
+        assert!(matches!(&backend.requests()[3], Request::Ping));
 
         // A prompt: the digest alone is worth speaking for, within the
         // smaller budget.
@@ -6217,6 +6258,8 @@ mod tests {
         /// Bound digests in characters alone, as a daemon that predates
         /// `max_bytes` does.
         ignores_max_bytes: bool,
+        /// What `ping` lists; none answers as a daemon older than the list.
+        features: Vec<&'static str>,
         memories: Vec<agentdocker_core::memory::Memory>,
     }
 
@@ -6228,6 +6271,7 @@ mod tests {
                 digest: RefCell::new(None),
                 journal_fill: None,
                 ignores_max_bytes: false,
+                features: Vec::new(),
                 memories: Vec::new(),
             }
         }
@@ -6277,6 +6321,7 @@ mod tests {
                     memories: self.memories.clone(),
                     left_out: Vec::new(),
                 },
+                Request::Ping if !self.features.is_empty() => pong(&self.features),
                 _ => Response::Ok,
             })
         }
@@ -6528,6 +6573,42 @@ mod tests {
             .unwrap();
         assert!(text.len() <= CONTEXT_BYTES, "{} bytes", text.len());
         assert!(text.contains("pause for the night"), "{text}");
+    }
+
+    /// A daemon that lists byte-bounded digests is asked for the start's
+    /// full characters, and bounds the bytes itself: a plain journal gets
+    /// its 2,000 characters, a wide one keeps the start within its bound.
+    #[tokio::test]
+    async fn a_daemon_listing_byte_bounded_digests_is_asked_for_the_full_characters() {
+        use agentdocker_core::ProjectRef;
+        let mut me = agent("claude-01234567", true);
+        me.spec
+            .labels
+            .insert("session_id".into(), input("SessionStart").session_id);
+        me.project = Some(ProjectRef::directory("/work/alpha"));
+        for fill in ['x', '\u{1F680}'] {
+            let mut daemon = Queue::new(me.clone(), vec![message("sender", "pause for the night")]);
+            daemon.journal_fill = Some(fill);
+            daemon.features = vec![agentdocker_core::protocol::FEATURE_DIGEST_MAX_BYTES];
+            let delivery = HookDelivery {
+                backend: &daemon,
+                pending: RefCell::new(Vec::new()),
+                channel_input: false,
+                channel_home: None,
+            };
+            let out = claude_code(&delivery, &input("SessionStart"), &opts())
+                .await
+                .unwrap()
+                .unwrap();
+            let text = out["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap();
+            assert!(text.len() <= CONTEXT_BYTES, "{fill}: {} bytes", text.len());
+            assert!(text.contains("pause for the night"), "{text}");
+            let (chars, bytes) = daemon.digest.borrow().unwrap();
+            assert_eq!(chars, 2000, "{fill}");
+            assert!(bytes.is_some_and(|b| b >= 2000), "{bytes:?}");
+        }
     }
 
     /// A prompt's journal is read within what its recall's bound and the
