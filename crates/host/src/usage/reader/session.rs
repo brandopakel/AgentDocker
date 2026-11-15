@@ -11,6 +11,10 @@ use super::*;
 
 pub struct Preparation {
     pub ready: bool,
+    /// The accepted bytes this pass hashed: what it consumed, so a proof's
+    /// passes add up to its prefix however the deadline cuts them. The
+    /// reader may have taken more from the file into its buffer when the
+    /// deadline ended the pass; the next pass reads those bytes again.
     pub bytes_read: u64,
 }
 
@@ -136,7 +140,23 @@ impl Session {
         bytes: u64,
         elapsed: Duration,
     ) -> Result<Preparation, Error> {
-        if bytes == 0 || bytes > MAX_BATCH || elapsed.is_zero() {
+        if elapsed.is_zero() {
+            return Err(Error::Budget);
+        }
+        self.prepare_while(path, bytes, |start| start.elapsed() < elapsed)
+    }
+
+    /// [`Self::prepare_next`], reading on while `more` says so: asked, with
+    /// the time the pass started, before each read of the file. The
+    /// deadline is one such answer; a test gives another, to end a pass at
+    /// a chosen point with no clock involved.
+    fn prepare_while(
+        &mut self,
+        path: &Path,
+        bytes: u64,
+        mut more: impl FnMut(Instant) -> bool,
+    ) -> Result<Preparation, Error> {
+        if bytes == 0 || bytes > MAX_BATCH {
             return Err(Error::Budget);
         }
         let mut file = crate::files::open_regular(path)?;
@@ -144,10 +164,11 @@ impl Session {
             .generation
             .check_within(Generation::capture(&file)?)?;
         let start = Instant::now();
-        file.seek(SeekFrom::Start(self.checked))?;
-        let allowance = bytes.min(self.cursor.offset - self.checked);
+        let from = self.checked;
+        file.seek(SeekFrom::Start(from))?;
+        let allowance = bytes.min(self.cursor.offset - from);
         let mut reader = BufReader::with_capacity(8192, file.take(allowance));
-        while self.checked < self.cursor.offset && start.elapsed() < elapsed {
+        while self.checked < self.cursor.offset && more(start) {
             let available = reader.fill_buf()?;
             if available.is_empty() {
                 break;
@@ -181,7 +202,10 @@ impl Session {
                 self.line.clear();
             }
         }
-        let bytes_read = allowance - reader.get_ref().limit();
+        // Counted as consumed, not as taken from the file: a pass the
+        // deadline ends mid-buffer leaves up to the buffer's size read but
+        // unhashed, and `checked` is where the next pass starts again.
+        let bytes_read = self.checked - from;
         self.cursor
             .generation
             .check_within(Generation::capture(reader.get_ref().get_ref())?)?;
@@ -700,6 +724,44 @@ mod tests {
         let mut whole = Session::at_snapshot(captured, Some(&restored)).unwrap();
         assert!(whole.proves_whole_prefix());
         assert_eq!(prove(&mut whole, &path).unwrap(), text.len() as u64);
+    }
+
+    /// A proof's passes add up to its prefix however the deadline cuts
+    /// them. A pass the deadline ends stops at a record boundary with the
+    /// rest of its buffer taken from the file but not hashed; those bytes
+    /// are the next pass's, counted once. Each pass here is ended after
+    /// one read of the file, a record of about 5.8 KB out of an 8 KiB
+    /// buffer, so every pass stops mid-buffer, on any machine: counted as
+    /// taken, each would be 8,192 and the sum past the file.
+    #[test]
+    fn passes_cut_mid_buffer_count_each_byte_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cut.jsonl");
+        let rows: Vec<String> = (0..40).map(row).collect();
+        let text = rows.concat();
+        assert!(rows.iter().all(|row| row.len() < 8192 && row.len() > 4096));
+        std::fs::write(&path, &text).unwrap();
+        let (cursor, _) = collect(&path, None);
+        let captured = Cursor::capture(&path, Runtime::Claude).unwrap();
+        let mut session = Session::at_snapshot(captured, Some(&cursor)).unwrap();
+        let mut counted = Vec::new();
+        loop {
+            let mut reads = 0;
+            let progress = session
+                .prepare_while(&path, MAX_BATCH, |_| {
+                    reads += 1;
+                    reads == 1
+                })
+                .unwrap();
+            counted.push(progress.bytes_read);
+            if progress.ready {
+                break;
+            }
+            assert!(counted.len() <= rows.len(), "{counted:?}");
+        }
+        let lengths: Vec<u64> = rows.iter().map(|row| row.len() as u64).collect();
+        assert_eq!(counted, lengths, "a record a pass, each counted once");
+        assert_eq!(counted.iter().sum::<u64>(), text.len() as u64);
     }
 
     #[test]
