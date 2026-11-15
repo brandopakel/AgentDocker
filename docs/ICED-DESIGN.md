@@ -641,9 +641,10 @@ control does, its id or its accessible label:
   fixed rail and the one column on view. Lists are rows inside a panel; prose sits in cards; the terminal
   and command output sit in a bezel of the chosen terminal palette's ground.
   Filters sit left and search right on one row. The background service is
-  said once, at the rail's foot (`service_chip`), as a chip (*Reconnecting…*,
-  *Service is older*) with the full words its detail, and only when it calls for
-  something: reconnecting, older than the app with **Restart…**
+  said once, at the rail's foot (`service_chip`), as a chip (*Connecting…*,
+  *Reconnecting…*, *Service is older*) with the full words its detail, and only when it calls for
+  something: connecting, since the window opened (`service-connecting`), reconnecting, after a service
+  was lost (`service-reconnecting`), older than the app with **Restart…**
   (`daemon-restart`), or an update to install (`open-available-update`); a healthy one says nothing, and a lost
   connection has no second banner on the page. The bottom
   strip exists only while a restart is confirmed or under way. What just
@@ -710,7 +711,22 @@ command.
 - Observed process, installed tool, configured integration and current activity
   are separate facts. The app displays daemon observations and keeps unknown
   states explicit. Disconnection retains the last snapshot, said once by the
-  rail foot's *Reconnecting…*; the session panel's readiness dot adds *Last known*.
+  rail foot's *Reconnecting…*; the session panel's readiness dot says
+  *Readiness unavailable*.
+- The link to the background service is one value (`link::Link`): connecting,
+  until a service first answers; up; or down, keeping what the last service
+  said. What a service says of itself (its version and place, whether it
+  keeps conversations, the open restart question) belongs to its connection.
+  A new connection asks all of it again and shows the last answer until the
+  new one arrives, so nothing on view jumps. The event stream and the worker
+  report on the service each in its own time, so the link counts its
+  connections (`link::Connection`, one more each time it comes up or goes
+  down), the worker reads the count as it starts a call, and what the call
+  brings back carries it: the answer, and the call's own word that the link is
+  up or down. The link takes only what was asked on the connection it has
+  now, so what a replaced service answers late is never recorded as its
+  successor's, and a call to it that returns late neither brings the link up
+  nor takes it down. The event stream's own reports are always taken.
 - Questions preserve drafts across navigation and failed sends. Duplicate sends
   are disabled while waiting. A successful reply means delivery, not proof that
   an agent consumed it or resumed work.

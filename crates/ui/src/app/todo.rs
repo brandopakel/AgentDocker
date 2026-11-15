@@ -103,7 +103,7 @@ impl App {
     }
 
     pub(super) fn todo_row(&self, task: &Task, c: Colors) -> Element<'_, Message> {
-        let connected = self.connected.is_ok();
+        let connected = self.link.is_up();
         let root = self
             .shell
             .catalog

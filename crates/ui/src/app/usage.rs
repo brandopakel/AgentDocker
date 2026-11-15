@@ -878,7 +878,7 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         let dir = tempfile::tempdir().unwrap();
         let project = agentdocker_core::ProjectRef::directory(dir.path().join("project"));
         let root = project.root.display().to_string();
@@ -941,7 +941,7 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         let dir = tempfile::tempdir().unwrap();
         let first = agentdocker_core::ProjectRef::directory(dir.path().join("first"));
         let second = agentdocker_core::ProjectRef::directory(dir.path().join("second"));
@@ -972,10 +972,17 @@ mod tests {
         );
         // The daemon goes while that read is on its way: the read is not
         // waited for, and the reconnect asks again for the screen on view.
-        messages.send(Msg::Disconnected("gone".into())).unwrap();
+        messages
+            .send(Msg::Disconnected(
+                crate::app::link::Report::Stream,
+                "gone".into(),
+            ))
+            .unwrap();
         app.drain();
         assert!(app.usage_pending.is_none());
-        messages.send(Msg::Connected).unwrap();
+        messages
+            .send(Msg::Connected(crate::app::link::Report::Stream))
+            .unwrap();
         app.drain();
         assert!(
             commands
@@ -993,7 +1000,7 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         for _ in 0..3 {
             messages
                 .send(Msg::Agents(Vec::new(), BTreeMap::new()))
@@ -1209,7 +1216,7 @@ mod tests {
         let (tx, _commands) = queue::channel();
         let (_messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         let project = agentdocker_core::ProjectRef::directory("/fixture/usage");
         let root = project.root.display().to_string();
         app.shell.catalog.remember(project.clone(), true).unwrap();

@@ -523,7 +523,7 @@ impl App {
                 page = page.push(action(
                     "board-more",
                     if loading { "Loading…" } else { "Show more" },
-                    (self.connected.is_ok() && !loading).then_some(Message::TasksMore),
+                    (self.link.is_up() && !loading).then_some(Message::TasksMore),
                     false,
                 ));
             }
@@ -579,7 +579,7 @@ impl App {
             page = page.push(action(
                 "board-more",
                 if loading { "Loading…" } else { "Show more" },
-                (self.connected.is_ok() && !loading).then_some(Message::TasksMore),
+                (self.link.is_up() && !loading).then_some(Message::TasksMore),
                 false,
             ));
         }
@@ -816,8 +816,8 @@ impl App {
                     "board-new",
                     "New agent workflow board",
                     container(icon(Icon::Add, c.muted, 14.0)).center(18),
-                    self.connected
-                        .is_ok()
+                    self.link
+                        .is_up()
                         .then(|| Message::BoardNew("agents".into())),
                     false,
                     Kind::Ghost,
@@ -992,7 +992,7 @@ impl App {
             primary(
                 "lane-settings-save",
                 "Save",
-                self.connected.is_ok().then_some(Message::LaneSettingsSave)
+                self.link.is_up().then_some(Message::LaneSettingsSave)
             ),
         ]
         .spacing(8)
@@ -1061,8 +1061,8 @@ impl App {
                     format!("lane-archive-{slug}"),
                     format!("Archive every card in {}", lane.name),
                     container(icon(Icon::Download, c.faint, 12.0)).center(16),
-                    self.connected
-                        .is_ok()
+                    self.link
+                        .is_up()
                         .then(|| Message::ArchiveLane(slug.clone())),
                     false,
                     Kind::Ghost,
@@ -1078,8 +1078,8 @@ impl App {
                 format!("lane-add-card-{slug}"),
                 format!("Add a card to {}", lane.name),
                 container(icon(Icon::Add, c.muted, 13.0)).center(16),
-                self.connected
-                    .is_ok()
+                self.link
+                    .is_up()
                     .then(|| Message::QuickAdd(Some(slug.clone()))),
                 false,
                 Kind::Ghost,
@@ -1390,7 +1390,7 @@ impl App {
         use super::shell::CardFieldKind as K;
         let id = task.id.clone();
         let lane = board.lane_of(task);
-        let connected = self.connected.is_ok();
+        let connected = self.link.is_up();
         let draft = &self.shell.card_draft;
         let icon_button =
             |control: String, words: String, glyph: Icon, tone, message: Option<Message>| {
@@ -1954,7 +1954,7 @@ impl App {
     /// Only the opened card's full detail can authorize a start. The board
     /// page may omit prerequisites; missing detail keeps the action unavailable.
     pub(super) fn card_startable(&self, id: &TaskId) -> bool {
-        self.connected.is_ok()
+        self.link.is_up()
             && self.task_open.as_ref() == Some(id)
             && self
                 .card
@@ -1976,7 +1976,7 @@ impl App {
     fn card_extras(&self, task: &Task, c: Colors) -> Element<'_, Message> {
         use super::shell::CardMenu;
         use agentdocker_core::LinkKind;
-        let connected = self.connected.is_ok();
+        let connected = self.link.is_up();
         let icon_button = |control: String, words: String, glyph: Icon, tone, message| {
             tip(
                 custom_sized(
@@ -2229,7 +2229,7 @@ impl App {
     /// The project's tags: each its colour (pressed, the next one) and a
     /// delete; a new one by name.
     fn tag_settings(&self, c: Colors) -> Element<'_, Message> {
-        let connected = self.connected.is_ok();
+        let connected = self.link.is_up();
         let tags = self
             .selected_project_root()
             .and_then(|p| self.workspaces.get(&p))
@@ -2299,7 +2299,7 @@ impl App {
         c: Colors,
     ) -> Element<'a, Message> {
         use super::shell::{RuleActionKind as A, RuleFieldKind as F};
-        let connected = self.connected.is_ok();
+        let connected = self.link.is_up();
         let rules: Vec<agentdocker_core::Rule> = self
             .selected_project_root()
             .and_then(|p| self.workspaces.get(&p))
@@ -2508,7 +2508,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.open();
         let project = agentdocker_core::ProjectRef::directory("/work/orchard");
         let board = agentdocker_core::Board::from_template(
             project.id(),
@@ -2588,7 +2588,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.open();
         let project = agentdocker_core::ProjectRef::directory("/work/orchard");
         let now = chrono::Utc::now();
         let hours = |h: i64| now - chrono::Duration::hours(h);

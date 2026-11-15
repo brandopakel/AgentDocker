@@ -224,7 +224,7 @@ impl App {
                 } else {
                     "Reconnect here"
                 },
-                (!self.shell.starting() && self.connected.is_ok())
+                (!self.shell.starting() && self.link.is_up())
                     .then(|| Message::Reconnect(agent.id.to_string())),
                 false,
             ));
@@ -348,7 +348,7 @@ mod tests {
         let (tx, _commands) = super::super::queue::channel();
         let (_messages, rx) = std::sync::mpsc::sync_channel(super::super::MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         app.agents = agents;
         app
     }

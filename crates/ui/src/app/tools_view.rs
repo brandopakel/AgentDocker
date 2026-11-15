@@ -552,7 +552,7 @@ impl App {
             .map(|agent| self.readiness_decision(agent).state)
             .collect();
         // A receiver holding input for the person's typing is a ready one.
-        let ready = self.connected.is_ok()
+        let ready = self.link.is_up()
             && states
                 .iter()
                 .any(|state| matches!(state, State::Ready { .. } | State::HeldForTyping));
@@ -795,7 +795,7 @@ impl App {
             page = page.push(action(
                 "register-all-discovered",
                 format!("Connect all ({})", self.discovered.len()),
-                self.connected.is_ok().then_some(Message::AdoptAll),
+                self.link.is_up().then_some(Message::AdoptAll),
                 false,
             ));
         }
@@ -1124,7 +1124,7 @@ impl App {
             for agent in &state.sessions {
                 let seen = |kind| {
                     agent.adapter_contacts.get(&kind).is_some_and(|contact| {
-                        self.connected.is_ok() && contact.current_for(agent.process_started_at, now)
+                        self.link.is_up() && contact.current_for(agent.process_started_at, now)
                     })
                 };
                 // Each route's contact as a chip: *MCP · recent*, *Hooks ·
@@ -2849,7 +2849,7 @@ mod tests {
         let (tx, _commands) = crate::app::queue::channel();
         let (_sender, rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         let runtime = RuntimeInfo {
             name: "codex".into(),
             vendor: "fixture".into(),
@@ -2966,7 +2966,7 @@ mod tests {
         let (tx, _commands) = crate::app::queue::channel();
         let (_sender, rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         let mut runtime = RuntimeInfo {
             name: "claude-code".into(),
             vendor: "fixture".into(),
@@ -3096,7 +3096,7 @@ mod tests {
         let (tx, _commands) = crate::app::queue::channel();
         let (_sender, rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         let c = Colors::new(false);
         let plan = |channel: &str| {
             serde_json::json!({
@@ -3186,7 +3186,7 @@ mod tests {
         let (tx, _commands) = crate::app::queue::channel();
         let (_sender, rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         let c = Colors::new(false);
         let plan = |phase: &str| {
             serde_json::json!({

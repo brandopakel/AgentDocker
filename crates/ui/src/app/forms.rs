@@ -91,7 +91,7 @@ impl Draft {
 impl App {
     /// Refuse stale, completed, disconnected or sending forms before editing or submitting.
     pub(super) fn active_form(&self, id: &MessageId) -> Option<(Value, McpForm)> {
-        if self.connected.is_err() || self.sending.contains(id) {
+        if !self.link.is_up() || self.sending.contains(id) {
             return None;
         }
         let question = self

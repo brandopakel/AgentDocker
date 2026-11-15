@@ -564,8 +564,8 @@ impl App {
             let actions: Element<'_, Message> = match &question.presentation {
                 Some(presentation @ QuestionPresentation::CodexCommand { .. }) if live => {
                     let answer = |label: &str| {
-                        self.connected
-                            .is_ok()
+                        self.link
+                            .is_up()
                             .then(|| Message::AnswerChoice(id.clone(), label.into()))
                     };
                     let mut buttons = row![compact(
@@ -763,8 +763,7 @@ impl App {
                         } else {
                             "Connect"
                         },
-                        (self.connected.is_ok() && !connecting)
-                            .then_some(Message::Adopt(process.pid)),
+                        (self.link.is_up() && !connecting).then_some(Message::Adopt(process.pid)),
                         Kind::Secondary,
                     ),
                 ));
@@ -859,7 +858,7 @@ impl App {
         let id = question.id.clone();
         let busy = self.sending.contains(&id);
         let expired = question.expired(now);
-        let enabled = !busy && !expired && self.connected.is_ok();
+        let enabled = !busy && !expired && self.link.is_up();
         // The choice on its way, while it is: the card's receipt.
         let chosen = self.shell.chosen_answers.get(&id).filter(|_| busy).cloned();
         let presentation = question
@@ -1802,8 +1801,7 @@ impl App {
         let shown = self.recent_window(&shown, 30);
         let ids: Vec<_> = shown.iter().map(|m| m.id.clone()).collect();
         if ids.len() > 1 {
-            let enabled =
-                self.connected.is_ok() && ids.iter().all(|id| !self.dismissing.contains(id));
+            let enabled = self.link.is_up() && ids.iter().all(|id| !self.dismissing.contains(id));
             convo = convo.push(row![
                 Space::new().width(Fill),
                 compact(
@@ -1831,7 +1829,7 @@ impl App {
             let entry = self.shell.session_drafts.get(id);
             let draft = entry.map(|e| e.draft.text.clone()).unwrap_or_default();
             let sending = entry.is_some_and(|e| e.draft.sending.is_some());
-            let ready = live && self.connected.is_ok() && !sending && !draft.trim().is_empty();
+            let ready = live && self.link.is_up() && !sending && !draft.trim().is_empty();
             let owner = id.to_owned();
             let mut composer = column![
                 row![
@@ -1957,8 +1955,7 @@ impl App {
             head = head.push(compact(
                 format!("dismiss-message-{id}"),
                 if busy { "…" } else { "Clear" },
-                (!busy && self.connected.is_ok())
-                    .then_some(Message::DismissInbox(vec![id.clone()])),
+                (!busy && self.link.is_up()).then_some(Message::DismissInbox(vec![id.clone()])),
                 Kind::Ghost,
             ));
         }
@@ -2002,7 +1999,7 @@ mod tests {
         let (tx, commands) = super::super::super::queue::channel();
         let (_, rx) = std::sync::mpsc::sync_channel(super::super::super::MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.open();
         (app, commands)
     }
 

@@ -57,9 +57,10 @@ pub(super) fn hidden_conversation(conversation: &str) -> bool {
 
 impl App {
     /// Whether the daemon lists conversations, so this screen can be shown
-    /// instead of the inbox.
+    /// instead of the inbox: what this connection's daemon said, or the
+    /// last one's until it has.
     pub(super) fn has_conversations(&self) -> bool {
-        self.conversations_supported == Some(true)
+        self.link.conversations().shown() == Some(true)
     }
 
     /// Unread across the conversations that are the person's to answer:
@@ -653,7 +654,7 @@ impl App {
                             "mark-all-read",
                             "Mark all read",
                             "Mark all read",
-                            self.connected.is_ok().then_some(Message::MarkAllRead),
+                            self.link.is_up().then_some(Message::MarkAllRead),
                             c.accent,
                         ),
                     ]
@@ -1073,7 +1074,7 @@ impl App {
         let draft = self.shell.conversation_drafts.get(&key);
         let text_now = draft.map(|d| d.text.clone()).unwrap_or_default();
         let sending = draft.is_some_and(|d| d.sending.is_some());
-        let ready = can_send && self.connected.is_ok() && !sending && !text_now.trim().is_empty();
+        let ready = can_send && self.link.is_up() && !sending && !text_now.trim().is_empty();
         let owner = key.clone();
         let submit = ready.then(|| Message::SendConversation(key.clone()));
         // A direct conversation's composer keeps the inbox's `reply-<agent>`
@@ -2020,8 +2021,8 @@ mod tests {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
-        app.conversations_supported = Some(true);
+        app.link.open();
+        app.with_conversations(true);
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = AgentId::from("human-id");
         let mut asker = record("codex-1", "codex", Some(1));
@@ -2077,8 +2078,8 @@ mod tests {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
-        app.conversations_supported = Some(true);
+        app.link.open();
+        app.with_conversations(true);
         let mut project = ProjectRef::directory("/fixture/alpha");
         project.fingerprint = Some("alpha-fingerprint".into());
         app.shell.catalog.remember(project.clone(), false).unwrap();
@@ -2212,7 +2213,7 @@ mod tests {
         let (commands, requests) = queue::channel();
         let (_messages, receiver) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, receiver);
-        app.connected = Ok(());
+        app.link.open();
         let mut agent = AgentRecord::new(Default::default(), false, Utc::now());
         agent.id = "worker".into();
         app.agents.push(agent);
@@ -2264,8 +2265,8 @@ mod tests {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
-        app.conversations_supported = Some(true);
+        app.link.open();
+        app.with_conversations(true);
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = AgentId::from("human-id");
         let mut worker = record("worker", "codex", Some(1));
@@ -2438,7 +2439,7 @@ mod tests {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.open();
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = AgentId::from("human-id");
         let mut agent = record("codex-1", "codex", Some(1));

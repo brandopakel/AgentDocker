@@ -64,7 +64,7 @@ impl App {
                                     SecretText::new(text).ok(),
                                 )
                             },
-                            self.connected.is_ok(),
+                            self.link.is_up(),
                         ),
                     );
                 }
@@ -76,8 +76,8 @@ impl App {
                     } else {
                         "Acknowledge provider retention notice"
                     },
-                    self.connected
-                        .is_ok()
+                    self.link
+                        .is_up()
                         .then_some(Message::SecretAcknowledge(review.id.clone(), !acknowledged)),
                     acknowledged,
                 ));
@@ -87,14 +87,14 @@ impl App {
                     ghost(
                         format!("temporary-cancel-{}", review.id),
                         "Cancel",
-                        self.connected
-                            .is_ok()
+                        self.link
+                            .is_up()
                             .then_some(Message::SecretCancel(review.id.clone()))
                     ),
                     primary(
                         format!("temporary-submit-{}", review.id),
                         "Submit once",
-                        (self.connected.is_ok() && self.secrets.ready(&review.id, now))
+                        (self.link.is_up() && self.secrets.ready(&review.id, now))
                             .then_some(Message::SecretSubmit(review.id.clone()))
                     ),
                 ]
