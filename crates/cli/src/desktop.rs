@@ -20,6 +20,7 @@ use sha2::{Digest, Sha256};
 use agentdocker_host::{command, dirs, project};
 use launch_services::{Registrar, Registration};
 
+mod condition;
 mod launch_services;
 mod maintenance;
 mod update;
@@ -703,16 +704,18 @@ impl Layout {
         if let Some(legacy) = &self.legacy_application {
             ensure!(
                 self.path_is_replaceable(legacy)?,
-                "{} already exists outside this installation; preserved",
-                legacy.display()
+                "{} already exists outside this installation; preserved: {}",
+                legacy.display(),
+                condition::PRESERVED
             );
         }
         for (path, target) in self.links() {
             match path.symlink_metadata() {
                 Ok(metadata) => ensure!(
                     metadata.file_type().is_symlink() && path.read_link()? == target,
-                    "{} already exists outside this installation; preserved",
-                    path.display()
+                    "{} already exists outside this installation; preserved: {}",
+                    path.display(),
+                    condition::PRESERVED
                 ),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
                 Err(error) => return Err(error.into()),
@@ -721,16 +724,18 @@ impl Layout {
         if cfg!(target_os = "macos") {
             ensure!(
                 self.application_is_replaceable()?,
-                "{} already exists outside this installation; preserved",
-                self.application.display()
+                "{} already exists outside this installation; preserved: {}",
+                self.application.display(),
+                condition::PRESERVED
             );
         } else {
             match self.application.symlink_metadata() {
                 Ok(metadata) => ensure!(
                     metadata.is_file()
                         && std::fs::read_to_string(&self.application)? == self.launcher()?,
-                    "{} is an existing or edited launcher; preserved",
-                    self.application.display()
+                    "{} is an existing or edited launcher; preserved: {}",
+                    self.application.display(),
+                    condition::PRESERVED
                 ),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
                 Err(error) => return Err(error.into()),
@@ -1347,7 +1352,7 @@ fn run_unix(args: DesktopArgs, socket: Option<PathBuf>) -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(
-                    &json!({"prefix":layout.prefix,"application":layout.application,"installation":active,"homebrew":homebrew,"daemon":daemon})
+                    &json!({"prefix":layout.prefix,"application":layout.application,"installation":active,"condition":layout.condition(active.as_ref()),"homebrew":homebrew,"daemon":daemon})
                 )?
             );
             return Ok(());
@@ -1812,7 +1817,7 @@ mod tests {
         rehash(layout, release)
     }
 
-    fn rehash(layout: &Layout, mut release: Release) -> Release {
+    pub(super) fn rehash(layout: &Layout, mut release: Release) -> Release {
         let old = layout.root.join("versions").join(&release.id);
         release.id = tree_hash(&layout.payload(&release)).unwrap();
         release.tree_sha256 = release.id.clone();
