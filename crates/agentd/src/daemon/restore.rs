@@ -327,7 +327,7 @@ impl Daemon {
                 {
                     break;
                 }
-                state.release_all(id.as_str(), None, SummarySource::Explicit, false);
+                state.release_all(id.as_str(), None, SummarySource::Explicit, false, None);
                 if state.storage_error.is_some() {
                     break;
                 }
@@ -1241,6 +1241,7 @@ mod tests {
                     note: None,
                     amount: None,
                     automatic: false,
+                    actor: None,
                     fresh: false,
                 })
                 .await,
@@ -1693,6 +1694,7 @@ mod tests {
                     note: None,
                     amount: None,
                     automatic: false,
+                    actor: None,
                     fresh: false,
                 })
                 .await,

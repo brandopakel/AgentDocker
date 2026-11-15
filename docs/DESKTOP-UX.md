@@ -147,7 +147,19 @@ folder but no tty or process, and a folder is not an identity (an agent can work
 in another folder than its tab reports, and that folder can be another tab's). The
 standing chip beside the name in its details says in its detail what it is
 doing, its tool and where it runs (*in Terminal (ttys005)*, *in
-tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
+tmux:%3*). Under the name, the daemon's three-part answer is three chips, one
+each, so idle and needs-input are never one word: its **state** — **Working**
+(on its task), **Blocked** (waiting on a lease another agent holds), **Done**,
+**Failed** (red) or **Stopped** — its **status** this moment — **Busy**,
+**Waiting** (amber when it waits on you; neutral, with a clock, when only on a
+lease) or **Idle** — and, when it waits on you, **what for**: **Wants
+permission**, **Needs input** (in its own terminal: a question dialog, a
+choice, an unsent draft), **Sandbox request** or **Has a question** (one it
+asked here). How good the word is lives in the status chip's detail: *Weak
+evidence: inferred, not reported* when it rests on an idle timer, a quiet
+terminal or no fresh report at all, which is also why **Idle** on weak
+evidence never claims more than that. A daemon predating the answer shows no
+such chips. Its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
 An agent without a terminal to reach opens its details instead.
 
@@ -189,6 +201,14 @@ its next colour (Claude Code's eight), its cross deletes it — pressed twice, a
 the second press takes it from every agent holding it and says how many — and
 **New role** adds one by name. The person is given no roles. With a daemon that
 has no palette, none of this is shown.
+
+An agent in a **Claude Code agent team** shows one more chip after its name
+in the session list and in its panel: **Lead of &lt;team&gt;** for the lead,
+**Teammate of &lt;lead&gt;** for a teammate, each an icon and its words, in the
+colour the lead gave the teammate (the same eight as roles) and the quiet
+tones otherwise. The full relation — the teammate's own name, its lead and its
+team — is the chip's tooltip and its spoken value. Nothing of the team is
+edited here: its names, colours and inboxes are Claude's.
 **Open in…** (the code icon beside the terminal icon in the header) opens the project's folder in an editor
 installed on this computer: a small menu lists the ones found (the one chosen
 last first, remembered with the workspace preferences), and with only one

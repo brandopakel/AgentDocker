@@ -302,6 +302,7 @@ mod tests {
                         wait_secs: 0,
                         priority: 0,
                         automatic: false,
+                        actor: None,
                         fresh: false,
                     })
                     .await
@@ -348,6 +349,7 @@ mod tests {
                         wait_secs: 20,
                         priority: 0,
                         automatic: false,
+                        actor: None,
                         fresh: false,
                     })
                     .await
@@ -386,6 +388,7 @@ mod tests {
                     summary: None,
                     summary_source: Default::default(),
                     only_automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Error { .. }

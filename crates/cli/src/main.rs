@@ -815,8 +815,10 @@ enum Command {
     /// Scan selected local transcripts without starting a daemon or changing its accounting.
     #[command(hide = true)]
     UsageScan(UsageScanArgs),
-    /// What each agent is doing: working, idle, or blocked on a named
-    /// resource held by a named agent.
+    /// What each agent is up to, in three words: its state (working,
+    /// blocked, done, failed, stopped), its status this moment (busy,
+    /// waiting, idle) and what it waits for from you (permission, input,
+    /// sandbox, question), with a block's resource and its holder.
     Activity {
         /// Only this agent.
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -903,6 +905,10 @@ enum Command {
         /// What changed and why; becomes the project's journal entry.
         #[arg(long)]
         summary: Option<String>,
+        /// With `--all`: only the leases this teammate owns inside the
+        /// session (a Claude Code in-process teammate's id).
+        #[arg(long, requires = "all")]
+        actor: Option<String>,
     },
     /// Ask whoever holds a resource to let go of it: each holder gets a `release_request` message and answers with `respond-release`; the answer comes back to you as a `release_response` message.
     RequestRelease {
@@ -2375,6 +2381,11 @@ struct ClaimArgs {
     /// decides is whether the sum fits its capacity.
     #[arg(long)]
     amount: Option<u64>,
+    /// Who inside this session takes it, where the session runs several
+    /// agents in one process (a Claude Code in-process teammate's id):
+    /// kept on the lease and named in a refusal.
+    #[arg(long)]
+    actor: Option<String>,
     /// Only a new lease will do: one you already hold is in the way like
     /// anybody else's, and is not renewed. For a slot one process at a
     /// time may use (the machine's build slot): a second worker claiming
@@ -5092,6 +5103,7 @@ async fn run() -> Result<()> {
                         reason: None,
                         detail: None,
                         source: None,
+                        evidence: None,
                     },
                 })
                 .await?;
@@ -5600,6 +5612,7 @@ async fn run() -> Result<()> {
                     priority: args.priority,
                     automatic: false,
                     fresh: args.fresh,
+                    actor: args.actor.clone(),
                 };
                 first = false;
                 let response = client.call_raw(&request).await?;
@@ -5645,6 +5658,7 @@ async fn run() -> Result<()> {
             lease,
             all,
             summary,
+            actor,
         } => {
             let agent = sender::resolve(&client, agent)
                 .await?
@@ -5655,6 +5669,7 @@ async fn run() -> Result<()> {
                     summary,
                     summary_source: agentdocker_core::SummarySource::Explicit,
                     only_automatic: false,
+                    actor,
                 };
                 if let Response::Leases { leases } = client.call(&request).await? {
                     for lease in leases {
@@ -6422,16 +6437,52 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
                 Activity::Unknown => ("no fresh activity reports".into(), None),
                 Activity::Starting | Activity::Finished => (String::new(), None),
             };
+            // The three parts in words; a daemon predating them gives
+            // none, and the one activity word stands in for the state.
+            let (state, status, waiting_for) = match a.identity() {
+                Some(identity) => (
+                    identity.state.word().to_owned(),
+                    identity.status.word().to_owned(),
+                    identity.waiting_for.word().to_owned(),
+                ),
+                None => (
+                    a.activity.label().to_owned(),
+                    "-".to_owned(),
+                    "-".to_owned(),
+                ),
+            };
+            let detail = match a.evidence {
+                Some(agentdocker_core::status::Evidence::Weak) if detail.is_empty() => {
+                    "weak evidence".to_owned()
+                }
+                Some(agentdocker_core::status::Evidence::Weak) => {
+                    format!("{detail} (weak evidence)")
+                }
+                _ => detail,
+            };
             vec![
                 a.agent.short().to_owned(),
                 a.name.clone(),
-                a.activity.label().to_owned(),
+                state,
+                status,
+                waiting_for,
                 detail,
                 since.map(format::ago).unwrap_or_else(|| "-".to_owned()),
             ]
         })
         .collect();
-    format::table(&["AGENT ID", "NAME", "DOING", "DETAIL", "SINCE"], &rows);
+    format::table(
+        &[
+            "AGENT ID",
+            "NAME",
+            "STATE",
+            "STATUS",
+            "WAITING FOR",
+            "DETAIL",
+            "SINCE",
+        ],
+        &rows,
+    );
 }
 
 /// Agents, then — dimmed — running agent processes nobody registered,
@@ -6448,11 +6499,18 @@ fn print_agents(
         activity
             .iter()
             .find(|a| a.agent == *id)
-            .map(|a| format::activity_cell(&a.activity))
+            .map(format::activity_cell)
             .unwrap_or_else(|| "-".to_owned())
     };
     let in_session =
         agents.iter().any(|a| a.session.is_some()) || unadopted.iter().any(|p| p.session.is_some());
+    // Said only where a Claude Code team is: the column is noise otherwise.
+    let in_team =
+        agents.iter().any(|a| a.team.is_some()) || unadopted.iter().any(|p| p.team.is_some());
+    let team_cell = |team: Option<&agentdocker_core::TeamMembership>| {
+        team.map(agentdocker_core::TeamMembership::describe)
+            .unwrap_or_else(|| "-".to_owned())
+    };
     let session_cell = |session: Option<&Session>| {
         session
             .map(Session::describe)
@@ -6520,6 +6578,9 @@ fn print_agents(
             if in_session {
                 row.push(session_cell(a.session.as_ref()));
             }
+            if in_team {
+                row.push(team_cell(a.team.as_ref()));
+            }
             row.push(
                 a.pid
                     .map(|p| p.to_string())
@@ -6555,6 +6616,9 @@ fn print_agents(
         if in_session {
             row.push(session_cell(p.session.as_ref()));
         }
+        if in_team {
+            row.push(team_cell(p.team.as_ref()));
+        }
         row.push(p.pid.to_string());
         row.push(
             p.started_at
@@ -6575,6 +6639,9 @@ fn print_agents(
     }
     if in_session {
         headers.push("LIVES IN");
+    }
+    if in_team {
+        headers.push("TEAM");
     }
     headers.extend(["PID", "CREATED"]);
     format::table_dimming(&headers, &rows, |i| i >= first_unadopted);

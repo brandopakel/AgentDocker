@@ -85,6 +85,7 @@ mod review;
 mod roles;
 mod secret_reviews;
 mod tasks;
+mod teams;
 mod topics;
 mod transport;
 mod usage;
@@ -555,6 +556,22 @@ struct State {
     /// its linked worktrees. Refreshed off the lock on the same tick as
     /// the VCS sweep, because enumerating them runs git.
     project_checkouts: HashMap<ProjectId, Vec<PathBuf>>,
+    /// Claude Code's configuration directory by the daemon's own
+    /// environment (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), as read when
+    /// the daemon started: where a session's team files are read from
+    /// only when nothing says which directory the session itself uses.
+    /// `None` where neither could be told.
+    claude_config_dir: Option<PathBuf>,
+    /// Each live Claude Code process's command line and configuration
+    /// directory as last read, by pid and birth, so they are read from the
+    /// process table and its environment once rather than on every tick.
+    team_processes: teams::ProcessCache,
+    /// The roster each live Claude Code record was placed by, as last read
+    /// from that session's own configuration directory: who a lease's
+    /// actor is, and how a refusal names it. Kept per record, so two
+    /// directories with a team of one name never stand for each other. In
+    /// memory only: read again on the next tick.
+    team_rosters: HashMap<AgentId, agentdocker_core::Team>,
     /// Where each checkout stood when git was last asked, by path, with
     /// its project: read off the lock on the checkout tick and by a brief
     /// that finds none read. In memory only: a restarted daemon reads them
@@ -640,6 +657,14 @@ struct State {
     /// and never persisted: a restart drops every waiting client, which
     /// reconnects and takes a new place.
     waiting: agentdocker_core::WaitQueue,
+    /// The three-part answer last announced for each agent
+    /// (`agent_status_changed`), so a recomputation that leaves it as it
+    /// was says nothing. Memory only: derived from the records, seeded
+    /// from them at startup without an announcement.
+    statuses: HashMap<AgentId, agentdocker_core::IdentityStatus>,
+    /// A status refresh is announcing: its own announcements' commits do
+    /// not start another.
+    refreshing_statuses: bool,
     /// Where desktop notifications are handed off to be posted. `None`
     /// until the daemon starts its notifier, and in tests.
     notifier: Option<mpsc::Sender<humans::Notice>>,
@@ -1415,6 +1440,9 @@ impl Daemon {
         state.expire_questions(Utc::now());
         state.expire_release_requests(Utc::now());
         state.expire_secret_reviews();
+        // A word that expired changes an agent's answer with no event of
+        // its own; the tick is where that is noticed.
+        state.refresh_statuses(Utc::now());
     }
     /// Send the stale and contested notices that accumulated since the
     /// last tick, one message per reader and per channel.
@@ -1531,6 +1559,32 @@ impl Daemon {
                     EventKind::AgentExited {
                         agent: record.id.clone(),
                         status: record.status.clone(),
+                    },
+                    now,
+                );
+                if fenced {
+                    let record = record.clone();
+                    deferred.push(Box::new(move |store, seq| {
+                        event.seq = seq;
+                        store.agent_transition(&record, &event)?;
+                        Ok(1)
+                    }));
+                } else {
+                    event.seq = next_seq;
+                    store.agent_transition(&record, &event)?;
+                    next_seq += 1;
+                }
+            }
+            // A record written before `first_hand_at` was kept: a judgment
+            // its stored first-hand report superseded comes off now, said
+            // and written as that report would have taken it off.
+            if record.status.is_live() && agentdocker_core::judgment::settle_loaded(&mut record) {
+                let mut event = Event::new(
+                    EventKind::AgentJudgmentCleared {
+                        agent: record.id.clone(),
+                        reason: agentdocker_core::judgment::ClearReason::Superseded
+                            .as_str()
+                            .to_owned(),
                     },
                     now,
                 );
@@ -1747,76 +1801,84 @@ impl Daemon {
             home,
             socket,
             started: Instant::now(),
-            state: Mutex::new(State {
-                discovered: Discovered::default(),
-                store,
-                storage_error: None,
-                starting_cards: BTreeMap::new(),
-                ledger_since: HashMap::new(),
-                content_proofs: read_content::Proofs::default(),
-                coordination: match pending_transfer {
-                    Some(transfer) => Coordination::Quiescing {
-                        transfer: transfer.id,
+            state: Mutex::new(
+                State {
+                    discovered: Discovered::default(),
+                    store,
+                    storage_error: None,
+                    starting_cards: BTreeMap::new(),
+                    ledger_since: HashMap::new(),
+                    content_proofs: read_content::Proofs::default(),
+                    coordination: match pending_transfer {
+                        Some(transfer) => Coordination::Quiescing {
+                            transfer: transfer.id,
+                        },
+                        None => Coordination::Serving,
                     },
-                    None => Coordination::Serving,
-                },
-                owner_successor: None,
-                deferred_recovery: deferred,
-                in_flight: 0,
-                skipped_write: false,
-                registry,
-                leases,
-                inboxes,
-                inbox_bytes,
-                live_subscribers: HashMap::new(),
-                keyed_sends: agentdocker_core::idempotency::IdempotencyLedger::default(),
-                supervised: HashMap::new(),
-                pending_restarts: HashSet::new(),
-                container_busy: HashSet::new(),
-                transports: HashMap::new(),
-                projects,
-                next_seq,
-                bus,
-                events,
-                journal_seq: HashMap::new(),
-                journal_rings: HashMap::new(),
-                config_notice: None,
-                otlp_status: otlp::Status::default(),
-                agent_config_notice: None,
-                read_set_notice: None,
-                topic_config_notice: None,
-                last_head: HashMap::new(),
-                last_branch: HashMap::new(),
-                worktree_creators: HashMap::new(),
-                project_checkouts: HashMap::new(),
-                checkout_reads: HashMap::new(),
-                checkout_scans: HashSet::new(),
-                committing: std::collections::BTreeSet::new(),
-                removing: BTreeMap::new(),
-                controller_pins: HashMap::new(),
-                question_waiters: HashSet::new(),
-                held_answers: HashMap::new(),
-                pending_stale: HashMap::new(),
-                stale_outstanding: HashMap::new(),
-                pending_contested: HashMap::new(),
-                journal_cursors: HashMap::new(),
-                channels,
-                contested: HashMap::new(),
-                contest_waiting: HashMap::new(),
-                questions,
-                blocked_defaults: HashSet::new(),
-                held_messages,
-                secret_reviews: HashMap::new(),
-                pauses,
-                release_requests,
-                waiting: agentdocker_core::WaitQueue::new(),
-                notifier: None,
-                host_policy: policies::Loaded::default(),
-                project_policies: HashMap::new(),
-                judge_generation: 0,
-                judge_status: agentdocker_core::judgment::JudgeState::Off,
-                judge_reason: None,
-            }),
+                    owner_successor: None,
+                    deferred_recovery: deferred,
+                    in_flight: 0,
+                    skipped_write: false,
+                    registry,
+                    leases,
+                    inboxes,
+                    inbox_bytes,
+                    live_subscribers: HashMap::new(),
+                    keyed_sends: agentdocker_core::idempotency::IdempotencyLedger::default(),
+                    supervised: HashMap::new(),
+                    pending_restarts: HashSet::new(),
+                    container_busy: HashSet::new(),
+                    transports: HashMap::new(),
+                    projects,
+                    next_seq,
+                    bus,
+                    events,
+                    journal_seq: HashMap::new(),
+                    journal_rings: HashMap::new(),
+                    config_notice: None,
+                    otlp_status: otlp::Status::default(),
+                    agent_config_notice: None,
+                    read_set_notice: None,
+                    topic_config_notice: None,
+                    last_head: HashMap::new(),
+                    last_branch: HashMap::new(),
+                    worktree_creators: HashMap::new(),
+                    project_checkouts: HashMap::new(),
+                    claude_config_dir: agentdocker_host::teams::claude_config_dir(),
+                    team_processes: HashMap::new(),
+                    team_rosters: HashMap::new(),
+                    checkout_reads: HashMap::new(),
+                    checkout_scans: HashSet::new(),
+                    committing: std::collections::BTreeSet::new(),
+                    removing: BTreeMap::new(),
+                    controller_pins: HashMap::new(),
+                    question_waiters: HashSet::new(),
+                    held_answers: HashMap::new(),
+                    pending_stale: HashMap::new(),
+                    stale_outstanding: HashMap::new(),
+                    pending_contested: HashMap::new(),
+                    journal_cursors: HashMap::new(),
+                    channels,
+                    contested: HashMap::new(),
+                    contest_waiting: HashMap::new(),
+                    questions,
+                    blocked_defaults: HashSet::new(),
+                    held_messages,
+                    secret_reviews: HashMap::new(),
+                    pauses,
+                    release_requests,
+                    waiting: agentdocker_core::WaitQueue::new(),
+                    notifier: None,
+                    host_policy: policies::Loaded::default(),
+                    project_policies: HashMap::new(),
+                    statuses: HashMap::new(),
+                    refreshing_statuses: false,
+                    judge_generation: 0,
+                    judge_status: agentdocker_core::judgment::JudgeState::Off,
+                    judge_reason: None,
+                }
+                .seeded(now),
+            ),
             shutdown: Notify::new(),
             watcher_flush: Mutex::new(None),
             scanning: std::sync::atomic::AtomicBool::new(false),
@@ -2342,6 +2404,7 @@ impl Daemon {
             Request::Register { spec, pid, session } => {
                 let registered = self.register(spec, pid, session, authorized).await;
                 self.trace_starter(&registered);
+                self.note_team(&registered).await;
                 registered
             }
             Request::SessionAttach {
@@ -2364,6 +2427,7 @@ impl Daemon {
             Request::Adopt { pid, name, runtime } => {
                 let adopted = self.adopt(pid, name, runtime, authorized).await;
                 self.trace_starter(&adopted);
+                self.note_team(&adopted).await;
                 adopted
             }
             Request::Stop { agent, force } => self.stop_agent(&agent, force).await,
@@ -3149,6 +3213,7 @@ impl Daemon {
                 priority,
                 automatic,
                 fresh,
+                actor,
             } => {
                 self.claim(
                     &agent,
@@ -3162,6 +3227,7 @@ impl Daemon {
                         priority,
                         automatic,
                         fresh,
+                        actor,
                     },
                 )
                 .await
@@ -3207,9 +3273,16 @@ impl Daemon {
                 summary,
                 summary_source,
                 only_automatic,
+                actor,
             } => {
                 self.flush_release_watcher(&agent, None).await;
-                lock(&self.state).release_all(&agent, summary, summary_source, only_automatic)
+                lock(&self.state).release_all(
+                    &agent,
+                    summary,
+                    summary_source,
+                    only_automatic,
+                    actor.as_deref(),
+                )
             }
             Request::RequestRelease {
                 from,
@@ -4175,6 +4248,9 @@ impl State {
             for event in events {
                 let _ = self.events.send(event);
             }
+            // Whatever changed may have changed what an agent is up to;
+            // said once, only where it did, and not for this saying.
+            self.refresh_statuses(Utc::now());
         }
         committed
     }
@@ -4221,6 +4297,9 @@ impl State {
             for event in events {
                 let _ = self.events.send(event);
             }
+            // Whatever changed may have changed what an agent is up to;
+            // said once, only where it did, and not for this saying.
+            self.refresh_statuses(Utc::now());
         }
         committed
     }
@@ -6283,6 +6362,19 @@ impl State {
                         .labels
                         .insert(agentdocker_core::agent::PROFILE_LABEL.to_owned(), profile);
                 }
+                // The session's own configuration directory, as the half
+                // that binds the session sees it in its environment, where
+                // the record does not say one yet.
+                let config_label = agentdocker_core::team::CONFIG_DIR_LABEL;
+                if let Some(dir) = record.spec.labels.get(config_label)
+                    && !dir.is_empty()
+                    && !updated.spec.labels.contains_key(config_label)
+                {
+                    updated
+                        .spec
+                        .labels
+                        .insert(config_label.to_owned(), dir.clone());
+                }
                 let event = Event::new(
                     EventKind::AgentSessionBound {
                         agent: id.clone(),
@@ -6578,6 +6670,7 @@ impl State {
         canonical.terminal = fresh.terminal.clone();
         canonical.vcs = fresh.vcs.clone();
         canonical.reported_activity = fresh.reported_activity.clone();
+        canonical.first_hand_at = fresh.first_hand_at;
         canonical.adapter_contacts = fresh.adapter_contacts.clone();
         canonical.queue_read = fresh.queue_read.clone();
         canonical.provider_availability = None;

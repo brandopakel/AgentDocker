@@ -622,6 +622,14 @@ fn registration_spec(
             if let Some(session) = session {
                 labels.insert("session_id".to_owned(), session);
             }
+            // The configuration directory the session uses, resolved in
+            // the environment Claude Code gave its MCP server: where its
+            // team files are.
+            if args.runtime == "claude-code"
+                && let Some(dir) = crate::hooks::session_config_dir()
+            {
+                labels.insert(agentdocker_core::team::CONFIG_DIR_LABEL.to_owned(), dir);
+            }
             labels
         },
         isolate: false,
@@ -1162,6 +1170,7 @@ impl<B: Backend> McpServer<B> {
                         reason: None,
                         detail: None,
                         source: None,
+                        evidence: None,
                     },
                 })
                 .await
@@ -1772,6 +1781,7 @@ impl<B: Backend> McpServer<B> {
                         wait_secs: args.wait_secs.min(MAX_CLAIM_WAIT_SECS),
                         priority: args.priority,
                         automatic: false,
+                        actor: None,
                         fresh: false,
                     })
                     .await

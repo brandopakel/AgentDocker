@@ -464,9 +464,16 @@ impl Store {
 
     /// Publish a lifecycle status and its replay evidence atomically.
     pub fn agent_transition(&self, record: &AgentRecord, event: &Event) -> Result<()> {
+        self.agent_transition_events(record, std::slice::from_ref(event))
+    }
+
+    /// An agent and the events that say what changed in it, as one commit.
+    pub fn agent_transition_events(&self, record: &AgentRecord, events: &[Event]) -> Result<()> {
         let tx = write_transaction(&self.conn)?;
         self.upsert_agent(record)?;
-        self.append_event(event)?;
+        for event in events {
+            self.append_event(event)?;
+        }
         tx.commit()?;
         Ok(())
     }
@@ -3271,6 +3278,7 @@ mod tests {
             note: Some("n".into()),
             amount: 0,
             automatic: false,
+            actor: None,
         };
         store.upsert_lease(&lease).unwrap();
         assert_eq!(store.load_leases().unwrap(), vec![lease.clone()]);
@@ -3297,6 +3305,7 @@ mod tests {
             note: None,
             amount: 0,
             automatic: false,
+            actor: None,
         };
         store.upsert_lease(&lease).unwrap();
         let mut event = Event::new(
@@ -4708,6 +4717,7 @@ mod tests {
             note: None,
             amount: 0,
             automatic: false,
+            actor: None,
         };
         store.upsert_lease(&lease).unwrap();
         store

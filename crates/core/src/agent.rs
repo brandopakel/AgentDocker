@@ -262,6 +262,11 @@ pub struct DiscoveredProcess {
     /// the tool that already owns its terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<crate::multiplexer::Session>,
+    /// The Claude Code team its command line puts it in, as a teammate;
+    /// a lead is only known once its session is registered. See
+    /// [`crate::team`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<crate::team::TeamMembership>,
 }
 
 impl DiscoveredProcess {
@@ -382,6 +387,14 @@ pub struct AgentRecord {
     pub last_seen: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_activity: Option<crate::ActivityObservation>,
+    /// When the newest first-hand (strong) observation of this agent was
+    /// made — its own adapter's report, Codex's shared server's — kept
+    /// apart from `reported_activity`, which a later weak word may
+    /// replace. A screen read before it is never judged waiting
+    /// ([`crate::judgment::ScreenJudgment::superseded_on`]). A daemon
+    /// predating it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_hand_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_delivery: Option<crate::InputDelivery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -411,11 +424,18 @@ pub struct AgentRecord {
     /// The opt-in judge read its quiet screen as waiting on the person:
     /// what for, how sure, and which screen of which process. It raises
     /// the agent's activity while it stands and never lowers it; a change
-    /// of screen, a screen that can no longer be read, a report from the
-    /// agent's own adapter or another process ends it (see
-    /// [`crate::judgment`]).
+    /// of screen, a screen that can no longer be read, a first-hand report
+    /// made after the screen was read (which takes it off the record for
+    /// good) or another process ends it (see [`crate::judgment`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judged: Option<crate::judgment::ScreenJudgment>,
+    /// Its place in a Claude Code agent team — the lead of one, or a
+    /// teammate with the name and colour its lead gave it — as the
+    /// daemon reads it from the process's command line and Claude's team
+    /// files ([`crate::team`]). Attached and taken away by the daemon
+    /// alone (`agent_team_changed`); a client's own value is dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<crate::team::TeamMembership>,
     /// What the provider itself says of this agent's conversation: the
     /// role it gave the thread and the thread that spawned it (Codex's
     /// multi-agent threads). Learned once the conversation is bound and
@@ -844,6 +864,7 @@ impl AgentRecord {
             finished_at: None,
             last_seen: now,
             reported_activity: None,
+            first_hand_at: None,
             input_delivery: None,
             provider_availability: None,
             adapter_contacts: Default::default(),
@@ -852,6 +873,7 @@ impl AgentRecord {
             input_binding: None,
             legacy_offers: Default::default(),
             judged: None,
+            team: None,
             thread: None,
         }
     }

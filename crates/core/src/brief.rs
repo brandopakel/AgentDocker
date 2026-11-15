@@ -1380,6 +1380,7 @@ mod tests {
             note: Some("a note\nwith a second line".to_owned()),
             amount: 0,
             automatic: false,
+            actor: None,
         }
     }
 
