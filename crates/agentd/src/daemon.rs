@@ -4754,6 +4754,11 @@ impl State {
                         "the conversation's ended record still has its process; let it finish first",
                     ));
                 }
+                // Not back into a worktree on its way out: refused before
+                // anything of the record or its name is touched.
+                if let Some(refusal) = self.removal_refuses_record(&record) {
+                    return Some(refusal);
+                }
                 // Its process is gone: kept by contact from here on.
                 record.pid = None;
                 record.process_started_at = None;
@@ -4887,6 +4892,11 @@ impl State {
         }
         if let Some(error) = self.write_failure() {
             return Some(error);
+        }
+        // A proven terminal does not bring its conversation's record back
+        // into a worktree on its way out either.
+        if let Some(refusal) = self.removal_refuses_record(&record) {
+            return Some(refusal);
         }
         if !record.status.is_live() {
             self.free_name(&mut record);
@@ -5899,10 +5909,21 @@ impl State {
     }
 
     /// The refusal for a record that would come to work in a worktree
-    /// being removed ([`State::removing`]). Every way a record becomes a
-    /// live agent goes through [`State::insert_record_announcing`], which
-    /// asks this: a registration, a launch, a resumption, a session that
-    /// says it has moved there.
+    /// being removed ([`State::removing`]).
+    ///
+    /// There is no single door a record comes back to life through, so
+    /// each one asks this under the lock that commits it: a record that
+    /// is made or registered ([`State::insert_record_announcing`]); a
+    /// supervised process, before it is spawned and when it is committed
+    /// as running ([`State::run_refusal`]: a launch, a restart, a
+    /// restore, a pane, a container); a session relaunched under its
+    /// ended record (`Daemon::resume_session`); a keyed conversation
+    /// heard from again or joined by its proven terminal
+    /// ([`State::keyed_session`], [`State::prove_keyed`]); and a restore
+    /// that plans a record's return with its leases. The other side of
+    /// the same care is in the removal's own look, which counts a record
+    /// waiting for its restart as working there. A new way back to life
+    /// has to ask this too.
     fn removal_refuses_record(&self, record: &AgentRecord) -> Option<Response> {
         if self.removing.is_empty() {
             return None;

@@ -933,9 +933,10 @@ impl Daemon {
     /// Git takes several commands to remove a worktree, and the state
     /// lock is not held across them. So the look that finds the worktree
     /// idle also marks it as being removed ([`Removing`]), and until the
-    /// removal has ended a record that would come to work there and a
-    /// claim in it, over it or on its branch are refused: nobody is told
-    /// they have a checkout that is about to go.
+    /// removal has ended a record that would come to work there, by any
+    /// of the ways one comes to life ([`State::removal_refuses_record`]),
+    /// and a claim in it, over it or on its branch are refused: nobody is
+    /// told they have a checkout that is about to go.
     pub(super) async fn worktree_remove_named(
         &self,
         reference: &str,
@@ -1017,8 +1018,12 @@ impl Daemon {
                     "that worktree is being removed already",
                 );
             }
-            let working = state.registry.live().find(|record| {
+            // Working there, or about to be again: a record waiting for
+            // its restart is not live yet, and its process is spawned
+            // before it is, so it is counted here rather than met later.
+            let working = state.registry.all().find(|record| {
                 record.id != agent
+                    && (record.status.is_live() || state.pending_restarts.contains(&record.id))
                     && record.project.as_ref().is_some_and(|project| {
                         project::canonical(project.dir()).starts_with(&target)
                     })
@@ -1027,9 +1032,14 @@ impl Daemon {
                 return Response::error(
                     ErrorCode::Conflict,
                     format!(
-                        "{} ({}) is working in that worktree",
+                        "{} ({}) is {} in that worktree",
                         working.spec.name,
-                        working.id.short()
+                        working.id.short(),
+                        if working.status.is_live() {
+                            "working"
+                        } else {
+                            "about to be restarted"
+                        }
                     ),
                 );
             }
