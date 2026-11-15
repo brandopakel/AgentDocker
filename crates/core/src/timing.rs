@@ -8,8 +8,9 @@
 //! archived, unarchived); the card's own `lane_since` and `archived_at`
 //! say where it is now and since when, and bound the last stay. What the
 //! record does not show is left out, never guessed: a span no line
-//! accounts for is assigned to no lane, a stay whose end was not seen
-//! counts no time, and the result says it is incomplete.
+//! accounts for is assigned to no lane, a stay whose end or start was not
+//! seen counts no time, a first pull is claimed only from a record unbroken
+//! up to it, and the result says it is incomplete.
 use crate::board::Board;
 use crate::task::{Task, TaskAction, TaskEntry, TaskId};
 use crate::{AgentId, Column};
@@ -39,6 +40,11 @@ pub struct Stay {
     /// counts no time.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub unseen_end: bool,
+    /// Its start was not seen: the card is back on the board with no line
+    /// saying when it came back, so `from` is only the earliest it can have
+    /// begun (the archive the record shows), and the stay counts no time.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unseen_start: bool,
     /// Opened by an unarchive, going on with the stay the card was in when
     /// it was archived: no new arrival in the lane.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -52,12 +58,18 @@ impl Stay {
             from,
             to: None,
             unseen_end: false,
+            unseen_start: false,
             resumed: false,
         }
     }
 
+    /// Both its ends were seen, so its length is known.
+    fn seen(&self) -> bool {
+        !self.unseen_end && !self.unseen_start
+    }
+
     /// How long it lasted, or has lasted so far at `now`; for a stay whose
-    /// end was not seen, the longest it can have lasted.
+    /// end or start was not seen, the longest it can have lasted.
     pub fn seconds(&self, now: DateTime<Utc>) -> u64 {
         let end = self.to.unwrap_or(now);
         u64::try_from((end - self.from).num_seconds()).unwrap_or(0)
@@ -100,7 +112,8 @@ pub struct CardTimes {
     /// In the order the card first came into each lane.
     pub lanes: Vec<LaneTime>,
     /// Its first pull, when an agent ever pulled it and the record shows
-    /// the first.
+    /// that it is the first: every line from the card's creation through
+    /// it, read whole, with none found missing between.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pulled_at: Option<DateTime<Utc>>,
     /// When it came into the Done lane it is in; absent unless it is done.
@@ -120,9 +133,12 @@ impl CardTimes {
         self.stays.last().filter(|s| s.to.is_none())
     }
 
-    /// How long the card has been in its lane, at `now`.
+    /// How long the card has been in its lane, at `now`; nothing when the
+    /// record did not see it come back to the board.
     pub fn in_lane(&self, now: DateTime<Utc>) -> Option<u64> {
-        self.current().map(|s| s.seconds(now))
+        self.current()
+            .filter(|s| !s.unseen_start)
+            .map(|s| s.seconds(now))
     }
 
     /// From its first pull to its arrival in Done, for a card that was
@@ -215,9 +231,14 @@ pub fn moves(action: &TaskAction) -> bool {
 /// and an archived card's ends when it was archived. What the record
 /// does not show is assigned to no lane and makes the result incomplete:
 /// time before the first line when that line is not the card's creation;
-/// a stay the record leaves it in that is not where the card is now, or
-/// that began before its stay there did (its end not seen); and a first
-/// pull, unless the record was read whole.
+/// a line that finds the card elsewhere than the record has it (a move out
+/// of another lane, a move or an archive while the record has it off the
+/// board, an unarchive while it has it on), where the stay it had ends
+/// unseen; a stay the record leaves it in that is not where the card is
+/// now, or that began before its stay there did (its end not seen); a
+/// card back on the board, or archived again, after the archive the record
+/// ends with; and a first pull, unless every line from the card's creation
+/// through it was read with none found missing.
 pub fn card_times(
     task: &Task,
     history: &[TaskEntry],
@@ -231,12 +252,25 @@ pub fn card_times(
         || entries
             .first()
             .is_some_and(|e| !matches!(e.action, TaskAction::Created { .. }));
+    // Every line from the card's creation is here so far, which is what
+    // claiming a first pull needs.
+    let mut unbroken = !incomplete;
     let mut stays: Vec<Stay> = Vec::new();
     let mut open: Option<Stay> = None;
     let mut pulled_at = None;
+    let mut pulled = false;
     let close = |open: &mut Option<Stay>, stays: &mut Vec<Stay>, at: DateTime<Utc>| {
         if let Some(mut stay) = open.take() {
             stay.to = Some(at.max(stay.from));
+            stays.push(stay);
+        }
+    };
+    // The lines that took the card out of the stay the record has it in
+    // are lost: that stay's end is unseen, no later than `at`.
+    let lose = |stay: Option<Stay>, stays: &mut Vec<Stay>, at: DateTime<Utc>| {
+        if let Some(mut stay) = stay {
+            stay.to = Some(at.max(stay.from));
+            stay.unseen_end = true;
             stays.push(stay);
         }
     };
@@ -252,6 +286,26 @@ pub fn card_times(
         *open = Some(Stay::new(lane, at));
     };
     for entry in entries {
+        // Off the board, as far as the record knows: its last line so far
+        // archived the card.
+        let off = open.is_none() && !stays.is_empty();
+        // A line that finds the card elsewhere than the record has it: the
+        // lines between are lost. A move names the lane it took the card
+        // out of; a pull names only the lane it took it into (its `from`
+        // is the holder it took over from, not a lane).
+        let lost = match &entry.action {
+            TaskAction::Moved { from, .. } => match &open {
+                Some(stay) => !from.is_empty() && stay.lane != *from,
+                None => off,
+            },
+            TaskAction::Pulled { .. } | TaskAction::Archived => off,
+            TaskAction::Unarchived => open.is_some(),
+            _ => false,
+        };
+        if lost {
+            incomplete = true;
+            unbroken = false;
+        }
         match &entry.action {
             TaskAction::Created { lane } => {
                 if open.is_none() && stays.is_empty() {
@@ -260,26 +314,41 @@ pub fn card_times(
                 }
             }
             TaskAction::Pulled { lane, .. } => {
-                if complete {
-                    pulled_at.get_or_insert(entry.at);
+                // The first pull the record shows is the card's first only
+                // when no line before it is missing.
+                if !pulled {
+                    pulled = true;
+                    if unbroken {
+                        pulled_at = Some(entry.at);
+                    }
                 }
                 let lane = if lane.is_empty() { &lane_now } else { lane };
                 enter(&mut open, &mut stays, lane, entry.at);
             }
             TaskAction::Moved { to, .. } => {
+                if lost {
+                    lose(open.take(), &mut stays, entry.at);
+                }
                 let to = if to.is_empty() { &lane_now } else { to };
                 enter(&mut open, &mut stays, to, entry.at);
             }
             TaskAction::Archived => close(&mut open, &mut stays, entry.at),
             TaskAction::Unarchived => {
-                if open.is_none() {
-                    let lane = stays
+                // Back in the lane it was archived from; an archive the
+                // record did not see ends the stay it had, unseen.
+                let lane = match open.take() {
+                    Some(stay) => {
+                        let lane = stay.lane.clone();
+                        lose(Some(stay), &mut stays, entry.at);
+                        lane
+                    }
+                    None => stays
                         .last()
-                        .map_or_else(|| lane_now.clone(), |s| s.lane.clone());
-                    let mut stay = Stay::new(&lane, entry.at);
-                    stay.resumed = stays.last().is_some_and(|s| s.lane == lane);
-                    open = Some(stay);
-                }
+                        .map_or_else(|| lane_now.clone(), |s| s.lane.clone()),
+                };
+                let mut stay = Stay::new(&lane, entry.at);
+                stay.resumed = stays.last().is_some_and(|s| s.lane == lane);
+                open = Some(stay);
             }
             TaskAction::Updated { .. }
             | TaskAction::Assigned { .. }
@@ -291,50 +360,53 @@ pub fn card_times(
     // lane and began no earlier than the card's stay there.
     let end = task.archived_at;
     let since = task.in_lane_since();
-    let last = match open.take() {
-        Some(stay) => Some(stay),
-        None if end.is_some() => stays.pop(),
-        None => None,
+    // The archive the record ends with, when it leaves the card off the
+    // board.
+    let off = match &open {
+        None => stays.last().and_then(|s| s.to),
+        Some(_) => None,
     };
-    let ended = |from: DateTime<Utc>| end.map(|at| at.max(from));
-    match last {
-        Some(mut stay) if stay.lane == lane_now && stay.from >= since => {
-            if end.is_some() {
-                stay.to = ended(stay.from);
-            }
-            stays.push(stay);
-        }
-        Some(mut stay) => {
-            stay.to = Some(since.max(stay.from));
-            stay.unseen_end = true;
-            let from = since.max(stay.from);
-            stays.push(stay);
+    match (off, end) {
+        // Archived again after the record, which saw neither its return
+        // nor this archive: the stays it saw stand as they ended, and of the
+        // time between only the card's own stay in its lane is shown, when
+        // the lane got it after the record did.
+        (Some(off), Some(archived)) if archived > off => {
             incomplete = true;
-            let mut now_in = Stay::new(&lane_now, from);
-            now_in.to = ended(from);
-            stays.push(now_in);
-        }
-        None => {
-            let from = stays
-                .last()
-                .and_then(|s| s.to)
-                .map_or(since, |to| since.max(to));
-            if from > task.created_at || !stays.is_empty() {
-                incomplete = true;
+            if since > off {
+                let mut stay = Stay::new(&lane_now, since);
+                stay.to = Some(archived);
+                stays.push(stay);
             }
-            let mut now_in = Stay::new(&lane_now, from);
-            now_in.to = ended(from);
-            stays.push(now_in);
         }
+        // Back on the board with no line saying so. Its lane got it after
+        // the record: from then. Still the lane it was archived from: the
+        // stay goes on, but when it came back is not known, so its start
+        // is unseen (no earlier than the archive) and it counts no time.
+        (Some(off), None) => {
+            incomplete = true;
+            let archived_from = stays.last().map(|s| s.lane.clone());
+            let mut stay = Stay::new(&lane_now, since.max(off));
+            if since <= off {
+                stay.unseen_start = true;
+                stay.resumed = archived_from.as_deref() == Some(lane_now.as_str());
+            }
+            stays.push(stay);
+        }
+        _ => reconcile(
+            &mut stays,
+            &mut open,
+            &lane_now,
+            since,
+            end,
+            task.created_at,
+            &mut incomplete,
+        ),
     }
     let mut lanes: Vec<LaneTime> = Vec::new();
     for stay in &stays {
-        let secs = if stay.unseen_end {
-            0
-        } else {
-            stay.seconds(now)
-        };
-        let seen_out = stay.to.is_some() && !stay.unseen_end;
+        let secs = if stay.seen() { stay.seconds(now) } else { 0 };
+        let seen_out = stay.to.is_some() && stay.seen();
         let entered = u32::from(!stay.resumed);
         match lanes.iter_mut().find(|l| l.lane == stay.lane) {
             Some(lane) => {
@@ -375,6 +447,56 @@ pub fn card_times(
         pulled_at,
         done_at,
         incomplete,
+    }
+}
+
+/// The record's last stay against the card's own fields, when the record
+/// leaves the card on the board, or off it by the archive the card names:
+/// the stay is the card's own only in the same lane and begun no earlier
+/// than `since`; else its end is unseen and the card's stay starts at
+/// `since`. With no stay at all, the card's stay is from `since`.
+fn reconcile(
+    stays: &mut Vec<Stay>,
+    open: &mut Option<Stay>,
+    lane_now: &str,
+    since: DateTime<Utc>,
+    end: Option<DateTime<Utc>>,
+    created_at: DateTime<Utc>,
+    incomplete: &mut bool,
+) {
+    let ended = |from: DateTime<Utc>| end.map(|at| at.max(from));
+    let last = match open.take() {
+        Some(stay) => Some(stay),
+        None if end.is_some() => stays.pop(),
+        None => None,
+    };
+    match last {
+        Some(mut stay) if stay.lane == lane_now && stay.from >= since => {
+            if end.is_some() {
+                stay.to = ended(stay.from);
+            }
+            stays.push(stay);
+        }
+        Some(mut stay) => {
+            stay.to = Some(since.max(stay.from));
+            stay.unseen_end = true;
+            let from = since.max(stay.from);
+            stays.push(stay);
+            *incomplete = true;
+            let mut now_in = Stay::new(lane_now, from);
+            now_in.to = ended(from);
+            stays.push(now_in);
+        }
+        None => {
+            // No stay at all: nothing shows where it was before `since`
+            // unless it has been there since it was filed.
+            if since > created_at {
+                *incomplete = true;
+            }
+            let mut now_in = Stay::new(lane_now, since);
+            now_in.to = ended(since);
+            stays.push(now_in);
+        }
     }
 }
 
@@ -522,13 +644,15 @@ mod tests {
         )
     }
 
-    fn pulled(task: &Task, hours: i64, from: &str, lane: &str) -> TaskEntry {
+    /// A pull into `lane`; its `from` is the holder a take-over took it
+    /// from, which an ordinary pull has none of.
+    fn pulled(task: &Task, hours: i64, lane: &str) -> TaskEntry {
         entry(
             task,
             hours,
             TaskAction::Pulled {
                 lane: lane.to_owned(),
-                from: Some(from.to_owned()),
+                from: None,
             },
         )
     }
@@ -561,7 +685,7 @@ mod tests {
         let task = card("done", Column::Done, 9);
         let history = vec![
             created(&task, "ready"),
-            pulled(&task, 2, "ready", "in_progress"),
+            pulled(&task, 2, "in_progress"),
             moved(&task, 5, "in_progress", "review"),
             moved(&task, 6, "review", "in_progress"),
             moved(&task, 8, "in_progress", "review"),
@@ -614,10 +738,7 @@ mod tests {
     #[test]
     fn a_card_still_in_its_lane_counts_up_to_now() {
         let task = card("in_progress", Column::InProgress, 3);
-        let history = vec![
-            created(&task, "ready"),
-            pulled(&task, 3, "ready", "in_progress"),
-        ];
+        let history = vec![created(&task, "ready"), pulled(&task, 3, "in_progress")];
         let early = card_times(&task, &history, true, at(4));
         let later = card_times(&task, &history, true, at(10));
         assert_eq!(early.in_lane(at(4)), Some(H));
@@ -639,8 +760,8 @@ mod tests {
         let task = card("in_progress", Column::InProgress, 2);
         let history = vec![
             created(&task, "ready"),
-            pulled(&task, 2, "ready", "in_progress"),
-            pulled(&task, 5, "in_progress", "in_progress"),
+            pulled(&task, 2, "in_progress"),
+            pulled(&task, 5, "in_progress"),
         ];
         let times = card_times(&task, &history, true, at(6));
         assert_eq!(times.stays.len(), 2);
@@ -654,7 +775,7 @@ mod tests {
         let task = card("review", Column::Review, 5);
         let history = vec![
             moved(&task, 5, "in_progress", "review"),
-            pulled(&task, 2, "ready", "in_progress"),
+            pulled(&task, 2, "in_progress"),
             created(&task, "ready"),
         ];
         let times = card_times(&task, &history, true, at(6));
@@ -671,7 +792,7 @@ mod tests {
     #[test]
     fn the_card_itself_bounds_a_history_with_gaps() {
         let task = card("review", Column::Review, 7);
-        let history = vec![pulled(&task, 2, "ready", "in_progress")];
+        let history = vec![pulled(&task, 2, "in_progress")];
         let times = card_times(&task, &history, true, at(8));
         let stays: Vec<(&str, i64, Option<i64>)> = times
             .stays
@@ -755,7 +876,7 @@ mod tests {
             task.assignee = Some(AgentId::from(if n == 3 { "agent-2" } else { "agent-1" }));
             let history = vec![
                 created(&task, "ready"),
-                pulled(&task, 1, "ready", "in_progress"),
+                pulled(&task, 1, "in_progress"),
                 moved(&task, 1 + hours, "in_progress", "review"),
                 moved(&task, 1 + hours + n, "review", "done"),
             ];
@@ -766,7 +887,7 @@ mod tests {
         let open = card("in_progress", Column::InProgress, 6);
         let open_history = vec![
             created(&open, "ready"),
-            pulled(&open, 1, "ready", "in_progress"),
+            pulled(&open, 1, "in_progress"),
             moved(&open, 2, "in_progress", "review"),
             moved(&open, 6, "review", "in_progress"),
         ];
@@ -822,10 +943,7 @@ mod tests {
     #[test]
     fn a_return_the_record_did_not_see_starts_the_stay_where_the_card_says() {
         let task = card("in_progress", Column::InProgress, 7);
-        let history = vec![
-            created(&task, "ready"),
-            pulled(&task, 2, "ready", "in_progress"),
-        ];
+        let history = vec![created(&task, "ready"), pulled(&task, 2, "in_progress")];
         let times = card_times(&task, &history, true, at(8));
         assert_eq!(
             hours(&times),
@@ -875,7 +993,7 @@ mod tests {
     fn a_history_cut_to_its_newest_lines_claims_no_first_pull() {
         let task = card("done", Column::Done, 9);
         let history = vec![
-            pulled(&task, 4, "ready", "in_progress"),
+            pulled(&task, 4, "in_progress"),
             moved(&task, 9, "in_progress", "done"),
         ];
         let times = card_times(&task, &history, false, at(10));
@@ -886,6 +1004,185 @@ mod tests {
         assert_eq!(lane_secs(&times, "in_progress"), 5 * H);
     }
 
+    /// A move out of a lane the record does not have the card in shows
+    /// that lines between were lost: the stay the record had ends unseen
+    /// at that move, counting no time and no leaving, and the span the lost
+    /// lines covered is no lane's. A pull's `from` is the holder it took
+    /// the card over from, not a lane, so it shows no gap.
+    #[test]
+    fn a_move_from_another_lane_than_the_record_has_leaves_its_stay_unseen() {
+        let task = card("done", Column::Done, 4);
+        let history = vec![
+            created(&task, "ready"),
+            moved(&task, 1, "ready", "review"),
+            moved(&task, 4, "in_progress", "done"),
+        ];
+        let times = card_times(&task, &history, true, at(10));
+        assert_eq!(
+            hours(&times),
+            vec![
+                ("ready", 0, Some(1), false),
+                ("review", 1, Some(4), true),
+                ("done", 4, None, false),
+            ]
+        );
+        assert!(times.incomplete);
+        assert_eq!(lane_secs(&times, "review"), 0, "when it left is not known");
+        assert_eq!(times.finished_in(&board(), Column::Review), None);
+        assert_eq!(times.done_at, Some(at(4)));
+
+        // A take-over names the lapsed holder in `from`: nothing is lost.
+        let taken = card("review", Column::Review, 3);
+        let history = vec![
+            created(&taken, "ready"),
+            entry(
+                &taken,
+                1,
+                TaskAction::Pulled {
+                    lane: "in_progress".into(),
+                    from: Some("agent-0".into()),
+                },
+            ),
+            moved(&taken, 3, "in_progress", "review"),
+        ];
+        let times = card_times(&taken, &history, true, at(5));
+        assert!(!times.incomplete);
+        assert_eq!(times.pulled_at, Some(at(1)));
+        assert_eq!(lane_secs(&times, "in_progress"), 2 * H);
+
+        // An unarchive while the record has the card on the board, and a
+        // move while it has it off: an archive and a return were lost.
+        let back = card("ready", Column::Ready, 0);
+        let history = vec![
+            created(&back, "ready"),
+            entry(&back, 5, TaskAction::Unarchived),
+        ];
+        let times = card_times(&back, &history, true, at(6));
+        assert_eq!(
+            hours(&times),
+            vec![("ready", 0, Some(5), true), ("ready", 5, None, false)]
+        );
+        assert!(times.incomplete && times.stays[1].resumed);
+        let moved_off = card("review", Column::Review, 6);
+        let history = vec![
+            created(&moved_off, "ready"),
+            moved(&moved_off, 2, "ready", "done"),
+            entry(&moved_off, 3, TaskAction::Archived),
+            moved(&moved_off, 6, "done", "review"),
+        ];
+        let times = card_times(&moved_off, &history, true, at(7));
+        assert_eq!(
+            hours(&times),
+            vec![
+                ("ready", 0, Some(2), false),
+                ("done", 2, Some(3), false),
+                ("review", 6, None, false),
+            ]
+        );
+        assert!(times.incomplete);
+    }
+
+    /// The first pull the record shows is claimed only when every line
+    /// from the card's creation through it is there: a history whose first
+    /// lines are gone, though the store read all it had, or one with a
+    /// line missing before the pull, claims none, and the stays it saw
+    /// still count. The board's numbers leave such a card out of pull to
+    /// done.
+    #[test]
+    fn a_first_pull_needs_every_line_from_the_cards_creation() {
+        let mut task = card("done", Column::Done, 9);
+        task.assignee = Some(AgentId::from("agent-1"));
+        let history = vec![
+            pulled(&task, 4, "in_progress"),
+            moved(&task, 9, "in_progress", "done"),
+        ];
+        let times = card_times(&task, &history, true, at(10));
+        assert!(times.incomplete);
+        assert_eq!(times.pulled_at, None);
+        assert_eq!(times.pull_to_done(), None);
+        assert_eq!(times.done_at, Some(at(9)));
+        assert_eq!(lane_secs(&times, "in_progress"), 5 * H);
+        let stats = Stats::of(&board(), [(&task, &times)]);
+        assert_eq!((stats.done, stats.pull_to_done), (1, None));
+        assert_eq!(stats.holders[0].pull_to_done, None);
+
+        let gap = card("done", Column::Done, 9);
+        let history = vec![
+            created(&gap, "ready"),
+            moved(&gap, 1, "backlog", "ready"),
+            pulled(&gap, 3, "in_progress"),
+            moved(&gap, 9, "in_progress", "done"),
+        ];
+        let times = card_times(&gap, &history, true, at(10));
+        assert!(times.incomplete);
+        assert_eq!(times.pulled_at, None, "a line before the pull is missing");
+        assert_eq!(lane_secs(&times, "ready"), 2 * H);
+        assert_eq!(lane_secs(&times, "in_progress"), 6 * H);
+    }
+
+    /// The archive the record ends with is where the stay it saw ended. A
+    /// card archived again since, its return and new archive unseen, keeps
+    /// that stay as it ended; the time between is no lane's but the card's
+    /// own stay from `lane_since` when its lane got it after the record.
+    /// One back on the board with no line saying so goes on in its lane
+    /// from no earlier than that archive, its start unseen: it counts no
+    /// time, says no time in lane, and was done when it came into Done.
+    #[test]
+    fn an_archive_the_record_shows_is_never_stretched_to_a_later_one() {
+        let history = |task: &Task| {
+            vec![
+                created(task, "ready"),
+                moved(task, 3, "ready", "done"),
+                entry(task, 5, TaskAction::Archived),
+            ]
+        };
+        let mut again = card("done", Column::Done, 3);
+        again.archived_at = Some(at(12));
+        let times = card_times(&again, &history(&again), true, at(20));
+        assert_eq!(
+            hours(&times),
+            vec![("ready", 0, Some(3), false), ("done", 3, Some(5), false)]
+        );
+        assert_eq!(lane_secs(&times, "done"), 2 * H);
+        assert!(times.incomplete);
+        assert_eq!(times.done_at, Some(at(3)));
+
+        let mut elsewhere = card("review", Column::Review, 8);
+        elsewhere.archived_at = Some(at(12));
+        let times = card_times(&elsewhere, &history(&elsewhere), true, at(20));
+        assert_eq!(
+            times.stays.last().map(|s| (s.from, s.to)),
+            Some((at(8), Some(at(12))))
+        );
+        assert_eq!(lane_secs(&times, "review"), 4 * H);
+        assert_eq!(lane_secs(&times, "done"), 2 * H);
+        assert!(times.incomplete);
+
+        let back = card("done", Column::Done, 3);
+        let times = card_times(&back, &history(&back), true, at(10));
+        assert_eq!(
+            hours(&times),
+            vec![
+                ("ready", 0, Some(3), false),
+                ("done", 3, Some(5), false),
+                ("done", 5, None, false),
+            ]
+        );
+        let current = times.current().unwrap();
+        assert!(current.unseen_start && current.resumed);
+        assert_eq!(
+            times.in_lane(at(10)),
+            None,
+            "when it came back is not known"
+        );
+        assert_eq!(lane_secs(&times, "done"), 2 * H);
+        assert_eq!(times.done_at, Some(at(3)), "an unarchive is no completion");
+        assert!(times.incomplete);
+        let json = serde_json::to_value(&times).unwrap();
+        assert_eq!(json["stays"][2]["unseen_start"], true);
+        assert!(json["stays"][1].get("unseen_start").is_none());
+    }
+
     /// A list carries a card's current stay alone, the rest counted, and
     /// its lanes say what the board's numbers need; a detail its newest.
     #[test]
@@ -893,7 +1190,7 @@ mod tests {
         let task = card("done", Column::Done, 9);
         let history = vec![
             created(&task, "ready"),
-            pulled(&task, 2, "ready", "in_progress"),
+            pulled(&task, 2, "in_progress"),
             moved(&task, 5, "in_progress", "review"),
             moved(&task, 9, "review", "done"),
         ];
@@ -973,10 +1270,7 @@ mod tests {
     #[test]
     fn the_wire_form_is_lanes_and_stays() {
         let task = card("in_progress", Column::InProgress, 2);
-        let history = vec![
-            created(&task, "ready"),
-            pulled(&task, 2, "ready", "in_progress"),
-        ];
+        let history = vec![created(&task, "ready"), pulled(&task, 2, "in_progress")];
         let times = card_times(&task, &history, true, at(3));
         let json = serde_json::to_value(&times).unwrap();
         assert_eq!(json["lanes"][0]["lane"], "ready");

@@ -516,7 +516,8 @@ chips, wrapping in a narrow lane — its due day (*Due today* amber, *Overdue*
 red, else *Due* and the day), how long its lane has had it in plain words
 beside it (*2h 10m in lane*, *3d 4h in lane*; words, not a colour, from the
 daemon's fold of the card's history, or from the card itself before the
-daemon says), *Waiting* when it waits on something (what, from off
+daemon says; none when its history did not see it come back to the board),
+*Waiting* when it waits on something (what, from off
 the board, in its detail), its first four tags by name with each tag's colour
 beside it (*+n* for the rest) — and who holds it, their mark and standing
 chip as every agent row draws them; a high-priority card has a red edge, a
@@ -542,7 +543,8 @@ remove), the cards it waits on and those part of it, its comments with
 replies and a composer, its time lane by lane (each stay in order: the
 lane, when it came in and how long it lasted, the one it is in *so far*,
 one whose leaving the history did not show *left unseen, within* the longest
-it can have lasted, and *N earlier stays not shown* above the newest two
+it can have lasted, one it is in again whose return the history did not
+show *back unseen, within* the longest it can have lasted so far, and *N earlier stays not shown* above the newest two
 hundred; then *Pull to done* for a card that was pulled and is done, and
 *Its history does not show all its time* when it does not), and its
 history. A card an agent is started on

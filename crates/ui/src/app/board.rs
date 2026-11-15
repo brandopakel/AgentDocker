@@ -198,11 +198,24 @@ pub(super) fn span_words(secs: u64) -> String {
 }
 
 /// How long a card has been in its lane, in seconds at `now`: from its
-/// folded times when the daemon sent them, else from the card itself.
-fn in_lane_secs(task: &Task, times: Option<&CardTimes>, now: chrono::DateTime<chrono::Utc>) -> u64 {
-    times
-        .and_then(|t| t.in_lane(now))
-        .unwrap_or_else(|| u64::try_from((now - task.in_lane_since()).num_seconds()).unwrap_or(0))
+/// folded times when the daemon sent them, else from the card itself;
+/// nothing when its history did not see it come back to the board.
+fn in_lane_secs(
+    task: &Task,
+    times: Option<&CardTimes>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Option<u64> {
+    if times
+        .and_then(CardTimes::current)
+        .is_some_and(|stay| stay.unseen_start)
+    {
+        return None;
+    }
+    Some(
+        times.and_then(|t| t.in_lane(now)).unwrap_or_else(|| {
+            u64::try_from((now - task.in_lane_since()).num_seconds()).unwrap_or(0)
+        }),
+    )
 }
 
 impl App {
@@ -1163,15 +1176,17 @@ impl App {
             words.push(format!("{state} {}", due.format("%b %-d")));
         }
         // How long its lane has had it: words, not a colour.
-        let in_lane = span_words(in_lane_secs(
+        if let Some(secs) = in_lane_secs(
             task,
             self.tasks
                 .as_ref()
                 .and_then(|b| b.times.iter().find(|t| t.task == id)),
             chrono::Utc::now(),
-        ));
-        foot = foot.push(text(format!("{in_lane} in lane")).size(11).color(c.muted));
-        words.push(format!("{in_lane} in lane"));
+        ) {
+            let in_lane = span_words(secs);
+            foot = foot.push(text(format!("{in_lane} in lane")).size(11).color(c.muted));
+            words.push(format!("{in_lane} in lane"));
+        }
         if !task.external_blocker.trim().is_empty() || !task.blocked_by.is_empty() {
             let mut waiting = Chip::new(
                 format!("task-waiting-{id}"),
@@ -1685,6 +1700,8 @@ impl App {
                     let span = span_words(stay.seconds(now));
                     let length = if stay.unseen_end {
                         format!("left unseen, within {span}")
+                    } else if stay.unseen_start {
+                        format!("back unseen, within {span} so far")
                     } else if stay.to.is_none() {
                         format!("{span} so far")
                     } else {
