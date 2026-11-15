@@ -116,7 +116,7 @@ fn compare_versions(a: &str, b: &str) -> Result<Ordering> {
     Ok(parse_version(a)?.cmp_precedence(&parse_version(b)?))
 }
 
-fn parse_version(value: &str) -> Result<Version> {
+pub(super) fn parse_version(value: &str) -> Result<Version> {
     ensure!(value.len() <= 64, "update version exceeds 64 bytes");
     Version::parse(value).context("update version is not a semantic version")
 }

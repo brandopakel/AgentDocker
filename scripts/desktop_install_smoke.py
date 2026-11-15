@@ -255,6 +255,13 @@ def trial(args):
                         extra_ids.append(installed["candidate"]["id"])
                         assert installed["retention"]["completed"], installed["retention"]
                         assert installed["retention"]["removed_versions"] == int(generation == 3)
+                        # The cleanup after an activation also sweeps: of the
+                        # activation records, the one in use and the one the
+                        # pointer just left stay, and a prune leaves no stage.
+                        assert installed["retention"]["swept"] >= 1, installed["retention"]
+                        assert "unswept" not in installed["retention"], installed["retention"]
+                        assert len(list((root_install / "generations").iterdir())) == 2
+                        assert not any((root_install / "retired").iterdir())
                     cleanup = cli("prune", "--preview")
                     second_path = root_install / "versions" / second_id
                     assert not second_path.exists(), "activation must prune the obsolete unpinned version"
@@ -264,8 +271,12 @@ def trial(args):
                     pinned = json.loads((first / META).read_text()).get("installation_lock") == 1
                     assert first_retained["reason"] == ("running process uses this version" if pinned
                                                         else "older release has no lifetime pin contract")
+                    # The record the last activation left is the prune's to sweep.
+                    assert [entry["kind"] for entry in cleanup["maintenance"]["sweep"]] == ["generation"]
                     cli("prune", "--expect-plan", cleanup["plan_id"])
                     assert not second_path.exists()
+                    assert len(list((root_install / "generations").iterdir())) == 1
+                    assert cli("status")["installation"]["current"]["id"] == extra_ids[-1]
                     assert rpc(environment["AGENTDOCKER_SOCKET"], "ping")["type"] == "pong"
                     result["scenarios"].append("automatic activation cleanup removes obsolete binaries and retains active, rollback and running or legacy binaries")
                     removal = cli("uninstall", "--preview")

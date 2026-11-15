@@ -33,6 +33,18 @@ fn field(json: &serde_json::Value, key: &str) -> String {
     json[key].as_str().unwrap_or("unknown").to_owned()
 }
 
+/// What a cleanup plan says of one thing it sweeps, by the kind the CLI
+/// gives it; a kind this build does not know is shown as printed.
+fn leftover_said(kind: &str) -> &str {
+    match kind {
+        "retired" => "left by a cleanup that stopped",
+        "generation" => "an activation record no longer in use",
+        "staging" => "left by an activation that stopped",
+        "download" => "an update's download, installed or passed over",
+        other => other,
+    }
+}
+
 /// A saved setup plan's phase as the CLI printed it; none for a word this
 /// build does not know, which is shown as printed and offers no move.
 fn phase_of(plan: &serde_json::Value) -> Option<Phase> {
@@ -2264,7 +2276,24 @@ impl App {
                     mono(path.as_str().unwrap_or("unknown"), 12, c.text).into(),
                 ));
             }
-            for entry in maintenance["retained"].as_array().into_iter().flatten() {
+            // What the plan sweeps is removed by Apply like the rest, so
+            // it is shown like the rest: a plan that only sweeps is not
+            // "nothing to remove".
+            for leftover in maintenance["sweep"].as_array().into_iter().flatten() {
+                facts.push((
+                    "Remove".into(),
+                    column![
+                        mono(field(leftover, "path"), 12, c.text),
+                        small(leftover_said(&field(leftover, "kind")).to_owned(), c)
+                    ]
+                    .spacing(2)
+                    .into(),
+                ));
+            }
+            let kept = ["retained", "unswept"]
+                .into_iter()
+                .flat_map(|key| maintenance[key].as_array().into_iter().flatten());
+            for entry in kept {
                 facts.push((
                     "Keep".into(),
                     column![

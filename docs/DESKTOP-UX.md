@@ -1063,7 +1063,11 @@ shows raw error codes or Rust debug output.
 
 Settings → Installation → Versions → **Manage** (read aloud *Manage installation and
 retained versions*) opens the screen that previews installation, rollback,
-cleanup and launcher removal. Apply is tied to the reviewed payload or cleanup
+cleanup and launcher removal. A cleanup preview lists, as **Remove**, the unused
+releases and what earlier commands left in the installation's folder (each with
+what it is: left by a cleanup or an activation that stopped, an activation record
+no longer in use, an update's download that is installed or passed over), and as
+**Keep** what stays, with the reason. Apply is tied to the reviewed payload or cleanup
 plan and refuses stale inputs. Running versions and agents remain protected by
 the existing installer rules. Public macOS downloads require Developer ID signing
 and notarization; locally signed builds are explicit previews.

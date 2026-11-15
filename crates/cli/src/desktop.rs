@@ -1540,6 +1540,9 @@ fn perform(layout: &Layout, install: Install) -> Result<serde_json::Value> {
     let changed = current
         .as_ref()
         .is_none_or(|active| active.current.id != candidate.id);
+    // The generation the pointer names before it moves: the cleanup
+    // after this activation keeps it, for a reader already following it.
+    let replaced = layout.root.join("current").read_link().ok();
     if changed {
         layout.activate(candidate, current.map(|active| active.current))?;
     } else if cfg!(target_os = "macos") && candidate.launcher_redirect == 1 {
@@ -1575,7 +1578,7 @@ fn perform(layout: &Layout, install: Install) -> Result<serde_json::Value> {
     report["activation"] = json!(daemon["summary"]);
     report["daemon"] = daemon;
     if changed {
-        report["retention"] = maintenance::after_activation(layout, &_held);
+        report["retention"] = maintenance::after_activation(layout, &_held, replaced.as_deref());
     }
     // Last, still under the installation lock: only the launcher and the
     // active release may answer for the app's name, never a retained one.

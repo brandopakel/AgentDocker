@@ -1,4 +1,5 @@
-//! Reviewed cleanup of owned launchers and unused pinned releases.
+//! Reviewed cleanup of owned launchers and unused pinned releases, and of
+//! what earlier commands left in the installation's own folder (`sweep`).
 // The installer, updates and retained versions run on macOS and Linux;
 // on Windows only the refusal in `run` is live, and the rest waits its slice.
 #![cfg_attr(windows, allow(dead_code))]
@@ -6,6 +7,7 @@ use super::*;
 use agentdocker_host::{installation, lock};
 
 mod services;
+mod sweep;
 
 #[derive(Serialize)]
 struct Entry {
@@ -20,6 +22,14 @@ struct Plan {
     remove: Vec<PathBuf>,
     retained: Vec<Entry>,
     keep: Option<usize>,
+    /// What commands left in the installation's folder, which a prune
+    /// removes with the unused releases: see `sweep`. Absent when there
+    /// is none, so a plan with nothing to sweep is the plan it was.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    sweep: Vec<sweep::Leftover>,
+    /// What is in the swept places and stays, each with why.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    unswept: Vec<Entry>,
 }
 
 impl Plan {
@@ -89,6 +99,19 @@ fn plan<T: Into<services::References>>(
     applying: bool,
     inspect_services: impl FnOnce() -> Result<T>,
 ) -> Result<(Plan, installation::VersionInventoryGuard)> {
+    plan_keeping(layout, keep, applying, None, inspect_services)
+}
+
+/// `plan` for a command that has moved the pointer: `replaced` is the
+/// generation it named when the command began, which that command's own
+/// sweep keeps (see `sweep::found`).
+fn plan_keeping<T: Into<services::References>>(
+    layout: &Layout,
+    keep: Option<usize>,
+    applying: bool,
+    replaced: Option<&Path>,
+    inspect_services: impl FnOnce() -> Result<T>,
+) -> Result<(Plan, installation::VersionInventoryGuard)> {
     layout.preflight()?;
     let active = layout.active()?;
     let mut plan = Plan {
@@ -97,6 +120,8 @@ fn plan<T: Into<services::References>>(
         remove: Vec::new(),
         retained: Vec::new(),
         keep,
+        sweep: Vec::new(),
+        unswept: Vec::new(),
     };
     let pins = installation::VersionInventoryGuard::default();
     let Some(keep) = keep else {
@@ -132,6 +157,9 @@ fn plan<T: Into<services::References>>(
         return Ok((plan, pins));
     };
     ensure!(keep <= 1000, "keep count exceeds 1000 versions");
+    let leftovers = sweep::found(layout, active.as_ref(), replaced);
+    plan.sweep = leftovers.remove;
+    plan.unswept = leftovers.kept;
     let versions = layout.root.join("versions");
     let mut directories = match std::fs::read_dir(&versions) {
         Ok(entries) => entries.take(1001).collect::<std::io::Result<Vec<_>>>()?,
@@ -233,8 +261,12 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
             std::fs::File::open(layout.root.join("versions"))?.sync_all()?;
             checked_version(layout, &moved)
                 .with_context(|| format!("changed release retained at {}", moved.display()))?;
-            std::fs::remove_dir_all(&moved)?;
-            std::fs::remove_dir(&stage)?;
+            // Marked as verified before the deletion begins, so that one
+            // that stops is finished by the next sweep.
+            sweep::discard(&stage, Some(&moved))?;
+        }
+        for leftover in &plan.sweep {
+            sweep::remove(layout, leftover)?;
         }
     }
     Ok(())
@@ -296,17 +328,32 @@ fn service_installed(layout: &Layout) -> Result<services::References> {
 /// The caller still holds the activation's installation lock. Cleanup is
 /// best-effort after that successful switch: a damaged old payload or an I/O
 /// failure must not make the caller retry an already-committed activation.
-pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> serde_json::Value {
+///
+/// `replaced` is the generation the pointer named before this activation
+/// moved it: this cleanup keeps it, for a reader that followed the pointer
+/// just before, and the next one removes it.
+pub(super) fn after_activation(
+    layout: &Layout,
+    _install_lock: &lock::Lock,
+    replaced: Option<&Path>,
+) -> serde_json::Value {
     let result = (|| {
         let _services = installation::service_inventory_guard(&layout.root, true)?;
-        prune_activated(layout, || service_installed(layout))
+        clean_up(layout, replaced, || service_installed(layout))
     })();
     match result {
-        Ok((removed, retained)) => json!({
-            "completed": true,
-            "removed_versions": removed,
-            "retained_versions": retained,
-        }),
+        Ok(plan) => {
+            let mut report = json!({
+                "completed": true,
+                "removed_versions": plan.remove.len(),
+                "retained_versions": plan.retained.len(),
+                "swept": plan.sweep.len(),
+            });
+            if !plan.unswept.is_empty() {
+                report["unswept"] = json!(plan.unswept);
+            }
+            report
+        }
         Err(error) => json!({
             "completed": false,
             "error": format!("{error:#}"),
@@ -315,14 +362,27 @@ pub(super) fn after_activation(layout: &Layout, _install_lock: &lock::Lock) -> s
     }
 }
 
+/// What an activation's cleanup does: a prune that keeps no additional
+/// release, and the sweep with it. Returns the plan it carried out.
+fn clean_up<T: Into<services::References>>(
+    layout: &Layout,
+    replaced: Option<&Path>,
+    service: impl FnOnce() -> Result<T>,
+) -> Result<Plan> {
+    let (plan, _pins) = plan_keeping(layout, Some(0), true, replaced, service)?;
+    if !plan.remove.is_empty() || !plan.sweep.is_empty() {
+        apply(layout, &plan)?;
+    }
+    Ok(plan)
+}
+
+/// The releases a cleanup removed and kept, for the tests that count them.
+#[cfg(test)]
 fn prune_activated<T: Into<services::References>>(
     layout: &Layout,
     service: impl FnOnce() -> Result<T>,
 ) -> Result<(usize, usize)> {
-    let (plan, _pins) = plan(layout, Some(0), true, service)?;
-    if !plan.remove.is_empty() {
-        apply(layout, &plan)?;
-    }
+    let plan = clean_up(layout, None, service)?;
     Ok((plan.remove.len(), plan.retained.len()))
 }
 
@@ -365,7 +425,7 @@ fn run_with<T: Into<services::References>>(
     if let Some(expected) = expected {
         ensure!(id == expected, "maintenance plan changed; review again");
     }
-    let applied = !preview && !plan.remove.is_empty();
+    let applied = !preview && (!plan.remove.is_empty() || !plan.sweep.is_empty());
     if applied {
         apply(layout, &plan)?;
     }
@@ -386,14 +446,14 @@ fn run_with<T: Into<services::References>>(
 mod tests {
     use super::*;
 
-    fn fixture() -> (tempfile::TempDir, Layout) {
+    pub(super) fn fixture() -> (tempfile::TempDir, Layout) {
         let temp = tempfile::tempdir().unwrap();
         let layout = Layout::new(temp.path().to_owned()).unwrap();
         layout.ensure_root().unwrap();
         (temp, layout)
     }
 
-    fn retained(layout: &Layout, marker: &str, pin: u32) -> Release {
+    pub(super) fn retained(layout: &Layout, marker: &str, pin: u32) -> Release {
         let mut release = super::super::tests::release(layout, marker);
         let payload = layout.payload(&release);
         let metadata = payload.join(if cfg!(target_os = "macos") {

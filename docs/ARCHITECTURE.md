@@ -952,7 +952,21 @@ each command link, the launcher against the active release) and derives one
 answer from those facts by a pure function, with the way out of each state an
 interrupted command leaves; it changes nothing and takes no lock. Its output
 keeps every key it had and adds that one. `desktop uninstall` removes owned launchers and deactivates the prefix;
-`desktop prune` removes verified unused payloads. CLI and GUI previews carry a
+`desktop prune` removes verified unused payloads. A prune, and the cleanup after
+every activation, also sweep what commands left in the installation's own folder,
+under the installation lock: the stages in `retired/` (a prune moves a release
+there before it deletes it, and marks it verified before the deletion begins, so
+one that stopped is finished from the mark; a release moved and not yet marked is
+verified again, and one that does not verify is kept); the generations no pointer
+names, with the staging folders an activation that stopped left in `generations/`
+and beside the pointer (the generation the pointer named when the command began is
+kept by that command, for a reader that followed the pointer just before it moved,
+and goes with the next); and `downloads/<version>` once that version is not newer
+than the active release's, since an update installs only what is newer (none while
+nothing is active). Each is recognised by what it holds, never by its place alone:
+the plan lists what goes under `sweep` and whatever else is in those places, which
+is kept, under `unswept` with the reason, both absent when empty. A removal goes in
+steps that each leave something the next sweep recognises. CLI and GUI previews carry a
 plan hash rechecked at apply. Host installation helpers give each managed
 binary a shared lifetime pin; cleanup holds the exclusive pin through deletion
 and rechecks content identity. Pins outlive deleted versions to prevent inode
