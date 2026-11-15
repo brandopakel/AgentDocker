@@ -3732,9 +3732,12 @@ mod tests {
     /// is not there, or one that no longer holds the agent's process,
     /// clears it in the pass that finds it so, one event each. The
     /// hanging stand-in blocks on a gate nothing ever opens, so only the
-    /// capture's deadline ends it, and the test checks that it did; the
-    /// agent's process and the stranger's are the test's own, ended with
-    /// it however it ends.
+    /// capture's deadline ends it. The outage is counted at a short
+    /// deadline, whether or not a stand-in started in time to reach its
+    /// gate; that the deadline ends and reaps one is checked apart, on a
+    /// pass the test sees reach its gate, given the suite's bound to start
+    /// in. The agent's process and the stranger's are the test's own,
+    /// ended with it however it ends.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_unreadable_tmux_pane_clears_its_judgment() {
@@ -3828,19 +3831,37 @@ mod tests {
             clearings(&mut events),
             [(agent.clone(), UNREADABLE.to_owned())]
         );
-        // Every stand-in that reached its gate was ended at the deadline
-        // and reaped before its pass went on.
-        let stand_ins: Vec<u32> = std::fs::read_to_string(&hung)
-            .unwrap_or_default()
-            .lines()
-            .map(|line| line.trim().parse().unwrap())
-            .collect();
-        assert!(!stand_ins.is_empty(), "the hanging stand-in ran");
-        for pid in stand_ins {
+        // A stand-in that reached its gate in those passes was ended at
+        // the deadline and reaped before its pass went on. On a loaded
+        // machine none may reach it in 300 ms; the passes' counting does
+        // not depend on it, and what follows does not either.
+        let gated = || -> Vec<u32> {
+            std::fs::read_to_string(&hung)
+                .unwrap_or_default()
+                .lines()
+                .map(|line| line.trim().parse().unwrap())
+                .collect()
+        };
+        for pid in gated() {
             assert!(!agentdocker_host::procinfo::alive(pid), "{pid} reaped");
         }
-
+        // And one seen to reach its gate is ended by the deadline alone.
+        // Given the suite's bound to start in, as an answering stand-in
+        // is, the pass runs while the test watches for it at the gate;
+        // nothing opens the gate, so the deadline is what ends it.
+        let before = gated().len();
         bound(TMUX_BOUND);
+        let pass = tokio::spawn({
+            let daemon = daemon.clone();
+            async move { daemon.judge_once().await }
+        });
+        let at_gate = eventually(async || gated().get(before).copied()).await;
+        pass.await.unwrap();
+        assert!(
+            !agentdocker_host::procinfo::alive(at_gate),
+            "{at_gate} ended at the deadline and reaped"
+        );
+
         for (how, calls_before) in [("gone", 2), ("replaced", 3)] {
             set("ok");
             daemon.judge_once().await;
