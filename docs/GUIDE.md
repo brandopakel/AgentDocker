@@ -545,7 +545,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); a THREAD column, where any agent's provider says something of its own conversation, with the role a spawned Codex thread was given and whose thread spawned it (`reviewer of <agent>`, `child of thread <id>`); `--input-details` adds the one fix for each session that cannot take messages now |
+| `ps` | Agents grouped by project, with INPUT readiness and, when usage collection is on, each agent's TOKENS over the last 24 hours (input and output, in three figures); a TEAM column when a Claude Code agent team is running (`lead of <team>`, or `<name>, teammate of team-lead in <team>`); a THREAD column, where any agent's provider says something of its own conversation, with the role a spawned Codex thread was given and whose thread spawned it (`reviewer of <agent>`, `child of thread <id>`); `--input-details` adds the one fix for each session that cannot take messages now |
 | `top` | The fleet live, redrawing as the daemon reports changes |
 | `activity` | What each agent is up to, in three words — STATE (working, blocked, done, failed, stopped), STATUS this moment (busy, waiting, idle) and WAITING FOR from you (permission, input, sandbox, question) — with a block's resource and holder, and *(weak evidence)* where the word is inferred rather than reported; `ps` prints the three as one cell, `working · waiting · permission` |
 | `usage` | Tokens the providers reported, filtered explicitly with `--agent <id>` (`--as` alias) or `--project <id\|path>`, one row per agent (`--by model\|provider\|project\|hour\|card\|role`: card is the board card held when each response was recorded, role the agent's roles then), each count with its coverage (`~` where some samples did not say, `—` where none did), the share of input read from cache, the provider-reported estimated cost where its telemetry said one, a FIGURES column saying whether the row's counts are `exact` (the provider's own count for each response) or `estimated` (differences between its running totals are in it; `—` where older totals cannot say), and under the table what the totals cover: the range answered, retention, gaps, whether collection is on and where the telemetry receiver listens, and AgentDocker's emitted-byte overhead with partial coverage, or *not measured* without matching records; `--since 24h`, `--json`. `AGENTDOCKER_AGENT_ID` does not narrow this query. |
@@ -863,7 +863,14 @@ when its conversation ends, giving back its leases — and `SubagentStart` and
 `SubagentStop`, which keep the conversation working while its subagents run.
 Hooks an earlier version installed are *outdated*: `agentdocker runtimes` shows
 `outdated (…)` with the events they lack, the Tools card says *Hooks outdated*,
-and `agentdocker setup claude-code` (or `codex`) adds them. Codex runs a hook only once you trust it in its `/hooks`, and trust ends when the hook's definition changes: setup leaves AgentDocker's Codex hooks exactly as they are once they are current, says so when it must change one you may have trusted, and `agentdocker setup --health` says *Never run: trust them in Codex's /hooks* until Codex has run one of them (which one is not recorded, so a hook setup changed is flagged only by setup itself). They are what let the daemon see an agent's session
+and `agentdocker setup claude-code` (or `codex`) adds them. Codex runs a hook only once you trust it in its `/hooks`, and trust ends when the hook's definition changes: setup leaves AgentDocker's Codex hooks exactly as they are once they are current, says so when it must change one you may have trusted, and `agentdocker setup --health` says *Never run: trust them in Codex's /hooks* until Codex has run one of them (which one is not recorded, so a hook setup changed is flagged only by setup itself).
+An edit refused for
+another agent's lease names that agent and, when it is a teammate of a
+Claude Code agent team, the name its lead gave it — a teammate running
+inside the lead's process included, whose edits are claimed under the
+lead's session as that teammate's. A turn's end gives back the leases
+taken for its edits: a teammate's own turn end only that teammate's, the
+session's own turn end every one of the session's. They are what let the daemon see an agent's session
 begin and end, what it is about to edit, what it changed, and what it
 should be told before it starts — the journal since it last looked, the
 project's memory, and anything it read that has gone stale. Codex's
@@ -1421,6 +1428,29 @@ Current behaviour that the sections above do not already state, by area.
   one, even when that conversation is already open.
 
 ### Agents, roles and setup
+
+- **A Claude Code agent team is shown as one.** When a Claude Code session
+  leads a team of named teammates in a checkout, each session's record says
+  its place: the lead as `lead of <team>`, each teammate by the name and
+  colour its lead gave it and whose teammate it is, in `ps` (TEAM), in
+  `inspect` (`team`) and in the app, read from Claude's own team files and
+  each process's command line. AgentDocker writes nothing into Claude's
+  team: no inbox, no registry, no task. What it adds is the protection the
+  team lacks: a teammate's edits take the same path leases through the
+  hooks as any Claude Code session, under its own record, so a Codex agent
+  (or another teammate) editing the same file in that checkout is refused
+  with the teammate's name; so is a teammate that runs inside the lead's
+  process, whose edits are claimed under the lead's session as that
+  teammate's, so two such teammates, or one and its lead, editing one file
+  are refused by each other too. The lead's own subagents are the lead's
+  work and never refused by the lead's own leases. A
+  team needs the lead's hooks to be known as the lead; a lead adopted
+  without hooks is placed only when it is the one plain Claude Code
+  session in the team's checkout. A session started under a
+  `CLAUDE_CONFIG_DIR` of its own is read from there whatever the daemon's
+  is: from the session's own environment where the system lets the daemon
+  read it (Linux), and otherwise as its hooks and AgentDocker MCP server
+  report it.
 
 - **Docker Agent joins per agent file.** Docker Agent (`docker agent`, or
   `docker-agent` and its earlier name `cagent` on their own) runs the model

@@ -905,6 +905,10 @@ enum Command {
         /// What changed and why; becomes the project's journal entry.
         #[arg(long)]
         summary: Option<String>,
+        /// With `--all`: only the leases this teammate owns inside the
+        /// session (a Claude Code in-process teammate's id).
+        #[arg(long, requires = "all")]
+        actor: Option<String>,
     },
     /// Ask whoever holds a resource to let go of it: each holder gets a `release_request` message and answers with `respond-release`; the answer comes back to you as a `release_response` message.
     RequestRelease {
@@ -2377,6 +2381,11 @@ struct ClaimArgs {
     /// decides is whether the sum fits its capacity.
     #[arg(long)]
     amount: Option<u64>,
+    /// Who inside this session takes it, where the session runs several
+    /// agents in one process (a Claude Code in-process teammate's id):
+    /// kept on the lease and named in a refusal.
+    #[arg(long)]
+    actor: Option<String>,
     /// Only a new lease will do: one you already hold is in the way like
     /// anybody else's, and is not renewed. For a slot one process at a
     /// time may use (the machine's build slot): a second worker claiming
@@ -5603,6 +5612,7 @@ async fn run() -> Result<()> {
                     priority: args.priority,
                     automatic: false,
                     fresh: args.fresh,
+                    actor: args.actor.clone(),
                 };
                 first = false;
                 let response = client.call_raw(&request).await?;
@@ -5648,6 +5658,7 @@ async fn run() -> Result<()> {
             lease,
             all,
             summary,
+            actor,
         } => {
             let agent = sender::resolve(&client, agent)
                 .await?
@@ -5658,6 +5669,7 @@ async fn run() -> Result<()> {
                     summary,
                     summary_source: agentdocker_core::SummarySource::Explicit,
                     only_automatic: false,
+                    actor,
                 };
                 if let Response::Leases { leases } = client.call(&request).await? {
                     for lease in leases {
@@ -6492,6 +6504,13 @@ fn print_agents(
     };
     let in_session =
         agents.iter().any(|a| a.session.is_some()) || unadopted.iter().any(|p| p.session.is_some());
+    // Said only where a Claude Code team is: the column is noise otherwise.
+    let in_team =
+        agents.iter().any(|a| a.team.is_some()) || unadopted.iter().any(|p| p.team.is_some());
+    let team_cell = |team: Option<&agentdocker_core::TeamMembership>| {
+        team.map(agentdocker_core::TeamMembership::describe)
+            .unwrap_or_else(|| "-".to_owned())
+    };
     let session_cell = |session: Option<&Session>| {
         session
             .map(Session::describe)
@@ -6559,6 +6578,9 @@ fn print_agents(
             if in_session {
                 row.push(session_cell(a.session.as_ref()));
             }
+            if in_team {
+                row.push(team_cell(a.team.as_ref()));
+            }
             row.push(
                 a.pid
                     .map(|p| p.to_string())
@@ -6594,6 +6616,9 @@ fn print_agents(
         if in_session {
             row.push(session_cell(p.session.as_ref()));
         }
+        if in_team {
+            row.push(team_cell(p.team.as_ref()));
+        }
         row.push(p.pid.to_string());
         row.push(
             p.started_at
@@ -6614,6 +6639,9 @@ fn print_agents(
     }
     if in_session {
         headers.push("LIVES IN");
+    }
+    if in_team {
+        headers.push("TEAM");
     }
     headers.extend(["PID", "CREATED"]);
     format::table_dimming(&headers, &rows, |i| i >= first_unadopted);

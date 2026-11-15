@@ -13,6 +13,10 @@ pub(super) struct ClaimArgs {
     pub priority: Priority,
     pub automatic: bool,
     pub fresh: bool,
+    /// Who inside the agent's session claims it, as its adapter reports
+    /// it; the daemon decides whether that names a teammate who owns the
+    /// lease ([`State::owner_actor`]).
+    pub actor: Option<String>,
 }
 
 impl Daemon {
@@ -27,7 +31,9 @@ impl Daemon {
             priority,
             automatic,
             fresh,
+            actor,
         } = args;
+        let actor = actor.map(|a| a.trim().to_owned()).filter(|a| !a.is_empty());
         if !wait::valid_priority(priority) {
             return Response::error(
                 ErrorCode::Invalid,
@@ -168,11 +174,16 @@ impl Daemon {
                             ));
                         }
                     }
+                    // Who inside the holder's session owns what it takes:
+                    // part of the lease's ownership, so two agents of one
+                    // session are refused by each other as any two are.
+                    let owner = state.owner_actor(&holder, actor.as_deref());
                     let result = if state.may_attempt(waiting.ticket()) {
                         state.leases.clone().claim_as(
                             ClaimRequest {
                                 resource: resource.clone(),
                                 holder: holder.clone(),
+                                actor: owner,
                                 // A quota is shared by construction: it is
                                 // spent, not occupied, so exclusivity would
                                 // make every budget a lock on itself.
@@ -273,14 +284,32 @@ impl Daemon {
                                 let holders = held_by
                                     .iter()
                                     .map(|l| {
-                                        let name = state
-                                            .registry
-                                            .get(&l.holder)
+                                        let holder = state.registry.get(&l.holder);
+                                        let name = holder
                                             .map(|a| a.spec.name.as_str())
                                             .filter(|n| !n.is_empty())
                                             .unwrap_or("an unknown agent");
+                                        // A member of a Claude Code team by
+                                        // the name its lead gave it: the name
+                                        // the team's other agents know. An
+                                        // in-process teammate owns its lease
+                                        // under the lead's session, and is
+                                        // named by the roster its holder was
+                                        // placed by.
+                                        let team = holder
+                                            .and_then(|a| a.team.as_ref())
+                                            .map(|t| {
+                                                format!(
+                                                    ", {}",
+                                                    t.describe_acting(
+                                                        l.actor.as_deref(),
+                                                        state.team_rosters.get(&l.holder),
+                                                    )
+                                                )
+                                            })
+                                            .unwrap_or_default();
                                         format!(
-                                            "{name} ({}; {} on {})",
+                                            "{name}{team} ({}; {} on {})",
                                             l.holder.short(),
                                             l.mode,
                                             l.resource
@@ -614,26 +643,50 @@ impl State {
         Response::Leases { leases: released }
     }
 
+    /// Release the agent's leases, or with `only_automatic` those an
+    /// adapter took for an edit. An `actor` that is a teammate inside the
+    /// agent's session ([`State::owner_actor`]) releases only the leases it
+    /// owns: its turn ended, not its session's. No actor, or one that names
+    /// no teammate, is the session itself, and every lease of the agent's
+    /// is released, its in-process teammates' included — the session's own
+    /// turn end is the only boundary its hooks see for them, and a teammate
+    /// takes its lease again at its next edit.
     pub(super) fn release_all(
         &mut self,
         reference: &str,
         summary: Option<String>,
         source: SummarySource,
         only_automatic: bool,
+        actor: Option<&str>,
     ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        let owner = self.owner_actor(&holder, actor);
         let released = self
             .leases
             .by_holder(&holder)
             .into_iter()
             .filter(|l| !only_automatic || l.automatic)
+            .filter(|l| owner.is_none() || l.actor == owner)
             .cloned()
             .collect();
         let released = self.finish_release(&holder, released, summary, source);
         Response::Leases { leases: released }
+    }
+
+    /// The owner an `actor` reported inside `holder`'s session is: another
+    /// member of the holder's Claude Code team, as the roster the holder was
+    /// placed by names it, else `None` — the session itself (see
+    /// [`agentdocker_core::TeamMembership::owner_actor`]). As of the last
+    /// read of the team: every five seconds, and at each registration.
+    pub(super) fn owner_actor(&self, holder: &AgentId, actor: Option<&str>) -> Option<String> {
+        self.registry
+            .get(holder)?
+            .team
+            .as_ref()?
+            .owner_actor(actor, self.team_rosters.get(holder))
     }
 
     /// Stage deletion and the journal/replay evidence in one transaction,

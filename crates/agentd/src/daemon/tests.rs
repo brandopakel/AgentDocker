@@ -3931,6 +3931,7 @@ async fn a_refused_claim_names_the_holder() {
         wait_secs: 0,
         priority: 0,
         automatic: false,
+        actor: None,
         fresh: false,
     };
     assert!(matches!(
@@ -3974,6 +3975,7 @@ async fn a_fresh_claim_keeps_two_workers_of_one_agent_apart() {
         priority: 0,
         automatic: false,
         fresh,
+        actor: None,
     };
     // A client asks before it relies on a fresh claim: a daemon that did
     // not know the word would renew instead, and say nothing.
@@ -4001,6 +4003,7 @@ async fn a_fresh_claim_keeps_two_workers_of_one_agent_apart() {
         priority: 0,
         automatic: false,
         fresh: true,
+        actor: None,
     };
     assert!(matches!(
         daemon.handle(shared).await,
@@ -4085,6 +4088,7 @@ async fn a_clean_shutdown_hands_the_leases_back_and_says_it_did() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
             fresh: false,
         })
         .await
@@ -4265,6 +4269,7 @@ async fn claim_waiting_at(
             wait_secs,
             priority,
             automatic: false,
+            actor: None,
             fresh: false,
         })
         .await
@@ -4782,6 +4787,7 @@ async fn a_granted_wait_is_not_picked_to_break_a_later_ring() {
         wait_secs,
         priority,
         automatic: false,
+        actor: None,
         fresh: false,
     };
     let mut events = daemon.subscribe_events();
@@ -5170,6 +5176,7 @@ async fn status_changes_are_said_once_and_answer_with_activity() {
                 question: "ship it?".to_owned(),
                 presentation: None,
                 timeout_secs: 600,
+                form: Default::default(),
             })
             .await,
         Response::Sent { .. }
@@ -7545,6 +7552,7 @@ async fn a_quota_is_spent_by_several_agents_until_it_runs_out() {
                     wait_secs: 0,
                     priority: 0,
                     automatic: false,
+                    actor: None,
                     fresh: false,
                 })
                 .await
@@ -7601,6 +7609,7 @@ async fn a_quota_nobody_set_a_capacity_for_is_unlimited() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
             fresh: false,
         })
         .await;
@@ -8122,6 +8131,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
             fresh: false,
         })
         .await
@@ -8567,6 +8577,7 @@ async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
             fresh: false,
         })
         .await
@@ -9585,6 +9596,7 @@ async fn restore_retires_half_spawned_agents_and_orphaned_leases() {
             note: None,
             amount: 0,
             automatic: false,
+            actor: None,
         };
         store
             .upsert_lease(&lease("kept", first.id.clone(), "task:kept"))
@@ -9677,6 +9689,7 @@ fn ambiguous_live_names_refuse_before_recovery_changes_any_record_or_lease() {
         note: None,
         amount: 0,
         automatic: false,
+        actor: None,
     };
     store.upsert_lease(&protection).unwrap();
     let before = store.load_agents().unwrap();
@@ -9770,6 +9783,7 @@ async fn claim_wait_acquires_when_the_holder_releases() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    actor: None,
                     fresh: false,
                 })
                 .await
@@ -9807,6 +9821,7 @@ async fn claim_wait_gives_up_at_the_deadline() {
             wait_secs: 1,
             priority: 0,
             automatic: false,
+            actor: None,
             fresh: false,
         })
         .await;
@@ -10934,6 +10949,7 @@ fn discovery_row(pid: u32, started_at: chrono::DateTime<Utc>) -> DiscoveredProce
         project: None,
         started_at: Some(started_at),
         session: None,
+        team: None,
     }
 }
 
@@ -11721,6 +11737,7 @@ async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    actor: None,
                     fresh: false,
                 })
                 .await
@@ -11741,6 +11758,7 @@ async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
             summary: None,
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await;
     assert!(matches!(
@@ -11984,6 +12002,7 @@ async fn claim_expiration_removes_storage_and_emits_once() {
         note: None,
         amount: 0,
         automatic: false,
+        actor: None,
     };
     {
         let mut state = lock(&daemon.state);
@@ -13280,6 +13299,7 @@ async fn releases_notes_joins_and_leaves_are_journaled() {
             summary: None,
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await
     else {
@@ -13317,6 +13337,7 @@ async fn releases_notes_joins_and_leaves_are_journaled() {
             summary: Some("rewrote the parser".to_owned()),
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await
     else {
@@ -13345,6 +13366,7 @@ async fn releases_notes_joins_and_leaves_are_journaled() {
             summary: None,
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await;
     assert_eq!(
@@ -13361,6 +13383,7 @@ async fn releases_notes_joins_and_leaves_are_journaled() {
             summary: Some("  reviewed the plan, no edits  ".to_owned()),
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await;
     let entries = journal_of(&daemon, &repo, Some("release"), None, None).await;
@@ -13797,6 +13820,7 @@ async fn digests_follow_cursors_that_are_seeded_by_name() {
             summary: Some("I finished the parser.".to_owned()),
             summary_source: SummarySource::Transcript,
             only_automatic: false,
+            actor: None,
         })
         .await;
     assert_eq!(
@@ -13816,6 +13840,7 @@ async fn digests_follow_cursors_that_are_seeded_by_name() {
             summary: Some("I finished the parser.".to_owned()),
             summary_source: SummarySource::Transcript,
             only_automatic: false,
+            actor: None,
         })
         .await;
     let releases = journal_of(&daemon, &repo, Some("release"), None, None).await;
@@ -13958,6 +13983,7 @@ async fn reject_lease_transition(operation: &str) {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
                 fresh: false,
             })
             .await
@@ -14150,6 +14176,7 @@ async fn journal_release_event_failures_roll_back_leases_entries_and_publication
                     summary: Some("release with durable summary".into()),
                     summary_source: SummarySource::Explicit,
                     only_automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Error {
@@ -14345,6 +14372,7 @@ async fn release_summary_uses_lease_sequence_when_wall_clock_moves_backwards() {
                 summary: None,
                 summary_source: SummarySource::Explicit,
                 only_automatic: false,
+                actor: None,
             })
             .await,
         Response::Leases { .. }
@@ -14370,6 +14398,7 @@ async fn task_release_skips_watcher_and_path_release_waits_for_pending_changes()
         summary: None,
         summary_source: SummarySource::Explicit,
         only_automatic: false,
+        actor: None,
     };
     assert!(matches!(
         tokio::time::timeout(
@@ -15114,11 +15143,797 @@ async fn a_full_watcher_flush_queue_cannot_block_release_indefinitely() {
             summary: None,
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         }),
     )
     .await
     .expect("queue admission must share the flush timeout");
     assert!(matches!(response, Response::Leases { .. }));
+}
+
+/// A Claude Code agent team is read onto its sessions' records: the lead
+/// by the session id its hooks report, which Claude's team file names as
+/// `leadSessionId`; a teammate by the options Claude starts it with, with
+/// the colour and id the team file gives it. Reading the same team again
+/// says nothing; the lead loses the team when its file goes, while a
+/// teammate's command line still says what it is. A refused claim names
+/// the teammate as its lead named it, so a Codex agent in the checkout is
+/// told whose edit it would overwrite. Nothing is written into Claude's
+/// directories.
+#[tokio::test]
+async fn a_claude_code_team_is_read_onto_its_records_and_names_the_teammate_in_a_refusal() {
+    use agentdocker_core::team::{INBOXES_DIR, TEAM_FILE, TEAMS_DIR, TeamRole};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = TempDir::new().unwrap();
+    let checkout_path = std::fs::canonicalize(checkout.path()).unwrap();
+    let config = TempDir::new().unwrap();
+    lock(&daemon.state).claude_config_dir = Some(config.path().to_path_buf());
+    let orchard = config.path().join(TEAMS_DIR).join("orchard");
+    std::fs::create_dir_all(orchard.join(INBOXES_DIR)).unwrap();
+    std::fs::write(orchard.join(INBOXES_DIR).join("pruner.json"), "[]").unwrap();
+    std::fs::write(
+        orchard.join(TEAM_FILE),
+        format!(
+            r#"{{"name":"orchard","createdAt":1,"leadAgentId":"team-lead@orchard","leadSessionId":"lead-session-0001",
+                "members":[{{"agentId":"team-lead@orchard","name":"team-lead","agentType":"team-lead","joinedAt":1,
+                "tmuxPaneId":"leader","cwd":{cwd},"subscriptions":[],"backendType":"in-process"}},
+                {{"agentId":"pruner@orchard","name":"pruner","color":"blue","joinedAt":2,"tmuxPaneId":"%3",
+                "cwd":{cwd},"subscriptions":[],"backendType":"tmux"}}]}}"#,
+            cwd = serde_json::to_string(&checkout_path.to_string_lossy()).unwrap()
+        ),
+    )
+    .unwrap();
+    let entries = |dir: &Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = (entries(&orchard), entries(&orchard.join(INBOXES_DIR)));
+    let mut events = daemon.subscribe_events();
+    let team_events = |events: &mut broadcast::Receiver<Event>| {
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentTeamChanged { agent, team } = event.kind {
+                seen.push((agent, team));
+            }
+        }
+        seen
+    };
+    let agent = |response: Response| match response {
+        Response::Agent { agent } => agent,
+        other => panic!("{other:?}"),
+    };
+    let inspect = |id: &AgentId| {
+        lock(&daemon.state)
+            .registry
+            .get(id)
+            .cloned()
+            .expect("registered")
+    };
+
+    // A teammate's process, as Claude starts one: by its options.
+    let mut teammate_process = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "read -r held",
+            "sh",
+            "--agent-name",
+            "pruner",
+            "--team-name",
+            "orchard",
+            "--parent-session-id",
+            "lead-session-0001",
+        ])
+        // Under the team's directory, as its lead would start it: where the
+        // daemon reads a process's environment, that is where it looks.
+        .env("CLAUDE_CONFIG_DIR", config.path())
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // The lead, by the session id its hooks report. The registration
+    // itself reads the team, so the record carries it at once.
+    let lead = agent(
+        register_session(
+            &daemon,
+            "claude-lead0001",
+            &checkout_path,
+            Some("lead-session-0001"),
+        )
+        .await,
+    );
+    let lead_now = inspect(&lead.id);
+    let membership = lead_now
+        .team
+        .clone()
+        .expect("the lead is placed on registration");
+    assert_eq!(membership.role, TeamRole::Lead);
+    assert_eq!(membership.team, "orchard");
+    assert_eq!(membership.name, "team-lead");
+    assert_eq!(membership.describe(), "lead of orchard");
+
+    let mut mate_spec = spec("claude-mate0002");
+    mate_spec.runtime = "claude-code".to_owned();
+    mate_spec.workdir = Some(checkout_path.clone());
+    mate_spec
+        .labels
+        .insert("session_id".to_owned(), "mate-session-0002".to_owned());
+    let teammate = agent(
+        daemon
+            .handle(Request::Register {
+                spec: mate_spec,
+                pid: Some(teammate_process.id()),
+                session: None,
+            })
+            .await,
+    );
+    let mate_now = inspect(&teammate.id);
+    let membership = mate_now
+        .team
+        .clone()
+        .expect("the teammate is placed by its command line");
+    assert_eq!(membership.role, TeamRole::Teammate);
+    assert_eq!(membership.name, "pruner");
+    assert_eq!(membership.lead_name, "team-lead");
+    assert_eq!(
+        membership.colour.as_deref(),
+        Some("blue"),
+        "the colour comes from the team file when the command line has none"
+    );
+    assert_eq!(membership.agent_id.as_deref(), Some("pruner@orchard"));
+    let announced = team_events(&mut events);
+    assert_eq!(
+        announced
+            .iter()
+            .map(|(id, team)| (id.clone(), team.as_ref().map(|t| t.name.clone())))
+            .collect::<Vec<_>>(),
+        [
+            (lead.id.clone(), Some("team-lead".to_owned())),
+            (teammate.id.clone(), Some("pruner".to_owned())),
+        ]
+    );
+    // The same team read again is not news, and is served by `list`.
+    daemon.refresh_teams().await;
+    assert!(team_events(&mut events).is_empty());
+    let Response::Agents { agents, .. } = daemon
+        .handle(Request::List {
+            all: false,
+            project: None,
+            labels: Default::default(),
+        })
+        .await
+    else {
+        panic!("list");
+    };
+    assert_eq!(
+        agents.iter().filter(|a| a.team.is_some()).count(),
+        2,
+        "both records say their place"
+    );
+
+    // The teammate's lease refuses a Codex agent by the teammate's name.
+    let mut codex_spec = spec("codex-reviewer");
+    codex_spec.runtime = "codex".to_owned();
+    codex_spec.workdir = Some(checkout_path.clone());
+    let codex = agent(
+        daemon
+            .handle(Request::Register {
+                spec: codex_spec,
+                pid: None,
+                session: None,
+            })
+            .await,
+    );
+    let file = format!(
+        "path:{}",
+        checkout_path.join("src").join("lib.rs").display()
+    );
+    assert!(matches!(
+        claim(&daemon, teammate.id.as_str(), &file).await,
+        Response::Lease { .. }
+    ));
+    let Response::Error {
+        code: ErrorCode::Conflict,
+        message,
+        ..
+    } = claim(&daemon, codex.id.as_str(), &file).await
+    else {
+        panic!("a conflicting claim is refused");
+    };
+    assert!(
+        message.contains("claude-mate0002, pruner, teammate of team-lead in orchard"),
+        "{message}"
+    );
+
+    // Nothing of AgentDocker's was written under Claude's directories: the
+    // team's directory and its inboxes hold exactly what the test wrote,
+    // and the checkout has no `.claude/`.
+    assert_eq!(
+        (entries(&orchard), entries(&orchard.join(INBOXES_DIR))),
+        before
+    );
+    assert!(before.0.contains(&TEAM_FILE.to_owned()));
+    assert!(!checkout_path.join(".claude").exists());
+
+    // The team ends: the lead's file is gone, so the lead is in no team;
+    // the teammate's command line still says what it is.
+    std::fs::remove_dir_all(&orchard).unwrap();
+    daemon.refresh_teams().await;
+    assert!(inspect(&lead.id).team.is_none());
+    let still = inspect(&teammate.id)
+        .team
+        .expect("a teammate by its options stays one");
+    assert_eq!(still.name, "pruner");
+    assert_eq!(
+        still.colour, None,
+        "with no file the colour is unknown, never kept from before"
+    );
+    let announced = team_events(&mut events);
+    assert_eq!(announced.len(), 2, "{announced:?}");
+    assert!(
+        announced
+            .iter()
+            .any(|(id, team)| id == &lead.id && team.is_none())
+    );
+    assert!(
+        announced
+            .iter()
+            .any(|(id, team)| id == &teammate.id
+                && team.as_ref().is_some_and(|t| t.colour.is_none()))
+    );
+    let _ = teammate_process.kill();
+    let _ = teammate_process.wait();
+}
+
+/// Claude's default teammates run inside the lead's process: their hooks
+/// fire under the lead's session with the teammate's `agent_id`, and the
+/// edit is claimed under the lead's record naming that agent. The
+/// refusal of a Codex agent's claim then names the teammate as the team
+/// file knows it by that id; an id the team does not know is said as the
+/// lead's agent by id; a renewal naming nobody keeps the actor. And a
+/// session that runs under its own `CLAUDE_CONFIG_DIR` is read from
+/// there, as its record says, while one saying nothing is read from the
+/// daemon's own: two sessions in one checkout under two directories are
+/// each placed in the team of theirs.
+#[tokio::test]
+async fn in_process_teammates_are_named_by_their_actor_and_teams_are_read_per_session() {
+    use agentdocker_core::team::{CONFIG_DIR_LABEL, TeamRole};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = TempDir::new().unwrap();
+    let checkout_path = std::fs::canonicalize(checkout.path()).unwrap();
+    let daemons_dir = TempDir::new().unwrap();
+    let sessions_dir = TempDir::new().unwrap();
+    lock(&daemon.state).claude_config_dir = Some(daemons_dir.path().to_path_buf());
+    let write_team = |config: &Path, team: &str, lead_session: &str, members: &[&str]| {
+        write_team_file(config, team, lead_session, &checkout_path, members);
+    };
+    write_team(
+        daemons_dir.path(),
+        "orchard",
+        "lead-session-0001",
+        &["pruner"],
+    );
+    write_team(
+        sessions_dir.path(),
+        "vineyard",
+        "lead-session-0002",
+        &["picker", "packer"],
+    );
+    write_team(
+        sessions_dir.path(),
+        "terrace",
+        "lead-session-0003",
+        &["hand"],
+    );
+    let agent = |response: Response| match response {
+        Response::Agent { agent } => agent,
+        other => panic!("{other:?}"),
+    };
+    let inspect = |id: &AgentId| {
+        lock(&daemon.state)
+            .registry
+            .get(id)
+            .cloned()
+            .expect("registered")
+    };
+
+    // The lead under the daemon's directory says no directory of its own.
+    let orchard_lead = agent(
+        register_session(
+            &daemon,
+            "claude-lead0001",
+            &checkout_path,
+            Some("lead-session-0001"),
+        )
+        .await,
+    );
+    // The lead under its own directory says so, as its hooks would.
+    let mut own = spec("claude-lead0002");
+    own.runtime = "claude-code".to_owned();
+    own.workdir = Some(checkout_path.clone());
+    own.labels
+        .insert("session_id".to_owned(), "lead-session-0002".to_owned());
+    own.labels.insert(
+        CONFIG_DIR_LABEL.to_owned(),
+        sessions_dir.path().display().to_string(),
+    );
+    let vineyard_lead = agent(
+        daemon
+            .handle(Request::Register {
+                spec: own,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await,
+    );
+    // A lead in a process of its own whose environment names the directory
+    // its team is under while its record reports another: where the
+    // daemon can read the process's environment (Linux) the environment
+    // decides; where it cannot, the record's word is all there is, and
+    // the daemon's directory has no such team.
+    let mut terrace_process = std::process::Command::new("sleep")
+        .arg("30")
+        .env("CLAUDE_CONFIG_DIR", sessions_dir.path())
+        .spawn()
+        .unwrap();
+    let mut third = spec("claude-lead0003");
+    third.runtime = "claude-code".to_owned();
+    third.workdir = Some(checkout_path.clone());
+    third
+        .labels
+        .insert("session_id".to_owned(), "lead-session-0003".to_owned());
+    third.labels.insert(
+        CONFIG_DIR_LABEL.to_owned(),
+        daemons_dir.path().display().to_string(),
+    );
+    let terrace_lead = agent(
+        daemon
+            .handle(Request::Register {
+                spec: third,
+                pid: Some(terrace_process.id()),
+                session: None,
+            })
+            .await,
+    );
+    let terrace = inspect(&terrace_lead.id).team.map(|t| t.team);
+    #[cfg(target_os = "linux")]
+    assert_eq!(terrace.as_deref(), Some("terrace"), "its own environment");
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(terrace, None, "its record's word");
+    let _ = terrace_process.kill();
+    let _ = terrace_process.wait();
+
+    let placed = |id: &AgentId| inspect(id).team.expect("placed");
+    assert_eq!(placed(&orchard_lead.id).team, "orchard");
+    assert_eq!(placed(&orchard_lead.id).role, TeamRole::Lead);
+    assert_eq!(placed(&vineyard_lead.id).team, "vineyard");
+    assert_eq!(placed(&vineyard_lead.id).role, TeamRole::Lead);
+    // Each record keeps the roster it was placed by, from its own
+    // session's directory.
+    {
+        let state = lock(&daemon.state);
+        let roster = |id: &AgentId| state.team_rosters.get(id).map(|t| t.name.clone());
+        assert_eq!(roster(&orchard_lead.id).as_deref(), Some("orchard"));
+        assert_eq!(roster(&vineyard_lead.id).as_deref(), Some("vineyard"));
+        let vineyard = state.team_rosters.get(&vineyard_lead.id).unwrap();
+        assert!(vineyard.member("picker").is_some() && vineyard.member("packer").is_some());
+        assert!(
+            vineyard.member("pruner").is_none(),
+            "the other directory's teammate"
+        );
+    }
+
+    // Two in-process teammates of the vineyard lead, its own edits and a
+    // subagent's: every claim goes in under the lead's record, naming who
+    // inside the session takes it.
+    let path_of = |relative: &str| format!("path:{}", checkout_path.join(relative).display());
+    let file = path_of("src/lib.rs");
+    let take = |actor: Option<&str>, resource: String| {
+        let actor = actor.map(str::to_owned);
+        let daemon = daemon.clone();
+        let agent = vineyard_lead.id.to_string();
+        async move {
+            daemon
+                .handle(Request::Claim {
+                    agent,
+                    resource,
+                    mode: LeaseMode::Exclusive,
+                    amount: None,
+                    ttl_secs: 60,
+                    note: Some("editing in Claude Code session claude-lead0002".into()),
+                    wait_secs: 0,
+                    priority: 0,
+                    automatic: true,
+                    actor,
+                    fresh: false,
+                })
+                .await
+        }
+    };
+    let picker = Some("picker@vineyard");
+    let packer = Some("packer@vineyard");
+    let subagent = Some("a1b2c3d4e5");
+    let Response::Lease { lease } = take(picker, file.clone()).await else {
+        panic!("the teammate's edit is claimed");
+    };
+    assert_eq!(lease.actor.as_deref(), picker);
+
+    let mut codex_spec = spec("codex-reviewer");
+    codex_spec.runtime = "codex".to_owned();
+    codex_spec.workdir = Some(checkout_path.clone());
+    let codex = agent(
+        daemon
+            .handle(Request::Register {
+                spec: codex_spec,
+                pid: None,
+                session: None,
+            })
+            .await,
+    );
+    let refusal = |message: Response| match message {
+        Response::Error {
+            code: ErrorCode::Conflict,
+            message,
+            ..
+        } => message,
+        other => panic!("{other:?}"),
+    };
+    let message = refusal(claim(&daemon, codex.id.as_str(), &file).await);
+    assert!(
+        message.contains("claude-lead0002, picker, teammate of team-lead in vineyard"),
+        "{message}"
+    );
+    // Another teammate of the same session is refused as another agent
+    // would be: on the same file, and on a directory holding it.
+    for resource in [file.clone(), path_of("src")] {
+        let message = refusal(take(packer, resource).await);
+        assert!(
+            message.contains("picker, teammate of team-lead in vineyard"),
+            "{message}"
+        );
+    }
+    // So are the lead itself and its subagent, which is the session's own
+    // work: an actor that names no teammate is the session.
+    for actor in [None, subagent] {
+        let message = refusal(take(actor, file.clone()).await);
+        assert!(
+            message.contains("picker, teammate of team-lead in vineyard"),
+            "{actor:?}: {message}"
+        );
+    }
+    // The same teammate renews its own.
+    let Response::Lease { lease: renewed } = take(picker, file.clone()).await else {
+        panic!("renewed");
+    };
+    assert_eq!(renewed.id, lease.id);
+    assert_eq!(renewed.actor.as_deref(), picker);
+    // The lead's own file: its subagent renews it as the session, and a
+    // teammate is refused naming the lead.
+    let own = path_of("src/main.rs");
+    let Response::Lease { lease: leads } = take(None, own.clone()).await else {
+        panic!("the lead's edit");
+    };
+    assert_eq!(leads.actor, None);
+    let Response::Lease { lease: by_subagent } = take(subagent, own.clone()).await else {
+        panic!("a subagent edits as its session");
+    };
+    assert_eq!(by_subagent.id, leads.id);
+    assert_eq!(by_subagent.actor, None);
+    let message = refusal(take(packer, own.clone()).await);
+    assert!(
+        message.contains("claude-lead0002, lead of vineyard ("),
+        "{message}"
+    );
+    let notes = path_of("docs/notes.md");
+    let Response::Lease { lease: packers } = take(packer, notes).await else {
+        panic!("the other teammate's edit");
+    };
+    assert_eq!(packers.actor.as_deref(), packer);
+
+    // A turn's end that names a teammate gives back only what it owns; the
+    // session's own turn end gives back every automatic lease of the
+    // session, its teammates' included.
+    let release = |actor: Option<&str>| {
+        let actor = actor.map(str::to_owned);
+        let daemon = daemon.clone();
+        let agent = vineyard_lead.id.to_string();
+        async move {
+            match daemon
+                .handle(Request::ReleaseAll {
+                    agent,
+                    summary: None,
+                    summary_source: SummarySource::Explicit,
+                    only_automatic: true,
+                    actor,
+                })
+                .await
+            {
+                Response::Leases { leases } => {
+                    let mut gone: Vec<String> =
+                        leases.into_iter().map(|l| l.id.to_string()).collect();
+                    gone.sort();
+                    gone
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    assert_eq!(release(picker).await, vec![lease.id.to_string()]);
+    let mut rest = vec![leads.id.to_string(), packers.id.to_string()];
+    rest.sort();
+    assert_eq!(release(None).await, rest);
+    assert!(
+        matches!(
+            claim(&daemon, codex.id.as_str(), &file).await,
+            Response::Lease { .. }
+        ),
+        "the teammate's file is free once its turn is over"
+    );
+    let third = format!("path:{}", checkout_path.join("README.md").display());
+    assert!(matches!(
+        claim(&daemon, orchard_lead.id.as_str(), &third).await,
+        Response::Lease { .. }
+    ));
+    let message = refusal(claim(&daemon, codex.id.as_str(), &third).await);
+    assert!(
+        message.contains("claude-lead0001, lead of orchard ("),
+        "{message}"
+    );
+
+    // A hooks registration carrying the directory teaches a record its
+    // MCP server made first without one.
+    let mut first = spec("claude-code-7777");
+    first.runtime = "claude-code".to_owned();
+    first.workdir = Some(checkout_path.clone());
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .env("CLAUDE_CONFIG_DIR", sessions_dir.path())
+        .spawn()
+        .unwrap();
+    let made = agent(
+        daemon
+            .handle(Request::Register {
+                spec: first,
+                pid: Some(child.id()),
+                session: None,
+            })
+            .await,
+    );
+    assert!(!made.spec.labels.contains_key(CONFIG_DIR_LABEL));
+    let mut second = spec("claude-7777abcd");
+    second.runtime = "claude-code".to_owned();
+    second.workdir = Some(checkout_path.clone());
+    second
+        .labels
+        .insert("session_id".to_owned(), "hook-session-7777".to_owned());
+    second.labels.insert(
+        CONFIG_DIR_LABEL.to_owned(),
+        sessions_dir.path().display().to_string(),
+    );
+    let joined = agent(
+        daemon
+            .handle(Request::Register {
+                spec: second,
+                pid: Some(child.id()),
+                session: None,
+            })
+            .await,
+    );
+    assert_eq!(joined.id, made.id, "the hook joined its session's record");
+    assert_eq!(
+        inspect(&made.id)
+            .spec
+            .labels
+            .get(CONFIG_DIR_LABEL)
+            .map(String::as_str),
+        Some(sessions_dir.path().display().to_string().as_str())
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A Claude Code team file under `config`, led from `checkout`, with
+/// in-process `members` named `<name>@<team>`.
+fn write_team_file(
+    config: &Path,
+    team: &str,
+    lead_session: &str,
+    checkout: &Path,
+    members: &[&str],
+) {
+    use agentdocker_core::team::{INBOXES_DIR, TEAM_FILE, TEAMS_DIR};
+    let cwd = serde_json::to_string(&checkout.to_string_lossy()).unwrap();
+    let mut entries = vec![format!(
+        r#"{{"agentId":"team-lead@{team}","name":"team-lead","agentType":"team-lead","joinedAt":1,
+            "tmuxPaneId":"leader","cwd":{cwd},"subscriptions":[],"backendType":"in-process"}}"#
+    )];
+    for member in members {
+        entries.push(format!(
+            r#"{{"agentId":"{member}@{team}","name":"{member}","color":"green","joinedAt":2,
+                "tmuxPaneId":"in-process","cwd":{cwd},"subscriptions":[],"backendType":"in-process"}}"#
+        ));
+    }
+    let team_dir = config.join(TEAMS_DIR).join(team);
+    std::fs::create_dir_all(team_dir.join(INBOXES_DIR)).unwrap();
+    std::fs::write(
+        team_dir.join(TEAM_FILE),
+        format!(
+            r#"{{"name":"{team}","createdAt":1,"leadAgentId":"team-lead@{team}","leadSessionId":"{lead_session}","members":[{}]}}"#,
+            entries.join(",")
+        ),
+    )
+    .unwrap();
+}
+
+/// Two configuration directories can each hold a team of one name with
+/// other members. Each record keeps the roster it was placed by, from its
+/// own directory: a teammate of one is nobody in the other, owns nothing
+/// apart from that session there, and is never named for it.
+#[tokio::test]
+async fn a_team_of_one_name_under_two_directories_is_two_rosters() {
+    use agentdocker_core::team::CONFIG_DIR_LABEL;
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = TempDir::new().unwrap();
+    let checkout_path = std::fs::canonicalize(checkout.path()).unwrap();
+    let first_root = TempDir::new().unwrap();
+    let second_root = TempDir::new().unwrap();
+    lock(&daemon.state).claude_config_dir = Some(first_root.path().to_path_buf());
+    write_team_file(
+        first_root.path(),
+        "orchard",
+        "lead-session-0101",
+        &checkout_path,
+        &["pruner"],
+    );
+    write_team_file(
+        second_root.path(),
+        "orchard",
+        "lead-session-0202",
+        &checkout_path,
+        &["grower"],
+    );
+    let agent = |response: Response| match response {
+        Response::Agent { agent } => agent,
+        other => panic!("{other:?}"),
+    };
+    // One lead under the daemon's directory, one under its own.
+    let first = agent(
+        register_session(
+            &daemon,
+            "claude-lead0101",
+            &checkout_path,
+            Some("lead-session-0101"),
+        )
+        .await,
+    );
+    let mut own = spec("claude-lead0202");
+    own.runtime = "claude-code".to_owned();
+    own.workdir = Some(checkout_path.clone());
+    own.labels
+        .insert("session_id".to_owned(), "lead-session-0202".to_owned());
+    own.labels.insert(
+        CONFIG_DIR_LABEL.to_owned(),
+        second_root.path().display().to_string(),
+    );
+    let second = agent(
+        daemon
+            .handle(Request::Register {
+                spec: own,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await,
+    );
+    {
+        let state = lock(&daemon.state);
+        for (id, member, stranger) in [
+            (&first.id, "pruner", "grower"),
+            (&second.id, "grower", "pruner"),
+        ] {
+            let record = state.registry.get(id).unwrap();
+            assert_eq!(
+                record.team.as_ref().map(|t| t.team.as_str()),
+                Some("orchard")
+            );
+            let roster = state
+                .team_rosters
+                .get(id)
+                .expect("the roster it was placed by");
+            assert!(roster.member(member).is_some(), "{member}");
+            assert!(
+                roster.member(stranger).is_none(),
+                "{stranger} is the other directory's"
+            );
+        }
+    }
+    // Each lead's teammate owns its lease; the other directory's teammate
+    // of the same name of team is the session itself there.
+    let take = |holder: AgentId, actor: &str, relative: &str| {
+        let resource = format!("path:{}", checkout_path.join(relative).display());
+        let actor = Some(actor.to_owned());
+        let daemon = daemon.clone();
+        async move {
+            match daemon
+                .handle(Request::Claim {
+                    agent: holder.to_string(),
+                    resource,
+                    mode: LeaseMode::Exclusive,
+                    amount: None,
+                    ttl_secs: 60,
+                    note: None,
+                    wait_secs: 0,
+                    priority: 0,
+                    automatic: true,
+                    actor,
+                    fresh: false,
+                })
+                .await
+            {
+                Response::Lease { lease } => lease,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let cases = [
+        (
+            second.id.clone(),
+            "grower@orchard",
+            "a.rs",
+            Some("grower@orchard"),
+        ),
+        (second.id.clone(), "pruner@orchard", "b.rs", None),
+        (
+            first.id.clone(),
+            "pruner@orchard",
+            "c.rs",
+            Some("pruner@orchard"),
+        ),
+        (first.id.clone(), "grower@orchard", "d.rs", None),
+    ];
+    for (holder, actor, relative, owner) in &cases {
+        let lease = take(holder.clone(), actor, relative).await;
+        assert_eq!(lease.actor.as_deref(), *owner, "{actor} on {relative}");
+    }
+    let mut codex_spec = spec("codex-reviewer");
+    codex_spec.runtime = "codex".to_owned();
+    codex_spec.workdir = Some(checkout_path.clone());
+    let codex = agent(
+        daemon
+            .handle(Request::Register {
+                spec: codex_spec,
+                pid: None,
+                session: None,
+            })
+            .await,
+    );
+    for (relative, named) in [
+        (
+            "a.rs",
+            "claude-lead0202, grower, teammate of team-lead in orchard",
+        ),
+        ("b.rs", "claude-lead0202, lead of orchard ("),
+        (
+            "c.rs",
+            "claude-lead0101, pruner, teammate of team-lead in orchard",
+        ),
+        ("d.rs", "claude-lead0101, lead of orchard ("),
+    ] {
+        let resource = format!("path:{}", checkout_path.join(relative).display());
+        match claim(&daemon, codex.id.as_str(), &resource).await {
+            Response::Error {
+                code: ErrorCode::Conflict,
+                message,
+                ..
+            } => assert!(message.contains(named), "{relative}: {message}"),
+            other => panic!("{relative}: {other:?}"),
+        }
+    }
 }
 
 #[test]
