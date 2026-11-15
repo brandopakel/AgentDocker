@@ -50,7 +50,12 @@ pub(crate) async fn schedule(client: &Client, input: &HookInput) -> Result<()> {
         return Ok(());
     };
     if agent.spec.labels.get("session_id") != Some(&input.session_id)
-        || !crate::mcp::channel_input_active(&dirs::home(), &agent)?
+        || !crate::mcp::channel_held(
+            &dirs::home(),
+            &agent,
+            tokio::time::Instant::now() + Duration::from_millis(250),
+        )
+        .await
     {
         return Ok(());
     }
@@ -111,7 +116,14 @@ pub async fn run(client: Client, args: DeferredArgs) -> Result<()> {
             else {
                 break;
             };
-            if !args.matches(&agent) || !crate::mcp::channel_input_active(&home, &agent)? {
+            if !args.matches(&agent)
+                || !crate::mcp::channel_held(
+                    &home,
+                    &agent,
+                    tokio::time::Instant::now() + Duration::from_millis(250),
+                )
+                .await
+            {
                 break;
             }
             // One bounded proof attempt; a transient deadline can retry, but

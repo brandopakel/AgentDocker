@@ -375,8 +375,10 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             let delivery = HookDelivery {
                 backend: &client,
                 pending: RefCell::new(Vec::new()),
-                channel_input: false,
-                channel_home: None,
+                ownership: OwnershipSource::NoChannel,
+                deadline,
+                probe: RefCell::new(None),
+                undecided: RefCell::new(None),
             };
             let result = bounded_claude_code_at(&delivery, &input, &opts, deadline).await;
             if let Err(err) = &result {
@@ -463,7 +465,7 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
                 let _ = tokio::time::timeout_at(receipt_deadline, async {
                     if let Some(agent) = session_agent(&client, &input).await? {
                         let home = agentdocker_host::dirs::home();
-                        if crate::mcp::channel_input_active(&home, &agent)? {
+                        if crate::mcp::channel_held(&home, &agent, receipt_deadline).await {
                             channel_receipt::recover(&client, &input, &agent, &home).await?;
                         }
                     }
@@ -481,8 +483,10 @@ pub async fn run(client: Client, args: HookArgs) -> Result<()> {
             let delivery = HookDelivery {
                 backend: &client,
                 pending: RefCell::new(Vec::new()),
-                channel_input: crate::mcp::channel_opted_in("claude-code"),
-                channel_home: Some(agentdocker_host::dirs::home()),
+                ownership: OwnershipSource::Probe(agentdocker_host::dirs::home()),
+                deadline,
+                probe: RefCell::new(None),
+                undecided: RefCell::new(None),
             };
             let mut output = match bounded_claude_code_at(&delivery, &input, &opts, deadline).await
             {
@@ -786,63 +790,94 @@ fn opencode_delivered(pending: Vec<Request>) -> Vec<Delivered> {
 /// it offered and never saw confirmed. Claude drops channel offers it has
 /// not loaded the channel for (a session restarted without the flag), so
 /// this is a channel that is not delivering, not one that is slow.
-fn channel_stalled(agent: &agentdocker_core::AgentRecord) -> bool {
-    agent.input_delivery.as_ref().is_some_and(|delivery| {
-        delivery.paused_for(agent.process_started_at)
-            && delivery.pause_reason.as_deref().is_some_and(|reason| {
-                reason.starts_with(agentdocker_core::input::PAUSE_RECEIPT_MISSING)
-            })
-    })
+/// Where a hook learns who owns its session's channel: the lock files
+/// under the state home, or, for a test, a fixed answer.
+enum OwnershipSource {
+    Probe(PathBuf),
+    /// A runtime no Claude channel serves (OpenCode): its queue is the
+    /// hooks' whole.
+    NoChannel,
+    #[cfg(test)]
+    Fixed(agentdocker_core::input::channel::Ownership),
 }
 
 /// Read inboxes without consuming them; acknowledge only after output is flushed.
 struct HookDelivery<'a, B> {
     backend: &'a B,
     pending: RefCell<Vec<Request>>,
-    /// Parent-session opt-in selects one inbox delivery path. Other lifecycle
-    /// observations and lease operations continue through the hooks adapter.
-    channel_input: bool,
-    /// Detect a live channel even if an MCP entry supplied the opt-in only to
-    /// its own child environment. Test backends omit host filesystem probing.
-    channel_home: Option<PathBuf>,
+    /// Who owns the session's channel decides what the hooks may read
+    /// (`agentdocker_core::input::channel::channel_state`), whether or not
+    /// this session opted in. Other lifecycle observations and lease
+    /// operations continue through the hooks adapter.
+    ownership: OwnershipSource,
+    /// The delivery gates are waited for until then.
+    deadline: tokio::time::Instant,
+    /// The gates a probe took, held until this delivery is dropped, after
+    /// its output is written and acknowledged: no channel adapter can begin
+    /// to own the session, or read its queue, in between.
+    probe: RefCell<Option<crate::mcp::ChannelProbe>>,
+    /// Why this hook could not tell who may deliver, when it could not.
+    undecided: RefCell<Option<String>>,
 }
 
 impl<B: Backend> Backend for HookDelivery<'_, B> {
     async fn call(&self, request: Request) -> Result<Response> {
         if let Request::Inbox { agent, .. } = request {
-            let held_channel = if self.channel_input || self.channel_home.is_some() {
-                // The channel may hold the registration's pre-resumption ID.
-                // Check the canonical record's process generation as well so
-                // hooks cannot race that still-live adapter after folding.
-                let record = match self
-                    .backend
-                    .call(Request::Inspect {
-                        agent: agent.clone(),
-                    })
-                    .await?
-                {
-                    Response::Agent { agent } => agent,
-                    other => bail!("cannot verify channel ownership: {other:?}"),
-                };
-                let live = self.channel_input
-                    || match &self.channel_home {
-                        Some(home) => crate::mcp::channel_input_active(home, &record)?,
-                        None => false,
-                    };
-                // A channel that offered a message the session never
-                // confirmed has stopped the queue on it. The hooks reach
-                // the model directly, and receipt recovery has just looked
-                // for that message in the transcript, so they take the queue
-                // over rather than leave every later message silent.
-                live && !channel_stalled(&record)
-            } else {
-                false
+            use agentdocker_core::input::channel::{ChannelState, HookShare, channel_state};
+            // The channel may hold the registration's pre-resumption ID:
+            // the probe reads the canonical record's process generation
+            // as well, so hooks cannot race a still-live adapter after
+            // folding.
+            let record = match self
+                .backend
+                .call(Request::Inspect {
+                    agent: agent.clone(),
+                })
+                .await?
+            {
+                Response::Agent { agent } => agent,
+                other => bail!("cannot verify channel ownership: {other:?}"),
             };
-            if held_channel {
-                return Ok(Response::Messages {
-                    messages: Vec::new(),
-                });
+            let ownership = match &self.ownership {
+                OwnershipSource::Probe(home) => {
+                    let probe = crate::mcp::channel_probe(home, &record, self.deadline).await;
+                    let ownership = probe.ownership.clone();
+                    *self.undecided.borrow_mut() = probe.why.clone();
+                    *self.probe.borrow_mut() = Some(probe);
+                    ownership
+                }
+                OwnershipSource::NoChannel => agentdocker_core::input::channel::Ownership::Absent,
+                #[cfg(test)]
+                OwnershipSource::Fixed(ownership) => ownership.clone(),
+            };
+            let state = channel_state(
+                &ownership,
+                record.input_delivery.as_ref(),
+                record.process_started_at,
+            );
+            if state == ChannelState::Unknown {
+                let why = self
+                    .undecided
+                    .borrow_mut()
+                    .get_or_insert_with(|| "its channel ownership could not be read".into())
+                    .clone();
+                eprintln!(
+                    "agentdocker hook: message delivery for this session cannot be decided ({why}); messages stay queued"
+                );
             }
+            // A channel that offered a message the session never confirmed
+            // has stopped the queue on it: the hooks take that message
+            // over, and only it, while it heads the queue, so a receipt that
+            // lands meanwhile can repeat it but never a message behind it.
+            let only = match state.hooks() {
+                HookShare::Nothing => {
+                    return Ok(Response::Messages {
+                        messages: Vec::new(),
+                    });
+                }
+                HookShare::All => None,
+                HookShare::Only(message) => Some(message),
+            };
             let response = self
                 .backend
                 .call(Request::DeliveryQueue {
@@ -854,6 +889,17 @@ impl<B: Backend> Backend for HookDelivery<'_, B> {
                     messages: Vec::new(),
                 });
             }
+            let response = match (response, only) {
+                (Response::Messages { messages }, Some(head)) => Response::Messages {
+                    messages: messages
+                        .into_iter()
+                        .take(1)
+                        .filter(|message| message.id == head)
+                        .collect(),
+                },
+                (response, _) => response,
+            };
+            // Only what is answered is ever acknowledged.
             if let Response::Messages { messages } = &response {
                 self.pending.borrow_mut().push(Request::AckInbox {
                     agent,
@@ -864,6 +910,10 @@ impl<B: Backend> Backend for HookDelivery<'_, B> {
         } else {
             self.backend.call(request).await
         }
+    }
+
+    fn delivery_undecided(&self) -> Option<String> {
+        self.undecided.borrow().clone()
     }
 
     /// What was read and not told stays queued: it leaves the
@@ -1074,6 +1124,10 @@ pub async fn claude_code<B: Backend>(
                 }
             }
             said.extend(also);
+            if let Some(why) = backend.delivery_undecided() {
+                text.push_str("\n\n");
+                text.push_str(&undecided_line(&why));
+            }
             // The messages come last. The OpenCode plugin keeps everything
             // before them in the session's system prompt for every request
             // and tells the messages once, cutting at their heading.
@@ -1149,7 +1203,18 @@ pub async fn claude_code<B: Backend>(
                 _ => (String::new(), Vec::new()),
             };
             let (recalled, said) = recalled;
-            if inbox.is_empty() && digest.is_empty() && recalled.is_empty() {
+            // A prompt is told when nobody can say who delivers its
+            // session's messages, since they stay queued meanwhile.
+            let undecided = if input.hook_event_name == "UserPromptSubmit" {
+                backend
+                    .delivery_undecided()
+                    .map(|why| undecided_line(&why))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            if inbox.is_empty() && digest.is_empty() && recalled.is_empty() && undecided.is_empty()
+            {
                 return Ok(None);
             }
             let journal = if digest.is_empty() {
@@ -1162,11 +1227,11 @@ pub async fn claude_code<B: Backend>(
             let (mut text, withheld) = messages_within(
                 &inbox,
                 &agents,
-                CONTEXT_BYTES.saturating_sub(blocks(&[&journal, &recalled])),
+                CONTEXT_BYTES.saturating_sub(blocks(&[&journal, &recalled, &undecided])),
                 heading,
             );
             backend.withhold(&withheld);
-            for part in [journal, recalled] {
+            for part in [journal, recalled, undecided] {
                 if part.is_empty() {
                     continue;
                 }
@@ -1983,6 +2048,14 @@ async fn all_agents<B: Backend>(backend: &B) -> Result<Vec<AgentRecord>> {
         Response::Agents { agents, .. } => Ok(agents),
         _ => Ok(Vec::new()),
     }
+}
+
+/// What a session is told when nobody can say who delivers its messages.
+fn undecided_line(why: &str) -> String {
+    format!(
+        "AgentDocker: message delivery for this session cannot be decided ({}); its messages stay queued until it can be.",
+        agentdocker_core::input::plain_text(why, 300)
+    )
 }
 
 /// The root session's queue, emptied into this hook's answer. A subagent's
@@ -6279,8 +6352,10 @@ mod tests {
         let delivery = HookDelivery {
             backend: &slow,
             pending: RefCell::new(Vec::new()),
-            channel_input: false,
-            channel_home: None,
+            ownership: OwnershipSource::Fixed(agentdocker_core::input::channel::Ownership::Absent),
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            probe: RefCell::new(None),
+            undecided: RefCell::new(None),
         };
         let mut event = input("UserPromptSubmit");
         event.cwd = Some(checkout.path().to_path_buf());
@@ -6293,9 +6368,16 @@ mod tests {
         assert_eq!(delivery.pending.borrow().len(), 1);
     }
 
+    /// What the hooks read follows who owns the session's channel: nothing
+    /// while an owner serves or is starting, its stalled head alone (and
+    /// only that is acknowledged) when the owner holding the lock wrote the
+    /// stall, nothing for a stall an earlier instance wrote, the whole queue
+    /// with no owner, and nothing, said, when ownership cannot be read.
+    /// Other requests pass through.
     #[tokio::test]
-    async fn explicit_channel_input_skips_hook_inbox_delivery_but_forwards_other_requests() {
-        struct Observed(RefCell<Vec<Request>>, AgentRecord);
+    async fn the_hooks_read_the_queue_only_as_channel_ownership_allows() {
+        use agentdocker_core::input::channel::{Ownership, TokenEvidence};
+        struct Observed(RefCell<Vec<Request>>, AgentRecord, Vec<Envelope>);
         impl Backend for Observed {
             async fn call(&self, request: Request) -> Result<Response> {
                 self.0.borrow_mut().push(request.clone());
@@ -6304,12 +6386,14 @@ mod tests {
                         agent: self.1.clone(),
                     },
                     Request::DeliveryQueue { .. } => Response::Messages {
-                        messages: vec![message("user", "pause for the night")],
+                        messages: self.2.clone(),
                     },
                     _ => Response::Ok,
                 })
             }
         }
+        const MINE: &str = "0123456789abcdef0123456789abcdef";
+        const EARLIER: &str = "fedcba9876543210fedcba9876543210";
         let started = Utc::now();
         let mut record = AgentRecord::new(
             agentdocker_core::AgentSpec {
@@ -6320,48 +6404,144 @@ mod tests {
             started,
         );
         record.process_started_at = Some(started);
-        let backend = Observed(RefCell::new(Vec::new()), record.clone());
-        let delivery = HookDelivery {
-            backend: &backend,
-            pending: RefCell::new(Vec::new()),
-            channel_input: true,
-            channel_home: None,
+        let head = message("user", "pause for the night");
+        let behind = message("user", "and lock up");
+        let stalled_by = |adapter: &str, message: &Envelope| {
+            let mut record = record.clone();
+            record.input_delivery = Some(agentdocker_core::InputDelivery {
+                process_started_at: started,
+                paused: true,
+                pause_reason: Some(agentdocker_core::input::receipt_missing_reason(
+                    &message.id,
+                    adapter,
+                )),
+                reported_at: Utc::now(),
+                received: None,
+                received_at: None,
+                typing_until: None,
+            });
+            record
         };
-        // A delivering channel owns the inbox: the hook reads nothing.
-        assert!(
-            matches!(delivery.call(Request::Inbox { agent: "me".into(), drain: true }).await.unwrap(),
-            Response::Messages { messages } if messages.is_empty())
-        );
-        assert!(matches!(
-            backend.0.borrow().as_slice(),
-            [Request::Inspect { .. }]
-        ));
-        assert!(delivery.pending.borrow().is_empty());
-        delivery.call(Request::Ping).await.unwrap();
-        assert!(matches!(backend.0.borrow().last(), Some(Request::Ping)));
+        let held = Ownership::Held(TokenEvidence::Token(MINE.into()));
+        let read = |ownership: Ownership, record: AgentRecord, queue: Vec<Envelope>| async move {
+            let backend = Observed(RefCell::new(Vec::new()), record, queue);
+            let delivery = HookDelivery {
+                backend: &backend,
+                pending: RefCell::new(Vec::new()),
+                ownership: OwnershipSource::Fixed(ownership),
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+                probe: RefCell::new(None),
+                undecided: RefCell::new(None),
+            };
+            let Response::Messages { messages } = delivery
+                .call(Request::Inbox {
+                    agent: "me".into(),
+                    drain: true,
+                })
+                .await
+                .unwrap()
+            else {
+                panic!("messages");
+            };
+            delivery.call(Request::Ping).await.unwrap();
+            let acked: Vec<MessageId> = delivery
+                .pending
+                .borrow()
+                .iter()
+                .flat_map(|request| match request {
+                    Request::AckInbox { messages, .. } => messages.clone(),
+                    _ => Vec::new(),
+                })
+                .collect();
+            let asked_queue = backend
+                .0
+                .borrow()
+                .iter()
+                .any(|r| matches!(r, Request::DeliveryQueue { .. }));
+            assert!(matches!(backend.0.borrow().last(), Some(Request::Ping)));
+            let ids: Vec<MessageId> = messages.iter().map(|m| m.id.clone()).collect();
+            (ids, acked, asked_queue, delivery.delivery_undecided())
+        };
+        let queue = vec![head.clone(), behind.clone()];
 
-        // A channel stopped on an offer nobody confirmed (Claude restarted
-        // without loading it): the hook delivers the queue and acknowledges
-        // it once its output is written.
-        record.input_delivery = Some(agentdocker_core::InputDelivery {
-            process_started_at: started,
-            paused: true,
-            pause_reason: Some(format!(
-                "{} ee72ad08c7df5911; following messages remain queued.",
-                agentdocker_core::input::PAUSE_RECEIPT_MISSING
-            )),
-            reported_at: Utc::now(),
-            received: None,
-            received_at: None,
-            typing_until: None,
-        });
-        let backend = Observed(RefCell::new(Vec::new()), record);
-        let delivery = HookDelivery {
+        // An owner that has not said it stalled: nothing read.
+        let (ids, acked, asked, undecided) =
+            read(held.clone(), record.clone(), queue.clone()).await;
+        assert!(ids.is_empty() && acked.is_empty() && !asked && undecided.is_none());
+
+        // Its own stall: the head alone, and only it acknowledged.
+        let (ids, acked, _, _) = read(held.clone(), stalled_by(MINE, &head), queue.clone()).await;
+        assert_eq!(ids, vec![head.id.clone()]);
+        assert_eq!(acked, vec![head.id.clone()]);
+
+        // The stalled message is no longer the head (a receipt took it):
+        // nothing, so the message behind it stays the channel's.
+        let (ids, acked, _, _) =
+            read(held.clone(), stalled_by(MINE, &head), vec![behind.clone()]).await;
+        assert!(ids.is_empty() && acked.is_empty(), "{ids:?} {acked:?}");
+
+        // A stall an earlier instance of this generation wrote: nothing.
+        let (ids, _, asked, _) =
+            read(held.clone(), stalled_by(EARLIER, &head), queue.clone()).await;
+        assert!(ids.is_empty() && !asked);
+
+        // No owner: the whole queue, whatever pause stands.
+        let (ids, acked, _, _) =
+            read(Ownership::Absent, stalled_by(EARLIER, &head), queue.clone()).await;
+        assert_eq!(ids, vec![head.id.clone(), behind.id.clone()]);
+        assert_eq!(acked, ids);
+
+        // Ownership unreadable: nothing, and the hook says it cannot decide.
+        let (ids, _, asked, undecided) =
+            read(Ownership::Unknown, stalled_by(MINE, &head), queue).await;
+        assert!(ids.is_empty() && !asked);
+        assert!(undecided.is_some());
+    }
+
+    /// Through the real lock files: with no adapter the hooks deliver, and
+    /// hold the gates until they are done, so an adapter starting meanwhile
+    /// waits and reads the queue only after their acknowledgement; with the
+    /// ownership folder broken, nothing is read and the hook says it cannot
+    /// decide.
+    #[tokio::test(start_paused = true)]
+    async fn the_hooks_hold_the_delivery_gates_through_their_acknowledgement() {
+        struct Observed(AgentRecord, Vec<Envelope>);
+        impl Backend for Observed {
+            async fn call(&self, request: Request) -> Result<Response> {
+                Ok(match request {
+                    Request::Inspect { .. } => Response::Agent {
+                        agent: self.0.clone(),
+                    },
+                    Request::DeliveryQueue { .. } => Response::Messages {
+                        messages: self.1.clone(),
+                    },
+                    _ => Response::Ok,
+                })
+            }
+        }
+        let born = Utc::now();
+        let mut record = agent("me", true);
+        record.spec.runtime = "claude-code".into();
+        record.pid = Some(4242);
+        record.process_started_at = Some(born);
+        let identity = crate::mcp::Identity {
+            id: record.id.to_string(),
+            name: "fixture".into(),
+            registered_here: false,
+            host_pid: record.pid,
+            host_started_at: record.process_started_at,
+        };
+        let home = tempfile::TempDir::new().unwrap();
+        let backend = Observed(record.clone(), vec![message("user", "only once")]);
+        let deliver = |home: std::path::PathBuf| HookDelivery {
             backend: &backend,
             pending: RefCell::new(Vec::new()),
-            channel_input: true,
-            channel_home: None,
+            ownership: OwnershipSource::Probe(home),
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            probe: RefCell::new(None),
+            undecided: RefCell::new(None),
         };
+        let delivery = deliver(home.path().to_path_buf());
         let Response::Messages { messages } = delivery
             .call(Request::Inbox {
                 agent: "me".into(),
@@ -6372,15 +6552,29 @@ mod tests {
         else {
             panic!("messages");
         };
-        assert_eq!(messages.len(), 1);
+        assert_eq!(messages.len(), 1, "no adapter: the hooks deliver");
+        let start = tokio::spawn({
+            let home = home.path().to_path_buf();
+            async move { crate::mcp::channel_start_for(&home, &identity).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        assert!(!start.is_finished(), "the adapter waits for the hook");
+        drop(delivery);
         assert!(matches!(
-            backend.0.borrow().as_slice(),
-            [Request::Inspect { .. }, Request::DeliveryQueue { .. }]
+            start.await.unwrap(),
+            crate::mcp::ChannelStart::Owned(_)
         ));
+
+        let broken = tempfile::TempDir::new().unwrap();
+        std::fs::write(broken.path().join("channel-input"), b"a file").unwrap();
+        let delivery = deliver(broken.path().to_path_buf());
         assert!(matches!(
-            delivery.pending.borrow().as_slice(),
-            [Request::AckInbox { .. }]
+            delivery.call(Request::Inbox { agent: "me".into(), drain: true }).await.unwrap(),
+            Response::Messages { messages } if messages.is_empty()
         ));
+        assert!(delivery.pending.borrow().is_empty());
+        let why = delivery.delivery_undecided().expect("said");
+        assert!(undecided_line(&why).contains("cannot be decided"));
     }
 
     #[tokio::test]
@@ -6637,8 +6831,10 @@ mod tests {
         let delivery = HookDelivery {
             backend: &daemon,
             pending: RefCell::new(Vec::new()),
-            channel_input: false,
-            channel_home: None,
+            ownership: OwnershipSource::Fixed(agentdocker_core::input::channel::Ownership::Absent),
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            probe: RefCell::new(None),
+            undecided: RefCell::new(None),
         };
         let out = claude_code(&delivery, &input("SessionStart"), &opts())
             .await
@@ -6696,8 +6892,10 @@ mod tests {
         let delivery = HookDelivery {
             backend: &daemon,
             pending: RefCell::new(Vec::new()),
-            channel_input: false,
-            channel_home: None,
+            ownership: OwnershipSource::Fixed(agentdocker_core::input::channel::Ownership::Absent),
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            probe: RefCell::new(None),
+            undecided: RefCell::new(None),
         };
         let out = claude_code(&delivery, &input("SessionStart"), &opts())
             .await
@@ -6732,8 +6930,10 @@ mod tests {
         let delivery = HookDelivery {
             backend: &daemon,
             pending: RefCell::new(Vec::new()),
-            channel_input: false,
-            channel_home: None,
+            ownership: OwnershipSource::Fixed(agentdocker_core::input::channel::Ownership::Absent),
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            probe: RefCell::new(None),
+            undecided: RefCell::new(None),
         };
         delivery
             .call(Request::Inbox {
@@ -6783,8 +6983,10 @@ mod tests {
         let delivery = HookDelivery {
             backend: &daemon,
             pending: RefCell::new(Vec::new()),
-            channel_input: false,
-            channel_home: None,
+            ownership: OwnershipSource::Fixed(agentdocker_core::input::channel::Ownership::Absent),
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            probe: RefCell::new(None),
+            undecided: RefCell::new(None),
         };
         let out = claude_code(&delivery, &input("SessionStart"), &opts())
             .await
@@ -6821,8 +7023,10 @@ mod tests {
         let delivery = HookDelivery {
             backend: &daemon,
             pending: RefCell::new(Vec::new()),
-            channel_input: false,
-            channel_home: None,
+            ownership: OwnershipSource::Fixed(agentdocker_core::input::channel::Ownership::Absent),
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            probe: RefCell::new(None),
+            undecided: RefCell::new(None),
         };
         let out = claude_code(&delivery, &input("SessionStart"), &opts())
             .await
@@ -6843,8 +7047,10 @@ mod tests {
         let delivery = HookDelivery {
             backend: &daemon,
             pending: RefCell::new(Vec::new()),
-            channel_input: false,
-            channel_home: None,
+            ownership: OwnershipSource::Fixed(agentdocker_core::input::channel::Ownership::Absent),
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            probe: RefCell::new(None),
+            undecided: RefCell::new(None),
         };
         let opts = ClaudeCodeArgs {
             prompt_digest_chars: 12_000,
@@ -6880,8 +7086,12 @@ mod tests {
             let delivery = HookDelivery {
                 backend: &daemon,
                 pending: RefCell::new(Vec::new()),
-                channel_input: false,
-                channel_home: None,
+                ownership: OwnershipSource::Fixed(
+                    agentdocker_core::input::channel::Ownership::Absent,
+                ),
+                deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+                probe: RefCell::new(None),
+                undecided: RefCell::new(None),
             };
             let out = claude_code(&delivery, &input("SessionStart"), &opts())
                 .await
@@ -6924,8 +7134,10 @@ mod tests {
         let delivery = HookDelivery {
             backend: &daemon,
             pending: RefCell::new(Vec::new()),
-            channel_input: false,
-            channel_home: None,
+            ownership: OwnershipSource::Fixed(agentdocker_core::input::channel::Ownership::Absent),
+            deadline: tokio::time::Instant::now() + std::time::Duration::from_secs(1),
+            probe: RefCell::new(None),
+            undecided: RefCell::new(None),
         };
         let out = claude_code(&delivery, &input("UserPromptSubmit"), &opts)
             .await

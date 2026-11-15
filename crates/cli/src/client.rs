@@ -575,6 +575,12 @@ pub trait Backend {
     /// the model: a transport that acknowledges what it read leaves these
     /// queued. Others have nothing to leave.
     fn withhold(&self, _messages: &[agentdocker_core::MessageId]) {}
+    /// Why a hook could not tell who may deliver its session's messages,
+    /// when it could not: said in the session's context, since its
+    /// messages then stay queued. Others always can.
+    fn delivery_undecided(&self) -> Option<String> {
+        None
+    }
 }
 
 impl Backend for Client {

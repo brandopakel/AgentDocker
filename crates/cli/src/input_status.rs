@@ -60,18 +60,10 @@ pub async fn refresh_report<B: Backend>(
 /// Preserve the outer error context, without embedding a full provider error
 /// chain or terminal control sequences in the durable session summary.
 pub fn paused(error: &anyhow::Error) -> InputReport {
-    let mut reason = String::new();
-    for character in error.to_string().chars() {
-        let character = if character.is_control() {
-            ' '
-        } else {
-            character
-        };
-        if reason.len() + character.len_utf8() > 2048 {
-            break;
-        }
-        reason.push(character);
-    }
+    let mut reason = agentdocker_core::input::plain_text(
+        &error.to_string(),
+        agentdocker_core::input::PAUSE_REASON_BYTES,
+    );
     if reason.trim().is_empty() {
         reason = "Input delivery stopped before completion. Review the session before restarting."
             .into();

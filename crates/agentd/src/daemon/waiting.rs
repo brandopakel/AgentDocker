@@ -336,7 +336,7 @@ impl State {
             }
             InputReport::Paused { reason } => {
                 if reason.trim().is_empty()
-                    || reason.len() > 2048
+                    || reason.len() > agentdocker_core::input::PAUSE_REASON_BYTES
                     || reason.chars().any(char::is_control)
                 {
                     return Response::error(

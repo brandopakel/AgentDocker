@@ -5,6 +5,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::MessageId;
 
+pub mod channel;
+
 /// Evidence about a session's input receiver, not receipt of any particular
 /// message or proof that its provider is available. Provider limits are separate.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,9 +101,124 @@ pub const PAUSE_CONTROLLER_ENDED: &str = "the bound controller ended";
 pub const PAUSE_CONTROLLER_RESTART_FAILED: &str = "the bound controller could not be restarted";
 pub const PAUSE_RECEIVER_UPGRADING: &str = "the input receiver is being upgraded";
 /// How a Claude channel says it offered a message the session never
-/// confirmed, followed by the message id. The hooks read it to take over a
-/// queue that would otherwise stay silent.
+/// confirmed, followed by the message id and the adapter instance that
+/// wrote it ([`receipt_missing_reason`]). The hooks read it
+/// ([`pause_kind`]) to take that message over rather than leave it silent.
 pub const PAUSE_RECEIPT_MISSING: &str = "Waiting for a verified receipt for message";
+/// How a Claude channel adapter says it could not start, followed by why
+/// ([`channel_not_started_reason`]). It writes this only while it holds
+/// its provider generation's process lock, so no other adapter of that
+/// generation is serving the session.
+pub const PAUSE_CHANNEL_NOT_STARTED: &str = "The Claude channel adapter could not start:";
+/// The most a pause reason may hold, in bytes: the daemon refuses more.
+pub const PAUSE_REASON_BYTES: usize = 2048;
+
+/// What a pause says, read from its reason by the words its writer put
+/// first: the one place a reason's kind is read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PauseKind {
+    /// A Claude channel offered `message` and has no verified receipt.
+    ReceiptMissing {
+        message: MessageId,
+        adapter: AdapterMark,
+    },
+    ChannelNotStarted,
+    ControllerEnded,
+    ControllerRestartFailed,
+    ReceiverUpgrading,
+    Other,
+}
+
+/// Which adapter instance a receipt-missing pause names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AdapterMark {
+    /// None: written by an adapter from before instances were named.
+    Unnamed,
+    /// The writing instance's token ([`channel::is_token`]).
+    Token(String),
+    /// Something in the place of a token that is not one: no evidence.
+    Malformed,
+}
+
+/// The kind of the pause `reason` gives.
+pub fn pause_kind(reason: &str) -> PauseKind {
+    if let Some(rest) = reason
+        .strip_prefix(PAUSE_RECEIPT_MISSING)
+        .and_then(|rest| rest.strip_prefix(' '))
+    {
+        let end = rest.find([' ', ';']).unwrap_or(rest.len());
+        let (message, after) = rest.split_at(end);
+        if !message.is_empty() {
+            let adapter = match after.strip_prefix(" (adapter ") {
+                None => AdapterMark::Unnamed,
+                Some(named) => match named.split_once(')') {
+                    Some((token, _)) if channel::is_token(token) => {
+                        AdapterMark::Token(token.to_owned())
+                    }
+                    _ => AdapterMark::Malformed,
+                },
+            };
+            return PauseKind::ReceiptMissing {
+                message: MessageId::from(message.to_owned()),
+                adapter,
+            };
+        }
+    }
+    if reason.starts_with(PAUSE_CHANNEL_NOT_STARTED) {
+        return PauseKind::ChannelNotStarted;
+    }
+    match reason {
+        PAUSE_CONTROLLER_ENDED => PauseKind::ControllerEnded,
+        PAUSE_CONTROLLER_RESTART_FAILED => PauseKind::ControllerRestartFailed,
+        PAUSE_RECEIVER_UPGRADING => PauseKind::ReceiverUpgrading,
+        _ => PauseKind::Other,
+    }
+}
+
+/// The reason a channel adapter (`adapter`, its instance token) gives when
+/// it offered `message` and no verified receipt came.
+pub fn receipt_missing_reason(message: &MessageId, adapter: &str) -> String {
+    format!(
+        "{PAUSE_RECEIPT_MISSING} {message} (adapter {adapter}); following messages remain queued. \
+         The session's hooks deliver it at its next prompt or tool use unless its transcript shows it arrived."
+    )
+}
+
+/// The reason a channel adapter gives when it could not start because of
+/// `cause`: plain text within [`PAUSE_REASON_BYTES`], the leading words
+/// and the closing sentence always kept and the cause cut to fit.
+pub fn channel_not_started_reason(cause: &str) -> String {
+    const CLOSING: &str = " The session's hooks deliver its messages.";
+    // The prefix, a space, the cause, a full stop and the closing sentence.
+    let room = PAUSE_REASON_BYTES - PAUSE_CHANNEL_NOT_STARTED.len() - 1 - 1 - CLOSING.len();
+    let cause = plain_text(cause.trim(), room);
+    let cause = cause.trim_end();
+    let cause = if cause.is_empty() {
+        "no cause was given"
+    } else {
+        cause
+    };
+    let stop = if cause.ends_with('.') { "" } else { "." };
+    format!("{PAUSE_CHANNEL_NOT_STARTED} {cause}{stop}{CLOSING}")
+}
+
+/// `text` with every control character a space, cut on a character
+/// boundary to at most `max` bytes.
+pub fn plain_text(text: &str, max: usize) -> String {
+    let mut plain = String::new();
+    for character in text.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if plain.len() + character.len_utf8() > max {
+            break;
+        }
+        plain.push(character);
+    }
+    plain
+}
 
 /// Contact with a particular adapter is separate from generic agent activity.
 /// These observations contain no provider configuration or message contents.
@@ -989,5 +1106,99 @@ mod tests {
         assert!(json.get("restart").is_some());
         let back: InputBinding = serde_json::from_value(json).unwrap();
         assert_eq!(back, managed);
+    }
+
+    /// Every reason a writer builds reads back as its kind, and nothing
+    /// else is taken for one.
+    #[test]
+    fn a_pause_reason_reads_back_as_the_kind_its_writer_meant() {
+        let message = MessageId::from("ee72ad08c7df5911".to_owned());
+        let token = "0123456789abcdef0123456789abcdef";
+        assert_eq!(
+            pause_kind(&receipt_missing_reason(&message, token)),
+            PauseKind::ReceiptMissing {
+                message: message.clone(),
+                adapter: AdapterMark::Token(token.into()),
+            }
+        );
+        // The form adapters wrote before instances were named.
+        assert_eq!(
+            pause_kind(&format!(
+                "{PAUSE_RECEIPT_MISSING} {message}; following messages remain queued."
+            )),
+            PauseKind::ReceiptMissing {
+                message: message.clone(),
+                adapter: AdapterMark::Unnamed,
+            }
+        );
+        assert_eq!(
+            pause_kind(&format!(
+                "{PAUSE_RECEIPT_MISSING} {message} (adapter XYZ); rest"
+            )),
+            PauseKind::ReceiptMissing {
+                message: message.clone(),
+                adapter: AdapterMark::Malformed,
+            }
+        );
+        assert_eq!(
+            pause_kind(&channel_not_started_reason("no generation")),
+            PauseKind::ChannelNotStarted
+        );
+        assert_eq!(
+            pause_kind(PAUSE_CONTROLLER_ENDED),
+            PauseKind::ControllerEnded
+        );
+        assert_eq!(
+            pause_kind(PAUSE_CONTROLLER_RESTART_FAILED),
+            PauseKind::ControllerRestartFailed
+        );
+        assert_eq!(
+            pause_kind(PAUSE_RECEIVER_UPGRADING),
+            PauseKind::ReceiverUpgrading
+        );
+        for other in [
+            "",
+            PAUSE_RECEIPT_MISSING,
+            &format!("{PAUSE_RECEIPT_MISSING} "),
+            &format!("{PAUSE_RECEIPT_MISSING}{message}"),
+            &format!("{PAUSE_CONTROLLER_ENDED} later"),
+            "Waiting for a verified receipt",
+            "The Claude channel adapter",
+            "stdin closed",
+        ] {
+            assert_eq!(pause_kind(other), PauseKind::Other, "{other:?}");
+        }
+    }
+
+    /// The failed-start reason is plain text the daemon accepts whatever
+    /// the cause: its leading words and closing sentence kept, the cause
+    /// cut on a character boundary to fit.
+    #[test]
+    fn a_failed_start_reason_fits_and_stays_plain() {
+        let plain = |reason: &str| {
+            !reason.trim().is_empty()
+                && reason.len() <= PAUSE_REASON_BYTES
+                && !reason.chars().any(char::is_control)
+        };
+        let short = channel_not_started_reason("no provider generation");
+        assert_eq!(
+            short,
+            format!(
+                "{PAUSE_CHANNEL_NOT_STARTED} no provider generation. The session's hooks deliver its messages."
+            )
+        );
+        let path = channel_not_started_reason("cannot open /tmp/a\nb/../x\nlock.");
+        assert!(
+            plain(&path) && path.contains("/tmp/a b/../x lock."),
+            "{path}"
+        );
+        let long = channel_not_started_reason(&"é".repeat(3000));
+        assert!(plain(&long), "{} bytes", long.len());
+        assert!(long.starts_with(PAUSE_CHANNEL_NOT_STARTED));
+        assert!(long.ends_with(" The session's hooks deliver its messages."));
+        assert_eq!(pause_kind(&long), PauseKind::ChannelNotStarted);
+        assert!(plain(&channel_not_started_reason("\n\t")));
+        assert_eq!(plain_text("a\u{7}b", 10), "a b");
+        assert_eq!(plain_text("ééé", 5), "éé");
     }
 }

@@ -43,6 +43,22 @@ impl Lock {
         }
     }
 
+    /// Replace the locked file's contents with `bytes` through the very
+    /// descriptor that holds the lock, and sync them: what a holder says
+    /// of itself is on the file it holds, never on one a reader might
+    /// have replaced since.
+    pub fn write_contents(&self, bytes: &[u8]) -> io::Result<()> {
+        use std::io::{Seek, SeekFrom, Write};
+        let mut file = self
+            .file
+            .as_ref()
+            .expect("a lock keeps its file until it is dropped or given away");
+        file.set_len(0)?;
+        file.seek(SeekFrom::Start(0))?;
+        file.write_all(bytes)?;
+        file.sync_data()
+    }
+
     /// The lock as a bare descriptor: `flock` locks travel with the open
     /// file, so a process that receives this descriptor holds the lock for
     /// as long as it keeps it open. Unlike dropping the lock, dropping the
@@ -218,6 +234,20 @@ mod tests {
         let other = try_exclusive(&path).unwrap().unwrap();
         assert!(!held.is_at(&path).unwrap(), "another file by that name");
         assert!(other.is_at(&path).unwrap());
+    }
+
+    /// A holder's words go on the file it holds, replacing what was there,
+    /// and a reader of that path sees them while the lock is still held.
+    #[cfg(unix)]
+    #[test]
+    fn a_holder_writes_on_the_file_it_holds() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("owner.lock");
+        std::fs::write(&path, b"an earlier holder's longer words\n").unwrap();
+        let held = try_exclusive(&path).unwrap().unwrap();
+        held.write_contents(b"mine\n").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"mine\n");
+        assert!(try_exclusive(&path).unwrap().is_none(), "still held");
     }
 
     #[test]

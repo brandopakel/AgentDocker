@@ -2,6 +2,7 @@
 //! A completed stdout write is only an offer. The durable envelope remains
 //! until a model ACK or verified provider transcript confirms actual input.
 use super::{Backend, Identity, McpServer, error_response};
+use agentdocker_core::input::channel::{Ownership, TokenEvidence};
 use agentdocker_core::{MessageId, Request, Response};
 use agentdocker_host::{dirs, lock};
 use anyhow::{Context, Result, bail};
@@ -16,9 +17,10 @@ use tokio::io::{AsyncBufRead, AsyncBufReadExt};
 
 mod stdio;
 
-pub(super) async fn serve(server: &McpServer<impl Backend>) -> Result<()> {
+/// Serve the channel as the instance `adapter` names (its token).
+pub(super) async fn serve(server: &McpServer<impl Backend>, adapter: &str) -> Result<()> {
     let (input, output) = stdio::open()?;
-    pump(server, input, output).await
+    pump(server, input, output, adapter).await
 }
 
 const FRAME_BYTES: usize = 1024 * 1024;
@@ -34,13 +36,50 @@ const RECEIPT_TIMEOUT: Duration = Duration::from_secs(30);
 // This is a startup mitigation, not a provider receipt or permission signal.
 const FIRST_OFFER_SETTLE: Duration = Duration::from_secs(1);
 
-pub(super) struct Owner {
+/// An adapter that owns its session: it holds its provider process's lock
+/// and its agent's, and each says which instance holds it.
+pub(crate) struct Owner {
     _process: lock::Lock,
     _agent: lock::Lock,
+    /// This instance's token, written into both lock files and into its
+    /// receipt-missing pause.
+    pub(super) token: String,
 }
 
-pub(super) fn acquire(identity: &Identity) -> Result<Owner> {
-    acquire_for(&dirs::home(), identity)
+/// What an adapter's start found. Only `Failed` may be reported: it holds
+/// the provider generation's process lock, so no other adapter of that
+/// generation serves the session and its report cannot overwrite one's.
+pub(crate) enum Start {
+    Owned(Owner),
+    /// Another adapter of this provider process holds its lock (found
+    /// under the gates, so not a probe): a duplicate MCP entry.
+    Duplicate,
+    /// Ownership could not be established. Nothing is reported, for an
+    /// owner may be serving behind the fault.
+    Unknown(anyhow::Error),
+    /// It holds the generation's process lock and the gates and failed
+    /// after taking them; `held` keeps them until the failure is reported.
+    Failed {
+        cause: anyhow::Error,
+        held: Exclusion,
+    },
+}
+
+/// The gates and the process lock a failed start keeps through its report.
+pub(crate) struct Exclusion {
+    _gates: Vec<lock::Lock>,
+    _process: lock::Lock,
+}
+
+/// How many delivery gates there are. A key falls on one of them by its
+/// hash, so the folder holds a bounded number of gate files however many
+/// sessions come and go.
+const GATES: usize = 64;
+/// How long an adapter waits for a gate before it says it is waiting.
+const GATE_PATIENCE: Duration = Duration::from_secs(10);
+
+pub(super) async fn acquire(identity: &Identity) -> Start {
+    acquire_for(&dirs::home(), identity).await
 }
 
 fn process_key(pid: u32, started: chrono::DateTime<chrono::Utc>) -> String {
@@ -51,72 +90,289 @@ fn process_key(pid: u32, started: chrono::DateTime<chrono::Utc>) -> String {
     )
 }
 
-fn acquire_for(home: &std::path::Path, identity: &Identity) -> Result<Owner> {
-    let pid = identity
-        .host_pid
-        .context("channel provider PID is unavailable")?;
-    let started = identity
-        .host_started_at
-        .context("channel provider generation is unavailable")?;
-    // The process lock remains the same if SessionStart canonicalizes this
-    // registration before channel initialization. An agent-ID lock alone would
-    // let a second MCP entry acquire the canonical ID while we hold its alias.
-    let process = acquire_at(home, &process_key(pid, started))?;
-    let agent = acquire_at(home, &identity.id)?;
-    Ok(Owner {
+/// Whether `id` can name an owner lock or gate.
+fn nameable(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn directory(home: &std::path::Path) -> Result<std::path::PathBuf> {
+    let directory = home.join("channel-input");
+    dirs::ensure_private_dir(&directory)?;
+    Ok(directory)
+}
+
+fn gate_path(directory: &std::path::Path, key: &str) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let stripe = usize::from(Sha256::digest(key.as_bytes())[0]) % GATES;
+    directory.join(format!("stripe-{stripe:02}.gate"))
+}
+
+/// Take the gates `keys` fall on, in one order for everyone, so two takers
+/// never wait on each other in a cycle. With a `deadline`, `Ok(None)` when
+/// it passes first; without one, wait as long as a holder holds, saying so
+/// once after [`GATE_PATIENCE`]: a holder is a hook or a probe, each
+/// bounded by its own deadline, and its lock ends with its process.
+async fn take_gates(
+    directory: &std::path::Path,
+    keys: &[&str],
+    deadline: Option<tokio::time::Instant>,
+) -> Result<Option<Vec<lock::Lock>>> {
+    let mut paths: Vec<_> = keys.iter().map(|key| gate_path(directory, key)).collect();
+    paths.sort();
+    paths.dedup();
+    let started = tokio::time::Instant::now();
+    let mut said = false;
+    let mut held = Vec::new();
+    for path in paths {
+        dirs::private_file(&path, true, false)
+            .with_context(|| format!("cannot open the delivery gate {}", path.display()))?;
+        let mut pause = Duration::from_millis(1);
+        loop {
+            match lock::try_exclusive_existing(&path)
+                .with_context(|| format!("cannot take the delivery gate {}", path.display()))?
+            {
+                Some(lock) => {
+                    held.push(lock);
+                    break;
+                }
+                None => {
+                    let now = tokio::time::Instant::now();
+                    if deadline.is_some_and(|deadline| now >= deadline) {
+                        return Ok(None);
+                    }
+                    if deadline.is_none() && !said && now - started >= GATE_PATIENCE {
+                        eprintln!(
+                            "agentdocker channel: waiting for the delivery gate {} that a hook or probe holds",
+                            path.display()
+                        );
+                        said = true;
+                    }
+                    let wake = deadline.map_or(now + pause, |deadline| deadline.min(now + pause));
+                    tokio::time::sleep_until(wake).await;
+                    pause = (pause * 2).min(Duration::from_millis(20));
+                }
+            }
+        }
+    }
+    Ok(Some(held))
+}
+
+/// Take an owner lock without waiting: `None` when another holds it.
+fn take_owner(directory: &std::path::Path, key: &str) -> std::io::Result<Option<lock::Lock>> {
+    let path = directory.join(format!("{key}.lock"));
+    dirs::private_file(&path, true, false)?;
+    lock::try_exclusive_existing(&path)
+}
+
+/// Start under the gates: the process lock, then the agent lock, then the
+/// token in both, and only then let the gates go. A would-block on the
+/// process lock under the gates is a real owner of this provider process.
+async fn acquire_for(home: &std::path::Path, identity: &Identity) -> Start {
+    let (Some(pid), Some(started)) = (identity.host_pid, identity.host_started_at) else {
+        return Start::Unknown(anyhow::anyhow!(
+            "channel provider PID or generation is unavailable"
+        ));
+    };
+    let process_key = process_key(pid, started);
+    let directory = match directory(home) {
+        Ok(directory) => directory,
+        Err(error) => return Start::Unknown(error.context("channel ownership folder unusable")),
+    };
+    let agent_key = nameable(&identity.id).then_some(identity.id.as_str());
+    let keys: Vec<&str> = std::iter::once(process_key.as_str())
+        .chain(agent_key)
+        .collect();
+    let gates = match take_gates(&directory, &keys, None).await {
+        Ok(Some(gates)) => gates,
+        Ok(None) => unreachable!("a wait without a deadline does not run out"),
+        Err(error) => return Start::Unknown(error),
+    };
+    let process = match take_owner(&directory, &process_key) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => return Start::Duplicate,
+        Err(error) => {
+            return Start::Unknown(
+                anyhow::Error::new(error)
+                    .context("cannot open this provider process's channel lock"),
+            );
+        }
+    };
+    let failed = |cause: anyhow::Error, gates, process| Start::Failed {
+        cause,
+        held: Exclusion {
+            _gates: gates,
+            _process: process,
+        },
+    };
+    let Some(agent_key) = agent_key else {
+        return failed(
+            anyhow::anyhow!("invalid agent ID for channel ownership"),
+            gates,
+            process,
+        );
+    };
+    let agent = match take_owner(&directory, agent_key) {
+        Ok(Some(lock)) => lock,
+        Ok(None) => {
+            return failed(
+                anyhow::anyhow!(
+                    "another channel adapter serves this agent from another provider process; close the duplicate MCP entry"
+                ),
+                gates,
+                process,
+            );
+        }
+        Err(error) => {
+            return failed(
+                anyhow::Error::new(error).context("cannot open this agent's channel lock"),
+                gates,
+                process,
+            );
+        }
+    };
+    let token = uuid::Uuid::new_v4().simple().to_string();
+    let line = format!("{token}\n");
+    if let Err(error) = process
+        .write_contents(line.as_bytes())
+        .and_then(|()| agent.write_contents(line.as_bytes()))
+    {
+        drop(agent);
+        return failed(
+            anyhow::Error::new(error).context("cannot name this adapter in its channel locks"),
+            gates,
+            process,
+        );
+    }
+    drop(gates);
+    Start::Owned(Owner {
         _process: process,
         _agent: agent,
+        token,
     })
 }
 
-fn directory(home: &std::path::Path, id: &str) -> Result<std::path::PathBuf> {
-    if id.is_empty()
-        || id.len() > 128
-        || !id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-    {
-        bail!("invalid agent ID for channel ownership");
-    }
-    Ok(home.join("channel-input"))
+/// A start as `identity` under `home`, for tests outside this module.
+#[cfg(test)]
+pub(crate) async fn start_for(home: &std::path::Path, identity: &Identity) -> Start {
+    acquire_for(home, identity).await
 }
 
-fn acquire_at(home: &std::path::Path, id: &str) -> Result<lock::Lock> {
-    let directory = directory(home, id)?;
-    dirs::ensure_private_dir(&directory)?;
-    let path = directory.join(format!("{id}.lock"));
-    dirs::private_file(&path, true, false)?;
-    lock::try_exclusive_existing(&path)?
-        .context("another channel adapter already serves this agent; close the duplicate MCP entry")
+/// What a probe of a session's channel ownership found, holding the gates
+/// it took until it is dropped: a hook keeps it through reading, writing
+/// and acknowledging the queue, so no adapter can begin to own the session
+/// meanwhile.
+pub(crate) struct Probe {
+    pub(crate) ownership: Ownership,
+    /// Why ownership is unknown, when it is.
+    pub(crate) why: Option<String>,
+    _gates: Vec<lock::Lock>,
 }
 
-pub(super) fn active(home: &std::path::Path, id: &str) -> Result<bool> {
-    let directory = directory(home, id)?;
-    match std::fs::symlink_metadata(&directory) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        result => {
-            result?;
+impl Probe {
+    fn unknown(why: impl std::fmt::Display) -> Self {
+        Self {
+            ownership: Ownership::Unknown,
+            why: Some(why.to_string()),
+            _gates: Vec::new(),
         }
     }
-    dirs::ensure_private_dir(&directory)?;
-    match lock::try_exclusive_existing(&directory.join(format!("{id}.lock"))) {
-        Ok(held) => Ok(held.is_none()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
+}
+
+/// Probe `agent`'s channel ownership under the gates its provider process
+/// and agent ID fall on, waiting for them until `deadline`. An owner lock
+/// free under the gates is no owner; a held one is an owner, whose file
+/// says which instance it is; anything unreadable is not knowing.
+pub(crate) async fn probe(
+    home: &std::path::Path,
+    agent: &agentdocker_core::AgentRecord,
+    deadline: tokio::time::Instant,
+) -> Probe {
+    let process_key = match (agent.pid, agent.process_started_at) {
+        (Some(pid), Some(started)) => Some(process_key(pid, started)),
+        _ => None,
+    };
+    let agent_key = nameable(agent.id.as_str()).then_some(agent.id.as_str());
+    let keys: Vec<&str> = process_key
+        .as_deref()
+        .into_iter()
+        .chain(agent_key)
+        .collect();
+    if keys.is_empty() {
+        return Probe::unknown("the session names no provider process or agent to probe");
+    }
+    let directory = match directory(home) {
+        Ok(directory) => directory,
+        Err(error) => return Probe::unknown(format!("{error:#}")),
+    };
+    let gates = match take_gates(&directory, &keys, Some(deadline)).await {
+        Ok(Some(gates)) => gates,
+        Ok(None) => return Probe::unknown("the delivery gate stayed held"),
+        Err(error) => return Probe::unknown(format!("{error:#}")),
+    };
+    let mut held = None;
+    for key in &keys {
+        let path = directory.join(format!("{key}.lock"));
+        match lock::try_exclusive_existing(&path) {
+            Ok(Some(free)) => drop(free),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Ok(None) => {
+                held.get_or_insert(path);
+            }
+            Err(error) => {
+                return Probe::unknown(format!("cannot probe {}: {error}", path.display()));
+            }
+        }
+    }
+    let ownership = match held {
+        None => Ownership::Absent,
+        Some(path) => match read_token(&path) {
+            Ok(evidence) => Ownership::Held(evidence),
+            Err(error) => {
+                return Probe::unknown(format!("cannot read {}: {error}", path.display()));
+            }
+        },
+    };
+    Probe {
+        ownership,
+        why: None,
+        _gates: gates,
     }
 }
 
-pub(super) fn active_for(
+/// The first bytes of a held owner lock file, as evidence of its holder.
+#[cfg(unix)]
+fn read_token(path: &std::path::Path) -> std::io::Result<TokenEvidence> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    dirs::open_private(path)?.take(64).read_to_end(&mut bytes)?;
+    Ok(TokenEvidence::read(&bytes))
+}
+
+/// A held byte-range lock refuses other readers on Windows, so a holder's
+/// token cannot be read there and its ownership is not known.
+#[cfg(windows)]
+fn read_token(_path: &std::path::Path) -> std::io::Result<TokenEvidence> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "a held channel lock cannot be read on Windows",
+    ))
+}
+
+/// Whether an adapter holds `agent`'s session: what receipt recovery asks
+/// before it reads a transcript for a channel's receipts.
+pub(crate) async fn held(
     home: &std::path::Path,
     agent: &agentdocker_core::AgentRecord,
-) -> Result<bool> {
-    if active(home, agent.id.as_str())? {
-        return Ok(true);
-    }
-    match (agent.pid, agent.process_started_at) {
-        (Some(pid), Some(started)) => active(home, &process_key(pid, started)),
-        _ => Ok(false),
-    }
+    deadline: tokio::time::Instant,
+) -> bool {
+    matches!(
+        probe(home, agent, deadline).await.ownership,
+        Ownership::Held(_)
+    )
 }
 
 type Pending<'a> = Pin<Box<dyn Future<Output = Option<Value>> + 'a>>;
@@ -127,6 +383,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
     server: &McpServer<B>,
     mut input: R,
     mut output: W,
+    adapter: &str,
 ) -> Result<()> {
     let mut pending: Vec<Pending<'_>> = Vec::new();
     let mut frame = Vec::new();
@@ -343,7 +600,7 @@ async fn pump<B: Backend, R: AsyncBufRead + Unpin, W: stdio::Output>(
                 if state_changed || last_report.elapsed() >= Duration::from_secs(30) {
                     let observation = match &offered {
                         Some((id, _, true, _)) => agentdocker_core::InputReport::Paused {
-                            reason: format!("{} {id}; following messages remain queued. The session's hooks deliver it at its next prompt or tool use unless its transcript shows it arrived.", agentdocker_core::input::PAUSE_RECEIPT_MISSING),
+                            reason: agentdocker_core::input::receipt_missing_reason(id, adapter),
                         },
                         _ => agentdocker_core::InputReport::Ready,
                     };
@@ -605,88 +862,223 @@ async fn read_frame(
 mod tests {
     use super::super::write_line;
     use super::*;
+
+    /// The instance token the pump's tests serve as.
+    const TEST_ADAPTER: &str = "0123456789abcdef0123456789abcdef";
     use agentdocker_core::{Destination, Envelope};
     use std::cell::RefCell;
     use tokio::io::{AsyncWriteExt, BufReader};
 
-    #[test]
-    fn channel_ownership_is_exclusive_and_detectable_without_creating_probe_state() {
-        let home = tempfile::tempdir().unwrap();
-        assert!(!active(home.path(), "receiver").unwrap());
-        assert!(!home.path().join("channel-input").exists());
-        let owner = acquire_at(home.path(), "receiver").unwrap();
-        assert!(active(home.path(), "receiver").unwrap());
-        assert!(acquire_at(home.path(), "receiver").is_err());
-        assert!(!active(home.path(), "other").unwrap());
-        drop(owner);
-        // Concurrent tests can fork between open and drop; the inherited
-        // descriptor holds flock until that child execs (CLOEXEC).
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while active(home.path(), "receiver").unwrap() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "channel ownership never released"
-            );
-            std::thread::sleep(Duration::from_millis(5));
+    fn identity(id: &str, pid: u32, born: chrono::DateTime<chrono::Utc>) -> Identity {
+        Identity {
+            id: id.into(),
+            name: "fixture".into(),
+            host_pid: Some(pid),
+            host_started_at: Some(born),
+            registered_here: false,
         }
-        assert!(active(home.path(), "../escape").is_err());
     }
 
-    #[test]
-    fn channel_ownership_survives_canonical_agent_id_changes() {
+    fn record_of(identity: &Identity) -> agentdocker_core::AgentRecord {
+        let mut record = agentdocker_core::AgentRecord::new(
+            Default::default(),
+            false,
+            identity.host_started_at.unwrap(),
+        );
+        record.id = identity.id.as_str().into();
+        record.pid = identity.host_pid;
+        record.process_started_at = identity.host_started_at;
+        record
+    }
+
+    fn soon() -> tokio::time::Instant {
+        tokio::time::Instant::now() + Duration::from_secs(1)
+    }
+
+    /// One adapter owns a provider process; the next start of it is a
+    /// duplicate; the hooks see the owner and which instance it is, and no
+    /// owner once it is gone.
+    #[tokio::test]
+    async fn an_owner_is_exclusive_and_named_by_its_instance() {
         let home = tempfile::tempdir().unwrap();
-        let birth = chrono::Utc::now();
-        let first = Identity {
-            id: "fresh".into(),
-            name: "fixture".into(),
-            host_pid: Some(1234),
-            host_started_at: Some(birth),
-            registered_here: false,
+        let born = chrono::Utc::now();
+        let first = identity("receiver", 1234, born);
+        let record = record_of(&first);
+        assert_eq!(
+            probe(home.path(), &record, soon()).await.ownership,
+            Ownership::Absent
+        );
+        let Start::Owned(owner) = acquire_for(home.path(), &first).await else {
+            panic!("the first start owns the session");
         };
-        let owner = acquire_for(home.path(), &first).unwrap();
-        let canonical = Identity {
-            id: "canonical".into(),
-            ..first.clone()
+        assert!(agentdocker_core::input::channel::is_token(&owner.token));
+        assert!(matches!(
+            acquire_for(home.path(), &first).await,
+            Start::Duplicate
+        ));
+        assert_eq!(
+            probe(home.path(), &record, soon()).await.ownership,
+            Ownership::Held(TokenEvidence::Token(owner.token.clone()))
+        );
+        drop(owner);
+        assert_eq!(
+            probe(home.path(), &record, soon()).await.ownership,
+            Ownership::Absent
+        );
+        // The folder holds the owner locks and a bounded set of gates.
+        let gates = std::fs::read_dir(home.path().join("channel-input"))
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .ends_with(".gate")
+            })
+            .count();
+        assert!((1..=GATES).contains(&gates), "{gates}");
+    }
+
+    /// The process lock outlives a change of agent ID, and a reused PID is
+    /// another generation.
+    #[tokio::test]
+    async fn channel_ownership_survives_canonical_agent_id_changes() {
+        let home = tempfile::tempdir().unwrap();
+        let born = chrono::Utc::now();
+        let first = identity("fresh", 1234, born);
+        let Start::Owned(owner) = acquire_for(home.path(), &first).await else {
+            panic!("owned");
         };
+        let canonical = identity("canonical", 1234, born);
         assert!(
-            acquire_for(home.path(), &canonical).is_err(),
+            matches!(acquire_for(home.path(), &canonical).await, Start::Duplicate),
             "a new agent ID cannot admit another channel for the same process"
         );
-        let mut record = agentdocker_core::AgentRecord::new(Default::default(), false, birth);
-        record.id = "canonical".into();
-        record.pid = first.host_pid;
-        record.process_started_at = Some(birth);
+        let mut record = record_of(&canonical);
         assert!(
-            active_for(home.path(), &record).unwrap(),
+            held(home.path(), &record, soon()).await,
             "hooks find the process lock even after ID folding"
         );
-        record.process_started_at = Some(birth + chrono::Duration::seconds(1));
+        record.process_started_at = Some(born + chrono::Duration::seconds(1));
         assert!(
-            !active_for(home.path(), &record).unwrap(),
+            !held(home.path(), &record, soon()).await,
             "a reused PID is another generation"
         );
-        let next = Identity {
-            host_started_at: record.process_started_at,
-            ..canonical.clone()
+        let next = identity("canonical", 1234, born + chrono::Duration::seconds(1));
+        let Start::Owned(next_owner) = acquire_for(home.path(), &next).await else {
+            panic!("another generation owns its own session");
         };
-        let next_owner = acquire_for(home.path(), &next).unwrap();
         drop(next_owner);
         drop(owner);
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            match acquire_for(home.path(), &canonical) {
-                Ok(_) => break,
-                Err(_) if std::time::Instant::now() < deadline => {
-                    std::thread::sleep(Duration::from_millis(5))
-                }
-                Err(error) => panic!("channel ownership did not release: {error}"),
-            }
-        }
+        assert!(matches!(
+            acquire_for(home.path(), &canonical).await,
+            Start::Owned(_)
+        ));
         let unknown = Identity {
             host_started_at: None,
             ..canonical
         };
-        assert!(acquire_for(home.path(), &unknown).is_err());
+        assert!(matches!(
+            acquire_for(home.path(), &unknown).await,
+            Start::Unknown(_)
+        ));
+    }
+
+    /// A probe holding the gates, however long, makes a starting adapter
+    /// wait, never fail or take the probe for an owner; the hook's own wait
+    /// ends at its deadline as not knowing.
+    #[tokio::test(start_paused = true)]
+    async fn a_held_gate_delays_a_start_and_is_never_an_owner() {
+        let home = tempfile::tempdir().unwrap();
+        let born = chrono::Utc::now();
+        let starting = identity("receiver", 4321, born);
+        let record = record_of(&starting);
+        let hook = probe(home.path(), &record, soon()).await;
+        assert_eq!(hook.ownership, Ownership::Absent);
+        let start = tokio::spawn({
+            let home = home.path().to_path_buf();
+            let starting = starting.clone();
+            async move { acquire_for(&home, &starting).await }
+        });
+        tokio::time::sleep(GATE_PATIENCE * 3).await;
+        assert!(!start.is_finished(), "the start waits on the gate");
+        // Another hook meanwhile cannot take the gate, and does not know.
+        let other = probe(home.path(), &record, soon()).await;
+        assert_eq!(other.ownership, Ownership::Unknown);
+        assert!(other.why.is_some());
+        drop(hook);
+        assert!(matches!(start.await.unwrap(), Start::Owned(_)));
+    }
+
+    /// A start that fails after taking the generation's process lock keeps
+    /// it, and the gates, until its failure is reported: a successor
+    /// cannot start in between, and starts once it is let go.
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_start_holds_its_exclusion_through_its_report() {
+        let home = tempfile::tempdir().unwrap();
+        let born = chrono::Utc::now();
+        let invalid = identity("../not-an-id", 99, born);
+        let Start::Failed { cause, held } = acquire_for(home.path(), &invalid).await else {
+            panic!("an invalid agent ID fails under the process lock");
+        };
+        assert!(cause.to_string().contains("invalid agent ID"));
+        let successor = tokio::spawn({
+            let home = home.path().to_path_buf();
+            async move { acquire_for(&home, &identity("receiver", 99, born)).await }
+        });
+        tokio::time::sleep(GATE_PATIENCE * 2).await;
+        assert!(!successor.is_finished(), "held through the report");
+        drop(held);
+        assert!(matches!(successor.await.unwrap(), Start::Owned(_)));
+    }
+
+    /// An owner file that fails its checks while an owner serves: the
+    /// process lock's makes ownership unknown to a start and to a hook, and
+    /// the agent lock's leaves the start a duplicate of the owner, so
+    /// neither can report over the owner's word.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_unreadable_owner_file_is_not_knowing_and_reports_nothing() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let born = chrono::Utc::now();
+        let serving = identity("receiver", 555, born);
+        let Start::Owned(_owner) = acquire_for(home.path(), &serving).await else {
+            panic!("owned");
+        };
+        let directory = home.path().join("channel-input");
+        let process = directory.join(format!("{}.lock", process_key(555, born)));
+        let agent = directory.join("receiver.lock");
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o622)).unwrap();
+        assert!(matches!(
+            acquire_for(home.path(), &serving).await,
+            Start::Duplicate
+        ));
+        std::fs::set_permissions(&agent, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&process, std::fs::Permissions::from_mode(0o622)).unwrap();
+        assert!(matches!(
+            acquire_for(home.path(), &serving).await,
+            Start::Unknown(_)
+        ));
+        let hook = probe(home.path(), &record_of(&serving), soon()).await;
+        assert_eq!(hook.ownership, Ownership::Unknown);
+    }
+
+    /// The ownership folder replaced by a file: no start can establish
+    /// ownership, and no hook can know it.
+    #[tokio::test]
+    async fn an_unusable_folder_is_not_knowing() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::write(home.path().join("channel-input"), b"not a folder").unwrap();
+        let starting = identity("receiver", 77, chrono::Utc::now());
+        assert!(matches!(
+            acquire_for(home.path(), &starting).await,
+            Start::Unknown(_)
+        ));
+        let hook = probe(home.path(), &record_of(&starting), soon()).await;
+        assert_eq!(hook.ownership, Ownership::Unknown);
+        assert!(hook.why.is_some());
     }
 
     struct Queue(RefCell<Vec<Envelope>>);
@@ -916,7 +1308,12 @@ mod tests {
                 writer.shutdown().await.unwrap();
             };
             let (result, ()) = tokio::join!(
-                pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+                pump(
+                    &server,
+                    BufReader::new(input),
+                    stdio::AsyncOutput(output),
+                    TEST_ADAPTER
+                ),
                 trial
             );
             result.unwrap();
@@ -1027,7 +1424,12 @@ mod tests {
             writer.shutdown().await.unwrap();
         };
         let (result, ()) = tokio::join!(
-            pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+            pump(
+                &server,
+                BufReader::new(input),
+                stdio::AsyncOutput(output),
+                TEST_ADAPTER
+            ),
             trial
         );
         result.unwrap();
@@ -1237,7 +1639,12 @@ mod tests {
                 writer.shutdown().await.unwrap();
             };
             let (result, ()) = tokio::join!(
-                pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+                pump(
+                    &server,
+                    BufReader::new(input),
+                    stdio::AsyncOutput(output),
+                    TEST_ADAPTER
+                ),
                 trial
             );
             result.unwrap();
@@ -1370,7 +1777,12 @@ mod tests {
             writer.shutdown().await.unwrap();
         };
         let (result, ()) = tokio::join!(
-            pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+            pump(
+                &server,
+                BufReader::new(input),
+                stdio::AsyncOutput(output),
+                TEST_ADAPTER
+            ),
             trial
         );
         result.unwrap();
@@ -1482,7 +1894,12 @@ mod tests {
             writer.shutdown().await.unwrap();
         };
         let (result, ()) = tokio::join!(
-            pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+            pump(
+                &server,
+                BufReader::new(input),
+                stdio::AsyncOutput(output),
+                TEST_ADAPTER
+            ),
             trial
         );
         result.unwrap();
@@ -1530,7 +1947,12 @@ mod tests {
             writer.shutdown().await.unwrap();
         };
         let (result, ()) = tokio::join!(
-            pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+            pump(
+                &server,
+                BufReader::new(input),
+                stdio::AsyncOutput(output),
+                TEST_ADAPTER
+            ),
             trial
         );
         result.unwrap();
@@ -1590,7 +2012,12 @@ mod tests {
             writer.shutdown().await.unwrap();
         };
         let (result, ()) = tokio::join!(
-            pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+            pump(
+                &server,
+                BufReader::new(input),
+                stdio::AsyncOutput(output),
+                TEST_ADAPTER
+            ),
             trial
         );
         result.unwrap();
@@ -1626,7 +2053,12 @@ mod tests {
                 writer.shutdown().await.unwrap();
             };
             let (result, ()) = tokio::join!(
-                pump(&server, BufReader::new(input), stdio::AsyncOutput(output)),
+                pump(
+                    &server,
+                    BufReader::new(input),
+                    stdio::AsyncOutput(output),
+                    TEST_ADAPTER
+                ),
                 trial
             );
             result.unwrap();
