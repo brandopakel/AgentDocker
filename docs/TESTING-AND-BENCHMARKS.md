@@ -245,7 +245,11 @@ when the caller already holds it), so no build starts under a cache on its way
 out, and a slot it cannot hold means nothing is pruned; nothing is held between
 the plan and the removals, so each worktree is judged again on fresh leases and
 processes right before its own caches go, and one that changed since the plan
-is skipped and said so. `--prune --dry-run` lists what would go, with sizes and
+is skipped and said so. From that last judgement until its caches are gone the
+prune holds the worktree itself, by an advisory lock on its folder, which a
+seed (below) holds on both of its checkouts: a prune and a seed never work on
+one cache together, and a prune skips a worktree a seed is reading or filling.
+`--prune --dry-run` lists what would go, with sizes and
 the reason, and what stays and why, and holds no slot. `verify.sh`
 prints that report at the end of every run that started a step — the cache
 totals and the prunable candidates — and never prunes on its own; a report that
@@ -271,11 +275,17 @@ copy is copy-on-write where `cp` and the filesystem have it and an ordinary
 copy elsewhere, and it is refused when less than the preflight's minimum is
 free where it would go. Cargo's own lock (`target/debug/.cargo-lock`) is held
 on both checkouts while the copy is made: the seed is refused while a build
-runs in either, and a build that starts meanwhile waits for it. Also refused,
+runs in either, and a build that starts meanwhile waits for it. Both checkouts
+are also held for the whole of the seed, each by an advisory lock on its
+folder, as a prune holds a worktree whose caches it removes: the seed is
+refused while a prune or another seed is at work on either. Also refused,
 with nothing made: a checkout that already holds build output, a `target` or a
 folder on the way to its `build` that is a symbolic link, a source that is not
-a checkout of this repository, and a `Cargo.lock` that cannot be read; a copy
-that fails removes what it had made. A target directory the seed makes gets
+a checkout of this repository, and a `Cargo.lock` that cannot be read. A copy
+that fails removes what it had made, folders copied read-only included, and
+says so only once it is gone; if some of it cannot be removed, the command
+names what is left and says to remove that `target` before a build there or
+another seed. A target directory the seed makes gets
 the cache tag and, on macOS, the mark that keeps backups off it, as one Cargo
 makes has. The command prints what it brought and what is left for the
 checkout to build. The release profile and `fuzz/target` are not seeded. It is

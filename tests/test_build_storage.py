@@ -984,9 +984,12 @@ class SeedCache(unittest.TestCase):
 
         def cp(command, **_):
             calls.append(command[0])
-            # It had begun before it failed.
-            (into / "serde").mkdir()
+            # It had begun before it failed, in a folder whose mode it kept:
+            # one its owner may not write to.
+            (into / "serde/kept").mkdir(parents=True)
             (into / "serde/half").write_text("")
+            (into / "serde/kept/half").write_text("")
+            (into / "serde/kept").chmod(0o555)
             return SimpleNamespace(returncode=1)
 
         with patch.object(STORAGE.sys, "platform", "linux"), patch.object(STORAGE.subprocess, "run", cp):
@@ -994,6 +997,7 @@ class SeedCache(unittest.TestCase):
         self.assertEqual(calls, ["cp"])
         self.assertEqual(sorted(entry.name for entry in into.iterdir()), ["serde", "syn"])
         self.assertFalse((into / "serde/half").exists())
+        self.assertFalse((into / "serde/kept").exists())
         self.assertEqual((into / "syn/1a2b3c4d5e6f7a8b/out/lib.rlib").read_text(), "syn")
         # A system with neither flavour of cp copies plainly from the start.
         shutil.rmtree(into)
@@ -1010,6 +1014,165 @@ class SeedCache(unittest.TestCase):
         self.seed()
         self.assertEqual(subprocess.run(["xattr", "-p", mark, str(self.new / "target")],
                                         capture_output=True, text=True).stdout.strip(), "com.apple.backupd")
+
+    def test_a_failed_copy_takes_back_folders_it_copied_read_only(self):
+        # A copy keeps modes, and a folder its owner may not write to keeps
+        # its entries: the unit below is such a folder in the warm cache.
+        unit = self.profile / "build/serde/1a2b3c4d5e6f7a8b"
+        (unit / "out").chmod(0o555)
+        unit.chmod(0o555)
+        self.addCleanup(lambda: [path.chmod(0o755) for path in (unit, unit / "out") if path.exists()])
+
+        def copy(sources, into):
+            STORAGE.copy_units(sources, into)
+            self.assertEqual((into / "serde/1a2b3c4d5e6f7a8b").stat().st_mode & 0o777, 0o555)
+            raise OSError(28, "No space left on device", str(into))
+
+        message = self.refused(copy=copy)
+        self.assertIn("what it had made is removed", message)
+        # It is: nothing is left for the next seed to trip over.
+        self.assertFalse((self.new / "target/debug/build").exists())
+        self.assertEqual(self.seed()[0], ["serde", "syn"])
+        self.assertEqual((self.new / "target/debug/build/serde/1a2b3c4d5e6f7a8b/out/lib.rlib").read_text(), "serde")
+
+    def test_a_cleanup_that_cannot_finish_says_what_is_left_and_what_to_do(self):
+        def copy(sources, into):
+            (into / "serde").mkdir()
+            raise OSError(28, "No space left on device", str(into))
+
+        with patch.object(STORAGE, "remove_copied", side_effect=PermissionError(1, "Operation not permitted")):
+            with self.assertRaises(STORAGE.SeedLeft) as raised:
+                self.seed(copy=copy)
+            message = str(raised.exception)
+            self.assertIn("could not all be removed (PermissionError)", message)
+            self.assertIn(f"{self.new / 'target/debug/build'} is left partly filled", message)
+            self.assertIn(f"Remove {self.new / 'target'} before a build there or another seed", message)
+            # The command says that, and does not say that nothing was seeded.
+            shutil.rmtree(self.new / "target")
+            with patch.object(STORAGE, "copy_units", copy):
+                code, out, err = self.run_main(["--seed-from", str(self.warm)])
+        self.assertEqual((code, out), (1, ""))
+        self.assertIn("is left partly filled", err)
+        self.assertNotIn("nothing was seeded", err)
+
+    def test_a_copied_tree_is_removed_whatever_modes_it_kept_and_nothing_outside_it(self):
+        tree, outside = self.base / "copied", self.base / "outside"
+        (tree / "read-only/inner").mkdir(parents=True)
+        (tree / "unreadable").mkdir()
+        outside.mkdir()
+        for path in (tree / "read-only/inner/file", tree / "read-only/file", tree / "unreadable/file", outside / "kept"):
+            path.write_text("x")
+        (tree / "read-only/out").symlink_to(outside)
+        (tree / "read-only/inner").chmod(0o555)
+        (tree / "read-only").chmod(0o555)
+        (tree / "unreadable").chmod(0o000)
+        STORAGE.remove_copied(tree)
+        self.assertFalse(tree.exists())
+        self.assertEqual((outside / "kept").read_text(), "x")
+        # A tree that is not there is no failure.
+        STORAGE.remove_copied(tree)
+
+    def test_a_checkout_is_held_by_one_at_a_time(self):
+        with STORAGE.checkout_held(self.warm) as first:
+            self.assertIsNone(first)
+            with STORAGE.checkout_held(self.warm) as second:
+                self.assertEqual(second, "has a prune or another seed at work on its cache")
+            # Another checkout is nobody's business.
+            with STORAGE.checkout_held(self.new) as other:
+                self.assertIsNone(other)
+        with STORAGE.checkout_held(self.warm) as again:
+            self.assertIsNone(again)
+        with STORAGE.checkout_held(self.base / "gone") as missing:
+            self.assertIn("its folder cannot be opened (FileNotFoundError)", missing)
+
+    def prune(self, hold=None):
+        """A real `--prune` in which the warm checkout is prunable by every
+        test `decide` makes; `hold` runs at the last question of the last
+        judgement, the one made right before the cache is removed (the plan
+        asked the same question once before it)."""
+        out, err = io.StringIO(), io.StringIO()
+        records = [record(self.base / "main"), record(self.warm, branch="warm"), record(self.new, branch="new")]
+        caches = {self.warm / "target": 2 * STORAGE.GIB}
+        asked = []
+
+        def last_question(cache):
+            asked.append(cache)
+            if hold is not None and len(asked) == 2:
+                hold()
+            return False
+
+        with patch.object(STORAGE.sys, "argv", ["build_storage.py", "--prune"]), \
+                patch.object(STORAGE, "measure", return_value=(Path("/nowhere/target"), records, caches)), \
+                patch.object(STORAGE, "lease_resources", return_value=set()), \
+                patch.object(STORAGE, "process_table", return_value=[]), \
+                patch.object(STORAGE, "Branches", lambda: SimpleNamespace(state=lambda entry: "merged")), \
+                patch.object(STORAGE, "build_lock_held", last_question), \
+                patch.object(STORAGE, "cli", lambda *args, **kwargs: {"claim": "lease-known\n"}.get(args[0], "")), \
+                redirect_stdout(out), redirect_stderr(err):
+            code = STORAGE.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_prune_and_a_seed_never_work_on_one_cache_together(self):
+        # A seed is copying from the warm checkout when a prune, which would
+        # remove that checkout's cache, comes to it: the prune leaves it.
+        pruned = []
+
+        def copy(sources, into):
+            pruned.append(self.prune())
+            STORAGE.copy_units(sources, into)
+
+        self.assertEqual(self.seed(copy=copy)[0], ["serde", "syn"])
+        code, out, _ = pruned[0]
+        self.assertEqual(code, 0)
+        self.assertIn(f"skipped   2.00 GiB  {self.warm}: it has a prune or another seed at work on its cache", out)
+        self.assertNotIn("removed", out)
+        # The copy was whole: its source was there to the end.
+        self.assertEqual((self.new / "target/debug/build/syn/1a2b3c4d5e6f7a8b/out/lib.rlib").read_text(), "syn")
+        self.assertTrue((self.profile / "build/serde").is_dir())
+
+        # The other way round: a prune has judged the warm checkout for the
+        # last time and is about to remove its cache when a seed from it
+        # starts. The seed is refused, and makes nothing; the prune goes on.
+        shutil.rmtree(self.new / "target")
+        refusals = []
+
+        def seed_now():
+            refusals.append(self.refused())
+
+        code, out, _ = self.prune(hold=seed_now)
+        self.assertEqual(code, 0)
+        self.assertEqual(refusals, [f"{self.warm} has a prune or another seed at work on its cache"])
+        self.assertFalse((self.new / "target").exists())
+        self.assertIn(f"removed   2.00 GiB  {self.warm / 'target'}", out)
+        self.assertFalse((self.warm / "target").exists())
+
+    def test_a_prune_leaves_a_cache_a_seed_is_filling(self):
+        # The checkout being seeded is one a prune would empty: it has an
+        # older cache of another profile, a merged branch and no lease.
+        (self.new / "target/release").mkdir(parents=True)
+        (self.new / "target/release/old").write_text("x")
+        pruned = []
+
+        def copy(sources, into):
+            out, err = io.StringIO(), io.StringIO()
+            records = [record(self.base / "main"), record(self.warm, branch="warm"), record(self.new, branch="new")]
+            with patch.object(STORAGE.sys, "argv", ["build_storage.py", "--prune"]), \
+                    patch.object(STORAGE, "measure", return_value=(Path("/nowhere/target"), records,
+                                                                   {self.new / "target": STORAGE.GIB})), \
+                    patch.object(STORAGE, "lease_resources", return_value=set()), \
+                    patch.object(STORAGE, "process_table", return_value=[]), \
+                    patch.object(STORAGE, "Branches", lambda: SimpleNamespace(state=lambda entry: "merged")), \
+                    patch.object(STORAGE, "build_lock_held", return_value=False), \
+                    patch.object(STORAGE, "cli", lambda *args, **kwargs: {"claim": "lease-known\n"}.get(args[0], "")), \
+                    redirect_stdout(out), redirect_stderr(err):
+                pruned.append((STORAGE.main(), out.getvalue()))
+            STORAGE.copy_units(sources, into)
+
+        self.assertEqual(self.seed(copy=copy)[0], ["serde", "syn"])
+        self.assertEqual(pruned[0][0], 0)
+        self.assertIn(f"{self.new}: it has a prune or another seed at work on its cache", pruned[0][1])
+        self.assertTrue((self.new / "target/release/old").exists())
+        self.assertTrue((self.new / "target/debug/build/serde").is_dir())
 
     def run_main(self, argv, *, target=None, free=100, worktrees=None):
         out, err = io.StringIO(), io.StringIO()

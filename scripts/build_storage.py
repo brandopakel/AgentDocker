@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -49,6 +50,11 @@ class PruneRefused(Exception):
 
 class SeedRefused(Exception):
     """A seed that cannot be made safe; nothing of it is left."""
+
+
+class SeedLeft(SeedRefused):
+    """A seed that failed and could not take back all it had made; the
+    message says what is left and what to do about it."""
 
 
 def positive(value):
@@ -152,6 +158,42 @@ def inspect(args):
     return {"current_cache_gib": round(current_bytes / GIB, 2),
             "registered_cache_gib": round(total / GIB, 2), "minimum_free_gib": args.minimum_free_gib,
             "max_current_gib": args.max_current_gib, "max_total_gib": args.max_total_gib}
+
+
+@contextmanager
+def checkout_held(root):
+    """This script's own lock on a checkout, held for as long as its cache
+    is removed, copied from or copied into: an advisory lock on the
+    checkout's folder, which is there as long as the checkout is and is no
+    part of any cache. A prune and a seed that meet on one checkout never
+    work on its cache together: whichever comes second holds nothing and is
+    told why, in words that follow the checkout's name. Yields None when
+    the checkout is held. Cargo's own lock keeps a build out; this keeps
+    this script's two hands off each other. Where the system has no such
+    lock nothing is held and nothing is in the way."""
+    try:
+        import fcntl
+    except ImportError:
+        yield None
+        return
+    try:
+        folder = os.open(root, os.O_RDONLY)
+    except OSError as error:
+        yield f"cannot be held, its folder cannot be opened ({type(error).__name__})"
+        return
+    try:
+        try:
+            fcntl.flock(folder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield "has a prune or another seed at work on its cache"
+            return
+        except OSError as error:
+            yield f"cannot be held ({type(error).__name__})"
+            return
+        yield None
+    finally:
+        # Closing lets it go.
+        os.close(folder)
 
 
 # --- pruning -----------------------------------------------------------------
@@ -584,9 +626,26 @@ def copy_units(sources, into):
             # it left of these goes, and they and the rest are copied plainly.
             command = None
             for source in chunk:
-                shutil.rmtree(into / source.name, ignore_errors=True)
+                remove_copied(into / source.name)
         for source in chunk:
             shutil.copytree(source, into / source.name, symlinks=True)
+
+
+def remove_copied(tree):
+    """Remove a tree a seed copied, and raise OSError when any of it stays.
+    A copy keeps modes, and a folder its owner may not write to keeps its
+    entries (one that may not be read cannot even be listed), so every
+    folder in it is given back to its owner first. Nothing is followed out
+    of the tree: a symbolic link in it is removed as a link."""
+    if not os.path.lexists(tree):
+        return
+    folders = [os.fspath(tree)]
+    while folders:
+        folder = folders.pop()
+        os.chmod(folder, stat.S_IRWXU)
+        with os.scandir(folder) as entries:
+            folders.extend(entry.path for entry in entries if entry.is_dir(follow_symlinks=False))
+    shutil.rmtree(tree)
 
 
 def mark_as_cache(made, like):
@@ -610,7 +669,7 @@ def mark_as_cache(made, like):
         pass
 
 
-def seed_cache(source_root, source_target, dest_root, dest_target, *, copy=copy_units):
+def seed_cache(source_root, source_target, dest_root, dest_target, *, copy=None):
     """Start the cache `dest_target` of the checkout `dest_root` from the
     cache `source_target` of the checkout `source_root`.
 
@@ -624,11 +683,22 @@ def seed_cache(source_root, source_target, dest_root, dest_target, *, copy=copy_
     own files; incremental state, binaries and everything else are left for
     the new checkout to build. Cargo's lock is held on both profile
     directories while the copy is made, so nothing is copied from under a
-    build and none starts on a cache half made.
+    build and none starts on a cache half made; and both checkouts are held
+    (`checkout_held`) for the whole of it, so no prune removes a cache the
+    seed is reading or filling.
 
     Returns (brought, own, others): the packages brought, the packages left
     out as a checkout's own, and how many other folders were left out.
     """
+    with checkout_held(source_root) as source_busy, checkout_held(dest_root) as dest_busy:
+        for root, busy in ((source_root, source_busy), (dest_root, dest_busy)):
+            if busy is not None:
+                raise SeedRefused(f"{root} {busy}")
+        return seed_held(source_root, source_target, dest_root, dest_target, copy or copy_units)
+
+
+def seed_held(source_root, source_target, dest_root, dest_target, copy):
+    """`seed_cache`, with both checkouts held."""
     source_profile, dest_profile = source_target / SEED_PROFILE, dest_target / SEED_PROFILE
     source_build, dest_build = source_profile / "build", dest_profile / "build"
     for path in (source_target, source_profile, source_build, dest_target, dest_profile, dest_build):
@@ -658,7 +728,14 @@ def seed_cache(source_root, source_target, dest_root, dest_target, *, copy=copy_
             try:
                 copy([source_build / name for name in brought], dest_build)
             except (OSError, subprocess.SubprocessError, shutil.Error) as error:
-                shutil.rmtree(dest_build, ignore_errors=True)
+                # The folder was empty when the copy began, so all of it is
+                # the copy's; it goes, and is said to be gone only when it is.
+                try:
+                    remove_copied(dest_build)
+                except OSError as left:
+                    raise SeedLeft(f"the copy failed ({type(error).__name__}) and what it had made could not all be removed "
+                                   f"({type(left).__name__}): {dest_build} is left partly filled. Remove {dest_target} "
+                                   "before a build there or another seed")
                 raise SeedRefused(f"the copy failed ({type(error).__name__}), and what it had made is removed")
     return brought, left_own, len(names) - len(brought) - len(left_own)
 
@@ -784,25 +861,32 @@ def prune(args):
         # Nothing is held between the plan and the removals, so each worktree
         # is judged again, on fresh leases and processes, right before its
         # own caches go; a build slot is held meanwhile so no verify.sh run
-        # starts under a cache on its way out.
+        # starts under a cache on its way out, and each checkout is held
+        # while its own caches go so no seed copies from or into one.
         with (Campaign(f"build_storage.py --prune in {ROOT}") if prunable else nullcontext()):
             for root, owned, reason in prunable:
-                kept_now, _ = decide(by_root[root], owned, current_root=ROOT.resolve(), current_target=current, main_root=main_root,
-                                     leases=lease_resources(), processes=process_table(), branch_state=branches.state,
-                                     lock_held=build_lock_held)
-                if kept_now is not None:
-                    print(f"  skipped {sum(size for _, size in owned) / GIB:6.2f} GiB  {root}: {kept_now} (changed since the plan)")
-                    kept.append((root, owned, kept_now))
-                    continue
-                for cache, size in owned:
-                    try:
-                        shutil.rmtree(cache)
-                    except OSError as error:
-                        failed += 1
-                        print(f"  cannot remove {cache}: {type(error).__name__}", file=sys.stderr)
+                # The checkout is held from before it is judged the last time
+                # until its caches are gone: a seed that reads or fills one of
+                # them holds it too, so the two never meet on one cache.
+                with checkout_held(root) as busy:
+                    kept_now = None if busy is None else f"it {busy}"
+                    if kept_now is None:
+                        kept_now, _ = decide(by_root[root], owned, current_root=ROOT.resolve(), current_target=current,
+                                             main_root=main_root, leases=lease_resources(), processes=process_table(),
+                                             branch_state=branches.state, lock_held=build_lock_held)
+                    if kept_now is not None:
+                        print(f"  skipped {sum(size for _, size in owned) / GIB:6.2f} GiB  {root}: {kept_now} (changed since the plan)")
+                        kept.append((root, owned, kept_now))
                         continue
-                    freed += size
-                    print(f"  removed {size / GIB:6.2f} GiB  {cache}: {reason}")
+                    for cache, size in owned:
+                        try:
+                            shutil.rmtree(cache)
+                        except OSError as error:
+                            failed += 1
+                            print(f"  cannot remove {cache}: {type(error).__name__}", file=sys.stderr)
+                            continue
+                        freed += size
+                        print(f"  removed {size / GIB:6.2f} GiB  {cache}: {reason}")
         print(f"freed {freed / GIB:.1f} GiB" + (f"; {failed} cache(s) could not be removed" if failed else ""))
         if failed:
             return 1
@@ -839,6 +923,9 @@ def main():
         print(f"build storage: {error}; no build started", file=sys.stderr)
         return 1
     except PruneRefused as error:
+        print(f"build storage: {error}", file=sys.stderr)
+        return 1
+    except SeedLeft as error:
         print(f"build storage: {error}", file=sys.stderr)
         return 1
     except SeedRefused as error:
