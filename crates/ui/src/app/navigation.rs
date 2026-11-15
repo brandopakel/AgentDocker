@@ -64,6 +64,15 @@ pub struct Place {
     pub card: Option<TaskId>,
 }
 
+/// What is open on Plans: nothing, a plan being written, or a plan by its
+/// id. Not part of a `Place`; part of where the person is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum PlanOn {
+    Nothing,
+    New,
+    Plan(String),
+}
+
 /// The places behind and ahead of the one on view. Window-local, never
 /// saved.
 #[derive(Debug, Default)]
@@ -75,12 +84,6 @@ pub struct History {
 }
 
 impl History {
-    /// Whether an update is in hand already: what runs inside it is part
-    /// of it, and is not a move of its own.
-    pub(super) fn in_hand(&self) -> bool {
-        self.busy
-    }
-
     /// The person went from `before` to `after`: a different place keeps
     /// `before` behind and drops what was ahead.
     pub fn visit(&mut self, before: Place, after: &Place) {
@@ -225,19 +228,60 @@ impl App {
     /// Run `f` as one move: when no update is in hand already, the place
     /// before and after it are compared and, when `record`, a change is
     /// kept. What `f` runs inside it belongs to it.
+    ///
+    /// A move of the person's also ends a notification being followed
+    /// when it takes them somewhere else. That is decided here and
+    /// nowhere else, so that every move is covered whatever made it: a
+    /// control, Back and Forward, and the two the window finishes for the
+    /// person later (a launched or reconnected session's terminal
+    /// opening), which never pass through `update` as a message of theirs.
     pub(super) fn navigating<T>(&mut self, record: bool, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.moving(record, true, f)
+    }
+
+    /// The notification's own move: the click that begins a route, and
+    /// its destination opening. It is recorded like any move, and is the
+    /// one move that does not end the route, being the route's.
+    pub(super) fn routing<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.moving(true, false, f)
+    }
+
+    fn moving<T>(&mut self, record: bool, leaves_route: bool, f: impl FnOnce(&mut Self) -> T) -> T {
         if self.shell.history.busy {
             return f(self);
         }
-        let before = record.then(|| self.place());
+        let leaves_route = leaves_route && self.shell.route != super::route::Route::Idle;
+        let before = (record || leaves_route).then(|| self.person_at());
         self.shell.history.busy = true;
         let out = f(self);
         self.shell.history.busy = false;
         if let Some(before) = before {
-            let after = self.place();
-            self.shell.history.visit(before, &after);
+            let after = self.person_at();
+            if leaves_route && before != after {
+                self.shell.route.end();
+            }
+            if record {
+                self.shell.history.visit(before.0, &after.0);
+            }
         }
         out
+    }
+
+    /// Where the person is, for what ends a notification being followed:
+    /// the place, and what is open on Plans. A plan is not a place (Back
+    /// does not return to one), and choosing another is going somewhere
+    /// else all the same. A plan asked for and the same plan arrived are
+    /// one answer, so the read coming back is not a move.
+    pub(super) fn person_at(&self) -> (Place, PlanOn) {
+        let plan = match &self.shell.plan {
+            _ if self.screen != Screen::Plans => PlanOn::Nothing,
+            super::shell::PlanPane::Closed => PlanOn::Nothing,
+            super::shell::PlanPane::New(_) => PlanOn::New,
+            pane => pane
+                .id()
+                .map_or(PlanOn::Nothing, |id| PlanOn::Plan(id.to_owned())),
+        };
+        (self.place(), plan)
     }
 
     /// What the project screens are about now.

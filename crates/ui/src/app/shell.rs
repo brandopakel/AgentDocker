@@ -1851,29 +1851,22 @@ impl App {
     /// the window's own updates refine the place on view
     /// (`navigation::moved`).
     ///
-    /// A notification being followed ends when the person goes somewhere
-    /// else, whatever control took them there: the place before and after
-    /// their move are compared here, so no handler has to remember to end
-    /// it, and a move that changes nothing ends nothing. A notification
-    /// is the one move that begins a route or answers for one, and what
-    /// an update runs inside itself belongs to it.
+    /// A notification being followed ends when a move of the person's
+    /// takes them somewhere else, whatever made the move
+    /// (`navigating`), so no handler has to remember to end it and a move
+    /// that changes nothing ends nothing. A notification is the one
+    /// message of the person's that begins a route or answers for one
+    /// rather than leaving it.
     pub fn update(&mut self, message: Message) -> Task<Message> {
         use super::navigation::Moved;
-        let moved = super::navigation::moved(&message);
-        let left = (moved != Moved::ByWindow
-            && !self.shell.history.in_hand()
-            && self.shell.route != super::route::Route::Idle
-            && !matches!(message, Message::Notification(_)))
-        .then(|| self.place());
-        let task = match moved {
+        match super::navigation::moved(&message) {
+            Moved::ByPerson if matches!(message, Message::Notification(_)) => {
+                self.routing(|app| app.apply(message))
+            }
             Moved::ByPerson => self.navigating(true, |app| app.apply(message)),
             Moved::Travel => self.navigating(false, |app| app.apply(message)),
             Moved::ByWindow => self.apply(message),
-        };
-        if left.is_some_and(|left| left != self.place()) {
-            self.shell.route.end();
         }
-        task
     }
 
     fn apply(&mut self, message: Message) -> Task<Message> {
@@ -1975,7 +1968,7 @@ impl App {
                 tasks.push(self.refresh_pull_requests(false));
                 // A notification's destination that opens now finishes
                 // the person's click on it: a move of theirs.
-                tasks.push(self.navigating(true, Self::advance_notification));
+                tasks.push(self.routing(Self::advance_notification));
                 if let Some(smoke) = &mut self.smoke {
                     tasks.push(smoke.tick(
                         self.connected.is_ok(),
@@ -11869,6 +11862,114 @@ mod tests {
         assert_ne!(app.place(), chosen, "the destination opened");
     }
 
+    /// A launch or a reconnect is a move the window finishes for the
+    /// person later: its terminal opens on a tick, when the session is
+    /// listed, and never as a message of theirs. It ends a route like
+    /// any other move, waiting or shown with its search, and the
+    /// notification's data arriving in the same tick opens nothing.
+    #[test]
+    fn a_launch_that_finishes_ends_a_route_and_the_notification_opens_nothing_after() {
+        use super::super::route::Route;
+        for shown in [false, true] {
+            let (mut app, _commands, messages, home, action) = notification_app();
+            let question = Question {
+                presentation: None,
+                id: action.target.message.clone(),
+                from: action.target.agent.to_string(),
+                to: agentdocker_core::Destination::Agent(agentdocker_core::AgentId::from("user")),
+                text: "which option?".into(),
+                asked_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+                form: Default::default(),
+                stale_since: None,
+            };
+            if shown {
+                app.screen = Screen::Questions;
+                app.shell.conversation = Some("dm:sender-1:user".to_owned());
+                app.shell.route.start_seek(super::Seek {
+                    conversation: "dm:sender-1:user".to_owned(),
+                    message: action.target.message.clone(),
+                    pages: 1,
+                    before: Some(801),
+                    refresh_pending: false,
+                });
+            } else {
+                let _ = app.update(Message::Notification(
+                    crate::notification_route::Activation::Open(action.clone()),
+                ));
+                assert!(app.shell.route.is_routing(), "no data yet: it waits");
+            }
+            // The person launched a session; nothing else of theirs moved.
+            app.shell.attach_when_listed = Some(("launched".into(), None));
+            let mut launched = session_in("launched", home.path());
+            launched.spec.tty = true;
+            messages
+                .send(Msg::Agents(vec![launched], BTreeMap::new()))
+                .unwrap();
+            // The notification's data, in the same tick.
+            messages
+                .send(Msg::Questions(vec![question.clone()]))
+                .unwrap();
+            let _ = app.update(Message::Tick);
+            assert_eq!(app.screen, Screen::Terminal, "shown {shown}: the launch");
+            assert_eq!(app.shell.route, Route::Idle, "shown {shown}");
+            let _ = app.update(Message::Tick);
+            assert_eq!(app.screen, Screen::Terminal, "shown {shown}: it stays");
+            assert_eq!(app.shell.route, Route::Idle, "shown {shown}");
+        }
+    }
+
+    /// A plan open on Plans is not a place, since Back does not return
+    /// to one, and choosing another plan is going somewhere else all the
+    /// same: a route that waits ends, and its data, when it comes, leaves
+    /// the plan the person chose on view. The same plan chosen again is
+    /// not a move, and nor is that plan's answer arriving.
+    #[test]
+    fn choosing_another_plan_on_plans_ends_a_route() {
+        use super::super::route::Route;
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        let question = Question {
+            presentation: None,
+            id: action.target.message.clone(),
+            from: action.target.agent.to_string(),
+            to: agentdocker_core::Destination::Agent(agentdocker_core::AgentId::from("user")),
+            text: "which option?".into(),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
+        };
+        let _ = app.update(Message::PlanOpen("aaaaaaaaaaaa".into()));
+        assert_eq!(app.screen, Screen::Plans);
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action.clone()),
+        ));
+        assert!(app.shell.route.is_routing());
+
+        // The plan already asked for, chosen again: nothing moved.
+        let here = app.place();
+        let _ = app.update(Message::PlanOpen("aaaaaaaaaaaa".into()));
+        assert!(app.shell.route.is_routing(), "the same plan is no move");
+
+        // Another plan: the place is the same, and the person has left.
+        let _ = app.update(Message::PlanOpen("bbbbbbbbbbbb".into()));
+        assert_eq!(app.place(), here, "a plan is not a place");
+        assert_eq!(app.shell.route, Route::Idle, "another plan was chosen");
+        messages.send(Msg::Questions(vec![question])).unwrap();
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.screen, Screen::Plans, "the late data moves nothing");
+        assert_eq!(app.shell.plan.id(), Some("bbbbbbbbbbbb"));
+
+        // A new plan begun, and the pane closed by leaving it for a new
+        // one, are choices of the same kind.
+        app.shell.route.begin(action.clone(), Instant::now());
+        let _ = app.update(Message::PlanNew);
+        assert_eq!(app.shell.route, Route::Idle, "a plan is being written");
+        app.shell.route.begin(action, Instant::now());
+        let _ = app.update(Message::PlanNew);
+        assert!(app.shell.route.is_routing(), "already writing one");
+    }
+
     /// A route in each of its states against the person's moves: any
     /// move that changes the place ends all of it, the wait or the mark
     /// with its search; a move that changes nothing ends nothing; and
@@ -11903,9 +12004,9 @@ mod tests {
                 } else {
                     app.shell.route.start_seek(seek.clone());
                 }
-                let before = app.place();
+                let before = app.person_at();
                 let _ = app.update(make());
-                let moved = before != app.place();
+                let moved = before != app.person_at();
                 assert_eq!(
                     app.shell.route == Route::Idle,
                     moved,
@@ -11918,9 +12019,9 @@ mod tests {
                 } else {
                     app.shell.route.start_seek(seek.clone());
                 }
-                let before = app.place();
+                let before = app.person_at();
                 let _ = app.update(make());
-                if before == app.place() {
+                if before == app.person_at() {
                     assert_ne!(app.shell.route, Route::Idle, "move {at} repeated");
                 }
                 app.shell.route.end();
@@ -11973,14 +12074,14 @@ mod tests {
             Message::Search("nothing here".into()),
         ] {
             app.shell.route.begin(action.clone(), Instant::now());
-            let before = app.place();
+            let before = app.person_at();
             let said = format!("{navigation:?}");
             let _ = app.update(navigation);
             assert_eq!(
                 app.shell.route.is_routing(),
-                before == app.place(),
+                before == app.person_at(),
                 "{said}: from {before:?} to {:?}",
-                app.place()
+                app.person_at()
             );
         }
         // Escape is no place, and ends a route outright: one that waits,

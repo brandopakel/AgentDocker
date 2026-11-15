@@ -953,9 +953,11 @@ paged further and is told that limit instead.
 A notification that was clicked is followed until the person goes somewhere
 else. Any move of theirs that changes the place ends it — another screen,
 project, session, conversation, thread, board or card, or back to the list in a
-narrow window, by whatever control — and so do Escape and another notification;
-choosing the place already on view, or anything else that leaves the place as it
-is, ends nothing. It ends
+narrow window, by whatever control, and a session they launched or reconnected
+when its terminal opens — and so does choosing another plan on Plans, which Back
+does not keep as a place and is somewhere else all the same. Escape and another
+notification end it too; choosing the place or the plan already on view, or
+anything else that leaves them as they are, ends nothing. It ends
 whole, wherever it had got to: a click still waiting for its data then opens
 nothing when the data comes, so the window is not pulled back from where the
 person went, and a message already shown loses its mark and the search for its

@@ -318,12 +318,13 @@ control does, its id or its accessible label:
   view and record nothing, so a reply that closes a pruned thread or settles
   a conversation never drops what was ahead; the two that finish what the
   person asked — a launched or reconnected session's terminal opening, a
-  notification's destination opening — are moves. The same comparison ends
-  a notification being followed: it is one value (waiting for its data, or
-  shown, with the search for its row and the scroll owed to it), and the
-  outermost update the person makes, a notification's own excepted, ends
-  all of it when the place after differs from the place before, so no
-  control has to remember to. Going Back or Forward
+  notification's destination opening — are moves. A move also ends a
+  notification being followed: it is one value (waiting for its data, or
+  shown, with the search for its row and the scroll owed to it), and every
+  move, a notification's own excepted, ends all of it when where the person
+  is differs afterwards, so no control has to remember to. Where the
+  person is, for this, is the place and the plan open or asked for on
+  Plans: not a place, and still somewhere they chose to be. Going Back or Forward
   restores the place by the messages that went there (the project, then the
   screen, then the board before its card, the session, conversation or
   thread, then the list or the conversation) and keeps the place left on the
