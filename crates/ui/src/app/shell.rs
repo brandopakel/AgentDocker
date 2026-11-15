@@ -5345,6 +5345,7 @@ impl App {
         if self.journal_project != selected {
             self.journal_project = selected.clone();
             self.journal.clear();
+            self.journal_due = false;
             if let Some(project) = selected {
                 self.request_journal(project);
             }
@@ -5360,6 +5361,14 @@ impl App {
             // now rather than say "Reading…" until a filter is touched.
             if self.screen == Screen::Usage {
                 self.request_usage();
+            }
+        } else if self.journal_due {
+            // The same project, whose journal the queue would not take
+            // last time: asked again, and nothing else of the project is
+            // touched. Refused again, it is owed again.
+            self.journal_due = false;
+            if let Some(project) = selected {
+                self.request_journal(project);
             }
         }
     }
@@ -6767,19 +6776,20 @@ mod tests {
         app.workspaces
             .insert("/work/a".into(), Workspace::default());
         quiet(&mut app, Cmd::Workspace("/work/a".into()));
-        // A project's journal: the project chosen, which is then no longer
-        // taken as read, so that the next look at it asks again.
+        // A project's journal: for the project on view the read is marked
+        // as owed, to be asked again, and the project stays who it is.
         app.journal_project = Some("project-a".into());
         quiet(
             &mut app,
             Cmd::Journal("project-b".into(), "project-b".into()),
         );
-        assert_eq!(app.journal_project.as_deref(), Some("project-a"));
-        said(
+        assert!(!app.journal_due);
+        quiet(
             &mut app,
             Cmd::Journal("project-a".into(), "project-a".into()),
         );
-        assert_eq!(app.journal_project, None, "asked again on the next look");
+        assert!(app.journal_due, "asked again on the next look");
+        assert_eq!(app.journal_project.as_deref(), Some("project-a"));
 
         // What a person did that leaves nothing waiting: said.
         for command in [
@@ -12041,6 +12051,90 @@ mod tests {
     /// The screen and the project on view.
     fn on(app: &App) -> (Screen, Option<PathBuf>) {
         (app.screen, app.shell.catalog.selected.clone())
+    }
+
+    /// A read of the project's journal that the queue will not take is
+    /// asked again by itself, and the project on view stays the project
+    /// it is. The mark that says "another project is on view" also closes
+    /// the open card and empties its editor, its comment line and the link
+    /// being added: a refused read must not be taken for that. A real
+    /// change of project still clears them.
+    #[test]
+    fn a_refused_journal_read_is_asked_again_and_closes_nothing() {
+        let (mut app, alpha, beta, kept) = travel();
+        let commands = &kept._commands;
+        let capacity = super::super::queue::CAPACITY;
+        let project = ProjectRef::directory(&beta).id().to_string();
+
+        // The project is on view with a card open, and words in its
+        // editor, its comment line and the link being added.
+        let _ = app.update(Message::SelectProject(beta.clone()));
+        app.refresh_project_context();
+        assert_eq!(app.journal_project.as_deref(), Some(project.as_str()));
+        let card = card_in("aaaaaaaaaaaa", &beta, "Port the parser");
+        let _ = app.update(Message::TaskOpen(card.id.clone()));
+        app.shell.card_draft.title = "Port the parser, carefully".into();
+        app.shell.card_draft.description = "what the person is writing".into();
+        app.shell.card_draft.comment = "half a comment".into();
+        app.shell.link_kind = Some(agentdocker_core::LinkKind::Url);
+        app.shell.link_target = "https://example.com/half".into();
+        app.board_asks.insert(41, (project.clone(), 50));
+        let whole = |app: &App| {
+            (
+                app.task_open.clone(),
+                app.shell.card_draft.clone(),
+                app.shell.link_kind,
+                app.shell.link_target.clone(),
+                app.board_asks.clone(),
+                app.journal_project.clone(),
+            )
+        };
+        let before = whole(&app);
+        assert_eq!(before.0, Some(card.id.clone()), "the card is open");
+
+        // The daemon comes back and the journal is asked for again, as it
+        // is on every connection; the queue is full and refuses it.
+        let _ = commands.try_iter().count();
+        fill_queue(&mut app);
+        app.status.clear();
+        app.request_journal(project.clone());
+        assert!(app.journal_due, "the read is owed");
+        assert!(app.status.is_empty(), "nothing waits, nothing is said");
+        // The next looks at the project's context, with the queue still
+        // full: the project has not changed, and nothing of the card goes.
+        app.refresh_project_context();
+        app.refresh_project_context();
+        assert_eq!(
+            whole(&app),
+            before,
+            "the card, its drafts and the board's asks, whole"
+        );
+        assert!(app.journal_due, "refused again, owed again");
+        let waiting: Vec<_> = commands.try_iter().collect();
+        assert_eq!(waiting.len(), capacity);
+        assert!(!waiting.iter().any(|c| matches!(c, Cmd::Journal(..))));
+
+        // With room, the journal alone is asked for, once.
+        app.refresh_project_context();
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::Journal(asked, _)] if *asked == project
+        ));
+        assert!(!app.journal_due);
+        assert_eq!(whole(&app), before);
+        app.refresh_project_context();
+        assert_eq!(commands.try_iter().count(), 0, "and not again");
+
+        // Another project chosen is a change of project: its journal is
+        // asked for, and the card of the one before is closed.
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        app.refresh_project_context();
+        assert_eq!(app.task_open, None);
+        assert_eq!(app.shell.card_draft.comment, "");
+        assert!(app.shell.link_target.is_empty());
+        assert!(app.board_asks.is_empty());
+        let other = ProjectRef::directory(&alpha).id().to_string();
+        assert_eq!(app.journal_project.as_deref(), Some(other.as_str()));
     }
 
     /// Back and Forward walk the places the person went, in order, each

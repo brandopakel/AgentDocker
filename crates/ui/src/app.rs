@@ -581,6 +581,11 @@ pub struct App {
     discovered: Vec<DiscoveredProcess>,
     journal: Vec<JournalEntry>,
     journal_project: Option<String>,
+    /// The read of that project's journal was refused by the request
+    /// queue: asked again at the next look at the project's context. Kept
+    /// apart from `journal_project`, which is also what says the project
+    /// on view has changed.
+    journal_due: bool,
     inbox: Vec<agentdocker_core::Envelope>,
     /// What the person can read, as the daemon lists it; `None` until the
     /// daemon has answered, `Some(false)` from a daemon without it.
@@ -794,6 +799,7 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
+            journal_due: false,
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
@@ -889,6 +895,7 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
+            journal_due: false,
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
@@ -1218,14 +1225,17 @@ impl App {
                     return;
                 }
             }
-            // A project's journal is read once, when the project is chosen.
-            // Refused, it is said, and the project is no longer taken as
-            // read, so the next look at it asks again.
+            // A project's journal is read once, when the project is chosen
+            // or the daemon comes back. Refused, the read is marked as
+            // still owed and asked again at the next look at the project's
+            // context, which every tick makes: nothing is said, since
+            // nothing is left waiting. The project on view is who it was:
+            // the mark is not the one that says it changed.
             Cmd::Journal(project, _) => {
-                if self.journal_project.as_deref() != Some(project.as_str()) {
-                    return;
+                if self.journal_project.as_deref() == Some(project.as_str()) {
+                    self.journal_due = true;
                 }
-                self.journal_project = None;
+                return;
             }
             // What a person did that leaves nothing waiting: it was not
             // done, and the status line says so. The page before the oldest
