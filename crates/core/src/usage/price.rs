@@ -160,17 +160,26 @@ impl Costing {
             return Ok(());
         };
         let [input, cache_read, cache_write, output, _reasoning] = aggregate.totals;
-        let read_known = cache_read.known_samples > 0;
-        let write_known = cache_write.known_samples > 0;
-        // The uncached share of an inclusive input total: what the row
-        // did not say about caching stays in the input count, priced as
-        // input, with the coverage below saying so.
-        let uncached = input
-            .sum
-            .saturating_sub(if read_known { cache_read.sum } else { 0 })
-            .saturating_sub(if write_known { cache_write.sum } else { 0 });
+        // The uncached share of an inclusive input total, only where the
+        // bucket establishes it. Its sums may cover different responses: a
+        // cache count is subtracted only when every response reported its
+        // input, so that every cache token counted belongs to counted
+        // input. When some response did not report its input and some
+        // reported a cache count, those cache tokens may belong to input
+        // nobody counted, so the share is not inferred: input is left out
+        // of the estimate, which the coverage below marks partial. What a
+        // response did not say about caching stays in its input count,
+        // priced as input, partial too.
+        let input_everywhere = input.known_samples == aggregate.samples;
+        let cache_said = cache_read.known_samples > 0 || cache_write.known_samples > 0;
+        let uncached = (input_everywhere || !cache_said).then(|| {
+            input
+                .sum
+                .saturating_sub(cache_read.sum)
+                .saturating_sub(cache_write.sum)
+        });
         let parts = [
-            (uncached, price.input),
+            (uncached.unwrap_or(0), price.input),
             (cache_read.sum, price.cache_read),
             (cache_write.sum, price.cache_write),
             (output.sum, price.output),
@@ -199,12 +208,22 @@ impl Costing {
             .into_iter()
             .zip(bears)
             .filter_map(|(total, bears)| bears.then_some(total));
-        let mut said = false;
-        let mut whole = true;
-        for total in relevant {
-            said |= total.known_samples > 0;
-            whole &= total.known_samples == aggregate.samples;
-        }
+        let (said, whole) = if bears.contains(&true) {
+            let mut said = false;
+            let mut whole = true;
+            for total in relevant {
+                said |= total.known_samples > 0;
+                whole &= total.known_samples == aggregate.samples;
+            }
+            // An input share left out is never whole; it is already not,
+            // since only a response without input leaves it out.
+            whole &= uncached.is_some() || price.input == 0.0;
+            (said, whole)
+        } else {
+            // Every rate zero: whatever was used, the estimate is a known
+            // zero, and nothing unreported can change it.
+            (aggregate.samples > 0, true)
+        };
         self.micro_usd = micro;
         self.priced = self
             .priced
@@ -445,6 +464,87 @@ mod tests {
         let mut nothing = Costing::default();
         nothing.add(Some(&price(None, "*")), &empty).unwrap();
         assert_eq!(nothing.report(true).unwrap().label(), "$0.0000");
+    }
+
+    /// A bucket's sums can cover different responses. Cache tokens are
+    /// taken out of input only when every response reported its input; a
+    /// response whose cache read is known but whose input is not (a Claude
+    /// record missing its cache write) must not take another response's
+    /// input away, so the input share is left out instead, marked partial.
+    #[test]
+    fn cache_tokens_never_take_away_input_another_response_reported() {
+        let rates = price(None, "*");
+        let estimate = |samples: &[Counters]| {
+            let mut costing = Costing::default();
+            costing.add(Some(&rates), &bucket(samples)).unwrap();
+            costing.report(true).unwrap()
+        };
+        let a = Counters::from_values([Some(100), Some(0), Some(0), Some(0), None]);
+        assert_eq!(
+            estimate(std::slice::from_ref(&a)),
+            CostReport {
+                micro_usd: Some(300),
+                coverage: Coverage::Complete
+            },
+            "alone, all of its input is uncached"
+        );
+        let b = Counters::from_values([None, Some(50), None, Some(0), None]);
+        // Subtracting the bucket's 50 cache reads from A's 100 input would
+        // say 165; the share cannot be established, so only B's reads are
+        // priced.
+        assert_eq!(
+            estimate(&[a.clone(), b]),
+            CostReport {
+                micro_usd: Some(15),
+                coverage: Coverage::Partial
+            }
+        );
+        // The reviewer's case: the false subtraction and the refusal both
+        // print 30 here, so the coverage is what tells them apart.
+        let c = Counters::from_values([None, Some(100), None, Some(0), None]);
+        assert_eq!(estimate(&[a, c]).coverage, Coverage::Partial);
+        // Every response reported its input: a known cache count is the
+        // response's own, so it comes out of input even where another
+        // response's cache count is unknown.
+        let d = Counters::from_values([Some(100), Some(40), None, Some(0), None]);
+        let e = Counters::from_values([Some(100), None, None, Some(0), None]);
+        assert_eq!(
+            estimate(&[d, e]),
+            CostReport {
+                micro_usd: Some((200 - 40) * 3 + 40 * 3 / 10),
+                coverage: Coverage::Partial
+            }
+        );
+    }
+
+    /// Four zero rates are a price: the estimate is a known zero for
+    /// usage that was reported, not unknown.
+    #[test]
+    fn a_free_price_is_a_known_zero() {
+        let free = Price {
+            input: 0.0,
+            cache_read: 0.0,
+            cache_write: 0.0,
+            output: 0.0,
+            ..price(None, "*")
+        };
+        let used = bucket(&[Counters::from_values([
+            Some(1_000),
+            Some(200),
+            Some(100),
+            Some(50),
+            Some(10),
+        ])]);
+        let mut costing = Costing::default();
+        costing.add(Some(&free), &used).unwrap();
+        assert_eq!(
+            costing.report(true),
+            Some(CostReport {
+                micro_usd: Some(0),
+                coverage: Coverage::Complete
+            })
+        );
+        assert_eq!(costing.report(false).unwrap().coverage, Coverage::Partial);
     }
 
     #[test]

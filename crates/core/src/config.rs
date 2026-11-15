@@ -228,9 +228,13 @@ pub struct UsageConfig {
     #[serde(default)]
     pub otlp_listen: Option<String>,
     /// The person's own prices, `[[usage.price]]` entries; none are
-    /// shipped, and without any the reports carry no cost.
+    /// shipped, and without any the reports carry no estimate. Kept as the
+    /// file gives them and read by [`UsageConfig::price_table`], so that a
+    /// mistake in one, even an unknown field or a value of the wrong type,
+    /// is the estimate's alone: the rest of `[usage]` still reads, and with
+    /// it collection and the telemetry receiver.
     #[serde(default)]
-    pub price: Vec<PriceConfig>,
+    pub price: serde_json::Value,
 }
 
 /// One `[[usage.price]]` entry as the file gives it: the numbers are US
@@ -276,8 +280,10 @@ impl PriceConfig {
             ));
         }
         let number = |field: &str, value: Option<f64>| match value {
+            // Read through JSON, where `nan` and `inf` have no form: they
+            // arrive as nothing, said with the missing.
             None => Err(format!(
-                "{} is missing: US dollars per million tokens, zero or more",
+                "{} is missing or not a finite number: US dollars per million tokens, zero or more",
                 name(field)
             )),
             Some(value) if !value.is_finite() || value < 0.0 => Err(format!(
@@ -309,7 +315,7 @@ impl Default for UsageConfig {
             claude_roots: Vec::new(),
             retention_days: 30,
             otlp_listen: None,
-            price: Vec::new(),
+            price: serde_json::Value::Null,
         }
     }
 }
@@ -339,13 +345,26 @@ impl UsageConfig {
     /// order (the first match prices a row); empty when the file has none.
     pub fn price_table(&self) -> Result<crate::usage::price::Table, String> {
         use crate::usage::price::{PRICES, Table};
-        if self.price.len() > PRICES {
+        let entries = match &self.price {
+            serde_json::Value::Null => return Ok(Table::default()),
+            serde_json::Value::Array(entries) => entries,
+            _ => {
+                return Err(
+                    "usage.price must be an array of tables, each written [[usage.price]]".into(),
+                );
+            }
+        };
+        if entries.len() > PRICES {
             return Err(format!("usage.price has at most {PRICES} entries"));
         }
-        self.price
+        entries
             .iter()
             .enumerate()
-            .map(|(index, entry)| entry.price(index))
+            .map(|(index, entry)| {
+                serde_json::from_value::<PriceConfig>(entry.clone())
+                    .map_err(|error| format!("usage.price[{index}]: {error}"))?
+                    .price(index)
+            })
             .collect::<Result<Vec<_>, _>>()
             .map(Table::new)
     }
@@ -1076,7 +1095,7 @@ mod tests {
         let missing = parsed(&entry("")).price_table().unwrap_err();
         assert_eq!(
             missing,
-            "usage.price[0] (fable-*) output is missing: US dollars per million tokens, zero or more"
+            "usage.price[0] (fable-*) output is missing or not a finite number: US dollars per million tokens, zero or more"
         );
         let negative = parsed(&entry("output = -1\n")).price_table().unwrap_err();
         assert_eq!(
@@ -1087,7 +1106,7 @@ mod tests {
             parsed(&entry("output = nan\n"))
                 .price_table()
                 .unwrap_err()
-                .contains("output must be")
+                .contains("output is missing or not a finite number")
         );
         assert!(
             parsed("[[usage.price]]\nmodel = \"\"\ninput = 1\ncache_read = 1\ncache_write = 1\noutput = 1\n")
@@ -1095,9 +1114,41 @@ mod tests {
                 .unwrap_err()
                 .contains("needs a model name")
         );
+        // A mistake of any kind in an entry, its shape included, is the
+        // estimate's alone: the file still reads, and the entry is named.
+        for (extra, says) in [
+            (
+                "output = 15\nextra = 1\n",
+                "usage.price[0]: unknown field `extra`",
+            ),
+            (
+                "output = \"oops\"\n",
+                "usage.price[0]: invalid type: string \"oops\"",
+            ),
+        ] {
+            let read = parsed(&format!(
+                "[usage]\nenabled = true\notlp_listen = \"127.0.0.1:4318\"\n{}",
+                entry(extra)
+            ));
+            let error = read.price_table().unwrap_err();
+            assert!(error.starts_with(says), "{error}");
+            assert_eq!(read.check(), Ok(()), "{extra}");
+            assert!(read.enabled);
+            assert!(read.otlp_listen().unwrap().is_some());
+        }
+        let no_model =
+            parsed("[[usage.price]]\ninput = 1\ncache_read = 1\ncache_write = 1\noutput = 1\n");
         assert!(
-            toml::from_str::<DaemonConfig>(&entry("output = 15\nextra = 1\n")).is_err(),
-            "an unknown field is refused as everywhere in the file"
+            no_model
+                .price_table()
+                .unwrap_err()
+                .starts_with("usage.price[0]: missing field `model`")
+        );
+        assert!(
+            parsed("[usage]\nprice = 3\n")
+                .price_table()
+                .unwrap_err()
+                .contains("array of tables")
         );
         let two = format!(
             "{}{}",

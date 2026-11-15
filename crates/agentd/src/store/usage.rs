@@ -2235,6 +2235,73 @@ mod tests {
         );
     }
 
+    /// Two responses in one bucket whose sums cover different responses:
+    /// one reported its input and no cache, the other a cache read but no
+    /// input (a Claude record missing its cache write). The cache read is
+    /// never taken out of the first one's input; the bucket's input share
+    /// is left out of the estimate instead, partial, under every grouping
+    /// the bucket falls in.
+    #[test]
+    fn usage_estimate_never_subtracts_cache_from_input_another_response_reported() {
+        use usage::price::{Price, Table};
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let mut whole = sample("whole", 2, 100, false);
+        whole.counters = Counters {
+            input_tokens: Some(100),
+            cache_read_input_tokens: Some(0),
+            cache_write_input_tokens: Some(0),
+            output_tokens: Some(0),
+            ..Counters::default()
+        };
+        let mut cached = sample("cached", 2, 0, false);
+        cached.counters = Counters {
+            input_tokens: None,
+            cache_read_input_tokens: Some(50),
+            cache_write_input_tokens: None,
+            output_tokens: Some(0),
+            ..Counters::default()
+        };
+        ingest(
+            &store,
+            &progress,
+            "file",
+            vec![
+                (whole, Attribution::default()),
+                (cached, Attribution::default()),
+            ],
+            at(0),
+        )
+        .unwrap();
+        let table = Table::new(vec![Price {
+            provider: None,
+            model: "*".into(),
+            input: 3.0,
+            cache_read: 0.3,
+            cache_write: 3.75,
+            output: 15.0,
+        }]);
+        for by in [Group::Model, Group::Agent, Group::Hour] {
+            let rows = store
+                .usage_report(
+                    Range::new(Some(at(0)), Some(at(21)), at(23), at(0)).unwrap(),
+                    by,
+                    None,
+                    None,
+                    &table,
+                )
+                .unwrap()
+                .unwrap()
+                .rows;
+            assert_eq!(rows.len(), 1, "{by:?}");
+            let estimate = rows[0].estimated_cost.clone().unwrap();
+            // 165 would be the 50 reads taken out of the other's 100 input.
+            assert_eq!(estimate.micro_usd, Some(15), "{by:?}: only the reads");
+            assert_eq!(estimate.coverage, usage::Coverage::Partial, "{by:?}");
+        }
+    }
+
     #[test]
     fn usage_capacity_keeps_dedupe_and_baselines_with_one_durable_gap() {
         let temp = tempfile::tempdir().unwrap();

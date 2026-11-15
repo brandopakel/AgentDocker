@@ -496,11 +496,14 @@ compared without case; `provider`, when given, must be the provider the usage
 reported, and left out the entry prices any provider — some tools' transcripts
 name none, so leave it out for those. All four numbers are required, each zero
 or more; the first entry that matches a row's provider and model prices it.
-A missing or negative number, an empty model, an unknown field or more than 256
-entries is an error in the table alone: `agentdocker usage` answers with it,
-naming the entry, until the file is fixed, while collection and the telemetry
-receiver go on. The estimate prices the uncached share of the input total,
-cache reads, cache writes and output. It knows nothing of a provider's actual
+A missing or negative number, a value of the wrong type, a missing or empty
+model, an unknown field or more than 256 entries is an error in the table
+alone: `agentdocker usage` answers with it, naming the entry, until the file is
+fixed, while collection and the telemetry receiver go on. The estimate prices
+the uncached share of the input total, cache reads, cache writes and output.
+Where some response in an hour did not report its input total but some
+reported cache tokens, that hour's uncached input cannot be told and is left
+out, so the estimate is marked `~`. It knows nothing of a provider's actual
 rates, plans, cache discounts or subscriptions, so it can be wrong even when
 your prices are right: it appears as EST. COST, never in the COST column and
 never added to it, and nothing is fetched from any network.
