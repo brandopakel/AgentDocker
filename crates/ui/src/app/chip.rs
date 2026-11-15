@@ -161,6 +161,29 @@ pub(super) fn standing(id: impl Into<String>, standing: Standing) -> Chip {
     Chip::new(id, glyph, standing.label(), tone).detail(sentence(standing.word()))
 }
 
+/// A managed container the daemon refused to go on launching, the same on
+/// every view that shows the agent: the dead end's words, which name the
+/// way out, and why in the detail. It stands beside the standing chip
+/// rather than in it: the agent's status and activity still say what they
+/// say, and this is the daemon's word on the launch. None while the dead
+/// end does not stand: after a stop, or once the engine reports the
+/// container running or exited.
+pub(super) fn dead_end(
+    id: impl Into<String>,
+    agent: &agentdocker_core::AgentRecord,
+) -> Option<Chip> {
+    let dead_end = agent.container_dead_end()?;
+    Some(
+        Chip::new(
+            id,
+            Some(Icon::Alert),
+            sentence(dead_end.words()),
+            Tone::Alert,
+        )
+        .detail(dead_end.why()),
+    )
+}
+
 /// The daemon's three-part answer as chips, in one order on every screen:
 /// where the agent stands with its task, what it is doing this moment and,
 /// when it waits on the person, what for — each its own chip, so idle and

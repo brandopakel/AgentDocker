@@ -134,6 +134,16 @@ control does, its id or its accessible label:
   evidence (`Evidence`) is the status chip's detail, where a weak word says
   so. Nothing is drawn for a daemon that gave no answer. The standing chip
   stays the one-word summary on every row.
+- **A launch at a dead end.** A managed container the daemon refused to go on
+  launching (`AgentRecord::container_dead_end`) is drawn by `chip::dead_end`
+  beside the standing chip, in the session row (`session-dead-end-<agent>`)
+  and the inspector's header (`inspector-dead-end`): `ContainerDeadEnd::words`
+  as its words (*Start unknown: stop it before retrying*, *Preparation
+  unfinished: stop it before retrying*, *Launch blocked: stop it before
+  retrying*), `ContainerDeadEnd::why` its detail, alert tone. It does not
+  replace the standing, which still says what the status and activity say
+  (*Starting*), and it is gone once a stop is asked for or the engine reports
+  the container running or exited.
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project
   in a focused window, the session is marked unviewed: its standing is

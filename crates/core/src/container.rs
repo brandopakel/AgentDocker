@@ -166,6 +166,22 @@ impl ContainerDeadEnd {
             Self::Unknown => "launch blocked: stop it before retrying",
         }
     }
+
+    /// Why the daemon stopped there and what a person does about it, for
+    /// a reader with room for more than the status words.
+    pub fn why(self) -> &'static str {
+        match self {
+            Self::StartUnknown => {
+                "Its earlier start's outcome is unknown and the engine still reports it created, so the daemon will not start it again. Stop it, then start a new agent."
+            }
+            Self::PrepareAbandoned => {
+                "Its launch ended before it recorded creating a container, so the daemon will not create one on a guess. Stop it, then start a new agent."
+            }
+            Self::Unknown => {
+                "A newer daemon refused to go on with its launch. Stop it, then start a new agent."
+            }
+        }
+    }
 }
 
 impl crate::AgentRecord {
@@ -656,6 +672,7 @@ mod tests {
             ContainerDeadEnd::Unknown,
         ] {
             assert!(dead_end.words().ends_with(": stop it before retrying"));
+            assert!(dead_end.why().ends_with("Stop it, then start a new agent."));
         }
     }
 
