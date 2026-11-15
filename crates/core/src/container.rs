@@ -243,6 +243,100 @@ impl ContainerEnvironment {
     }
 }
 
+/// Where a managed container's launch stands, read from its agent's
+/// status, its write-ahead flags and one fact the record cannot hold.
+/// Derived, never stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ContainerPhase {
+    /// Being prepared by this process; nothing exists in the engine yet.
+    Prepared,
+    /// Create was asked for and the engine's id is not known yet. A lost
+    /// create response is found again by the container's name.
+    Creating,
+    /// Created in the engine and never asked to start.
+    Created,
+    /// Its first start is being issued by this process.
+    Starting,
+    Running,
+    /// A start was asked for, its outcome was never seen, and no process
+    /// here is still issuing it. Another start is refused; inspecting it
+    /// again is not, and an observed run or exit ends the uncertainty.
+    StartUnknown,
+    /// Preparation was left unfinished and nothing was created, and no
+    /// process here is still preparing it.
+    PrepareAbandoned,
+    /// Asked to stop or be killed, and not yet seen to exit.
+    Stopping,
+    /// Its agent is no longer live.
+    Ended,
+}
+
+impl ContainerPhase {
+    /// The phase of a container whose agent has `status`.
+    ///
+    /// `operating` is positive evidence that this process owns an active
+    /// preparation or first start of this container, whichever request
+    /// issues it: from the record's publication through create, and the
+    /// first start, whether the original launch issues it or a recovery
+    /// does after a lost create response. It is cleared when that operation
+    /// completes or is cancelled. Neither the original launch request alone
+    /// nor the agent being busy is such evidence: a recovery that only
+    /// inspects an uncertain start is busy, with nothing to complete.
+    ///
+    /// Precedence, over every combination of the inputs: a status that is
+    /// not live is ended; a stop or kill intent is stopping; a run intent
+    /// with status stopping is stopping; with status running, running,
+    /// whatever the flags say, since that is the engine's word; with status
+    /// created, in order, no create attempted is prepared (operating) or
+    /// prepare abandoned, no engine id is creating, no start attempted is
+    /// created, and a start attempted is starting (operating) or start
+    /// unknown. The pairs the daemon never writes are read conservatively,
+    /// never as engine evidence: a run intent with status stopping as a
+    /// stop under way, a start flag without a create attempt as unprepared,
+    /// and a start flag without an engine id as creating.
+    pub fn of(status: &crate::AgentStatus, container: &ManagedContainer, operating: bool) -> Self {
+        use crate::AgentStatus;
+        match status {
+            AgentStatus::Exited { .. } | AgentStatus::Failed { .. } => Self::Ended,
+            _ if container.intent != ContainerIntent::Run => Self::Stopping,
+            AgentStatus::Stopping => Self::Stopping,
+            AgentStatus::Running => Self::Running,
+            AgentStatus::Created if !container.create_attempted => {
+                if operating {
+                    Self::Prepared
+                } else {
+                    Self::PrepareAbandoned
+                }
+            }
+            AgentStatus::Created if container.id.is_none() => Self::Creating,
+            AgentStatus::Created if !container.start_attempted => Self::Created,
+            AgentStatus::Created if operating => Self::Starting,
+            AgentStatus::Created => Self::StartUnknown,
+        }
+    }
+
+    /// For the two dead ends, what to do: stop the container before
+    /// retrying. Nothing further is started or prepared for it, though it
+    /// may still be inspected.
+    pub fn dead_end(self) -> Option<&'static str> {
+        match self {
+            Self::StartUnknown => Some(
+                "previous start outcome is unknown; stop this container before retrying as a new agent",
+            ),
+            Self::PrepareAbandoned => {
+                Some("launch preparation did not finish; stop before starting a replacement")
+            }
+            Self::Prepared
+            | Self::Creating
+            | Self::Created
+            | Self::Starting
+            | Self::Running
+            | Self::Stopping
+            | Self::Ended => None,
+        }
+    }
+}
+
 fn legacy_create_attempted() -> bool {
     true
 }
@@ -250,6 +344,207 @@ fn legacy_create_attempted() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AgentStatus;
+
+    fn container() -> ManagedContainer {
+        ManagedContainer {
+            inputs: None,
+            build: "build".into(),
+            engine: ContainerEngine::Podman,
+            connection: None,
+            image_id: "sha256:image".into(),
+            name: "agent-container".into(),
+            owner: "owner-label".into(),
+            id: None,
+            intent: ContainerIntent::Run,
+            start_attempted: false,
+            create_attempted: false,
+            last_error: None,
+            options: ContainerRunOptions::default(),
+            workspace: None,
+            deadline: None,
+        }
+    }
+
+    fn phase(
+        status: &AgentStatus,
+        intent: ContainerIntent,
+        (create, id, start): (bool, bool, bool),
+        operating: bool,
+    ) -> ContainerPhase {
+        let mut c = container();
+        c.intent = intent;
+        c.create_attempted = create;
+        c.id = id.then(|| "engine-id".to_owned());
+        c.start_attempted = start;
+        ContainerPhase::of(status, &c, operating)
+    }
+
+    /// One row per phase, both sides of `operating` where it decides, and
+    /// the pairs the daemon never writes.
+    #[test]
+    fn each_launch_phase_is_read_from_the_record_and_whether_this_process_operates_it() {
+        use ContainerIntent::{Kill, Run, Stop};
+        use ContainerPhase::*;
+        let created = AgentStatus::Created;
+        let rows = [
+            // Preparation, by this process or left behind.
+            (&created, Run, (false, false, false), true, Prepared),
+            (
+                &created,
+                Run,
+                (false, false, false),
+                false,
+                PrepareAbandoned,
+            ),
+            (&created, Run, (true, false, false), false, Creating),
+            (&created, Run, (true, false, false), true, Creating),
+            (&created, Run, (true, true, false), false, Created),
+            // The first start, being issued, or its outcome lost.
+            (&created, Run, (true, true, true), true, Starting),
+            (&created, Run, (true, true, true), false, StartUnknown),
+            (
+                &AgentStatus::Running,
+                Run,
+                (true, true, true),
+                false,
+                Running,
+            ),
+            (
+                &AgentStatus::Stopping,
+                Stop,
+                (true, true, true),
+                false,
+                Stopping,
+            ),
+            (&created, Kill, (true, true, false), false, Stopping),
+            (&created, Stop, (false, false, false), false, Stopping),
+            (
+                &AgentStatus::Exited { code: Some(0) },
+                Run,
+                (true, true, true),
+                false,
+                Ended,
+            ),
+            (
+                &AgentStatus::Failed { reason: "x".into() },
+                Run,
+                (false, false, false),
+                true,
+                Ended,
+            ),
+            // Never written, read conservatively.
+            (
+                &AgentStatus::Stopping,
+                Run,
+                (true, true, true),
+                false,
+                Stopping,
+            ),
+            (
+                &AgentStatus::Running,
+                Run,
+                (false, false, false),
+                false,
+                Running,
+            ),
+            (&created, Run, (false, false, true), false, PrepareAbandoned),
+            (&created, Run, (false, false, true), true, Prepared),
+            (&created, Run, (true, false, true), false, Creating),
+        ];
+        for (status, intent, flags, operating, expected) in rows {
+            assert_eq!(
+                phase(status, intent, flags, operating),
+                expected,
+                "{status:?} {intent:?} {flags:?} operating={operating}"
+            );
+        }
+    }
+
+    /// Every combination of the inputs keeps the precedence, and only the
+    /// two dead ends are dead ends, never while this process operates.
+    #[test]
+    fn the_precedence_holds_over_every_combination() {
+        let statuses = [
+            AgentStatus::Created,
+            AgentStatus::Running,
+            AgentStatus::Stopping,
+            AgentStatus::Exited { code: None },
+            AgentStatus::Failed {
+                reason: "fixture".into(),
+            },
+        ];
+        let intents = [
+            ContainerIntent::Run,
+            ContainerIntent::Stop,
+            ContainerIntent::Kill,
+        ];
+        let mut seen = 0;
+        for status in &statuses {
+            for intent in intents {
+                for bits in 0..8u8 {
+                    let flags = (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+                    let with = phase(status, intent, flags, true);
+                    let without = phase(status, intent, flags, false);
+                    // Both sides of `operating`, in one step.
+                    seen += 2;
+                    let case = format!("{status:?} {intent:?} {flags:?}");
+                    if !status.is_live() {
+                        assert_eq!(
+                            (with, without),
+                            (ContainerPhase::Ended, ContainerPhase::Ended),
+                            "{case}"
+                        );
+                    } else if intent != ContainerIntent::Run || *status == AgentStatus::Stopping {
+                        assert_eq!(
+                            (with, without),
+                            (ContainerPhase::Stopping, ContainerPhase::Stopping),
+                            "{case}"
+                        );
+                    } else if *status == AgentStatus::Running {
+                        assert_eq!(
+                            (with, without),
+                            (ContainerPhase::Running, ContainerPhase::Running),
+                            "{case}"
+                        );
+                    }
+                    // Operating decides only between a step in flight and
+                    // the same step found left behind.
+                    match without {
+                        ContainerPhase::PrepareAbandoned => {
+                            assert_eq!(with, ContainerPhase::Prepared, "{case}")
+                        }
+                        ContainerPhase::StartUnknown => {
+                            assert_eq!(with, ContainerPhase::Starting, "{case}")
+                        }
+                        other => assert_eq!(with, other, "{case}"),
+                    }
+                    assert_eq!(with.dead_end(), None, "{case}");
+                    assert_eq!(
+                        without.dead_end().is_some(),
+                        matches!(
+                            without,
+                            ContainerPhase::StartUnknown | ContainerPhase::PrepareAbandoned
+                        ),
+                        "{case}"
+                    );
+                }
+            }
+        }
+        assert_eq!(seen, 240);
+        assert!(
+            ContainerPhase::StartUnknown
+                .dead_end()
+                .unwrap()
+                .contains("stop this container before retrying")
+        );
+        assert!(
+            ContainerPhase::PrepareAbandoned
+                .dead_end()
+                .unwrap()
+                .contains("stop before starting a replacement")
+        );
+    }
     #[test]
     fn portable_environment_ignores_only_local_build_and_connection_names() {
         let environment = ContainerEnvironment {
