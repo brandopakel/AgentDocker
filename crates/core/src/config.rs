@@ -15,7 +15,7 @@ pub const FILE_NAME: &str = "agentd.toml";
 /// once-a-minute tick stays short however far behind retention has fallen.
 pub const RETENTION_BATCH: usize = 1_000;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DaemonConfig {
     #[serde(default)]
@@ -209,7 +209,7 @@ impl Default for AgentsConfig {
 }
 
 /// Local accounting roots only; transcript text is parsed but never retained.
-#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageConfig {
     #[serde(default)]
@@ -227,6 +227,80 @@ pub struct UsageConfig {
     /// `enabled`, which governs the transcript collector.
     #[serde(default)]
     pub otlp_listen: Option<String>,
+    /// The person's own prices, `[[usage.price]]` entries; none are
+    /// shipped, and without any the reports carry no estimate. Kept as the
+    /// file gives them and read by [`UsageConfig::price_table`], so that a
+    /// mistake in one, even an unknown field or a value of the wrong type,
+    /// is the estimate's alone: the rest of `[usage]` still reads, and with
+    /// it collection and the telemetry receiver.
+    #[serde(default)]
+    pub price: serde_json::Value,
+}
+
+/// One `[[usage.price]]` entry as the file gives it: the numbers are US
+/// dollars per million tokens, every one required, so a price nobody
+/// wrote is refused rather than read as free.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PriceConfig {
+    /// Left out, the entry prices any provider; named, only usage
+    /// reporting that provider (without case).
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// The model name or a pattern over it (`*`, `?`).
+    pub model: String,
+    #[serde(default)]
+    pub input: Option<f64>,
+    #[serde(default)]
+    pub cache_read: Option<f64>,
+    #[serde(default)]
+    pub cache_write: Option<f64>,
+    #[serde(default)]
+    pub output: Option<f64>,
+}
+
+impl PriceConfig {
+    /// The entry as a price, or why it is not one: a number missing,
+    /// negative or not a number, named by the entry and the field.
+    fn price(&self, index: usize) -> Result<crate::usage::price::Price, String> {
+        let name = |field: &str| format!("usage.price[{index}] ({}) {field}", self.model);
+        if self.model.trim().is_empty() {
+            return Err(format!(
+                "usage.price[{index}] needs a model name or pattern"
+            ));
+        }
+        if self
+            .provider
+            .as_deref()
+            .is_some_and(|p| p.trim().is_empty())
+        {
+            return Err(format!(
+                "usage.price[{index}] ({}) provider must be a name or left out",
+                self.model
+            ));
+        }
+        let number = |field: &str, value: Option<f64>| match value {
+            // Read through JSON, where `nan` and `inf` have no form: they
+            // arrive as nothing, said with the missing.
+            None => Err(format!(
+                "{} is missing or not a finite number: US dollars per million tokens, zero or more",
+                name(field)
+            )),
+            Some(value) if !value.is_finite() || value < 0.0 => Err(format!(
+                "{} must be US dollars per million tokens, zero or more",
+                name(field)
+            )),
+            Some(value) => Ok(value),
+        };
+        Ok(crate::usage::price::Price {
+            provider: self.provider.clone(),
+            model: self.model.clone(),
+            input: number("input", self.input)?,
+            cache_read: number("cache_read", self.cache_read)?,
+            cache_write: number("cache_write", self.cache_write)?,
+            output: number("output", self.output)?,
+        })
+    }
 }
 
 fn usage_retention_days() -> u32 {
@@ -241,6 +315,7 @@ impl Default for UsageConfig {
             claude_roots: Vec::new(),
             retention_days: 30,
             otlp_listen: None,
+            price: serde_json::Value::Null,
         }
     }
 }
@@ -264,6 +339,34 @@ impl UsageConfig {
             );
         }
         Ok(())
+    }
+
+    /// The file's prices as a table, each entry checked, in the file's
+    /// order (the first match prices a row); empty when the file has none.
+    pub fn price_table(&self) -> Result<crate::usage::price::Table, String> {
+        use crate::usage::price::{PRICES, Table};
+        let entries = match &self.price {
+            serde_json::Value::Null => return Ok(Table::default()),
+            serde_json::Value::Array(entries) => entries,
+            _ => {
+                return Err(
+                    "usage.price must be an array of tables, each written [[usage.price]]".into(),
+                );
+            }
+        };
+        if entries.len() > PRICES {
+            return Err(format!("usage.price has at most {PRICES} entries"));
+        }
+        entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                serde_json::from_value::<PriceConfig>(entry.clone())
+                    .map_err(|error| format!("usage.price[{index}]: {error}"))?
+                    .price(index)
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Table::new)
     }
 }
 
@@ -962,6 +1065,104 @@ mod tests {
             "a name git reads as a pattern is the daemon's to escape, not refused"
         );
         assert!(toml::from_str::<DaemonConfig>("[worktrees]\nfolder = \"x\"\n").is_err());
+    }
+
+    /// No price is shipped; the file's entries are checked one by one, a
+    /// number missing or negative named with its entry, and read into a
+    /// table in the file's order. Only the estimate depends on them.
+    #[test]
+    fn the_price_table_is_empty_until_written_and_every_entry_is_checked() {
+        let parsed = |text: &str| toml::from_str::<DaemonConfig>(text).unwrap().usage;
+        assert!(parsed("").price_table().unwrap().is_empty());
+        let entry = |extra: &str| {
+            format!(
+                "[[usage.price]]\nmodel = \"fable-*\"\ninput = 3\ncache_read = 0.3\ncache_write = 3.75\n{extra}"
+            )
+        };
+        let good = parsed(&entry("output = 15\nprovider = \"acme\"\n"));
+        let table = good.price_table().unwrap();
+        let price = table.find(Some("Acme"), Some("fable-7")).unwrap();
+        assert_eq!(
+            (
+                price.input,
+                price.cache_read,
+                price.cache_write,
+                price.output
+            ),
+            (3.0, 0.3, 3.75, 15.0)
+        );
+        assert!(table.find(None, Some("fable-7")).is_none());
+        let missing = parsed(&entry("")).price_table().unwrap_err();
+        assert_eq!(
+            missing,
+            "usage.price[0] (fable-*) output is missing or not a finite number: US dollars per million tokens, zero or more"
+        );
+        let negative = parsed(&entry("output = -1\n")).price_table().unwrap_err();
+        assert_eq!(
+            negative,
+            "usage.price[0] (fable-*) output must be US dollars per million tokens, zero or more"
+        );
+        assert!(
+            parsed(&entry("output = nan\n"))
+                .price_table()
+                .unwrap_err()
+                .contains("output is missing or not a finite number")
+        );
+        assert!(
+            parsed("[[usage.price]]\nmodel = \"\"\ninput = 1\ncache_read = 1\ncache_write = 1\noutput = 1\n")
+                .price_table()
+                .unwrap_err()
+                .contains("needs a model name")
+        );
+        // A mistake of any kind in an entry, its shape included, is the
+        // estimate's alone: the file still reads, and the entry is named.
+        for (extra, says) in [
+            (
+                "output = 15\nextra = 1\n",
+                "usage.price[0]: unknown field `extra`",
+            ),
+            (
+                "output = \"oops\"\n",
+                "usage.price[0]: invalid type: string \"oops\"",
+            ),
+        ] {
+            let read = parsed(&format!(
+                "[usage]\nenabled = true\notlp_listen = \"127.0.0.1:4318\"\n{}",
+                entry(extra)
+            ));
+            let error = read.price_table().unwrap_err();
+            assert!(error.starts_with(says), "{error}");
+            assert_eq!(read.check(), Ok(()), "{extra}");
+            assert!(read.enabled);
+            assert!(read.otlp_listen().unwrap().is_some());
+        }
+        let no_model =
+            parsed("[[usage.price]]\ninput = 1\ncache_read = 1\ncache_write = 1\noutput = 1\n");
+        assert!(
+            no_model
+                .price_table()
+                .unwrap_err()
+                .starts_with("usage.price[0]: missing field `model`")
+        );
+        assert!(
+            parsed("[usage]\nprice = 3\n")
+                .price_table()
+                .unwrap_err()
+                .contains("array of tables")
+        );
+        let two = format!(
+            "{}{}",
+            entry("output = 15\n"),
+            entry("output = 1\nmodel = \"*\"\n").replace("model = \"fable-*\"\n", "")
+        );
+        let ordered = parsed(&two).price_table().unwrap();
+        assert_eq!(ordered.find(None, Some("fable-7")).unwrap().output, 15.0);
+        assert_eq!(ordered.find(None, Some("other")).unwrap().output, 1.0);
+        let many = entry("output = 15\n").repeat(crate::usage::price::PRICES + 1);
+        assert!(parsed(&many).price_table().unwrap_err().contains("at most"));
+        // A broken price is the estimate's alone: the rest of the usage
+        // settings, collection and the receiver among them, still hold.
+        assert_eq!(parsed(&entry("output = -1\n")).check(), Ok(()));
     }
 
     /// The mirror is off unless turned on, names its projects, keeps its

@@ -1377,6 +1377,17 @@ pub fn card_usage(row: &agentdocker_core::usage::report::Row) -> String {
     line
 }
 
+/// What EST. COST is and is not, under a table that shows it.
+pub const ESTIMATE_NOTE: &str = "EST. COST is your own price table in agentd.toml applied to the tokens reported: an estimate, not the cost the provider reported (COST), and not a bill";
+
+/// A row's estimate from the person's price table: `$1.23`, marked `~`
+/// when some of its usage had no price or some samples did not say, `—`
+/// when no price matched or nothing priced was reported. Never the
+/// reported cost, which [`cost`] shows.
+pub fn estimate(report: Option<&agentdocker_core::usage::price::CostReport>) -> String {
+    report.map_or_else(|| "—".to_owned(), |estimate| estimate.label())
+}
+
 /// Each agent's tokens over a usage report grouped by agent, as `ps`
 /// cells keyed by agent id.
 pub fn tokens_by_agent(
@@ -1522,11 +1533,14 @@ pub fn usage_report(
             println!("No usage in this range.");
         }
     } else {
+        // The cost column only when some row has a price: the person's
+        // own price table applied to the tokens reported, not a bill.
+        let priced = report.priced();
         let rows: Vec<Vec<String>> = report
             .rows
             .iter()
             .map(|row| {
-                vec![
+                let mut cells = vec![
                     usage_key(row.key.as_deref(), names),
                     thousands(row.samples),
                     counter(&row.counters.input_tokens),
@@ -1537,27 +1551,35 @@ pub fn usage_report(
                     counter(&row.counters.reasoning_output_tokens),
                     usage_source(row.usage_source).to_owned(),
                     cost(&row.cost_usd_micros),
-                ]
+                ];
+                if priced {
+                    cells.push(estimate(row.estimated_cost.as_ref()));
+                }
+                cells
             })
             .collect();
-        table(
-            &[
-                key,
-                "SAMPLES",
-                "INPUT",
-                "CACHE READ",
-                "CACHED",
-                "CACHE WRITE",
-                "OUTPUT",
-                "REASONING",
-                "FIGURES",
-                "COST",
-            ],
-            &rows,
-        );
+        let mut headers = vec![
+            key,
+            "SAMPLES",
+            "INPUT",
+            "CACHE READ",
+            "CACHED",
+            "CACHE WRITE",
+            "OUTPUT",
+            "REASONING",
+            "FIGURES",
+            "COST",
+        ];
+        if priced {
+            headers.push("EST. COST");
+        }
+        table(&headers, &rows);
         println!(
             "~ some samples did not say; — none did; CACHED is cache reads over input; FIGURES: exact are the provider's own per-response counts, estimated has differences between its running totals in it; COST is the provider-reported estimated cost"
         );
+        if priced {
+            println!("{ESTIMATE_NOTE}");
+        }
     }
     println!(
         "Range {} to {}{}{}; retained since {}{}",
@@ -1952,6 +1974,33 @@ mod tests {
         assert_eq!(super::thousands(999), "999");
         assert_eq!(super::thousands(1_000), "1,000");
         assert_eq!(super::thousands(10_000_000), "10,000,000");
+        use agentdocker_core::usage::price::CostReport;
+        assert_eq!(
+            super::estimate(None),
+            "—",
+            "no price matched: no estimate, not zero"
+        );
+        assert_eq!(
+            super::estimate(Some(&CostReport {
+                micro_usd: Some(2_145_000),
+                coverage: Coverage::Complete
+            })),
+            "$2.15"
+        );
+        assert_eq!(
+            super::estimate(Some(&CostReport {
+                micro_usd: Some(2_145_000),
+                coverage: Coverage::Partial
+            })),
+            "$2.15~"
+        );
+        assert_eq!(
+            super::estimate(Some(&CostReport {
+                micro_usd: None,
+                coverage: Coverage::Unknown
+            })),
+            "—"
+        );
     }
 
     /// A price shows as dollars with the counters' coverage marks, the
@@ -1990,6 +2039,7 @@ mod tests {
             },
             cost_usd_micros: report(Some(250_000), Coverage::Partial),
             cache_read_share_percent: Some(75),
+            estimated_cost: None,
         };
         assert_eq!(
             super::card_usage(&row),

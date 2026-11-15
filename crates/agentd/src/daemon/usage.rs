@@ -256,9 +256,18 @@ impl Daemon {
                 Some((a.id.to_string(), a.spec.runtime.clone(), session.clone()))
             })
             .collect();
+        let prices = match config.price_table() {
+            Ok(prices) => prices,
+            Err(error) => return Response::error(ErrorCode::Invalid, error),
+        };
         match state.store_read("usage query", |store| {
-            let mut report =
-                store.usage_report(range, query.by, project.as_deref(), agent.as_deref())?;
+            let mut report = store.usage_report(
+                range,
+                query.by,
+                project.as_deref(),
+                agent.as_deref(),
+                &prices,
+            )?;
             if let Some(report) = &mut report
                 && config.enabled
             {
@@ -279,18 +288,7 @@ impl Daemon {
                     report.coverage.collection = Collection::default();
                     report.context.clear();
                     for row in &mut report.rows {
-                        for counter in [
-                            &mut row.counters.input_tokens,
-                            &mut row.counters.cache_read_input_tokens,
-                            &mut row.counters.cache_write_input_tokens,
-                            &mut row.counters.output_tokens,
-                            &mut row.counters.reasoning_output_tokens,
-                            &mut row.cost_usd_micros,
-                        ] {
-                            if counter.coverage == usage::Coverage::Complete {
-                                counter.coverage = usage::Coverage::Partial;
-                            }
-                        }
+                        row.demote_complete();
                     }
                 }
                 report.coverage.collection.enabled = Some(config.enabled);
@@ -1346,6 +1344,75 @@ mod tests {
         );
         std::fs::write(temp.path().join("agentd.toml"), config_text).unwrap();
         (temp, daemon, config, root)
+    }
+
+    /// A mistake in a price entry, of any kind, is the estimate's alone:
+    /// the configuration the collector and the telemetry receiver read
+    /// still holds, and only the usage query answers `invalid`, naming the
+    /// entry.
+    #[tokio::test]
+    async fn a_broken_price_leaves_collection_and_the_receiver_alone() {
+        let (temp, daemon, _config, root) = fixture();
+        let base = format!(
+            "[usage]\nenabled=true\notlp_listen=\"127.0.0.1:4318\"\nclaude_roots=[{}]\ncodex_roots=[{}]\n",
+            serde_json::to_string(&root).unwrap(),
+            serde_json::to_string(&temp.path().join("no-codex")).unwrap()
+        );
+        let entry = "[[usage.price]]\nmodel = \"fable-*\"\ninput = 3\ncache_read = 0.3\ncache_write = 3.75\n";
+        for (mistake, says) in [
+            ("output = 15\nextra = 1\n", "unknown field `extra`"),
+            ("output = \"oops\"\n", "invalid type"),
+            (
+                "output = -1\n",
+                "output must be US dollars per million tokens",
+            ),
+        ] {
+            std::fs::write(
+                temp.path().join("agentd.toml"),
+                format!("{base}{entry}{mistake}"),
+            )
+            .unwrap();
+            // What the collector's tick and the receiver's address read.
+            let config = configuration(temp.path()).unwrap();
+            assert!(config.enabled, "{mistake}");
+            assert!(config.otlp_listen().unwrap().is_some(), "{mistake}");
+            match daemon
+                .handle(Request::Usage {
+                    project: None,
+                    agent: None,
+                    since: Some("24h".into()),
+                    until: None,
+                    by: Group::Agent,
+                })
+                .await
+            {
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    message,
+                    ..
+                } => assert!(
+                    message.starts_with("usage.price[0]") && message.contains(says),
+                    "{message}"
+                ),
+                other => panic!("{mistake}: {other:?}"),
+            }
+        }
+        std::fs::write(
+            temp.path().join("agentd.toml"),
+            format!("{base}{entry}output = 15\n"),
+        )
+        .unwrap();
+        let config = configuration(temp.path()).unwrap();
+        assert_eq!(
+            config
+                .price_table()
+                .unwrap()
+                .find(None, Some("fable-7"))
+                .unwrap()
+                .output,
+            15.0
+        );
+        query_by(&daemon, Group::Agent).await;
     }
 
     #[tokio::test]

@@ -318,9 +318,11 @@ fn scan_bounded(
             .collect();
         let seq = store.max_event_seq()? + 1;
         store.usage_snapshot(&collection, &gap_refs, as_of, seq, None)?;
-        let mut report = store.usage_report(range, query.by, None, None)?.context(
-            "standalone report exceeds its bucket or counter limit; narrow its time range",
-        )?;
+        let mut report = store
+            .usage_report(range, query.by, None, None, &usage::price::Table::default())?
+            .context(
+                "standalone report exceeds its bucket or counter limit; narrow its time range",
+            )?;
         ensure!(
             !report
                 .coverage
@@ -333,21 +335,7 @@ fn scan_bounded(
         // This coverage refers to the selected file snapshots, not all provider
         // accounts or the duration remaining in the current hour.
         for row in &mut report.rows {
-            for counter in [
-                &mut row.counters.input_tokens,
-                &mut row.counters.cache_read_input_tokens,
-                &mut row.counters.cache_write_input_tokens,
-                &mut row.counters.output_tokens,
-                &mut row.counters.reasoning_output_tokens,
-            ] {
-                counter.coverage = if counter.known_samples == 0 {
-                    Coverage::Unknown
-                } else if complete && counter.known_samples == row.samples {
-                    Coverage::Complete
-                } else {
-                    Coverage::Partial
-                };
-            }
+            row.settle_coverage(complete);
         }
         for (path, session, cursor) in &witnesses {
             within(started, deadline)?;

@@ -1,6 +1,7 @@
 //! Usage query and response values. Coverage belongs beside every total.
 
 use super::context::Context;
+use super::price::CostReport;
 use super::{Aggregate, CounterReport, Coverage};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -79,6 +80,17 @@ pub struct CounterReports {
 }
 
 impl CounterReports {
+    /// The five, in the order the counters are kept.
+    pub fn each_mut(&mut self) -> [&mut CounterReport; 5] {
+        [
+            &mut self.input_tokens,
+            &mut self.cache_read_input_tokens,
+            &mut self.cache_write_input_tokens,
+            &mut self.output_tokens,
+            &mut self.reasoning_output_tokens,
+        ]
+    }
+
     pub fn new(aggregate: &Aggregate, complete: bool) -> Self {
         let [
             input_tokens,
@@ -119,6 +131,13 @@ pub struct Row {
     /// cache, in whole percent; null when either count is unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_share_percent: Option<u8>,
+    /// An estimate: the person's own price table (`[[usage.price]]` in
+    /// `agentd.toml`, off unless they fill it) applied to the tokens the
+    /// row reports. Kept apart from `cost_usd_micros`, which is what the
+    /// provider reported, and never added to it or shown as it; present
+    /// only where a price matched some of the row's usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_cost: Option<CostReport>,
 }
 
 impl Row {
@@ -145,6 +164,46 @@ impl Row {
         }
         // In u128: a hundred times a large u64 count does not fit a u64.
         Some((u128::from(read.min(input)) * 100 / u128::from(input)) as u8)
+    }
+
+    /// Every token count's coverage, and the estimate's, settled again
+    /// from what the samples said: complete only when `complete` and every
+    /// sample said. Partial coverage is kept partial, and the estimate
+    /// follows its counts, since it is computed from them.
+    pub fn settle_coverage(&mut self, complete: bool) {
+        for counter in self.counters.each_mut() {
+            counter.coverage = if counter.known_samples == 0 {
+                Coverage::Unknown
+            } else if complete && counter.known_samples == self.samples {
+                Coverage::Complete
+            } else {
+                Coverage::Partial
+            };
+        }
+        if let Some(estimate) = &mut self.estimated_cost
+            && estimate.coverage == Coverage::Complete
+            && !complete
+        {
+            estimate.coverage = Coverage::Partial;
+        }
+    }
+
+    /// No figure, the reported cost and the estimate included, claims to
+    /// be complete.
+    pub fn demote_complete(&mut self) {
+        let estimate = self.estimated_cost.as_mut().map(|e| &mut e.coverage);
+        for coverage in self
+            .counters
+            .each_mut()
+            .into_iter()
+            .map(|c| &mut c.coverage)
+            .chain([&mut self.cost_usd_micros.coverage])
+            .chain(estimate)
+        {
+            if *coverage == Coverage::Complete {
+                *coverage = Coverage::Partial;
+            }
+        }
     }
 }
 
@@ -287,6 +346,12 @@ impl Tokens {
 }
 
 impl Report {
+    /// Whether any row has an estimated cost: the column is shown only
+    /// then, since a table with no price matched has nothing to say.
+    pub fn priced(&self) -> bool {
+        self.rows.iter().any(|row| row.estimated_cost.is_some())
+    }
+
     /// Each row's tokens by its key. A row no sample gave a count for, and
     /// unattributed usage, are left out rather than shown as zero.
     pub fn tokens(&self) -> BTreeMap<String, Tokens> {

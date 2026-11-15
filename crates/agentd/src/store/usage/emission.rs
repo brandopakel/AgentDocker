@@ -181,7 +181,13 @@ mod tests {
         );
         let range = Range::new(Some(at(0)), Some(at(3)), at(4), at(0)).unwrap();
         let usage = store
-            .usage_report(range, Group::Agent, None, None)
+            .usage_report(
+                range,
+                Group::Agent,
+                None,
+                None,
+                &agentdocker_core::usage::price::Table::default(),
+            )
             .unwrap()
             .unwrap();
         assert!(usage.rows.is_empty());
@@ -203,7 +209,13 @@ mod tests {
         );
         let range = Range::new(Some(at(0)), Some(at(3)), at(4), at(0)).unwrap();
         let report = store
-            .usage_report(range, Group::Hour, None, None)
+            .usage_report(
+                range,
+                Group::Hour,
+                None,
+                None,
+                &agentdocker_core::usage::price::Table::default(),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(
