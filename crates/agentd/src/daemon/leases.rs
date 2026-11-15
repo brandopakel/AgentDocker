@@ -122,6 +122,11 @@ impl Daemon {
                     if let Some(pause) = state.pause_holding(&holder) {
                         break 'attempt Err((pause_refusal(pause), gone));
                     }
+                    // Nor is anything claimed in a worktree on its way out,
+                    // by a waiter that queued before its removal began either.
+                    if let Some(refusal) = state.removal_refuses_claim(&resource) {
+                        break 'attempt Err((refusal, gone));
+                    }
                     let now = Utc::now();
                     state.expire_leases_at(now);
                     if let Some(error) = state.write_failure() {

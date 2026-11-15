@@ -664,16 +664,17 @@ turn. A copied instruction is not executed by AgentDocker.
 | `blame <path>` | Who changed a file, oldest first |
 | `overlap` | Paths changed in more than one checkout: what will collide |
 | `observe` / `reads` / `stale` | Record what was read, and check it is still true |
-| `brief` | Where the work stands in the project, from AgentDocker's own records: your open cards, the cards ended sessions left open with their newest comment, cards nobody holds in a working lane, the newest checkpoint for each role with the command that resumes it where you can, the questions waiting on you and the leases held; what a new session is told at its start. An agent reads its own project's; you read the working directory's, or `--project`. `--all` prints all of it rather than the first 16 KiB, `--json` the structured brief |
+| `brief` | Where the work stands in the project, from AgentDocker's own records: your open cards, the cards ended sessions left open with their newest comment, cards nobody holds in a working lane, the newest checkpoint for each role with the command that resumes it where you can, the questions waiting on you, the leases held, and the checkouts where work stands with the gate's word at a pushed head; what a new session is told at its start, and, from this command only, GitHub's open pull requests with the gate's word at each head, asked in a checkout of the project the brief is of. An agent reads its own project's; you read the working directory's, or `--project`. The text, pull requests included, is at most 16 KiB and counts what it leaves out; GitHub is asked for 100 open pull requests and the text says when it has more. `--all` prints all of it and asks for up to 2,000, `--json` the structured brief and the pull requests |
 | `memory add <text>` / `search <words>` / `profile` / `retire <id> --reason <why>` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one, `retire` stops one that is no longer true being said when nothing takes its place (any agent of the project may, whoever kept it; it stays in the history with the reason, and `forget <the retirement's id>`, which `retire` prints, brings it back), `forget` drops one for good (your own, or any as you), `add --standing` keeps a convention said first (when a new session will not be told it in full, `add` says so on stderr: either it is too long by itself, to be superseded by a shorter one, or what a session is told in full has no room for it, with how full that is; sessions are then told it by its first words until room is made), `add --forget-after <when>` (an RFC 3339 time, or `90m`, `12h`, `7d`, `2w` from now) stops saying it after then, `add --role reviewer` says it only to that role's holders and you, `add --valid-from <when>` (an RFC 3339 time, a date, or `3d` ago) records a fact that became true no later than now; `search --as-of <when>` and `profile --as-of <when>` read memory as it stood then, `search --history` lists replaced and retired memories too, with what replaced each or who retired it and why; `search` and `profile` read as the agent whose session runs them, or as you, who read every memory; `profile` lists what agents should know first, within 4000 characters, and `profile --session` exactly what a new session is told in full at its start, which is less (2000 characters of memories, as lines within 4 KiB); each lists on stderr the standing memories it had no room for, by id and first words, and `profile` says there when a session's start leaves any out |
 
 ### Work in isolation, then merge
 
 | Command | What it does |
 |---|---|
-| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]… <path>` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
+| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]… [<path>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files. With no path it goes in the project's own worktrees folder, `.agentdocker/worktrees/<name>` inside the project (a `/` in the branch name becomes `-`), which the daemon keeps out of git through the repository's own exclude file, so everything of a project stays in the one folder you cloned; the command prints where. If a rule in the project's own `.gitignore` keeps that folder in git's view, the command refuses and names the rule: change it, move the folder with the setting below, or give a path. `[worktrees] dir = "…"` in `~/.agentdocker/agentd.toml` moves the folder: a relative path is another place inside each project, an absolute one holds every project's checkouts outside them (for a project whose tools search its whole folder and would find the checkouts inside it). A path you give is outside the checkout, or inside that folder; a relative one is read where you run the command. A path lease covers everything under its folder, so hold files and folders of your own checkout rather than the project's root; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged. The worktree's build cache (`target/`) goes with it |
+| `worktree-remove --path <path>` or `--branch <name>` | Remove a worktree of your project that nobody works in, named by where it is or by the branch checked out in it: one you made with `worktree-create` and are done with, or one another session left behind. Any running agent of the project may ask. It is refused, with what is in the way, for the project's main folder, the worktree you are in, one another agent works in, one in which anybody holds a path or whose branch anybody holds (release yours first), and one with uncommitted or untracked files. The branch is deleted only when git considers it merged; otherwise the worktree goes, the branch stays and the command says so. The worktree's build cache (`target/`) goes with it |
 | `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |
 | `merge-branch <agent> --head <sha>` | Merge that branch into the main checkout's branch with a merge commit, if its head is still the one `review-branch` printed and nothing stops it; refused with nothing changed otherwise. It does not push |
 | `commit` | Commit the agent's checkout, journaled and attributed to it |
@@ -797,7 +798,7 @@ cursor where it is; `mark_journal_read` moves it past what `read_journal`
 shows, so the next read starts after it; the since argument reads from a sequence
 number instead.
 
-`create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
+`create_worktree` · `worktree_diff` · `remove_worktree` · `commit` · `integrate_worktree` ·
 `validate` · `validation_results`
 
 `save_checkpoint` · `list_checkpoints` · `resume_checkpoint` · `handoff` ·
@@ -1682,16 +1683,30 @@ Current behaviour that the sections above do not already state, by area.
   the rest); cards nobody holds in a working lane; the newest checkpoint for
   each role, with `agentdocker resume <id> --as <you>` when it was left in
   your own checkout and where it must be resumed from otherwise; the
-  questions waiting on you; and the leases held. Quoted text in it is what
+  questions waiting on you; the leases held; and the checkouts where work
+  stands (uncommitted paths, commits not pushed or a branch never pushed,
+  commits not yet in the base, and at a pushed branch's head what the review
+  gate says), as git said when it last read them. A checkout is counted clean
+  only when git said so: a branch with no remote counts as never pushed, even
+  merged into the main checkout's branch; what git could not count is said. The brief finds
+  the project's checkouts itself, so a worktree nobody works in is told even
+  when no agent of the project is running. Quoted text in it is what
   agents and you wrote. An agent reads its own project's; you read the
   project of the directory you are in, or `--project`. It prints the first
   16 KiB and says what it left out; `--all` prints everything, `--json` the
-  same records as JSON. Checkouts and pull requests are not in it yet, and it
-  says so. The `get_brief` tool gives a session the same text.
+  same records as JSON. The command also asks GitHub (`gh`, run in a checkout
+  of the project the brief is of, not the directory you are in) for the open
+  pull requests and says what the gate says at each one's head: the first
+  100, or 2,000 with `--all`, saying when GitHub has more, within the same
+  16 KiB as the rest. What it leaves out it offers by a command that names
+  the project, so it means the same in any directory. A session's start and the `get_brief` tool never ask
+  GitHub, and say so. The `get_brief` tool
+  gives a session the brief's text.
 
 - Sessions start in their own worktree. In a git project, **Launch agent…**
   has **Own worktree: On** by default: the session works on a branch of its
-  own in its own folder, its changes are reviewed and merged from Changes, and
+  own in its own folder inside the project (`.agentdocker/worktrees/<name>`,
+  kept out of git), its changes are reviewed and merged from Changes, and
   once merged and ended, **Remove its worktree** (or `agentdocker
   worktree-remove`) cleans up. Files git ignores that the project lists in
   `.worktreeinclude` (one pathspec per line, e.g. `.env`) are copied into each

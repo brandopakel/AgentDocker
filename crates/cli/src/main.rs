@@ -108,13 +108,18 @@ enum Command {
     },
     /// List retained image build records, including finished sessions.
     Images,
-    /// Create a new linked checkout and branch without changing existing files.
+    /// Create a new linked checkout and branch without changing existing
+    /// files. With no path it goes in the project's own worktrees folder,
+    /// in a folder named for the branch.
     WorktreeCreate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
-        /// New checkout path, which becomes its physical identifier.
-        path: String,
+        /// Where the new checkout goes, when not in the project's
+        /// worktrees folder (`.agentdocker/worktrees/<branch>` inside the
+        /// project, unless the daemon's `[worktrees] dir` says otherwise).
+        /// Outside the checkout, or inside that folder.
+        path: Option<String>,
         #[arg(long)]
         /// Name of the new branch.
         branch: String,
@@ -158,12 +163,29 @@ enum Command {
         /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
     },
-    /// Remove an ended session's own worktree once its branch is merged or
-    /// no longer wanted: the worktree must be clean, and its branch is
-    /// deleted only when git considers it merged.
+    /// Remove a worktree that is done with: an ended session's own
+    /// (`worktree-remove <agent>`), or, asked by a running agent of the
+    /// project, one nobody works in, named with `--path` or `--branch`.
+    /// The worktree must be clean, and its branch is deleted only when
+    /// git considers it merged.
     WorktreeRemove {
-        /// Agent id, name or unique prefix.
-        agent: String,
+        /// The ended session whose worktree goes: agent id, name or
+        /// unique prefix.
+        #[arg(
+            required_unless_present_any = ["path", "branch"],
+            conflicts_with_all = ["path", "branch"]
+        )]
+        agent: Option<String>,
+        /// The worktree at this path.
+        #[arg(long, conflicts_with = "branch")]
+        path: Option<String>,
+        /// The worktree that has this branch checked out.
+        #[arg(long)]
+        branch: Option<String>,
+        /// Who asks, with `--path` or `--branch`: agent id, name or unique
+        /// prefix (defaults to this session).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
     },
     /// What an agent's branch would bring to the branch in the project's
     /// main checkout: its commits and files, and what stops a merge now.
@@ -467,7 +489,8 @@ enum Command {
     /// the person and the leases held. A session is told it at its start;
     /// an agent reads its own project's, the person any project's.
     Brief {
-        /// All of it, not the first 16 KiB.
+        /// All of it, not the first 16 KiB, with up to 2,000 open pull
+        /// requests asked of GitHub rather than 100.
         #[arg(long)]
         all: bool,
         /// The brief as JSON, exactly what the text is made from.
@@ -2736,7 +2759,8 @@ async fn run() -> Result<()> {
             match client
                 .call(&Request::WorktreeCreate {
                     agent,
-                    path,
+                    // A relative path is the caller's, not the daemon's.
+                    path: path.as_deref().map(absolute_path),
                     branch,
                     from,
                     seed_build,
@@ -2766,8 +2790,24 @@ async fn run() -> Result<()> {
         Command::WorktreeDiff { agent } => {
             print_json(&client.call(&Request::WorktreeDiff { agent }).await?)?
         }
-        Command::WorktreeRemove { agent } => {
-            match client.call(&Request::WorktreeRemove { agent }).await? {
+        Command::WorktreeRemove {
+            agent,
+            path,
+            branch,
+            from,
+        } => {
+            let request = match agent {
+                Some(agent) => Request::WorktreeRemove { agent },
+                None => Request::WorktreeRemoveNamed {
+                    agent: from.context(
+                        "say who asks: --as <agent> (a session started through AgentDocker has it set)",
+                    )?,
+                    // A relative path is the caller's, not the daemon's.
+                    path: path.as_deref().map(absolute_path),
+                    branch,
+                },
+            };
+            match client.call(&request).await? {
                 Response::WorktreeRemoved {
                     path,
                     branch_removed,
@@ -3229,7 +3269,6 @@ async fn run() -> Result<()> {
             project,
             from,
         } => {
-            use agentdocker_core::brief;
             let reader = sender::resolve(&client, from)
                 .await?
                 .unwrap_or_else(|| HUMAN.into());
@@ -3240,25 +3279,49 @@ async fn run() -> Result<()> {
                 None if reader == HUMAN => Some(std::env::current_dir()?.display().to_string()),
                 None => None,
             };
-            match client
+            let Response::Brief { mut brief } = client
                 .call(&Request::Brief {
-                    from: reader,
-                    project,
+                    from: reader.clone(),
+                    project: project.clone(),
                 })
                 .await?
-            {
-                Response::Brief { brief } if json => {
-                    println!("{}", serde_json::to_string_pretty(&brief)?);
+            else {
+                bail!("the daemon gave no brief");
+            };
+            // GitHub's open pull requests, each with the gate's word at its
+            // head: asked here, never by the daemon or a session's hook, in
+            // a checkout of the project the brief is of.
+            let pulls = match brief.repository.clone() {
+                Some(repository) => {
+                    crate::gate::open_pulls(&client, Some(reader), project, &repository, all).await
                 }
-                Response::Brief { brief } => {
-                    let max = if all {
-                        usize::MAX
-                    } else {
-                        brief::COMMAND_BYTES
-                    };
-                    println!("{}", brief::render(&brief, chrono::Utc::now(), max));
-                }
-                other => bail!("unexpected answer to brief: {other:?}"),
+                None => Err(anyhow::anyhow!(
+                    "the daemon did not say where the project's repository is"
+                )),
+            };
+            if pulls.is_ok() {
+                brief.pull_requests_supplied();
+            }
+            if json {
+                let pulls = match &pulls {
+                    Ok(pulls) => serde_json::json!({
+                        "lines": pulls.lines,
+                        "asked": pulls.asked,
+                        "more": pulls.more,
+                    }),
+                    Err(error) => serde_json::json!({ "error": format!("{error:#}") }),
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "brief": brief, "pull_requests": pulls })
+                    )?
+                );
+            } else {
+                println!(
+                    "{}",
+                    crate::gate::brief_text(&brief, &pulls, chrono::Utc::now(), all)
+                );
             }
         }
         Command::Memory(args) => {
@@ -7157,6 +7220,37 @@ mod tests {
             .expect("a parsing thread")
             .join()
             .expect("parsing does not panic")
+    }
+
+    /// `worktree-create` needs a branch and no path: the daemon then puts
+    /// the checkout in the project's worktrees folder. A path is still
+    /// taken when given.
+    #[test]
+    fn a_worktree_is_created_with_or_without_a_path() {
+        let path_of = |parsed: super::Cli| match parsed.command {
+            super::Command::WorktreeCreate { path, branch, .. } => {
+                assert_eq!(branch, "agent/fix");
+                path
+            }
+            _ => panic!("not worktree-create"),
+        };
+        let line = ["agentdocker", "worktree-create", "--as", "agent-1"];
+        let parsed = parse_cli([line[0], line[1], line[2], line[3], "--branch", "agent/fix"]);
+        assert_eq!(path_of(parsed.unwrap()), None);
+        let parsed = parse_cli([
+            line[0],
+            line[1],
+            line[2],
+            line[3],
+            "--branch",
+            "agent/fix",
+            "../fix",
+        ]);
+        assert_eq!(path_of(parsed.unwrap()), Some("../fix".to_owned()));
+        assert!(
+            parse_cli([line[0], line[1], line[2], line[3]]).is_err(),
+            "a branch is always named"
+        );
     }
 
     /// `roles set --tools a,b` names a role's tools, each one the MCP

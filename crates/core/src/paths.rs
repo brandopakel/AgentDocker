@@ -140,14 +140,41 @@ fn workspace_dir_in(home: &Path, runtime: &Path) -> PathBuf {
     Path::new("/tmp").join(name)
 }
 
-/// Persistent linked checkouts are siblings of daemon state, never inside it.
-pub fn worktree_dir(home: &Path) -> PathBuf {
-    let mut name = home
-        .file_name()
-        .unwrap_or(std::ffi::OsStr::new("agentdocker"))
-        .to_os_string();
-    name.push(".worktrees");
-    home.with_file_name(name)
+/// Where a project keeps the checkouts made for its agents, relative to
+/// its root, unless the daemon's settings name another place: one folder
+/// inside the project, so that everything of a project lives in the
+/// folder a person cloned or downloaded. `.agentdocker/` may hold files
+/// the project tracks (its policy), so only this folder under it is kept
+/// out of git, by the repository's own `info/exclude`.
+pub const PROJECT_WORKTREES: &str = ".agentdocker/worktrees";
+
+/// The folder a worktree made for `name` gets inside the worktrees
+/// folder: a branch's or an agent's name with everything that is not an
+/// ASCII letter, a digit, `-`, `_` or `.` turned into `-`, so
+/// `claude/fix-login` is `claude-fix-login`. Never empty, never hidden,
+/// never a step up, and no longer than a folder name may be anywhere.
+pub fn worktree_folder(name: &str) -> String {
+    let folder: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let folder: String = folder
+        .trim_start_matches(['.', '-'])
+        .trim_end_matches(['.', '-'])
+        .chars()
+        .take(100)
+        .collect();
+    if folder.is_empty() {
+        "worktree".to_owned()
+    } else {
+        folder
+    }
 }
 
 /// Where the short socket directories live. `/tmp` is world-writable, so
@@ -305,13 +332,11 @@ mod tests {
                 control.display()
             );
             assert_eq!(workspace_dir(&home), mounts);
-            assert!(!worktree_dir(&home).starts_with(&home));
-            assert_ne!(worktree_dir(&home), mounts);
         }
     }
 
     #[test]
-    fn an_overlong_runtime_directory_also_falls_back_and_worktrees_ignore_trailing_slashes() {
+    fn an_overlong_runtime_directory_also_falls_back() {
         let home = PathBuf::from(format!("/tmp/{}", "h".repeat(120)));
         let runtime = PathBuf::from(format!("/tmp/{}", "r".repeat(120)));
         let sockets = socket_dir_in(&home, &runtime);
@@ -320,10 +345,21 @@ mod tests {
         let workspace = workspace_dir_in(&home, &runtime);
         assert!(workspace_fits(&workspace));
         assert_eq!(workspace.parent(), Some(Path::new("/tmp")));
-        assert_eq!(
-            worktree_dir(Path::new("/tmp/state/")),
-            Path::new("/tmp/state.worktrees")
-        );
+    }
+
+    #[test]
+    fn a_worktrees_folder_is_named_for_its_branch_or_agent() {
+        assert_eq!(worktree_folder("claude/fix-login"), "claude-fix-login");
+        assert_eq!(worktree_folder("agent/reviewer-1"), "agent-reviewer-1");
+        assert_eq!(worktree_folder("v1.2_hotfix"), "v1.2_hotfix");
+        // Never hidden, never a step up, never empty, never unbounded.
+        assert_eq!(worktree_folder("../../etc"), "etc");
+        assert_eq!(worktree_folder(".hidden"), "hidden");
+        assert_eq!(worktree_folder("///"), "worktree");
+        assert_eq!(worktree_folder(""), "worktree");
+        assert_eq!(worktree_folder("caf\u{e9} au lait"), "caf--au-lait");
+        assert_eq!(worktree_folder(&"x".repeat(300)).len(), 100);
+        assert!(!worktree_folder("a/../b").contains('/'));
     }
 
     #[test]

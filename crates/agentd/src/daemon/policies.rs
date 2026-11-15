@@ -264,9 +264,18 @@ impl Daemon {
 }
 
 impl State {
+    /// Whether `record` may not run now: asked before a supervised
+    /// process is spawned ([`Daemon::validate_native_launch`], a pane, a
+    /// container, a relaunch under a policy) and again under the lock
+    /// that commits it as running (a launch, a restart, a restore).
     pub(super) fn run_refusal(&mut self, record: &AgentRecord) -> Option<Response> {
         if let Some(error) = self.write_failure() {
             return Some(error);
+        }
+        // Nothing is started in a worktree on its way out, and nothing
+        // started there a moment before is committed as running.
+        if let Some(refusal) = self.removal_refuses_record(record) {
+            return Some(refusal);
         }
         let action = format!("run:{}", record.spec.name);
         let ruling = self.permits_record(record, &action);

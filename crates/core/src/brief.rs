@@ -38,9 +38,19 @@ pub const COMMAND_BYTES: usize = 16 * 1024;
 /// How many of a checkpoint's next steps a brief names.
 const NEXT_STEPS: usize = 2;
 
-/// What this brief does not cover yet, said rather than left to look
-/// like nothing.
-pub const NOT_COVERED: &[&str] = &["checkouts", "pull requests"];
+/// What a brief the daemon makes does not cover, said rather than left
+/// to look like nothing: the daemon asks no network service, and
+/// `agentdocker brief` adds what GitHub says.
+pub const NOT_COVERED: &[&str] =
+    &["pull requests on GitHub, which `agentdocker brief` asks GitHub for"];
+
+/// What the `not_covered` entry for GitHub's pull requests begins with,
+/// in every daemon's brief: the one entry `agentdocker brief`, having
+/// asked GitHub, takes out ([`Brief::pull_requests_supplied`]).
+pub const PULL_REQUESTS: &str = "pull requests";
+
+/// How many of a checkout's uncommitted paths a brief names.
+const DIRTY_NAMED: usize = 3;
 
 /// Who a brief is for.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,6 +96,95 @@ pub struct CardRecord {
     pub newest: Option<Comment>,
 }
 
+/// Where one checkout stands, as git said when it was read
+/// (`agentdocker_host::vcs::standing`). Local refs only: what was pushed
+/// is as of the checkout's last fetch.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Standing {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    /// The paths that differ from HEAD, untracked ones included, as git
+    /// prints them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dirty: Vec<String>,
+    /// What the commits not pushed are counted against: the branch's
+    /// upstream, else its own name on origin; none when it has neither.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<String>,
+    /// The commits on HEAD `upstream` does not have; none when there is
+    /// no `upstream` or git could not count them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unpushed: Option<usize>,
+    /// The commit `origin/<branch>` names: what was pushed of the branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pushed: Option<String>,
+    /// The ref the checkout is measured against: what `origin/HEAD` names,
+    /// else `origin/main`, else `origin/master`, else the branch the
+    /// repository's main checkout is on; none when there is none of them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// The commits on HEAD the base does not have; none when there is no
+    /// base or git could not count them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unmerged: Option<usize>,
+    /// The base is a branch of this repository (the main checkout's), not
+    /// a remote's: being in it says nothing of what was pushed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub base_is_local: bool,
+}
+
+impl Standing {
+    /// Whether work stands in it, or may: uncommitted paths, commits not
+    /// on a remote, commits not in the base, or a count nobody could take.
+    /// A checkout is clean and merged only when git said so: nothing
+    /// uncommitted, every commit in the base, and every commit on a remote
+    /// ([`Self::on_remote`]). An unknown count is never read as none. One
+    /// with no commit yet and nothing uncommitted holds nothing.
+    pub fn stands(&self) -> bool {
+        if !self.dirty.is_empty() {
+            return true;
+        }
+        if self.head.is_none() {
+            return false;
+        }
+        !self.on_remote() || self.unmerged != Some(0)
+    }
+
+    /// Whether git said every commit on HEAD is on a remote: none not
+    /// pushed to the upstream, or, with no upstream, every one in a base
+    /// that is a remote's. A local base says nothing of it.
+    pub fn on_remote(&self) -> bool {
+        match &self.upstream {
+            Some(_) => self.unpushed == Some(0),
+            None => self.base.is_some() && !self.base_is_local && self.unmerged == Some(0),
+        }
+    }
+}
+
+/// What the daemon knows of one of the project's checkouts.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CheckoutRead {
+    Read {
+        at: DateTime<Utc>,
+        standing: Standing,
+    },
+    /// Git could not say, at `at`, for this reason.
+    Failed { at: DateTime<Utc>, error: String },
+    /// Not read yet: the daemon reads a project's checkouts every few
+    /// seconds while an agent of it is live, and a brief reads them first
+    /// for a short while when none has been.
+    Unread,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckoutRecord {
+    pub path: PathBuf,
+    pub read: CheckoutRead,
+}
+
 /// One project's records, as the daemon gathered them for one reader.
 #[derive(Clone, Debug)]
 pub struct Records {
@@ -104,6 +203,16 @@ pub struct Records {
     /// Handoffs of checkpoints, by the checkpoint's id: whom each is
     /// addressed to, when anyone.
     pub handoffs: Vec<(String, AgentId)>,
+    /// What the daemon knows of each of the project's checkouts.
+    pub checkout_reads: Vec<CheckoutRecord>,
+    /// Why git could not list the project's checkouts for this brief, when
+    /// it could not: only those known before are in `checkout_reads`.
+    pub checkouts_unlisted: Option<String>,
+    /// A checkout of the project's repository, where `agentdocker brief`
+    /// asks GitHub ([`Brief::repository`]).
+    pub repository: Option<PathBuf>,
+    /// The gate's word at a pushed head, by `(branch, commit, word)`.
+    pub gates: Vec<(String, String, String)>,
 }
 
 /// Where the work stands, for one reader.
@@ -118,8 +227,56 @@ pub struct Brief {
     pub checkpoints: Vec<CheckpointLine>,
     pub questions: Vec<QuestionLine>,
     pub leases: Vec<LeaseLine>,
-    /// What this brief does not cover yet.
+    /// The project's checkouts where work stands, the reader's own first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checkouts: Vec<CheckoutLine>,
+    /// Checkouts read and found clean and merged: counted.
+    #[serde(default)]
+    pub checkouts_clean: usize,
+    /// Checkouts not read yet.
+    #[serde(default)]
+    pub checkouts_unread: usize,
+    /// What this brief does not cover.
     pub not_covered: Vec<String>,
+    /// The project's id, which names it to `--project` from anywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    /// A checkout of the project's repository, where `agentdocker brief`
+    /// asks GitHub for its pull requests: the reader's own for an agent,
+    /// else the one the person named, else one of the project's. None from
+    /// a daemon that does not say, and then GitHub is not asked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<PathBuf>,
+}
+
+impl Brief {
+    /// GitHub's open pull requests were told beside this brief: the notice
+    /// that they are not in it goes, and every other notice stays (an
+    /// older daemon's for checkouts, say).
+    pub fn pull_requests_supplied(&mut self) {
+        self.not_covered
+            .retain(|entry| !entry.starts_with(PULL_REQUESTS));
+    }
+}
+
+/// A checkout where work stands, or one git could not read.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckoutLine {
+    pub path: PathBuf,
+    /// When it was read.
+    pub at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standing: Option<Standing>,
+    /// Why git could not read it, as a headline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    /// The gate's word at the pushed head, when the branch was pushed: an
+    /// observation of a pushed ref, not of a pull request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gate: Option<String>,
+    /// The reader's own checkout.
+    #[serde(default)]
+    pub yours: bool,
 }
 
 /// Cards left in one place.
@@ -373,8 +530,88 @@ pub fn compose(records: &Records, reader: &Reader) -> Brief {
         checkpoints: checkpoints(records, reader, &by_id),
         questions: questions(records, &in_project, &name_of),
         leases: leases(records, me, &in_project, &by_id),
-        not_covered: NOT_COVERED.iter().map(|s| (*s).to_owned()).collect(),
+        checkouts: checkout_lines(records, reader),
+        checkouts_clean: records
+            .checkout_reads
+            .iter()
+            .filter(
+                |c| matches!(&c.read, CheckoutRead::Read { standing, .. } if !standing.stands()),
+            )
+            .count(),
+        checkouts_unread: records
+            .checkout_reads
+            .iter()
+            .filter(|c| c.read == CheckoutRead::Unread)
+            .count(),
+        not_covered: records
+            .checkouts_unlisted
+            .iter()
+            .map(|reason| {
+                format!(
+                    "checkouts not known before, as git could not list them ({})",
+                    quoted(&headline(reason))
+                )
+            })
+            .chain(NOT_COVERED.iter().map(|s| (*s).to_owned()))
+            .collect(),
+        repository: records.repository.clone(),
+        project_id: Some(records.project.as_str().to_owned()),
     }
+}
+
+/// The checkouts where work stands, and those git could not read: the
+/// reader's own first, then by path. Record text in them (a branch, the
+/// paths, an error) is cut to headlines.
+fn checkout_lines(records: &Records, reader: &Reader) -> Vec<CheckoutLine> {
+    let here = match reader {
+        Reader::Agent { checkout, .. } => checkout.as_ref(),
+        Reader::Person => None,
+    };
+    let mut lines: Vec<CheckoutLine> = records
+        .checkout_reads
+        .iter()
+        .filter_map(|record| {
+            let yours = here == Some(&record.path);
+            match &record.read {
+                CheckoutRead::Read { at, standing } if standing.stands() => {
+                    let gate = match (&standing.branch, &standing.pushed) {
+                        (Some(branch), Some(pushed)) => records
+                            .gates
+                            .iter()
+                            .find(|(b, sha, _)| b == branch && sha == pushed)
+                            .map(|(_, _, word)| headline(word)),
+                        _ => None,
+                    };
+                    let standing = Standing {
+                        branch: standing.branch.as_deref().map(headline),
+                        dirty: standing.dirty.iter().map(|p| headline(p)).collect(),
+                        upstream: standing.upstream.as_deref().map(headline),
+                        base: standing.base.as_deref().map(headline),
+                        ..standing.clone()
+                    };
+                    Some(CheckoutLine {
+                        path: record.path.clone(),
+                        at: *at,
+                        standing: Some(standing),
+                        error: None,
+                        gate,
+                        yours,
+                    })
+                }
+                CheckoutRead::Failed { at, error } => Some(CheckoutLine {
+                    path: record.path.clone(),
+                    at: *at,
+                    standing: None,
+                    error: Some(headline(error)),
+                    gate: None,
+                    yours,
+                }),
+                CheckoutRead::Read { .. } | CheckoutRead::Unread => None,
+            }
+        })
+        .collect();
+    lines.sort_by(|a, b| b.yours.cmp(&a.yours).then_with(|| a.path.cmp(&b.path)));
+    lines
 }
 
 /// The newest checkpoint for each role its author's record last carried,
@@ -549,6 +786,7 @@ fn quoted(text: &str) -> String {
 #[derive(Default)]
 struct LeftOut {
     cards: usize,
+    checkouts: usize,
     checkpoints: usize,
     questions: usize,
     leases: usize,
@@ -556,9 +794,10 @@ struct LeftOut {
 }
 
 impl LeftOut {
-    fn line(&self) -> Option<String> {
+    fn line(&self, all: &str) -> Option<String> {
         let parts: Vec<String> = [
             (self.cards, "card"),
+            (self.checkouts, "checkout"),
             (self.checkpoints, "checkpoint"),
             (self.questions, "question"),
             (self.leases, "lease"),
@@ -570,10 +809,20 @@ impl LeftOut {
         .collect();
         (!parts.is_empty()).then(|| {
             format!(
-                "Left out for room: {}; `agentdocker brief --all` shows them.",
+                "Left out for room: {}; `{all}` shows them.",
                 parts.join(", ")
             )
         })
+    }
+}
+
+/// The command that tells `brief` whole: for the person, of the project
+/// it is of (`--project <id>`), so it means the same wherever it is run;
+/// an agent's brief is of its own project wherever it runs.
+pub fn all_command(brief: &Brief) -> String {
+    match (&brief.reader, &brief.project_id) {
+        (Reader::Person, Some(id)) => format!("agentdocker brief --all --project {}", arg(id)),
+        _ => "agentdocker brief --all".to_owned(),
     }
 }
 
@@ -589,27 +838,25 @@ pub fn title(project: &str) -> String {
 /// in a working lane), the newest checkpoints, the questions waiting on the
 /// person, the leases held, and a count of the cards live agents hold.
 /// Within a section, a line that does not fit ends it, so what is told
-/// keeps its order; what is left is counted in a closing line naming
-/// `agentdocker brief --all`. Nothing at all when even the opening line
-/// does not fit.
+/// keeps its order; what is left is counted in a closing line naming the
+/// command that tells it whole ([`all_command`]). Nothing at all when even
+/// the opening line does not fit.
 pub fn render(brief: &Brief, now: DateTime<Utc>, max_bytes: usize) -> String {
-    let not_covered = (!brief.not_covered.is_empty()).then(|| {
-        format!(
-            "Not in this brief yet: {}.",
-            brief.not_covered.join(" and ")
-        )
-    });
+    let not_covered = (!brief.not_covered.is_empty())
+        .then(|| format!("Not in this brief: {}.", brief.not_covered.join(" and ")));
     // The closing line at its longest, with every item of every kind left
     // out: what is left out is never more, so its line is never longer.
     let most = LeftOut {
         cards: brief.groups.iter().map(|g| g.cards.len()).sum(),
+        checkouts: brief.checkouts.len() + brief.checkouts_clean + brief.checkouts_unread,
         checkpoints: brief.checkpoints.len(),
         questions: brief.questions.len(),
         leases: brief.leases.len(),
         holders: brief.held_live.len(),
     };
-    let reserve =
-        most.line().map_or(0, |l| l.len() + 1) + not_covered.as_ref().map_or(0, |l| l.len() + 1);
+    let all = all_command(brief);
+    let reserve = most.line(&all).map_or(0, |l| l.len() + 1)
+        + not_covered.as_ref().map_or(0, |l| l.len() + 1);
     let mut text = title(&brief.project);
     if text.len() + reserve > max_bytes {
         return String::new();
@@ -672,6 +919,34 @@ pub fn render(brief: &Brief, now: DateTime<Utc>, max_bytes: usize) -> String {
         left.cards += section(&mut text, &heading, lines);
     }
     let lines = brief
+        .checkouts
+        .iter()
+        .map(|c| checkout_line(c, now))
+        .collect();
+    left.checkouts += section(&mut text, "Checkouts where work stands:", lines);
+    // The rest of the project's checkouts, counted: never left to look as
+    // if there were none.
+    let others: Vec<String> = [
+        (brief.checkouts_clean, "read clean and merged"),
+        (
+            brief.checkouts_unread,
+            "not read yet (read every few seconds while an agent of the project is live)",
+        ),
+    ]
+    .into_iter()
+    .filter(|(n, _)| *n > 0)
+    .map(|(n, what)| format!("{n} {what}"))
+    .collect();
+    if !others.is_empty() {
+        let line = format!("Other checkouts: {}.", others.join("; "));
+        if text.len() + line.len() < room {
+            text.push('\n');
+            text.push_str(&line);
+        } else {
+            left.checkouts += brief.checkouts_clean + brief.checkouts_unread;
+        }
+    }
+    let lines = brief
         .checkpoints
         .iter()
         .map(|c| checkpoint_line(c, &brief.reader, now))
@@ -722,7 +997,7 @@ pub fn render(brief: &Brief, now: DateTime<Utc>, max_bytes: usize) -> String {
         text.push('\n');
         text.push_str(&line);
     }
-    if let Some(line) = left.line() {
+    if let Some(line) = left.line(&all) {
         text.push('\n');
         text.push_str(&line);
     }
@@ -744,6 +1019,92 @@ fn card_line(card: &CardLine, now: DateTime<Utc>) -> String {
         ));
     }
     line
+}
+
+fn checkout_line(c: &CheckoutLine, now: DateTime<Utc>) -> String {
+    let path = quoted(&bounded(&c.path.display().to_string(), CHECKOUT_CHARS));
+    let yours = if c.yours { " (yours)" } else { "" };
+    let read = format!("read {}", ago(now, c.at));
+    let Some(standing) = &c.standing else {
+        let error = c.error.as_deref().unwrap_or("no answer");
+        return format!(
+            "- {path}{yours}: git could not read it ({}); {read}",
+            quoted(error)
+        );
+    };
+    let plural =
+        |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+    let mut parts = Vec::new();
+    if !standing.dirty.is_empty() {
+        let named: Vec<String> = standing
+            .dirty
+            .iter()
+            .take(DIRTY_NAMED)
+            .map(|p| quoted(p))
+            .collect();
+        let more = standing.dirty.len().saturating_sub(DIRTY_NAMED);
+        let more = if more > 0 {
+            format!(" and {more} more")
+        } else {
+            String::new()
+        };
+        parts.push(format!(
+            "{} ({}{more})",
+            plural(
+                standing.dirty.len(),
+                "uncommitted path",
+                "uncommitted paths"
+            ),
+            named.join(", ")
+        ));
+    }
+    // What git could not count is said, never shown as nothing.
+    match (&standing.upstream, standing.unpushed) {
+        (Some(upstream), Some(n)) if n > 0 => parts.push(format!(
+            "{} not pushed to {upstream}",
+            plural(n, "commit", "commits")
+        )),
+        (Some(upstream), None) => parts.push(format!(
+            "git could not count the commits not pushed to {upstream}"
+        )),
+        (None, _) if standing.head.is_some() && !standing.on_remote() => {
+            parts.push(if standing.branch.is_some() {
+                "never pushed".to_owned()
+            } else {
+                "not on any remote".to_owned()
+            });
+        }
+        _ => {}
+    }
+    match (&standing.base, standing.unmerged) {
+        (Some(base), Some(n)) if n > 0 => {
+            parts.push(format!("{} not in {base}", plural(n, "commit", "commits")));
+        }
+        (Some(base), None) => parts.push(format!("git could not count the commits not in {base}")),
+        (None, _) if standing.head.is_some() => parts.push(
+            "no base to measure it against (no origin/HEAD, origin/main or origin/master, \
+             and the main checkout on no branch)"
+                .to_owned(),
+        ),
+        _ => {}
+    }
+    if let (Some(branch), Some(pushed)) = (&standing.branch, &standing.pushed) {
+        let short: String = pushed.chars().take(12).collect();
+        let gate = c.gate.as_deref().unwrap_or("not asked");
+        parts.push(format!(
+            "pushed ref origin/{branch} at {short}, the gate there: {gate}"
+        ));
+    }
+    let on = match (&standing.branch, &standing.head) {
+        (Some(branch), Some(head)) => format!(
+            " on {branch} at {}",
+            head.chars().take(12).collect::<String>()
+        ),
+        (Some(branch), None) => format!(" on {branch}"),
+        (None, Some(head)) => format!(" detached at {}", head.chars().take(12).collect::<String>()),
+        (None, None) => String::new(),
+    };
+    format!("- {path}{yours}{on}: {}; {read}", parts.join("; "))
 }
 
 fn checkpoint_line(c: &CheckpointLine, reader: &Reader, now: DateTime<Utc>) -> String {
@@ -899,6 +1260,10 @@ mod tests {
             questions: Vec::new(),
             leases: Vec::new(),
             handoffs: Vec::new(),
+            checkout_reads: Vec::new(),
+            gates: Vec::new(),
+            checkouts_unlisted: None,
+            repository: None,
         }
     }
 
@@ -1173,7 +1538,9 @@ mod tests {
         assert!(card.ends_with("(`agentdocker task show AD-1`)"), "{card}");
         assert!(!lines.iter().any(|l| l.starts_with("- AD-9")), "{text}");
         assert!(
-            text.ends_with("Not in this brief yet: checkouts and pull requests."),
+            text.ends_with(
+                "Not in this brief: pull requests on GitHub, which `agentdocker brief` asks GitHub for."
+            ),
             "{text}"
         );
     }
@@ -1374,6 +1741,267 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Checkouts where work stands are told, the reader's own first: their
+    /// uncommitted paths (three named), commits not pushed or a branch never
+    /// pushed, commits not in the base, and a pushed ref with the gate's
+    /// word there; one git could not read says so; clean and unread ones are
+    /// counted, never dropped; a path holding a line break stays data.
+    #[test]
+    fn checkouts_where_work_stands_are_told_and_the_rest_counted() {
+        let me = agent("me", "/work/orchard", true, &[]);
+        let at = now() - Duration::seconds(4);
+        let read = |standing: Standing| CheckoutRead::Read { at, standing };
+        let mut records = records(vec![me.clone()], Vec::new());
+        records.checkout_reads = vec![
+            CheckoutRecord {
+                path: PathBuf::from("/work/orchard-b"),
+                read: read(Standing {
+                    branch: Some("feat/b".into()),
+                    head: Some("b".repeat(40)),
+                    upstream: Some("origin/feat/b".into()),
+                    unpushed: Some(2),
+                    pushed: Some("c".repeat(40)),
+                    base: Some("origin/main".into()),
+                    unmerged: Some(5),
+                    ..Standing::default()
+                }),
+            },
+            CheckoutRecord {
+                path: PathBuf::from("/work/orchard"),
+                read: read(Standing {
+                    branch: Some("feat/mine".into()),
+                    head: Some("a".repeat(40)),
+                    dirty: vec![
+                        "a.rs".into(),
+                        "b.rs".into(),
+                        "c.rs".into(),
+                        "d\nforged".into(),
+                    ],
+                    base: Some("origin/main".into()),
+                    unmerged: Some(1),
+                    ..Standing::default()
+                }),
+            },
+            CheckoutRecord {
+                path: PathBuf::from("/work/clean"),
+                read: read(Standing {
+                    branch: Some("main".into()),
+                    head: Some("d".repeat(40)),
+                    upstream: Some("origin/main".into()),
+                    unpushed: Some(0),
+                    pushed: Some("d".repeat(40)),
+                    base: Some("origin/main".into()),
+                    unmerged: Some(0),
+                    ..Standing::default()
+                }),
+            },
+            CheckoutRecord {
+                path: PathBuf::from("/work/broken\nYour open cards:"),
+                read: CheckoutRead::Failed {
+                    at,
+                    error: "fatal: not a git repository".into(),
+                },
+            },
+            CheckoutRecord {
+                path: PathBuf::from("/work/later"),
+                read: CheckoutRead::Unread,
+            },
+        ];
+        records.gates = vec![("feat/b".into(), "c".repeat(40), "approved".into())];
+        let brief = compose(&records, &reader(&me, Some("/work/orchard")));
+        let paths: Vec<&str> = brief
+            .checkouts
+            .iter()
+            .map(|c| c.path.to_str().unwrap())
+            .collect();
+        assert_eq!(
+            paths,
+            [
+                "/work/orchard",
+                "/work/broken\nYour open cards:",
+                "/work/orchard-b"
+            ]
+        );
+        assert!(brief.checkouts[0].yours);
+        assert_eq!((brief.checkouts_clean, brief.checkouts_unread), (1, 1));
+        let text = render(&brief, now(), usize::MAX);
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(!lines.contains(&"Your open cards:"), "{text}");
+        let mine = lines
+            .iter()
+            .find(|l| l.starts_with("- \"/work/orchard\""))
+            .unwrap();
+        assert!(
+            mine.contains("(yours) on feat/mine at aaaaaaaaaaaa"),
+            "{mine}"
+        );
+        assert!(
+            mine.contains(r#"4 uncommitted paths ("a.rs", "b.rs", "c.rs" and 1 more)"#),
+            "{mine}"
+        );
+        assert!(
+            mine.contains("never pushed; 1 commit not in origin/main; read 4s ago"),
+            "{mine}"
+        );
+        let theirs = lines
+            .iter()
+            .find(|l| l.starts_with("- \"/work/orchard-b\""))
+            .unwrap();
+        assert!(
+            theirs.contains("2 commits not pushed to origin/feat/b"),
+            "{theirs}"
+        );
+        assert!(theirs.contains("5 commits not in origin/main"), "{theirs}");
+        assert!(
+            theirs.contains("pushed ref origin/feat/b at cccccccccccc, the gate there: approved"),
+            "{theirs}"
+        );
+        assert!(
+            text.contains("git could not read it (\"fatal: not a git repository\")"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Other checkouts: 1 read clean and merged; 1 not read yet"),
+            "{text}"
+        );
+        assert!(!text.contains("/work/clean"), "{text}");
+        // Left out for room, they are counted, the counts' line included.
+        let short = render(&brief, now(), 700);
+        assert!(short.len() <= 700);
+        assert!(short.contains(" checkout"), "{short}");
+    }
+
+    /// A checkout is counted clean and merged only when git said so: a
+    /// committed branch with no remote and no base, or a count git could
+    /// not take, is told with what is unknown, and one merged into a local
+    /// base only is still never pushed, detached or not. One with no commit
+    /// and nothing uncommitted, or merged into a remote's base, holds
+    /// nothing. A listing git could not give is said, and the notice of
+    /// pull requests is the only one `agentdocker brief` takes out, from a
+    /// part-1 daemon's list too. The person's way to the whole brief names
+    /// the project; an agent's is its own.
+    #[test]
+    fn unknown_or_never_pushed_work_is_never_counted_clean() {
+        let me = agent("me", "/work/orchard", true, &[]);
+        let at = now() - Duration::seconds(4);
+        let head = || Some("e".repeat(40));
+        let cases = [
+            (
+                "/work/local",
+                Standing {
+                    branch: Some("topic".into()),
+                    head: head(),
+                    ..Standing::default()
+                },
+                Some("never pushed; no base to measure it against"),
+            ),
+            (
+                "/work/uncounted",
+                Standing {
+                    branch: Some("topic".into()),
+                    head: head(),
+                    upstream: Some("origin/topic".into()),
+                    pushed: head(),
+                    base: Some("origin/main".into()),
+                    ..Standing::default()
+                },
+                Some(
+                    "git could not count the commits not pushed to origin/topic; \
+                     git could not count the commits not in origin/main",
+                ),
+            ),
+            (
+                "/work/unborn",
+                Standing {
+                    branch: Some("main".into()),
+                    ..Standing::default()
+                },
+                None,
+            ),
+            (
+                "/work/merged-locally",
+                Standing {
+                    branch: Some("done".into()),
+                    head: head(),
+                    base: Some("main".into()),
+                    unmerged: Some(0),
+                    base_is_local: true,
+                    ..Standing::default()
+                },
+                Some("never pushed; read"),
+            ),
+            (
+                "/work/detached-locally",
+                Standing {
+                    head: head(),
+                    base: Some("main".into()),
+                    unmerged: Some(0),
+                    base_is_local: true,
+                    ..Standing::default()
+                },
+                Some("detached at eeeeeeeeeeee: not on any remote; read"),
+            ),
+            (
+                "/work/merged-on-remote",
+                Standing {
+                    branch: Some("done".into()),
+                    head: head(),
+                    base: Some("origin/main".into()),
+                    unmerged: Some(0),
+                    ..Standing::default()
+                },
+                None,
+            ),
+        ];
+        let mut records = records(vec![me.clone()], Vec::new());
+        records.checkout_reads = cases
+            .iter()
+            .map(|(path, standing, _)| CheckoutRecord {
+                path: PathBuf::from(path),
+                read: CheckoutRead::Read {
+                    at,
+                    standing: standing.clone(),
+                },
+            })
+            .collect();
+        records.checkouts_unlisted = Some("git did not answer in time".into());
+        let mut brief = compose(&records, &reader(&me, None));
+        assert_eq!(brief.checkouts_clean, 2, "{:?}", brief.checkouts);
+        let text = render(&brief, now(), usize::MAX);
+        for (path, standing, said) in &cases {
+            assert_eq!(standing.stands(), said.is_some(), "{path}");
+            let line = text
+                .lines()
+                .find(|l| l.starts_with(&format!("- \"{path}\"")));
+            match said {
+                Some(said) => assert!(line.is_some_and(|l| l.contains(said)), "{path}: {text}"),
+                None => assert!(line.is_none(), "{path}: {text}"),
+            }
+        }
+        assert!(
+            text.contains(
+                "Not in this brief: checkouts not known before, as git could not list them \
+                 (\"git did not answer in time\") and pull requests on GitHub"
+            ),
+            "{text}"
+        );
+        brief.pull_requests_supplied();
+        assert_eq!(brief.not_covered.len(), 1, "{:?}", brief.not_covered);
+        assert!(brief.not_covered[0].starts_with("checkouts"));
+        // What a part-1 daemon sent.
+        brief.not_covered = vec!["checkouts".into(), "pull requests".into()];
+        brief.pull_requests_supplied();
+        assert_eq!(brief.not_covered, ["checkouts"]);
+        assert!(NOT_COVERED.iter().all(|n| n.starts_with(PULL_REQUESTS)));
+
+        assert_eq!(all_command(&brief), "agentdocker brief --all");
+        brief.reader = Reader::Person;
+        let all = format!("agentdocker brief --all --project {}", project().as_str());
+        assert_eq!(all_command(&brief), all);
+        let short = render(&brief, now(), 600);
+        assert!(short.contains(&format!("`{all}` shows them.")), "{short}");
     }
 
     /// Within every bound the text stays within it, keeps each section's
