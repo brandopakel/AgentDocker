@@ -608,9 +608,13 @@ a successful pipe write or a client message ID is not sufficient.
 After a supervised restart, paginated provider history can recover an exact
 receipt and acknowledge it without starting another turn. An uncertain input,
 ambiguous match, changed binding or nonterminal previous turn pauses delivery.
-Codex may not have saved an unused conversation yet. A controller that has never
-prepared input may replace that unused handle after restart. Prepared or
-previously completed input always forbids this reset.
+Codex may not have saved an unused conversation yet. A conversation on which no
+input was ever prepared or completed may have its handle replaced after restart.
+Questions it asked that are closed and acknowledged keep only their routes, among
+the retired question IDs, so a late reply to one stays queued and never becomes
+input; an open question, a secret request's response fence or a reply not yet
+acknowledged keeps the handle. Prepared or previously completed input always
+forbids this reset.
 Do not delete the record to make a paused controller retry: that discards its
 duplicate-work protection. History, frames, pending requests and retained receipts
 are bounded; exceeding a bound reports an error and preserves the pending input.
@@ -732,8 +736,8 @@ It retains at most 64 items of 32,000 bytes, at most 16 files per review, and a
 or oversized changes are refused. Repeated details after review publication pause
 the controller, shut down its owned Codex process and cancel its pending human
 routes. The ledger keeps the uncertain review; it does not invent a confirmed
-cancellation or discard a possibly transmitted approval. Restart continues to
-require review of that retained uncertainty. Turn completion discards old item
+cancellation or discard a possibly transmitted approval. A restart settles it as
+[any question its controller left open](#a-question-open-when-its-controller-stopped). Turn completion discards old item
 snapshots. Non-null `grantRoot` is refused because it can describe session-wide
 write authority. Allow sends `accept`; **Allow for session** sends
 `acceptForSession`, which Codex takes for any file change: later changes to the
@@ -812,14 +816,80 @@ This does not relax receipt or acknowledgement durability.
 
 Queue acknowledgements, question publication, activity/receipt writes and other
 failed RPCs pause delivery; a lost write response cannot prove whether the daemon
-accepted that operation. A restarted controller cancels its known pending human
-routes and requires recovery; it never automatically resends an approval. The
+accepted that operation. A restarted controller settles the questions the last
+one left open, below; it never automatically resends an approval. The
 private delivery record (version 15) preserves version-3 through version-14
 records and accepts version-1/2 records only without recorded question history.
 Version 2 could already have discarded older question IDs; those records are
 refused without rewriting the file. The record retains eight detailed closed
 requests and up to 10,000 older question IDs, and has an 8 MiB total bound.
 Reaching a bound preserves the previous record and reports an error.
+
+### A question open when its controller stopped
+
+A controller that stops with a provider question open leaves it in its record,
+and the next start settles it before any queued input is read. Each retained
+question is one of three things, read from the record alone:
+
+- **Never answered**: no response was written for it, and each of its questions
+  has its route. Its Codex request ended with the old Codex process, so the
+  start closes it as cancelled. Its known routes are cancelled, the queue is
+  read once, and every reply it owns is kept with the closed question as an
+  unapplied response, whatever closure the old controller last saw; only then
+  are those replies acknowledged, by their exact IDs. Nothing is written to
+  Codex for it, and the start goes on.
+- **A response that may have reached Codex**: the response is recorded before
+  it is written to Codex, so it may have been sent. It is never sent again. Its
+  known routes are cancelled, and the start refuses, naming the command below.
+- **An uncertain publication**: no response was written, and one of its
+  questions has no route. A question is recorded before it is published, so a
+  lost reply to its publication leaves the daemon perhaps holding a question
+  this controller never learned the ID of, and a reply to it could not be told
+  from new input. Its known routes are cancelled, nothing is acknowledged, its
+  replies stay queued, and the start refuses. Nothing resolves it, and the
+  session stays stopped. No route is ever bound to it on a guess: a question of
+  the same text and time is not the same question.
+
+A record holding several is settled in that order: each never-answered question
+is closed first, its replies acknowledged, and then the start refuses with each
+remaining one's own reason.
+
+`agentdocker codex-input-resolve --agent <id>` reviews what a stopped
+controller's record kept. It opens only an existing record of the binding the
+controller holds (the agent's checkout, the daemon socket and the Codex profile,
+`CODEX_HOME` or `~/.codex` as the session had it), never a new one, and holds its owner lock throughout, so it is refused
+while a controller runs. It never starts Codex or writes to it. Without other
+options it is a read-only preview of each retained question: its request ID and
+kind, thread and turn, the person asked and the end of its review window, each
+question's text, presentation, route and captured answer, later replies, and the
+prepared response, with long text cut and each cut marked. For a response that
+may have reached Codex it prints a confirmation: a SHA-256 over what cannot
+change once the questions are published (the binding, the typed request ID, its
+thread, turn, person, kind, expiry and response, and each question's field,
+text, presentation and route), and over none of what accumulates (answers,
+closures, later replies).
+
+After looking at the Codex conversation, close that question:
+
+```bash
+agentdocker codex-input-resolve --agent <id> --request '<request-id>' \
+  --confirm <confirmation> --note "<why>"
+```
+
+The request ID is JSON, which the preview prints quoted as one shell word
+whatever it holds, so `'17'` and `'"17"'` name different requests. A confirmation that no longer matches is refused before
+anything is asked of the daemon; review again. The command then writes the
+intent to the agent's journal (the confirmation, the request, the operator
+process and the note) and goes on only once the daemon confirms the entry. It
+closes the question as cancelled with its response kept, archives its replies as
+above, and acknowledges them. Nothing is resent, and the closed record does not
+say whether the response was applied. Each step is safe to repeat with the same
+confirmation after a crash or a lost reply: before the close, the journal may
+get a second entry for the same intent; after it, the command reports the
+question already closed and finishes only its acknowledgement, which the
+controller's next start also finishes. The command shows an uncertain
+publication but cannot resolve it, leaves a never-answered question to the
+controller's start, and does not handle a secret request's response fence.
 
 ## MCP answers and URL elicitation
 

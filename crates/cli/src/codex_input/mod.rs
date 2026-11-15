@@ -10,6 +10,7 @@ mod mcp_answers;
 mod question_events;
 mod recovery;
 mod requests;
+pub mod resolve;
 mod review;
 mod secret_requests;
 mod session_identity;
@@ -57,6 +58,17 @@ pub(crate) async fn experimental(client: &Client) -> agentdocker_core::config::E
             _ => Default::default(),
         };
     reported.with_env(|name| std::env::var(name).ok())
+}
+
+/// The Codex profile a managed controller is bound to: `CODEX_HOME`, or
+/// `~/.codex`, as it already exists.
+fn provider_home() -> Result<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".codex")))
+        .context("Codex provider profile cannot be located")?
+        .canonicalize()
+        .context("Codex provider profile must already exist")
 }
 
 async fn call(client: &Client, request: Request) -> Result<Response> {
@@ -147,12 +159,7 @@ async fn run_owned(
     cwd: PathBuf,
     agent: &AgentRecord,
 ) -> Result<()> {
-    let provider_home = std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".codex")))
-        .context("Codex provider profile cannot be located")?
-        .canonicalize()
-        .context("Codex provider profile must already exist")?;
+    let provider_home = provider_home()?;
     let mut ledger = Ledger::open(
         &home,
         Binding {
@@ -328,7 +335,7 @@ async fn session(
     )?;
     // Codex does not persist an empty thread's rollout. Only a controller that
     // has never prepared input may replace that unused handle after restart.
-    let resumed = ledger.record().attempt.is_some() || !ledger.record().completed.is_empty();
+    let resumed = ledger.record().conversation_used();
     if !resumed {
         ledger.discard_unused_thread()?;
     }
