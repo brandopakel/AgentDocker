@@ -367,31 +367,46 @@ pub fn card_times(
         Some(_) => None,
     };
     match (off, end) {
-        // Archived again after the record, which saw neither its return
-        // nor this archive: the stays it saw stand as they ended, and of the
-        // time between only the card's own stay in its lane is shown, when
-        // the lane got it after the record did.
-        (Some(off), Some(archived)) if archived > off => {
+        // Back on the board, or archived again, after the archive the
+        // record ends with, and neither the return nor a new archive seen.
+        // When the card's lane got it before that archive, the stay the
+        // record archived it from is first reconciled with that lane up to
+        // the archive, which stands; when the lane got it after, the stays
+        // seen stand as they ended and its own stay is from `lane_since`.
+        // The time between the archive and an unseen return is no lane's.
+        (Some(off), end) if end.is_none_or(|archived| archived > off) => {
             incomplete = true;
-            if since > off {
-                let mut stay = Stay::new(&lane_now, since);
-                stay.to = Some(archived);
-                stays.push(stay);
+            let before = since <= off;
+            if before {
+                reconcile(
+                    &mut stays,
+                    &mut None,
+                    &lane_now,
+                    since,
+                    Some(off),
+                    task.created_at,
+                    &mut incomplete,
+                );
             }
-        }
-        // Back on the board with no line saying so. Its lane got it after
-        // the record: from then. Still the lane it was archived from: the
-        // stay goes on, but when it came back is not known, so its start
-        // is unseen (no earlier than the archive) and it counts no time.
-        (Some(off), None) => {
-            incomplete = true;
-            let archived_from = stays.last().map(|s| s.lane.clone());
-            let mut stay = Stay::new(&lane_now, since.max(off));
-            if since <= off {
-                stay.unseen_start = true;
-                stay.resumed = archived_from.as_deref() == Some(lane_now.as_str());
+            match end {
+                Some(archived) => {
+                    if !before {
+                        let mut stay = Stay::new(&lane_now, since);
+                        stay.to = Some(archived);
+                        stays.push(stay);
+                    }
+                }
+                // Still in the lane it was archived from: the stay goes on,
+                // but when it came back is not known, so its start is
+                // unseen (no earlier than the archive) and it counts no
+                // time.
+                None => {
+                    let mut stay = Stay::new(&lane_now, since.max(off));
+                    stay.unseen_start = before;
+                    stay.resumed = before;
+                    stays.push(stay);
+                }
             }
-            stays.push(stay);
         }
         _ => reconcile(
             &mut stays,
@@ -1127,6 +1142,8 @@ mod tests {
     /// One back on the board with no line saying so goes on in its lane
     /// from no earlier than that archive, its start unseen: it counts no
     /// time, says no time in lane, and was done when it came into Done.
+    /// Either way, the stay the record archived it from is first made to
+    /// agree with the card's lane up to that archive.
     #[test]
     fn an_archive_the_record_shows_is_never_stretched_to_a_later_one() {
         let history = |task: &Task| {
@@ -1181,6 +1198,45 @@ mod tests {
         let json = serde_json::to_value(&times).unwrap();
         assert_eq!(json["stays"][2]["unseen_start"], true);
         assert!(json["stays"][1].get("unseen_start").is_none());
+
+        // The move into its lane is missing too: the record archived it
+        // from Ready at 5, but the card has been Done since 3. The stay it
+        // was archived from is reconciled with that first, Ready's end
+        // unseen at 3 and Done seen [3,5], then the archive stands: archived
+        // again, nothing more; back on the board, Done goes on unseen.
+        let missing =
+            |task: &Task| vec![created(task, "ready"), entry(task, 5, TaskAction::Archived)];
+        let mut again = card("done", Column::Done, 3);
+        again.archived_at = Some(at(12));
+        let times = card_times(&again, &missing(&again), true, at(20));
+        assert_eq!(
+            hours(&times),
+            vec![("ready", 0, Some(3), true), ("done", 3, Some(5), false)]
+        );
+        assert_eq!(
+            (lane_secs(&times, "ready"), lane_secs(&times, "done")),
+            (0, 2 * H)
+        );
+        assert_eq!(times.done_at, Some(at(3)));
+        assert!(times.incomplete);
+        let back = card("done", Column::Done, 3);
+        let times = card_times(&back, &missing(&back), true, at(10));
+        assert_eq!(
+            hours(&times),
+            vec![
+                ("ready", 0, Some(3), true),
+                ("done", 3, Some(5), false),
+                ("done", 5, None, false),
+            ]
+        );
+        let current = times.current().unwrap();
+        assert!(current.unseen_start && current.resumed);
+        assert_eq!(times.in_lane(at(10)), None);
+        assert_eq!(times.done_at, Some(at(3)), "done when it came into Done");
+        assert_eq!(
+            (lane_secs(&times, "ready"), lane_secs(&times, "done")),
+            (0, 2 * H)
+        );
     }
 
     /// A list carries a card's current stay alone, the rest counted, and
