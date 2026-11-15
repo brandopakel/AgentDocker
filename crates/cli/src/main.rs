@@ -3667,6 +3667,21 @@ async fn run() -> Result<()> {
                             })
                         })
                         .transpose()?;
+                    let body = read_body(body)?;
+                    if body.is_some() {
+                        // A daemon that does not know the word takes the
+                        // edit and writes it whatever revision it names.
+                        // Asked first, where nothing is changed by asking.
+                        let holds = matches!(
+                            client.call(&Request::Ping).await?,
+                            Response::Pong { features, .. } if features
+                                .iter()
+                                .any(|f| f == agentdocker_core::protocol::FEATURE_PLAN_REVISION)
+                        );
+                        if !holds {
+                            bail!("{}", agentdocker_core::protocol::PLAN_REVISION_UNKNOWN);
+                        }
+                    }
                     let request = Request::PlanSave {
                         from: sender::resolve(&client, from)
                             .await?
@@ -3674,7 +3689,7 @@ async fn run() -> Result<()> {
                         project: None,
                         plan: Some(plan),
                         title,
-                        body: read_body(body)?,
+                        body,
                         status,
                         revision,
                     };

@@ -89,8 +89,23 @@ pub const FEATURE_FRESH_CLAIM: &str = "fresh_claim";
 /// its characters; a daemon that does not list it bounds characters alone.
 pub const FEATURE_DIGEST_MAX_BYTES: &str = "digest_max_bytes";
 
+/// `plan_save` holds an edit of a plan's text to the `revision` it names
+/// ([`Request::PlanSave`]). A daemon that does not list it takes the
+/// request and ignores the revision, writing the text over whatever is
+/// there, so a client asks first and sends no such edit to one.
+pub const FEATURE_PLAN_REVISION: &str = "plan_revision";
+
 /// The names a daemon of this build answers in `pong.features`.
-pub const FEATURES: &[&str] = &[FEATURE_FRESH_CLAIM, FEATURE_DIGEST_MAX_BYTES];
+pub const FEATURES: &[&str] = &[
+    FEATURE_FRESH_CLAIM,
+    FEATURE_DIGEST_MAX_BYTES,
+    FEATURE_PLAN_REVISION,
+];
+
+/// What a client says when the daemon it reached does not hold a plan's
+/// edit to its revision: said in one wording by the command, the tool and
+/// the app, before anything is sent.
+pub const PLAN_REVISION_UNKNOWN: &str = "the running daemon does not hold a plan's edit to the revision it names: it is older than this client and would write the text over whatever is there. Nothing was sent. Restart the daemon on the installed build (`agentdocker daemon restart`, once no agent work is running) and save again";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]

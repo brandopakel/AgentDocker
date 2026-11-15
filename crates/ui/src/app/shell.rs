@@ -48,6 +48,8 @@ pub(super) struct PlanDraft {
     pub revision: Option<u64>,
     /// Edited since it was read or saved.
     pub dirty: bool,
+    /// A save of it is with the daemon: no second one is sent meanwhile.
+    pub saving: bool,
 }
 
 impl Default for PlanDraft {
@@ -59,6 +61,7 @@ impl Default for PlanDraft {
             status: agentdocker_core::PlanStatus::Draft,
             revision: None,
             dirty: false,
+            saving: false,
         }
     }
 }
@@ -75,6 +78,26 @@ impl PlanDraft {
         self.status = plan.status;
         self.revision = Some(plan.revision);
         self.dirty = false;
+    }
+
+    /// The daemon kept a save of this draft as `plan`: the text in the
+    /// editor now stands on that revision. What the person typed while
+    /// the save was on its way stays, and stays unsaved.
+    pub fn saved(&mut self, plan: &agentdocker_core::Plan) {
+        self.saving = false;
+        self.id = Some(plan.id.clone());
+        self.revision = Some(plan.revision);
+        self.dirty = self.body.text() != plan.body
+            || self.title.trim() != plan.title
+            || self.status != plan.status;
+    }
+
+    /// The daemon refused a save of this draft: what the person wrote and
+    /// the revision it was written from are kept as they are, unsaved, for
+    /// the person to reconcile with what the plan now says.
+    pub fn refused(&mut self) {
+        self.saving = false;
+        self.dirty = true;
     }
 }
 
@@ -2748,8 +2771,11 @@ impl App {
                 let draft = &mut self.shell.plan_draft;
                 if draft.title.trim().is_empty() {
                     self.say("A plan needs a title");
-                } else {
-                    draft.dirty = false;
+                } else if !draft.saving {
+                    // Still unsaved until the daemon says it kept it: a
+                    // save it refuses must not leave the draft looking
+                    // clean, for the next read of the plan to replace.
+                    draft.saving = true;
                     let request = Request::PlanSave {
                         from: agentdocker_core::HUMAN.into(),
                         project: project.clone(),
@@ -2763,11 +2789,12 @@ impl App {
                     };
                     // Its answer is the plan, which opens: a new one has
                     // its id from then on.
-                    if let Some(project) = project {
+                    if project.is_some() {
                         self.send(Cmd::PlanSave {
-                            project,
                             request: Box::new(request),
                         });
+                    } else {
+                        self.shell.plan_draft.saving = false;
                     }
                 }
             }
@@ -5873,6 +5900,111 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = sync_channel(MESSAGE_CAPACITY);
         (App::bare(tx, rx), commands, messages)
+    }
+
+    /// A save of a plan's text that the daemon refuses, because the plan
+    /// was edited since the person read it, keeps what the person wrote.
+    /// The draft is unsaved from the moment the save is sent until the
+    /// daemon says it kept it; a refusal leaves its text, its base
+    /// revision and its unsaved state as they were, and a read of the
+    /// plan that arrives afterwards (the app re-reads a plan when it
+    /// changes) does not replace it. A save the daemon keeps moves the
+    /// draft to the new revision.
+    #[test]
+    fn a_refused_plan_save_keeps_what_the_person_wrote() {
+        let (mut app, commands, messages) = app();
+        app.shell.catalog.selected = Some("/work/a".into());
+        let stored = |revision: u64, body: &str| agentdocker_core::Plan {
+            id: "abc123def456".into(),
+            project: "p".into(),
+            title: "Where the work stands".into(),
+            body: body.into(),
+            status: agentdocker_core::PlanStatus::Draft,
+            created_by: "agent-1".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            revision,
+            edits: Vec::new(),
+        };
+        let deliver = |app: &mut App, message: Msg| {
+            messages.send(message).unwrap();
+            let _ = app.update(Message::Tick);
+        };
+        // The plan is open at revision 1, and the person edits it.
+        let first = stored(1, "## Lead\nnothing yet\n");
+        deliver(
+            &mut app,
+            Msg::Plan(Ok(Box::new((first.clone(), Vec::new())))),
+        );
+        assert_eq!(app.shell.plan_draft.revision, Some(1));
+        assert!(!app.shell.plan_draft.dirty);
+        let mine = "## Lead\nwhat the person wrote\n";
+        app.shell.plan_draft.body = iced::widget::text_editor::Content::with_text(mine);
+        app.shell.plan_draft.dirty = true;
+
+        // Saved: sent with the revision it was read at, and unsaved still.
+        let _ = commands.try_iter().count();
+        let _ = app.update(Message::PlanSave);
+        let sent = commands
+            .try_iter()
+            .find_map(|command| match command {
+                Cmd::PlanSave { request, .. } => Some(*request),
+                _ => None,
+            })
+            .expect("the save is sent");
+        assert!(
+            matches!(&sent, Request::PlanSave { plan: Some(plan), body: Some(body), revision: Some(1), .. }
+                if plan == "abc123def456" && body.trim_end() == mine.trim_end()),
+            "{sent:?}"
+        );
+        assert!(app.shell.plan_draft.dirty && app.shell.plan_draft.saving);
+        // No second save while the first is with the daemon.
+        let _ = app.update(Message::PlanSave);
+        assert!(
+            !commands
+                .try_iter()
+                .any(|command| matches!(command, Cmd::PlanSave { .. })),
+            "one save at a time"
+        );
+
+        // Refused: somebody wrote revision 2 meanwhile. Then the plan as
+        // it now stands is read, as it is whenever a plan changes.
+        deliver(
+            &mut app,
+            Msg::PlanSaved(Err("this edit was written from revision 1".into())),
+        );
+        let theirs = stored(2, "## Lead\nnothing yet\n\n## Reviewer\nPASS\n");
+        deliver(&mut app, Msg::Plan(Ok(Box::new((theirs, Vec::new())))));
+        let draft = &app.shell.plan_draft;
+        assert_eq!(
+            draft.body.text().trim_end(),
+            mine.trim_end(),
+            "the person's text"
+        );
+        assert_eq!(
+            draft.revision,
+            Some(1),
+            "and the revision it was written from"
+        );
+        assert!(
+            draft.dirty && !draft.saving,
+            "unsaved, and free to save again"
+        );
+        assert!(
+            app.status.contains("written from revision 1"),
+            "the refusal is said: {}",
+            app.status
+        );
+
+        // Kept: the draft now stands on the revision the daemon made.
+        let _ = app.update(Message::PlanSave);
+        deliver(
+            &mut app,
+            Msg::PlanSaved(Ok(Box::new((stored(3, mine), Vec::new())))),
+        );
+        let draft = &app.shell.plan_draft;
+        assert_eq!(draft.revision, Some(3));
+        assert!(!draft.dirty && !draft.saving);
     }
 
     /// The board's Mine toggle keeps the cards the person holds and those

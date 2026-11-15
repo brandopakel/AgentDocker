@@ -280,7 +280,8 @@ impl App {
                         primary(
                             "plan-save",
                             "Save",
-                            (connected && draft.dirty).then_some(Message::PlanSave),
+                            (connected && draft.dirty && !draft.saving)
+                                .then_some(Message::PlanSave),
                         ),
                     ]
                     .align_y(Center),

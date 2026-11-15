@@ -1384,6 +1384,31 @@ impl<B: Backend> McpServer<B> {
                 object.insert("from".into(), json!(me));
                 let request = serde_json::from_value(Value::Object(object))
                     .map_err(|e| (INVALID_PARAMS, e.to_string()))?;
+                // An edit of an existing plan's text goes only to a daemon
+                // that holds it to its revision: an older one would take
+                // it and write it whatever revision it names.
+                if matches!(
+                    &request,
+                    Request::PlanSave {
+                        plan: Some(_),
+                        body: Some(_),
+                        ..
+                    }
+                ) && !crate::hooks::daemon_lists(
+                    &self.backend,
+                    agentdocker_core::protocol::FEATURE_PLAN_REVISION,
+                )
+                .await
+                {
+                    return Ok(text_result(
+                        &json!({
+                            "type": "error",
+                            "code": "unavailable",
+                            "message": agentdocker_core::protocol::PLAN_REVISION_UNKNOWN,
+                        }),
+                        true,
+                    ));
+                }
                 self.forward(request).await
             }
             "get_brief" => {
@@ -4024,35 +4049,79 @@ mod tests {
     }
 
     /// `save_plan` passes on the revision an edit of a plan's text was
-    /// written from, as the caller: the daemon refuses one written from
-    /// an older reading.
+    /// written from, as the caller, to a daemon that says it holds an
+    /// edit to its revision; the daemon then refuses one written from an
+    /// older reading. To a daemon that does not say so, an older one that
+    /// would write the text whatever revision it names, nothing is sent:
+    /// the tool says why. A new plan and a change of status ask nothing
+    /// first.
     #[tokio::test]
-    async fn save_plan_names_the_revision_it_read() {
-        let s = server(vec![Response::Error {
+    async fn save_plan_names_the_revision_it_read_to_a_daemon_that_holds_it() {
+        let pong = |features: &[&str]| -> Response {
+            serde_json::from_value(
+                json!({"type": "pong", "version": "test", "uptime_secs": 1, "features": features}),
+            )
+            .unwrap()
+        };
+        let edit = json!({"name": "save_plan", "arguments": {"plan": "abc123def456", "body": "## Lead\nmerged\n", "revision": 4}});
+        let stale = || Response::Error {
             code: agentdocker_core::ErrorCode::Conflict,
             message:
                 "this edit was written from revision 4 of the plan, which is now at revision 5"
                     .into(),
             details: None,
-        }]);
-        let reply = s
-            .handle(rpc(
-                1,
-                "tools/call",
-                json!({"name": "save_plan", "arguments": {"plan": "abc123def456", "body": "## Lead\nmerged\n", "revision": 4}}),
-            ))
-            .await
-            .unwrap();
+        };
+
+        let s = server(vec![
+            pong(&[agentdocker_core::protocol::FEATURE_PLAN_REVISION]),
+            stale(),
+        ]);
+        let reply = s.handle(rpc(1, "tools/call", edit.clone())).await.unwrap();
         assert!(reply.to_string().contains("now at revision 5"), "{reply}");
+        let requests = s.backend.requests();
+        assert!(matches!(requests[0], Request::Ping), "{requests:?}");
         assert!(
-            s.backend.requests().iter().any(|request| matches!(
-                request,
+            matches!(
+                &requests[1],
                 Request::PlanSave { from, plan: Some(plan), body: Some(_), revision: Some(4), .. }
                     if from == "abc123" && plan == "abc123def456"
-            )),
-            "{:?}",
-            s.backend.requests()
+            ),
+            "{requests:?}"
         );
+
+        // A daemon that lists no such feature: asked, and sent nothing more.
+        let s = server(vec![pong(&["fresh_claim"]), stale()]);
+        let reply = s.handle(rpc(2, "tools/call", edit)).await.unwrap();
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+        assert!(
+            reply.to_string().contains("Nothing was sent"),
+            "the tool says why: {reply}"
+        );
+        let requests = s.backend.requests();
+        assert_eq!(requests.len(), 1, "only the question: {requests:?}");
+        assert!(matches!(requests[0], Request::Ping));
+
+        // A new plan, and a change of status, replace no text: not asked.
+        for arguments in [
+            json!({"title": "A new plan", "body": "text"}),
+            json!({"plan": "abc123def456", "status": "done"}),
+        ] {
+            let s = server(vec![stale()]);
+            let _ = s
+                .handle(rpc(
+                    3,
+                    "tools/call",
+                    json!({"name": "save_plan", "arguments": arguments}),
+                ))
+                .await
+                .unwrap();
+            let requests = s.backend.requests();
+            assert_eq!(requests.len(), 1, "{requests:?}");
+            assert!(
+                matches!(requests[0], Request::PlanSave { .. }),
+                "{requests:?}"
+            );
+        }
     }
 
     /// `list_tasks` passes `mine` through with the caller named, so the

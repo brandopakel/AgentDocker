@@ -242,7 +242,6 @@ enum Cmd {
     Todo,
     /// A plan written; its answer opens it.
     PlanSave {
-        project: String,
         request: Box<Request>,
     },
     /// One plan in full.
@@ -457,6 +456,9 @@ enum Msg {
     BoardActed(String, Result<(), String>),
     Todo(Result<Vec<agentdocker_core::Task>, String>),
     Plan(Result<Box<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>, String>),
+    /// What became of a save of the plan in the editor: the plan as the
+    /// daemon kept it with its cards, or why it was not kept.
+    PlanSaved(Result<Box<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>, String>),
     /// A project's boards, or why they could not be read.
     Boards(String, Result<Vec<agentdocker_core::Board>, String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -1543,6 +1545,21 @@ impl App {
                 Msg::Todo(result) => match result {
                     Ok(cards) => self.todo = Some(cards),
                     Err(error) => self.say(error),
+                },
+                Msg::PlanSaved(result) => match result {
+                    Ok(plan) => {
+                        let (plan, tasks) = *plan;
+                        self.shell.plan_draft.saved(&plan);
+                        self.plan_open = Some((plan, tasks));
+                    }
+                    // Said, and nothing read in its place: what the person
+                    // wrote stays in the editor, on the revision it was
+                    // written from, until they save it again or open the
+                    // plan anew.
+                    Err(error) => {
+                        self.shell.plan_draft.refused();
+                        self.say(error);
+                    }
                 },
                 Msg::Plan(result) => match result {
                     Ok(plan) => {
@@ -3824,15 +3841,37 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::MemoryAdded(project, text, result))
         }
-        Cmd::PlanSave { project, request } => match client.call(&request) {
-            Ok(Response::Plan { plan, tasks }) => Some(Msg::Plan(Ok(Box::new((plan, tasks))))),
-            Ok(Response::Error { message, .. }) => Some(Msg::BoardActed(
-                project,
-                Err(crate::client::explain(&message)),
-            )),
-            Ok(other) => Some(Msg::BoardActed(project, Err(unexpected_reply(&other)))),
-            Err(error) => Some(Msg::BoardActed(project, Err(format!("{error:#}")))),
-        },
+        Cmd::PlanSave { request } => {
+            // An edit of an existing plan's text goes only to a daemon
+            // that holds it to its revision: an older one would take it
+            // and write it over whatever is there. Asked first.
+            let replaces_text = matches!(
+                &*request,
+                Request::PlanSave {
+                    plan: Some(_),
+                    body: Some(_),
+                    ..
+                }
+            );
+            let held = !replaces_text
+                || matches!(
+                    client.call(&Request::Ping),
+                    Ok(Response::Pong { features, .. }) if features
+                        .iter()
+                        .any(|f| f == agentdocker_core::protocol::FEATURE_PLAN_REVISION)
+                );
+            let result = if !held {
+                Err(agentdocker_core::protocol::PLAN_REVISION_UNKNOWN.to_owned())
+            } else {
+                match client.call(&request) {
+                    Ok(Response::Plan { plan, tasks }) => Ok(Box::new((plan, tasks))),
+                    Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                    Ok(other) => Err(unexpected_reply(&other)),
+                    Err(error) => Err(format!("{error:#}")),
+                }
+            };
+            Some(Msg::PlanSaved(result))
+        }
         Cmd::PlanGet(plan) => {
             let result = match client.call(&Request::PlanGet { plan }) {
                 Ok(Response::Plan { plan, tasks }) => Ok(Box::new((plan, tasks))),
