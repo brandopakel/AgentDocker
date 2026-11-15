@@ -677,6 +677,72 @@ async fn an_agent_is_started_on_a_card_only_by_the_person() {
     );
 }
 
+/// A browser whose user data the system will not list (as macOS will not
+/// for a program not allowed to read other apps' data) is said in
+/// `runtimes` as an incomplete inventory, and a start on a card still
+/// learns which runtimes there are: one closed door is not a failed
+/// inventory.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unreadable_browser_is_noted_and_costs_neither_runtimes_nor_a_start() {
+    use std::os::unix::fs::PermissionsExt;
+    /// Gives back what the test took away, so the temp dir can go.
+    struct Reopen(std::path::PathBuf);
+    impl Drop for Reopen {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+    let f = fixture().await;
+    let d = &f.daemon;
+    let chrome = f._dir.path().join("machine/Chrome");
+    std::fs::create_dir_all(chrome.join("Default/Extensions")).unwrap();
+    std::fs::set_permissions(&chrome, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _reopen = Reopen(chrome.clone());
+    if std::fs::read_dir(&chrome).is_ok() {
+        // Root: a mode closes nothing, and there is nothing to test.
+        return;
+    }
+    lock(&d.runtime_roots).browser_dirs = vec![agentdocker_host::runtimes::browser::BrowserDir {
+        browser: "Chrome".into(),
+        path: chrome.clone(),
+    }];
+    let Response::Runtimes { runtimes } = d.handle(Request::Runtimes).await else {
+        panic!("runtimes failed");
+    };
+    let browser = runtimes
+        .iter()
+        .find(|r| r.name == "claude-browser")
+        .expect("every known runtime is listed");
+    assert!(browser.extensions.is_empty());
+    assert!(
+        browser
+            .incomplete
+            .iter()
+            .any(|n| n.starts_with("Chrome profiles not examined: ")),
+        "{:?}",
+        browser.incomplete
+    );
+    let filed = card(
+        d.handle(create(HUMAN, &f.work, "Port it", Some("ready"), &[]))
+            .await,
+    );
+    assert!(matches!(
+        d.handle(Request::TaskStart {
+            from: HUMAN.to_owned(),
+            task: filed.id.to_string(),
+            runtime: "no-such-runtime".into(),
+            args: Vec::new(),
+            workdir: None,
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+}
+
 /// A card that waits, on an open card or on something off the board, is
 /// not started on by the person or by a start rule, as a pull would not
 /// take it; once what it waits on clears, both start on it.
@@ -1214,7 +1280,7 @@ async fn a_projects_memory_is_read_as_it_stood_at_a_moment() {
     };
     let keep = |request: Request| async move {
         match d.handle(request).await {
-            Response::Memory { memory } => memory,
+            Response::Memory { memory, .. } => memory,
             other => panic!("{other:?}"),
         }
     };
@@ -1247,7 +1313,9 @@ async fn a_projects_memory_is_read_as_it_stood_at_a_moment() {
         min_score: None,
     };
     let found = |response: Response| match response {
-        Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
+        Response::Memories { memories, .. } => {
+            memories.into_iter().map(|m| m.id).collect::<Vec<_>>()
+        }
         other => panic!("{other:?}"),
     };
     assert!(found(d.handle(search(Some(days(20)), false)).await).is_empty());
@@ -1311,7 +1379,7 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
     };
     let keep = |request: Request| async move {
         match d.handle(request).await {
-            Response::Memory { memory } => memory,
+            Response::Memory { memory, .. } => memory,
             other => panic!("{other:?}"),
         }
     };
@@ -1337,7 +1405,9 @@ async fn a_memory_said_to_a_role_reaches_its_holders_and_the_person() {
         min_score: None,
     };
     let found = |response: Response| match response {
-        Response::Memories { memories } => memories.into_iter().map(|m| m.id).collect::<Vec<_>>(),
+        Response::Memories { memories, .. } => {
+            memories.into_iter().map(|m| m.id).collect::<Vec<_>>()
+        }
         other => panic!("{other:?}"),
     };
     assert_eq!(
@@ -1439,7 +1509,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         roles: vec![],
         valid_from: None,
     };
-    let Response::Memory { memory: first } = d
+    let Response::Memory { memory: first, .. } = d
         .handle(add(
             f.agent.id.to_string(),
             "Deploys go out on Fridays",
@@ -1458,13 +1528,13 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         include_superseded: false,
         min_score: None,
     };
-    let Response::Memories { memories } = d.handle(search("deploys friday")).await else {
+    let Response::Memories { memories, .. } = d.handle(search("deploys friday")).await else {
         panic!()
     };
     assert_eq!(memories.len(), 1, "a peer of the project finds it");
     assert_eq!(memories[0].id, first.id);
 
-    let Response::Memory { memory: second } = d
+    let Response::Memory { memory: second, .. } = d
         .handle(add(
             f.peer.id.to_string(),
             "Deploys go out on Mondays now",
@@ -1475,7 +1545,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         panic!("replaced")
     };
     assert_eq!(second.supersedes.as_deref(), Some(first.id.as_str()));
-    let Response::Memories { memories } = d
+    let Response::Memories { memories, .. } = d
         .handle(Request::MemoryProfile {
             from: Some(f.agent.id.to_string()),
             project: None,
@@ -1524,7 +1594,7 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
         .await,
         Response::Ok
     ));
-    let Response::Memories { memories } = d.handle(search("mondays")).await else {
+    let Response::Memories { memories, .. } = d.handle(search("mondays")).await else {
         panic!()
     };
     assert!(memories.is_empty(), "forgotten for good");
@@ -1533,7 +1603,9 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
     // by full id or by prefix.
     let other = std::path::Path::new(&f.work).join("other-project");
     std::fs::create_dir_all(&other).unwrap();
-    let Response::Memory { memory: elsewhere } = d
+    let Response::Memory {
+        memory: elsewhere, ..
+    } = d
         .handle(Request::MemoryAdd {
             from: f.agent.id.to_string(),
             project: Some(other.display().to_string()),
@@ -1566,6 +1638,608 @@ async fn a_projects_memory_is_kept_found_replaced_and_forgotten() {
             "{reference}"
         );
     }
+}
+
+/// Any agent of the project retires a memory another kept: it is no
+/// longer said, the history says who retired it and why, and the journal
+/// has a line. Forgetting the retirement brings the memory back, and is
+/// its author's, the retired memory's author's or the person's to do. A
+/// retirement is neither retired nor replaced, and an agent retires
+/// nothing in a project that is not its own.
+#[tokio::test]
+async fn any_agent_of_the_project_retires_a_memory_and_forgetting_that_brings_it_back() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let add = |from: String, project: Option<String>, text: &str, supersedes: Option<String>| {
+        Request::MemoryAdd {
+            from,
+            project,
+            text: text.into(),
+            links: vec![],
+            supersedes,
+            standing: true,
+            forget_after: None,
+            roles: vec![],
+            valid_from: None,
+        }
+    };
+    let retire = |from: String, memory: String, reason: &str| Request::MemoryRetire {
+        from,
+        memory,
+        reason: reason.into(),
+    };
+    let Response::Memory { memory: first, .. } = d
+        .handle(add(
+            f.agent.id.to_string(),
+            None,
+            "Deploys go out on Fridays",
+            None,
+        ))
+        .await
+    else {
+        panic!("kept")
+    };
+    let said = || async {
+        let Response::Memories { memories, .. } = d
+            .handle(Request::MemoryProfile {
+                from: Some(f.agent.id.to_string()),
+                project: None,
+                max_chars: None,
+                as_of: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        memories.into_iter().map(|m| m.id).collect::<Vec<_>>()
+    };
+    let search = |query: &str, history: bool| Request::MemorySearch {
+        from: Some(f.agent.id.to_string()),
+        project: None,
+        query: query.into(),
+        limit: None,
+        as_of: None,
+        include_superseded: history,
+        min_score: None,
+    };
+    assert_eq!(said().await, std::slice::from_ref(&first.id));
+
+    // A reason is asked for.
+    assert!(matches!(
+        d.handle(retire(f.peer.id.to_string(), first.id.clone(), "  "))
+            .await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+    // The peer did not keep it, and retires it all the same, by a prefix.
+    let Response::Memory {
+        memory: retirement, ..
+    } = d
+        .handle(retire(
+            f.peer.id.to_string(),
+            first.id[..6].to_owned(),
+            "Deploys moved to a release train",
+        ))
+        .await
+    else {
+        panic!("retired")
+    };
+    assert!(retirement.retirement);
+    assert_eq!(retirement.supersedes.as_deref(), Some(first.id.as_str()));
+    assert_eq!(retirement.author, f.peer.id.to_string());
+    assert!(said().await.is_empty(), "no longer said");
+    for words in ["deploys", "release train"] {
+        let Response::Memories { memories, .. } = d.handle(search(words, false)).await else {
+            panic!()
+        };
+        assert!(memories.is_empty(), "{words}");
+    }
+    let Response::MemoryHistory { memories, replaced } = d.handle(search("deploys", true)).await
+    else {
+        panic!("history")
+    };
+    assert_eq!(memories.len(), 1);
+    assert_eq!(memories[0].id, first.id);
+    let was = &replaced[&first.id];
+    assert_eq!(was.by, retirement.id);
+    assert_eq!(
+        was.retired,
+        Some(agentdocker_core::memory::Retired {
+            by: f.peer.id.to_string(),
+            reason: "Deploys moved to a release train".into(),
+        })
+    );
+    // The journal has the retiring agent's line.
+    let Response::Journal { entries, .. } = d
+        .handle(Request::Journal {
+            project: f.work.clone(),
+            since_seq: None,
+            until_seq: None,
+            agent: None,
+            branch: None,
+            kind: None,
+            path: None,
+            grep: Some("retired memory".into()),
+            limit: 20,
+            digest: None,
+        })
+        .await
+    else {
+        panic!("journal")
+    };
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert!(
+        entries[0].summary.contains(&first.id),
+        "{}",
+        entries[0].summary
+    );
+    assert!(
+        entries[0]
+            .summary
+            .ends_with("Deploys moved to a release train"),
+        "{}",
+        entries[0].summary
+    );
+    assert_eq!(entries[0].agent.as_ref(), Some(&f.peer.id));
+
+    // Already retired; and a retirement is no memory to retire or replace.
+    for target in [first.id.clone(), retirement.id.clone()] {
+        assert!(
+            matches!(
+                d.handle(retire(f.agent.id.to_string(), target.clone(), "again"))
+                    .await,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "{target}"
+        );
+    }
+    assert!(matches!(
+        d.handle(add(
+            f.agent.id.to_string(),
+            None,
+            "Deploys go out daily",
+            Some(retirement.id.clone())
+        ))
+        .await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+
+    // The retired memory's author brings it back, though the peer wrote
+    // the retirement.
+    assert!(matches!(
+        d.handle(Request::MemoryForget {
+            from: f.agent.id.to_string(),
+            memory: retirement.id.clone(),
+        })
+        .await,
+        Response::Ok
+    ));
+    assert_eq!(said().await, std::slice::from_ref(&first.id), "said again");
+
+    // The person retires it; forgetting the memory itself then takes its
+    // retirement with it.
+    let Response::Memory { memory: again, .. } = d
+        .handle(retire(
+            HUMAN.into(),
+            first.id.clone(),
+            "superseded by the runbook",
+        ))
+        .await
+    else {
+        panic!("retired by the person")
+    };
+    assert!(said().await.is_empty());
+    assert!(matches!(
+        d.handle(Request::MemoryForget {
+            from: HUMAN.into(),
+            memory: first.id.clone(),
+        })
+        .await,
+        Response::Ok
+    ));
+    assert!(matches!(
+        d.handle(Request::MemoryForget {
+            from: HUMAN.into(),
+            memory: again.id.clone(),
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+
+    // A memory of another project is not this agent's to retire.
+    let other = std::path::Path::new(&f.work).join("other-project");
+    std::fs::create_dir_all(&other).unwrap();
+    let Response::Memory {
+        memory: elsewhere, ..
+    } = d
+        .handle(add(
+            f.agent.id.to_string(),
+            Some(other.display().to_string()),
+            "a fact of another project",
+            None,
+        ))
+        .await
+    else {
+        panic!("kept elsewhere")
+    };
+    assert!(matches!(
+        d.handle(retire(
+            f.peer.id.to_string(),
+            elsewhere.id.clone(),
+            "not mine to say"
+        ))
+        .await,
+        Response::Error {
+            code: ErrorCode::Forbidden,
+            ..
+        }
+    ));
+}
+
+/// The journal is everyone's: read by any agent of the project and told
+/// to new sessions with no reader's roles applied. Retiring a memory said
+/// to one role therefore puts neither its words nor the reason there, in
+/// the entry or in the event that carries it: only its id, for those who
+/// can read its history. A memory said to everyone keeps both.
+#[tokio::test]
+async fn retiring_a_memory_said_to_a_role_keeps_its_words_out_of_the_journal() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    assert!(matches!(
+        d.handle(Request::RoleAssign {
+            from: HUMAN.into(),
+            agent: f.peer.id.to_string(),
+            add: vec!["reviewer".into()],
+            remove: vec![],
+        })
+        .await,
+        Response::Agent { .. }
+    ));
+    let add = |text: &str, roles: &[&str]| Request::MemoryAdd {
+        from: f.agent.id.to_string(),
+        project: None,
+        text: text.into(),
+        links: vec![],
+        supersedes: None,
+        standing: true,
+        forget_after: None,
+        roles: roles.iter().map(|r| (*r).to_owned()).collect(),
+        valid_from: None,
+    };
+    let keep = |request: Request| async move {
+        match d.handle(request).await {
+            Response::Memory { memory, .. } => memory,
+            other => panic!("{other:?}"),
+        }
+    };
+    let scoped = keep(add(
+        "Embargoed findings sit in the vault folder",
+        &["reviewer"],
+    ))
+    .await;
+    let open = keep(add("Deploys go out on Fridays", &[])).await;
+    let mut events = d.subscribe_events();
+
+    // The agent that kept it does not hold the role: to it, it is not there.
+    assert!(matches!(
+        d.handle(Request::MemoryRetire {
+            from: f.agent.id.to_string(),
+            memory: scoped.id.clone(),
+            reason: "guessing".into(),
+        })
+        .await,
+        Response::Error {
+            code: ErrorCode::NotFound,
+            ..
+        }
+    ));
+    let retirement = keep(Request::MemoryRetire {
+        from: f.peer.id.to_string(),
+        memory: scoped.id.clone(),
+        reason: "the vault moved to the escrow share".into(),
+    })
+    .await;
+    assert_eq!(retirement.roles, ["reviewer"]);
+    keep(Request::MemoryRetire {
+        from: f.peer.id.to_string(),
+        memory: open.id.clone(),
+        reason: "deploys moved to a release train".into(),
+    })
+    .await;
+
+    let journal = |reader: Option<&AgentRecord>| Request::Journal {
+        project: f.work.clone(),
+        since_seq: None,
+        until_seq: None,
+        agent: None,
+        branch: None,
+        kind: None,
+        path: None,
+        grep: None,
+        limit: 50,
+        digest: reader.map(|reader| agentdocker_core::protocol::DigestRequest {
+            reader: reader.id.to_string(),
+            max_entries: 50,
+            max_chars: 8000,
+            max_bytes: None,
+            all_branches: true,
+            advance: false,
+        }),
+    };
+    let Response::Journal { entries, .. } = d.handle(journal(None)).await else {
+        panic!("journal")
+    };
+    let mut carried = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        if let EventKind::JournalAppended { entry } = event.kind {
+            carried.push(entry.summary);
+        }
+    }
+    // What an agent without the role is told at its next session start.
+    let digest = match d.handle(journal(Some(&f.agent))).await {
+        Response::Digest { digest, .. } => format!("{digest:?}"),
+        other => panic!("{other:?}"),
+    };
+    let lines: Vec<String> = entries.iter().map(|e| e.summary.clone()).collect();
+    for said in lines.iter().chain(&carried).chain([&digest]) {
+        for secret in ["Embargoed", "vault", "escrow"] {
+            assert!(!said.contains(secret), "{secret}: {said}");
+        }
+    }
+    for said in [&lines, &carried] {
+        let of_scoped: Vec<&String> = said.iter().filter(|l| l.contains(&scoped.id)).collect();
+        assert_eq!(of_scoped.len(), 1, "{said:?}");
+        assert!(of_scoped[0].contains("said to reviewer only"), "{said:?}");
+        // One said to everyone is told in full.
+        assert!(
+            said.iter().any(|l| l.contains(&open.id)
+                && l.contains("Deploys go out on Fridays")
+                && l.ends_with("deploys moved to a release train")),
+            "{said:?}"
+        );
+    }
+    assert!(digest.contains(&scoped.id), "{digest}");
+}
+
+/// A card nobody holds that waits on something off the board is freed by
+/// whoever takes it, with a reason: any agent of the card's project, not
+/// the one that filed it in particular, whose session may be long gone.
+/// What it waited on, what happened and who said so are kept on the card
+/// and in the journal and told as an event, all with the pull or not at
+/// all. A refusal changes nothing.
+#[tokio::test]
+async fn whoever_takes_an_unheld_card_says_its_wait_is_over() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let filed = |title: &str, blocker: &str| {
+        let mut filing = create(&f.agent.id.to_string(), &f.work, title, Some("ready"), &[]);
+        if let Request::TaskCreate {
+            external_blocker, ..
+        } = &mut filing
+        {
+            *external_blocker = blocker.into();
+        }
+        filing
+    };
+    let pull = |agent: &AgentRecord, task: &Task, unblock: Option<&str>| Request::TaskPull {
+        agent: agent.id.to_string(),
+        task: Some(task.id.to_string()),
+        take_over_from: None,
+        project: None,
+        board: None,
+        unblock: unblock.map(str::to_owned),
+    };
+    let refused = |response: Response, code: ErrorCode| {
+        assert!(
+            matches!(&response, Response::Error { code: got, .. } if *got == code),
+            "{response:?}"
+        );
+    };
+    let waiting = card(
+        d.handle(filed("Ship the importer", "the vendor's sign-off"))
+            .await,
+    );
+    let read = || async {
+        match d
+            .handle(Request::TaskGet {
+                task: waiting.id.to_string(),
+            })
+            .await
+        {
+            Response::TaskDetail {
+                task,
+                comments,
+                history,
+                ..
+            } => (task, comments, history),
+            other => panic!("{other:?}"),
+        }
+    };
+
+    // As it stands nobody takes it, not the agent that filed it either;
+    // saying nothing of what happened is no reason; and an agent of
+    // another project does not say so here.
+    refused(
+        d.handle(pull(&f.agent, &waiting, None)).await,
+        ErrorCode::Invalid,
+    );
+    refused(
+        d.handle(pull(&f.peer, &waiting, Some("  "))).await,
+        ErrorCode::Invalid,
+    );
+    let elsewhere = std::path::Path::new(&f.work).join("another-project");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    let Response::Agent { agent: outsider } = d
+        .handle(Request::Register {
+            spec: AgentSpec {
+                name: "outsider".into(),
+                workdir: Some(elsewhere),
+                ..Default::default()
+            },
+            pid: None,
+            session: None,
+        })
+        .await
+    else {
+        panic!("registered")
+    };
+    refused(
+        d.handle(pull(&outsider, &waiting, Some("it shipped")))
+            .await,
+        ErrorCode::Forbidden,
+    );
+    let (task, comments, _) = read().await;
+    assert_eq!(task.external_blocker, "the vendor's sign-off");
+    assert!(
+        task.assignee.is_none() && comments.is_empty(),
+        "nothing changed"
+    );
+
+    // The peer, which did not file it, takes it and says what happened.
+    let mut events = d.subscribe_events();
+    let Response::TaskDetail {
+        task: taken, lease, ..
+    } = d
+        .handle(pull(
+            &f.peer,
+            &waiting,
+            Some("the vendor signed off this morning"),
+        ))
+        .await
+    else {
+        panic!("taken")
+    };
+    assert_eq!(taken.assignee.as_ref(), Some(&f.peer.id));
+    assert_eq!(taken.column, Column::InProgress);
+    assert!(taken.external_blocker.is_empty() && lease.is_some());
+    let (_, comments, history) = read().await;
+    assert_eq!(comments.len(), 1);
+    assert_eq!(comments[0].author, f.peer.id.to_string());
+    for kept in [
+        "the vendor's sign-off",
+        "the vendor signed off this morning",
+    ] {
+        assert!(comments[0].body.contains(kept), "{}", comments[0].body);
+    }
+    assert!(
+        history
+            .iter()
+            .any(|e| matches!(&e.action, TaskAction::Pulled { .. })),
+        "{history:?}"
+    );
+    assert!(
+        history.iter().any(
+            |e| matches!(&e.action, TaskAction::Commented { comment } if *comment == comments[0].id)
+        ),
+        "{history:?}"
+    );
+    let mut told = Vec::new();
+    let mut journaled = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        match event.kind {
+            EventKind::TaskUnblocked {
+                task,
+                by,
+                was,
+                reason,
+                ..
+            } => told.push((task, by, was, reason)),
+            EventKind::JournalAppended { entry } => journaled.push(entry),
+            _ => {}
+        }
+    }
+    assert_eq!(
+        told,
+        [(
+            waiting.id.clone(),
+            f.peer.id.to_string(),
+            "the vendor's sign-off".to_owned(),
+            "the vendor signed off this morning".to_owned()
+        )]
+    );
+    assert_eq!(journaled.len(), 1, "{journaled:?}");
+    assert_eq!(journaled[0].agent.as_ref(), Some(&f.peer.id));
+    assert!(
+        journaled[0].summary.contains("said its wait is over")
+            && journaled[0]
+                .summary
+                .ends_with("the vendor signed off this morning"),
+        "{}",
+        journaled[0].summary
+    );
+    let Response::Journal { entries, .. } = d
+        .handle(Request::Journal {
+            project: f.work.clone(),
+            since_seq: None,
+            until_seq: None,
+            agent: None,
+            branch: None,
+            kind: None,
+            path: None,
+            grep: Some("said its wait is over".into()),
+            limit: 20,
+            digest: None,
+        })
+        .await
+    else {
+        panic!("journal")
+    };
+    assert_eq!(entries.len(), 1, "kept, with its place in the journal");
+    assert_eq!(entries[0].seq, journaled[0].seq);
+
+    // Its holder taking it again renews it, and has nothing to unblock; a
+    // card that waits on nothing is not unblocked; one somebody holds is
+    // its holder's.
+    assert!(matches!(
+        d.handle(pull(&f.peer, &waiting, Some("again"))).await,
+        Response::TaskDetail { .. }
+    ));
+    let free = card(d.handle(filed("Write the changelog", "")).await);
+    refused(
+        d.handle(pull(&f.peer, &free, Some("nothing was in the way")))
+            .await,
+        ErrorCode::Invalid,
+    );
+    refused(
+        d.handle(pull(&f.agent, &waiting, Some("mine now"))).await,
+        ErrorCode::Conflict,
+    );
+    // Not with a take-over, and not without a card named.
+    refused(
+        d.handle(Request::TaskPull {
+            agent: f.agent.id.to_string(),
+            task: None,
+            take_over_from: None,
+            project: None,
+            board: None,
+            unblock: Some("anything".into()),
+        })
+        .await,
+        ErrorCode::Invalid,
+    );
+    refused(
+        d.handle(Request::TaskPull {
+            agent: f.agent.id.to_string(),
+            task: Some(waiting.id.to_string()),
+            take_over_from: Some(f.peer.id.to_string()),
+            project: None,
+            board: None,
+            unblock: Some("anything".into()),
+        })
+        .await,
+        ErrorCode::Invalid,
+    );
 }
 
 /// `mine` is the person's cards and those held by the agents they launched:

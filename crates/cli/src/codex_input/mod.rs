@@ -267,6 +267,7 @@ async fn activity(client: &Client, agent: &str, activity: ReportedActivity) -> R
                         reason: None,
                         detail: None,
                         source: None,
+                        evidence: None,
                     }
                 }
             )
@@ -420,7 +421,8 @@ async fn session(
                             kind: "chat".into(),
                             payload: json!({"text":text}),
                             reply_to: None,
-                            links: Vec::new()
+                            links: Vec::new(),
+                            idempotency_key: None
                         }
                     )
                     .await?,

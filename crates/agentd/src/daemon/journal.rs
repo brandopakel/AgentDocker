@@ -1,20 +1,189 @@
 use super::*;
 
+/// A journal read as the request spelt it: the filters by name, resolved
+/// to ids, kinds and relative paths by [`Daemon::journal`].
+pub(super) struct JournalArgs {
+    pub since_seq: Option<u64>,
+    pub until_seq: Option<u64>,
+    pub agent: Option<String>,
+    pub branch: Option<String>,
+    pub kind: Option<String>,
+    pub path: Option<String>,
+    pub grep: Option<String>,
+    pub limit: usize,
+    pub digest: Option<DigestRequest>,
+}
+
+/// How long git has to say what a checkout has uncommitted.
+const UNCOMMITTED_READ: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often a checkout is looked at while git may still be writing it.
+const SETTLE_LOOK: std::time::Duration = std::time::Duration::from_millis(250);
+/// How long a checkout is waited for at most before the changes seen in
+/// it are judged as it then stands.
+const SETTLE_LIMIT: std::time::Duration = std::time::Duration::from_secs(60);
+/// At most this many changes of one checkout wait to be judged.
+pub(super) const CONTEST_WAITING: usize = 2_000;
+
+/// The paths of the checkout `dir` that differ from its HEAD: what tells
+/// a change somebody made from one git made. `None` when that cannot be
+/// known, and every change there then counts as somebody's: `dir` is not
+/// a git checkout's own root (git names paths from the root, so a watched
+/// folder inside one would be compared with nothing), or git did not
+/// answer in time.
+fn uncommitted(dir: &Path) -> Option<HashSet<PathBuf>> {
+    if !dir.join(".git").exists() {
+        return None;
+    }
+    let deadline = std::time::Instant::now() + UNCOMMITTED_READ;
+    vcs::dirty_paths(dir, deadline)
+        .ok()
+        .map(|paths| paths.into_iter().map(PathBuf::from).collect())
+}
+
+/// What a look at the checkout `dir` finds: whether git is in the middle
+/// of changing it, and where its HEAD is.
+///
+/// Git is in the middle of it while it holds a lock or has an operation
+/// open. The locks: the index's, from before a pull, merge, rebase,
+/// branch switch or reset writes its first file until the index is
+/// written; then HEAD's and the branch's, while the reference is moved
+/// (a `reference-transaction` hook can hold git there, the files and
+/// the index new and HEAD still old); and the packed references'. An
+/// open operation: a merge, a cherry-pick or a revert that has not made
+/// its commit, a rebase or a sequence under way. Those last also stand
+/// while git waits for a person to settle a conflict, which is why a
+/// checkout is not waited for without end ([`SETTLE_LIMIT`]).
+fn look(dir: &Path) -> (bool, Option<String>) {
+    const HELD_OR_OPEN: [&str; 8] = [
+        "index.lock",
+        "HEAD.lock",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+        "sequencer",
+    ];
+    let state = vcs::state(dir);
+    let writing = vcs::git_dirs(dir).is_some_and(|(gitdir, common)| {
+        HELD_OR_OPEN.iter().any(|name| gitdir.join(name).exists())
+            || common.join("packed-refs.lock").exists()
+            || state
+                .as_ref()
+                .and_then(|state| state.branch.as_ref())
+                .is_some_and(|branch| {
+                    common
+                        .join("refs/heads")
+                        .join(format!("{branch}.lock"))
+                        .exists()
+                })
+    });
+    (writing, state.and_then(|state| state.head))
+}
+
+/// Count toward a contested room the changes waiting for the checkout
+/// `dir`, once git has finished with it.
+///
+/// What differs from HEAD at the moment a change is seen proves nothing
+/// yet: in the middle of a merge the files git has already written
+/// differ from a HEAD it has not moved. So the checkout is looked at
+/// ([`look`]) until git is not in the middle of anything and HEAD is
+/// where it was at the look before; git is then asked what differs; and
+/// the answer is used only if a look after it finds the same: nothing
+/// held or open, HEAD unmoved. An answer read while git was at work, or
+/// across a move of HEAD, is thrown away and the wait goes on. A change
+/// whose path still differs is somebody's, and one git brought in is by
+/// then equal to HEAD.
+///
+/// A change that arrives while git is being asked is left for the next
+/// round, never judged by an answer older than itself. After
+/// [`SETTLE_LIMIT`] the checkout is judged as it stands: a lock left
+/// behind by a git that died, or a conflict nobody settles, does not
+/// keep real edits from ever counting.
+///
+/// It holds the daemon weakly: a wait must not be what keeps one alive.
+async fn settle_contest(daemon: std::sync::Weak<Daemon>, dir: PathBuf) {
+    let look_at = |dir: &Path| {
+        let dir = dir.to_path_buf();
+        tokio::task::spawn_blocking(move || look(&dir))
+    };
+    // A look that cannot be made ends the wait, and what waited with it: a
+    // list left behind would keep a later change from starting a wait.
+    let give_up = |daemon: &std::sync::Weak<Daemon>, dir: &Path| {
+        if let Some(daemon) = daemon.upgrade() {
+            lock(&daemon.state).contest_waiting.remove(dir);
+        }
+    };
+    let started = std::time::Instant::now();
+    let mut seen: Option<Option<String>> = None;
+    loop {
+        tokio::time::sleep(SETTLE_LOOK).await;
+        let Ok((writing, head)) = look_at(&dir).await else {
+            return give_up(&daemon, &dir);
+        };
+        let overdue = started.elapsed() >= SETTLE_LIMIT;
+        let moved = seen.as_ref() != Some(&head);
+        seen = Some(head.clone());
+        if (writing || moved) && !overdue {
+            continue;
+        }
+        // The changes there are now; a later one waits for the next round.
+        let Some(upto) = daemon.upgrade().and_then(|daemon| {
+            lock(&daemon.state)
+                .contest_waiting
+                .get(&dir)
+                .and_then(|waiting| waiting.iter().map(|change| change.seq).max())
+        }) else {
+            return;
+        };
+        let read = dir.clone();
+        let differing = tokio::task::spawn_blocking(move || uncommitted(&read))
+            .await
+            .ok()
+            .flatten();
+        // The answer counts only if git was at rest around it.
+        let Ok((writing, after)) = look_at(&dir).await else {
+            return give_up(&daemon, &dir);
+        };
+        if (writing || after != head) && !overdue {
+            seen = Some(after);
+            continue;
+        }
+        let Some(daemon) = daemon.upgrade() else {
+            return;
+        };
+        let mut state = lock(&daemon.state);
+        let waiting = state.contest_waiting.remove(&dir).unwrap_or_default();
+        let (judged, later): (Vec<Change>, Vec<Change>) =
+            waiting.into_iter().partition(|change| change.seq <= upto);
+        for change in judged {
+            if differing
+                .as_ref()
+                .is_none_or(|differs| differs.contains(&change.path))
+            {
+                state.note_contested(&change);
+            }
+        }
+        if later.is_empty() {
+            return;
+        }
+        state.contest_waiting.insert(dir.clone(), later);
+    }
+}
+
 impl Daemon {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn journal(
-        &self,
-        project: &str,
-        since_seq: Option<u64>,
-        until_seq: Option<u64>,
-        agent: Option<String>,
-        branch: Option<String>,
-        kind: Option<String>,
-        path: Option<String>,
-        grep: Option<String>,
-        limit: usize,
-        digest: Option<DigestRequest>,
-    ) -> Response {
+    pub(super) async fn journal(&self, project: &str, args: JournalArgs) -> Response {
+        let JournalArgs {
+            since_seq,
+            until_seq,
+            agent,
+            branch,
+            kind,
+            path,
+            grep,
+            limit,
+            digest,
+        } = args;
         if let Some(request) = digest {
             return self.journal_digest(project, since_seq, request).await;
         }
@@ -109,23 +278,32 @@ impl Daemon {
     /// ledger entries (persisted in `changes`, announced live as
     /// `file_changed`), and checkouts whose HEAD moved get their agents'
     /// branch and head re-read.
-    pub async fn record_fs_changes(&self, observed: Vec<Observed>, vcs_touched: Vec<Checkout>) {
+    pub async fn record_fs_changes(
+        self: &Arc<Self>,
+        observed: Vec<Observed>,
+        vcs_touched: Vec<Checkout>,
+    ) {
         let dirs: Vec<PathBuf> = {
             let mut dirs: Vec<PathBuf> = observed.iter().map(|o| o.checkout.dir.clone()).collect();
             dirs.sort();
             dirs.dedup();
             dirs
         };
-        let heads: HashMap<PathBuf, Option<String>> = tokio::task::spawn_blocking(move || {
-            dirs.into_iter()
-                .map(|dir| {
-                    let head = vcs::state(&dir).and_then(|s| s.head);
-                    (dir, head)
-                })
-                .collect()
-        })
-        .await
-        .unwrap_or_default();
+        // Where each touched checkout's HEAD is, and what it has that
+        // differs from it: read once per checkout for the batch, off the
+        // lock.
+        let (heads, differing): (HashMap<PathBuf, Option<String>>, HashMap<PathBuf, _>) =
+            tokio::task::spawn_blocking(move || {
+                dirs.into_iter()
+                    .map(|dir| {
+                        let head = vcs::state(&dir).and_then(|s| s.head);
+                        let differs = uncommitted(&dir);
+                        ((dir.clone(), head), (dir, differs))
+                    })
+                    .unzip()
+            })
+            .await
+            .unwrap_or_default();
         let observed = tokio::task::spawn_blocking(move || {
             observed
                 .into_iter()
@@ -178,6 +356,9 @@ impl Daemon {
         .await
         .unwrap_or_default();
         let now = Utc::now();
+        // The checkouts that gained a first change to judge once git has
+        // settled in them.
+        let mut settling: Vec<PathBuf> = Vec::new();
         {
             // One hold of the lock and one durable transaction for the
             // batch: a branch switch is thousands of paths, and a sync per
@@ -238,14 +419,41 @@ impl Daemon {
                     }
                     state.warn_readers(&change, physical.as_deref());
                     // A second checkout on this path means two agents are in the
-                    // same work: give them a room.
-                    state.note_contested(&change);
+                    // same work: give them a room. Only for a change somebody
+                    // made, though. A pull, a merge or a branch switch writes
+                    // every file of the work it brings in, and each of them
+                    // equals the checkout's HEAD once git is done: git put it
+                    // there, and whoever made that change made it elsewhere.
+                    match change
+                        .checkout
+                        .as_ref()
+                        .and_then(|dir| differing.get(dir).zip(Some(dir)))
+                    {
+                        // Git cannot say for this folder: somebody's, now.
+                        None | Some((None, _)) => state.note_contested(&change),
+                        // Equal to HEAD already: brought by git, and done.
+                        Some((Some(differs), _)) if !differs.contains(&change.path) => {}
+                        // It differs now. Whether it still does once git has
+                        // finished with the checkout is what decides.
+                        Some((Some(_), dir)) => {
+                            let waiting = state.contest_waiting.entry(dir.clone()).or_default();
+                            if waiting.is_empty() {
+                                settling.push(dir.clone());
+                            }
+                            if waiting.len() < CONTEST_WAITING {
+                                waiting.push(change.clone());
+                            }
+                        }
+                    }
                     debug!(project = %change.project.short(), path = %change.path.display(), kind = %change.kind, "file changed");
                     let _ = state
                         .events
                         .send(Event::new(EventKind::FileChanged { change }, now));
                 }
             }
+        }
+        for dir in settling {
+            tokio::spawn(settle_contest(Arc::downgrade(self), dir));
         }
         // A repository's refs are shared between its worktrees: a commit
         // made in a linked one writes `refs/heads/<branch>` under the

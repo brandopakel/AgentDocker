@@ -314,6 +314,7 @@ async fn a_client_report_cannot_name_a_source() {
                 reason: None,
                 detail: None,
                 source: Some(ActivitySource::Herdr),
+                evidence: None,
             },
         })
         .await;

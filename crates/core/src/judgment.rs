@@ -25,7 +25,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{Activity, AgentRecord, WaitReason, wait::Judged};
+use crate::status::Evidence;
+use crate::{Activity, ActivityObservation, AgentRecord, WaitReason, wait::Judged};
 
 /// TypeSafe's System One endpoint.
 pub const DEFAULT_URL: &str = "https://api.typesafe.ai/v1/systemone";
@@ -63,14 +64,18 @@ pub enum Judgment {
     /// A quiet agent's last screen lines, for whether it waits on the
     /// person.
     Screens,
+    /// A new memory and the current ones most like it, for which it may
+    /// replace. Only suggests: nothing is superseded by an answer.
+    Memories,
 }
 
 impl Judgment {
-    pub const ALL: [Self; 1] = [Self::Screens];
+    pub const ALL: [Self; 2] = [Self::Screens, Self::Memories];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Screens => "screens",
+            Self::Memories => "memories",
         }
     }
 
@@ -263,34 +268,95 @@ pub fn valid_model(name: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
 }
 
-/// Read a System One answer: the versioned model that answered and the
-/// four probabilities. Anything the contract does not have — a missing
-/// answer, another type, a probability outside 0–1 — is not an answer.
-pub fn read_answers(body: &Value) -> Result<(String, ScreenAnswers), String> {
-    let model = body["model"]
+/// The versioned model a System One answer names.
+fn answering_model(body: &Value) -> Result<String, String> {
+    Ok(body["model"]
         .as_str()
         .filter(|m| valid_model(m))
         .ok_or("the answer names no model")?
-        .to_owned();
-    let noul = |name: &str| -> Result<f64, String> {
-        let answer = &body["answers"][name];
-        if answer["type"].as_str() != Some("noul") {
-            return Err(format!("the answer has no yes/no answer for `{name}`"));
-        }
-        answer["noul"]
-            .as_f64()
-            .filter(|p| p.is_finite() && (0.0..=1.0).contains(p))
-            .ok_or_else(|| format!("the answer for `{name}` is not a probability"))
-    };
+        .to_owned())
+}
+
+/// The probability of yes a System One answer gives to `name`. Anything the
+/// contract does not have — a missing answer, another type, a probability
+/// outside 0–1 — is not an answer.
+fn noul(body: &Value, name: &str) -> Result<f64, String> {
+    let answer = &body["answers"][name];
+    if answer["type"].as_str() != Some("noul") {
+        return Err(format!("the answer has no yes/no answer for `{name}`"));
+    }
+    answer["noul"]
+        .as_f64()
+        .filter(|p| p.is_finite() && (0.0..=1.0).contains(p))
+        .ok_or_else(|| format!("the answer for `{name}` is not a probability"))
+}
+
+/// Read a System One answer about a screen: the versioned model that
+/// answered and the four probabilities.
+pub fn read_answers(body: &Value) -> Result<(String, ScreenAnswers), String> {
     Ok((
-        model,
+        answering_model(body)?,
         ScreenAnswers {
-            approval: noul("approval")?,
-            question: noul("question")?,
-            running: noul("running")?,
-            draft: noul("draft")?,
+            approval: noul(body, "approval")?,
+            question: noul(body, "question")?,
+            running: noul(body, "running")?,
+            draft: noul(body, "draft")?,
         },
     ))
+}
+
+/// The memories a new one is compared with at most.
+pub const MEMORY_CANDIDATES: usize = 8;
+
+const MEMORY_ABOUT: &str = "Short notes a software project keeps for the people and coding \
+    agents working on it: conventions, decisions, where things live. `new` was just kept. Each \
+    `note_N` is an older note that may say the same thing or something `new` makes wrong.";
+
+/// The name of the `index`th candidate, from one, in a memory request and
+/// its answer.
+fn memory_field(index: usize) -> String {
+    format!("note_{}", index + 1)
+}
+
+/// The request for a new memory: the model, its text and the candidates'
+/// as the state, and one question each. Nothing else goes: no id, link,
+/// author, role or project.
+pub fn memory_request(model: &str, new: &str, candidates: &[&str]) -> Value {
+    let mut state = serde_json::Map::new();
+    state.insert("about".to_owned(), json!(MEMORY_ABOUT));
+    state.insert("new".to_owned(), json!(new));
+    let mut questions = serde_json::Map::new();
+    for (index, text) in candidates.iter().enumerate() {
+        let name = memory_field(index);
+        state.insert(name.clone(), json!(text));
+        questions.insert(
+            name.clone(),
+            json!({
+                "type": "noul",
+                "instructions": format!(
+                    "Does `new` restate, contradict or replace `{name}`, so that a reader \
+                     who has `new` should no longer rely on `{name}`?"
+                ),
+                "criteria": {
+                    "true": "They are about the same fact and `new` says it again, says \
+                        it differently or says it no longer holds.",
+                    "false": "They are about different things, or both can stand: \
+                        sharing words or a subject is not enough."
+                }
+            }),
+        );
+    }
+    json!({ "model": model, "state": state, "questions": questions })
+}
+
+/// Read a System One answer about `count` candidates: the versioned model
+/// and the probability of yes for each, in their order.
+pub fn read_memory_answers(body: &Value, count: usize) -> Result<(String, Vec<f64>), String> {
+    let model = answering_model(body)?;
+    let answers = (0..count)
+        .map(|index| noul(body, &memory_field(index)))
+        .collect::<Result<_, _>>()?;
+    Ok((model, answers))
 }
 
 /// Where a promotion starts and what stops one.
@@ -394,18 +460,78 @@ impl ScreenJudgment {
         }
     }
 
+    /// How good a standing judgment is as evidence of a wait: strong. The
+    /// judge records a judgment only when the model's reading cleared the
+    /// confidence bar `[judge]` sets ([`decide`]), so one that stands is a
+    /// confident read; a reading that did not clear it was never recorded
+    /// and counts for nothing. First-hand reports still come first: see
+    /// [`Self::superseded_by`].
+    pub fn evidence(&self) -> Evidence {
+        Evidence::Strong
+    }
+
+    /// Whether `observation`, on the agent's record, takes this judgment
+    /// off: a first-hand word ([`ActivityObservation::evidence`] strong —
+    /// the agent's own adapter, Codex's shared server) made after the
+    /// screen was read. A weak word made after it — Claude Code's idle
+    /// timer, herdr's reading of the terminal — is a poorer read than the
+    /// judged screen and leaves the judgment standing; the judge's own
+    /// pass takes it off once the screen moves ([`review`]).
+    pub fn superseded_by(&self, observation: &ActivityObservation) -> bool {
+        observation.observed_at > self.judged_at && observation.evidence() == Evidence::Strong
+    }
+
+    /// Whether anything first-hand on `record` came after the screen was
+    /// read: its newest first-hand observation (`first_hand_at`), which a
+    /// weaker word that replaced it on the record does not hide, or the
+    /// observation on the record itself ([`Self::superseded_by`]). Once
+    /// true it stays true for this judgment, whatever is reported later.
+    pub fn superseded_on(&self, record: &AgentRecord) -> bool {
+        record.first_hand_at.is_some_and(|at| at > self.judged_at)
+            || record
+                .reported_activity
+                .as_ref()
+                .is_some_and(|observation| self.superseded_by(observation))
+    }
+
     /// Whether it still stands for `record`: the same live process, and
-    /// nothing its own adapter reported since the screen was read. A
-    /// report from the agent is first-hand and outranks any reading of
-    /// its screen.
+    /// nothing first-hand reported since the screen was read
+    /// ([`Self::superseded_on`]). A report from the agent is first-hand and
+    /// outranks any reading of its screen; an inference does not.
     pub fn stands_for(&self, record: &AgentRecord) -> bool {
         record.status.is_live()
             && record.process_started_at == self.process_started_at
-            && record
-                .reported_activity
-                .as_ref()
-                .is_none_or(|observation| observation.observed_at <= self.judged_at)
+            && !self.superseded_on(record)
     }
+}
+
+/// A record as a daemon loads it, written before
+/// [`AgentRecord::first_hand_at`] was kept. Its newest first-hand word was
+/// its reported observation where that is strong, so `first_hand_at` is
+/// seeded from it, and a judgment of a screen read before that word is
+/// taken off now, as the report would have taken it off had the field
+/// been kept. Returns whether a judgment was taken off. A record whose
+/// reported observation is weak keeps its judgment: whether a first-hand
+/// word came between the screen and that observation was not kept and is
+/// not guessed; the judge's own pass takes the judgment off once the
+/// screen moves, and the next first-hand word does at once.
+pub fn settle_loaded(record: &mut AgentRecord) -> bool {
+    if record.first_hand_at.is_none()
+        && let Some(observation) = record
+            .reported_activity
+            .as_ref()
+            .filter(|observation| observation.evidence() == Evidence::Strong)
+    {
+        record.first_hand_at = Some(observation.observed_at);
+    }
+    let superseded = record
+        .judged
+        .as_ref()
+        .is_some_and(|judged| judged.superseded_on(record));
+    if superseded {
+        record.judged = None;
+    }
+    superseded
 }
 
 /// Why a judgment came off an agent's record, as
@@ -420,6 +546,9 @@ pub enum ClearReason {
     ScreenUnreadable,
     /// The judge was turned off or cannot run.
     JudgeOff,
+    /// Something first-hand was reported after its screen was read: the
+    /// agent's own word, or its conversation's server's.
+    Superseded,
 }
 
 impl ClearReason {
@@ -429,6 +558,7 @@ impl ClearReason {
             Self::ProcessChanged => "process_changed",
             Self::ScreenUnreadable => "screen_unreadable",
             Self::JudgeOff => "judge_off",
+            Self::Superseded => "superseded",
         }
     }
 }
@@ -853,6 +983,48 @@ mod tests {
         );
         record.reported_activity.as_mut().unwrap().observed_at = at(21);
         assert!(!judged.stands_for(&record), "a report after it outranks it");
+        // A weak word after it does not: the idle timer, herdr's reading.
+        let weak: ActivityObservation = serde_json::from_value(
+            json!({"activity": "idle", "observed_at": at(21), "evidence": "weak"}),
+        )
+        .unwrap();
+        assert!(!judged.superseded_by(&weak));
+        record.reported_activity = Some(weak);
+        assert!(judged.stands_for(&record), "an idle timer after it");
+        let herdr: ActivityObservation = serde_json::from_value(
+            json!({"activity": "idle", "observed_at": at(22), "source": "herdr"}),
+        )
+        .unwrap();
+        record.reported_activity = Some(herdr);
+        assert!(judged.stands_for(&record), "herdr's reading after it");
+        let server: ActivityObservation = serde_json::from_value(
+            json!({"activity": "working", "observed_at": at(23), "source": "codex_server"}),
+        )
+        .unwrap();
+        assert!(
+            judged.superseded_by(&server),
+            "the conversation's own server"
+        );
+        record.reported_activity = Some(server);
+        assert!(!judged.stands_for(&record));
+        // A first-hand word after it is remembered apart from the record's
+        // observation: a weak word that replaces it does not bring the
+        // judgment back.
+        record.first_hand_at = Some(at(23));
+        record.reported_activity = Some(
+            serde_json::from_value(
+                json!({"activity": "idle", "observed_at": at(24), "evidence": "weak"}),
+            )
+            .unwrap(),
+        );
+        assert!(judged.superseded_on(&record));
+        assert!(!judged.stands_for(&record), "not revived by a weaker word");
+        record.first_hand_at = Some(at(20));
+        assert!(
+            judged.stands_for(&record),
+            "a first-hand word before the screen"
+        );
+        record.first_hand_at = None;
         record.reported_activity = None;
         record.process_started_at = Some(at(-5));
         assert!(!judged.stands_for(&record), "another process");
@@ -861,12 +1033,66 @@ mod tests {
         assert!(!judged.stands_for(&record), "an ended agent");
     }
 
+    /// A record stored before `first_hand_at` was kept, as it is loaded:
+    /// a strong report after the judged screen seeds the field and takes
+    /// the judgment off, so a weak word that later replaces the report
+    /// cannot bring it back; a strong report before the screen seeds the
+    /// field and leaves it; a weak report after it leaves it, since
+    /// whether a first-hand word came between was not kept.
+    #[test]
+    fn a_record_stored_before_first_hand_at_is_settled_as_it_is_loaded() {
+        let observed = |activity: &str, secs: i64, evidence: Option<&str>| {
+            let mut json = json!({"activity": activity, "observed_at": at(secs)});
+            if let Some(evidence) = evidence {
+                json["evidence"] = evidence.into();
+            }
+            serde_json::from_value::<ActivityObservation>(json).unwrap()
+        };
+        let stored = |report: ActivityObservation| {
+            let mut record = AgentRecord::new(AgentSpec::default(), false, at(-60));
+            record.status = AgentStatus::Running;
+            record.process_started_at = Some(at(-60));
+            record.judged = Some(judgment(WaitReason::Permission, 960));
+            record.reported_activity = Some(report);
+            // As the older daemon wrote it: no `first_hand_at` at all.
+            let json = serde_json::to_value(&record).unwrap();
+            assert!(json.get("first_hand_at").is_none());
+            serde_json::from_value::<AgentRecord>(json).unwrap()
+        };
+
+        let mut after = stored(observed("working", 21, None));
+        assert!(settle_loaded(&mut after), "taken off as it is loaded");
+        assert_eq!(
+            (after.judged.as_ref(), after.first_hand_at),
+            (None, Some(at(21)))
+        );
+        after.reported_activity = Some(observed("idle", 400, Some("weak")));
+        assert!(!settle_loaded(&mut after), "nothing to take off again");
+        assert_eq!(after.first_hand_at, Some(at(21)), "kept");
+
+        let mut before = stored(observed("working", 10, None));
+        assert!(!settle_loaded(&mut before));
+        assert_eq!(before.first_hand_at, Some(at(10)));
+        assert!(
+            before
+                .judged
+                .as_ref()
+                .is_some_and(|j| j.stands_for(&before))
+        );
+
+        let mut weak = stored(observed("idle", 21, Some("weak")));
+        assert!(!settle_loaded(&mut weak));
+        assert_eq!(weak.first_hand_at, None);
+        assert!(weak.judged.as_ref().is_some_and(|j| j.stands_for(&weak)));
+    }
+
     #[test]
     fn clear_reasons_read_as_the_event_says_them() {
         assert_eq!(ClearReason::ScreenChanged.as_str(), "screen_changed");
         assert_eq!(ClearReason::ProcessChanged.as_str(), "process_changed");
         assert_eq!(ClearReason::ScreenUnreadable.as_str(), "screen_unreadable");
         assert_eq!(ClearReason::JudgeOff.as_str(), "judge_off");
+        assert_eq!(ClearReason::Superseded.as_str(), "superseded");
     }
 
     /// A screen read decides as before; one lost for the agent's own
@@ -916,9 +1142,53 @@ mod tests {
         }
     }
 
+    /// A memory request carries the new text and the candidates' and nothing
+    /// else, with one question each; an answer reads back in their order,
+    /// and one missing or out of range is no answer.
+    #[test]
+    fn a_memory_request_asks_about_each_candidate_and_reads_back_in_order() {
+        let request = memory_request("jev-1.13.0", "deploys are on Fridays", &["a", "b"]);
+        assert_eq!(request["model"], "jev-1.13.0");
+        let state = request["state"].as_object().unwrap();
+        let mut fields: Vec<&str> = state.keys().map(String::as_str).collect();
+        fields.sort_unstable();
+        assert_eq!(fields, ["about", "new", "note_1", "note_2"]);
+        assert_eq!(state["new"], "deploys are on Fridays");
+        assert_eq!(
+            (&state["note_1"], &state["note_2"]),
+            (&json!("a"), &json!("b"))
+        );
+        let questions = request["questions"].as_object().unwrap();
+        assert_eq!(questions.len(), 2);
+        assert_eq!(questions["note_2"]["type"], "noul");
+        assert!(
+            questions["note_2"]["instructions"]
+                .as_str()
+                .unwrap()
+                .contains("`note_2`")
+        );
+
+        let answer = |second: Value| {
+            json!({"model": "jev-1.13.0", "answers": {
+                "note_1": {"type": "noul", "noul": 0.25},
+                "note_2": second,
+            }})
+        };
+        let (model, read) =
+            read_memory_answers(&answer(json!({"type": "noul", "noul": 0.75})), 2).unwrap();
+        assert_eq!((model.as_str(), read), ("jev-1.13.0", vec![0.25, 0.75]));
+        assert!(read_memory_answers(&answer(json!({"type": "noul", "noul": 1.5})), 2).is_err());
+        assert!(read_memory_answers(&answer(json!({"type": "text"})), 2).is_err());
+        assert!(
+            read_memory_answers(&json!({"answers": {}}), 0).is_err(),
+            "no model"
+        );
+    }
+
     #[test]
     fn judgments_are_named_as_the_file_names_them() {
         assert_eq!(Judgment::parse("screens"), Some(Judgment::Screens));
+        assert_eq!(Judgment::parse("memories"), Some(Judgment::Memories));
         assert_eq!(Judgment::parse("summaries"), None);
         assert_eq!(Judgment::Screens.as_str(), "screens");
     }

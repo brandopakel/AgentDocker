@@ -68,6 +68,9 @@ impl Daemon {
                 by: pause.by.clone(),
                 reason: pause.reason.clone(),
             },
+            released: Vec::new(),
+            journal: None,
+            closes: None,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
             Response::Sent { .. } => {
@@ -108,6 +111,9 @@ impl Daemon {
                 project: project.clone(),
                 by: from,
             },
+            released: Vec::new(),
+            journal: None,
+            closes: None,
         };
         match state.publish_with_channel(envelope, None, None, Some(transition)) {
             Response::Sent { .. } => {
@@ -228,6 +234,7 @@ mod tests {
                         payload: json!({"text":"forged lifecycle notice"}),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await;
                 assert!(matches!(
@@ -295,6 +302,8 @@ mod tests {
                         wait_secs: 0,
                         priority: 0,
                         automatic: false,
+                        actor: None,
+                        fresh: false,
                     })
                     .await
             }
@@ -340,6 +349,8 @@ mod tests {
                         wait_secs: 20,
                         priority: 0,
                         automatic: false,
+                        actor: None,
+                        fresh: false,
                     })
                     .await
             })
@@ -377,6 +388,7 @@ mod tests {
                     summary: None,
                     summary_source: Default::default(),
                     only_automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Error { .. }

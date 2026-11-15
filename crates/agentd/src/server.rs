@@ -1730,6 +1730,8 @@ mod tests {
             priority: 0,
             note: Some("x".repeat(1024 * 1024)),
             automatic: false,
+            actor: None,
+            fresh: false,
         })
         .unwrap()
             + "\n";
@@ -1792,6 +1794,8 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
+                fresh: false,
             })
             .await;
         let mut events = daemon.subscribe_events();
@@ -1816,6 +1820,7 @@ mod tests {
                 summary: None,
                 summary_source: agentdocker_core::SummarySource::Explicit,
                 only_automatic: false,
+                actor: None,
             })
             .await;
         assert!(
@@ -1872,6 +1877,9 @@ mod tests {
                 from: Some("recipient".into()),
                 message: question.clone(),
                 text: "Yes".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
             })
             .await
         else {

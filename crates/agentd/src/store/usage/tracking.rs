@@ -14,6 +14,7 @@ const TABLES: &[(&str, &[&str])] = &[
     ),
     ("usage_baselines", &["key", "json"]),
     ("usage_context", &["runtime", "session", "at", "json"]),
+    ("usage_accounts", &["key", "account"]),
     ("usage_files", &["key", "json"]),
     (
         "usage_buckets",

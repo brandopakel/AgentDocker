@@ -590,6 +590,7 @@ mod tests {
             project: None,
             started_at: agent.process_started_at,
             session: None,
+            team: None,
         };
         app.agents.push(agent);
         app.discovered = vec![process.clone(), process];
@@ -632,6 +633,8 @@ mod tests {
                 text: "Continue?".into(),
                 asked_at: now,
                 expires_at: now + chrono::Duration::minutes(1),
+                form: Default::default(),
+                stale_since: None,
             });
         }
         app.agents = vec![quiet, first.clone(), finished, elsewhere];

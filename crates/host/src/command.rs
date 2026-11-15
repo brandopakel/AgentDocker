@@ -281,6 +281,8 @@ pub fn run_with_env(
         reaped: false,
     };
     let started = Instant::now();
+    // Short at first, so a quick command is not kept waiting on the poll.
+    let mut pause = Duration::from_millis(1);
     let status = loop {
         if let Some(status) = child.child.try_wait()? {
             child.reaped = true;
@@ -299,7 +301,8 @@ pub fn run_with_env(
         {
             return Err(io::Error::other("command output exceeded 4 MiB"));
         }
-        std::thread::sleep(Duration::from_millis(10));
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(Duration::from_millis(10));
     };
     use std::io::{Seek, SeekFrom};
     log.seek(SeekFrom::Start(0))?;

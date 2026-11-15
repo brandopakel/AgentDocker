@@ -1,7 +1,10 @@
 //! The opt-in judge, `[judge]` in `agentd.toml`: an agent's quiet screen
 //! read by a TypeSafe System One model (Jev) for whether it waits on the
 //! person. Off unless the person names a judgment and a key; then, and
-//! only then, screens are read and their last lines sent.
+//! only then, screens are read and their last lines sent. The `memories`
+//! judgment asks the same model, within the same budget, which current
+//! memories a new one may replace ([`Daemon::judge_memory`]): it suggests
+//! and changes nothing.
 //!
 //! Every five seconds the file and the key are read — on their own, so a
 //! change is seen even while a pass waits on an answer — and a pass reads
@@ -46,9 +49,10 @@ use super::*;
 use agentdocker_core::Activity;
 use agentdocker_core::config::JudgeConfig;
 use agentdocker_core::judgment::{
-    self, ClearReason, JudgeState, JudgeStatus, Outcome, Review, ScreenJudgment, Thresholds,
-    Unreadable,
+    self, ClearReason, JudgeState, JudgeStatus, Judgment, Outcome, Review, ScreenJudgment,
+    Thresholds, Unreadable,
 };
+use agentdocker_core::memory::{MaySupersede, Suggestion};
 use agentdocker_core::multiplexer::Evidence;
 use sha2::{Digest, Sha256};
 
@@ -173,6 +177,16 @@ pub(in crate::daemon) struct Setup {
     generation: u64,
 }
 
+impl Setup {
+    /// Whether the file names `judgment`.
+    fn judges(&self, judgment: Judgment) -> bool {
+        self.config
+            .judgments
+            .iter()
+            .any(|name| name == judgment.as_str())
+    }
+}
+
 /// The judge's own state, off the state lock.
 pub(in crate::daemon) struct Judge {
     setting: Setting,
@@ -219,6 +233,21 @@ pub(in crate::daemon) struct Judge {
     /// second.
     #[cfg(test)]
     pause: Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>,
+    /// A test's hold, once, on a due screen found within the budget and
+    /// not yet given its place, so another call can go in between.
+    #[cfg(test)]
+    admit_pause: Option<(Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>)>,
+}
+
+/// Why a call may not go now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Refusal {
+    /// The setup it would be asked under is no longer in force.
+    Stale,
+    /// The service failed lately and is being given time.
+    BackingOff,
+    /// The minute's calls are spent.
+    OverBudget,
 }
 
 impl Default for Judge {
@@ -247,11 +276,50 @@ impl Default for Judge {
             reads: 0,
             #[cfg(test)]
             pause: None,
+            #[cfg(test)]
+            admit_pause: None,
         }
     }
 }
 
 impl Judge {
+    /// Why a call under `generation` may not go now, if it may not.
+    fn refusal(
+        &mut self,
+        generation: u64,
+        calls_per_minute: usize,
+        now: Instant,
+    ) -> Option<Refusal> {
+        self.prune(now);
+        if !self.current(generation) {
+            Some(Refusal::Stale)
+        } else if self.backoff_until.is_some_and(|until| now < until) {
+            Some(Refusal::BackingOff)
+        } else if self.calls.len() >= calls_per_minute {
+            Some(Refusal::OverBudget)
+        } else {
+            None
+        }
+    }
+
+    /// Give a call that goes now its place in the minute's budget, and its
+    /// deadline. Every call, a screen's or a memory's, is admitted here, in
+    /// the hold that checks the setup, the backoff and the budget, right
+    /// before it is sent: two calls never both take the last place, and
+    /// none goes out after another's failure began a backoff.
+    fn admit(
+        &mut self,
+        generation: u64,
+        calls_per_minute: usize,
+        now: Instant,
+    ) -> Result<StdDuration, Refusal> {
+        if let Some(refusal) = self.refusal(generation, calls_per_minute, now) {
+            return Err(refusal);
+        }
+        self.calls.push_back(now);
+        Ok(self.deadline)
+    }
+
     fn prune(&mut self, now: Instant) {
         while self
             .calls
@@ -641,6 +709,11 @@ impl Daemon {
         if status == JudgeState::On {
             return;
         }
+        Self::clear_screen_judgments(&mut state);
+    }
+
+    /// Take off every standing screen judgment: nothing reads screens now.
+    fn clear_screen_judgments(state: &mut State) {
         let standing: Vec<(AgentId, String)> = state
             .registry
             .all()
@@ -666,8 +739,99 @@ impl Daemon {
         let Some(setup) = self.judge_setup().await else {
             return;
         };
+        // On for memories alone: no screen is read, and none stays judged.
+        if !setup.judges(Judgment::Screens) {
+            {
+                let mut judge = lock(&self.judge);
+                judge.screens.clear();
+                judge.outages.clear();
+            }
+            Self::clear_screen_judgments(&mut lock(&self.state));
+            return;
+        }
         let (mut pass, due) = self.read_screens(&setup).await;
         self.ask_judge(&setup, &mut pass, due).await;
+    }
+
+    /// Ask which of `candidates` (id and text) a new memory may replace,
+    /// within the same budget as the screens: those at or above the
+    /// threshold, the likeliest first, and what came of asking. Only the
+    /// texts go. Nothing here can refuse the memory or change it: a judge
+    /// that is off, spent or failing says so and suggests nothing.
+    pub(in crate::daemon) async fn judge_memory(
+        self: &Arc<Self>,
+        new: &str,
+        candidates: Vec<(String, String)>,
+    ) -> (Suggestion, Vec<MaySupersede>) {
+        let Some(setup) = self.judge_setup().await else {
+            let unusable = matches!(lock(&self.judge).setting, Setting::Unusable(_));
+            let word = if unusable {
+                Suggestion::Unavailable
+            } else {
+                Suggestion::Off
+            };
+            return (word, Vec::new());
+        };
+        if !setup.judges(Judgment::Memories) {
+            return (Suggestion::Off, Vec::new());
+        }
+        if candidates.is_empty() {
+            return (Suggestion::Made, Vec::new());
+        }
+        let config = &setup.config;
+        let admitted = lock(&self.judge).admit(
+            setup.generation,
+            config.calls_per_minute as usize,
+            Instant::now(),
+        );
+        let deadline = match admitted {
+            Ok(deadline) => deadline,
+            Err(Refusal::OverBudget) => return (Suggestion::OverBudget, Vec::new()),
+            Err(Refusal::Stale | Refusal::BackingOff) => {
+                return (Suggestion::Unavailable, Vec::new());
+            }
+        };
+        let texts: Vec<&str> = candidates.iter().map(|(_, text)| text.as_str()).collect();
+        let body = judgment::memory_request(&config.model, new, &texts);
+        let count = candidates.len();
+        let (url, key) = (config.url.clone(), setup.key.clone());
+        let answered = tokio::task::spawn_blocking(move || call(&url, &key, &body, deadline))
+            .await
+            .unwrap_or(Err(Failure::Unreachable))
+            .and_then(|value| {
+                judgment::read_memory_answers(&value, count).map_err(|_| Failure::Malformed)
+            });
+        // Switched off or changed while it was out: the answer is not one
+        // the setup in force asked for.
+        if !self.judge_current(setup.generation) {
+            return (Suggestion::Unavailable, Vec::new());
+        }
+        match answered {
+            Ok((model, answers)) => {
+                lock(&self.judge).problem = None;
+                debug!(%model, ?answers, "judge answered about a memory");
+                let floor = f64::from(config.threshold_percent) / 100.0;
+                let mut likely: Vec<MaySupersede> = candidates
+                    .into_iter()
+                    .zip(answers)
+                    .filter(|(_, probability)| *probability >= floor)
+                    .map(|((memory, _), probability)| MaySupersede {
+                        memory,
+                        probability,
+                    })
+                    .collect();
+                likely.sort_by(|a, b| b.probability.total_cmp(&a.probability));
+                (Suggestion::Made, likely)
+            }
+            Err(failure) => {
+                warn!(reason = failure.word(), "a judge call failed");
+                let event = lock(&self.judge).fail(failure, Instant::now());
+                if let Some(event) = event {
+                    self.emit(event);
+                }
+                (Suggestion::Unavailable, Vec::new())
+            }
+        }
     }
 
     /// One screen, as it is now: the terminal drawn; the tmux pane
@@ -953,29 +1117,27 @@ impl Daemon {
     async fn ask_judge(self: &Arc<Self>, setup: &Setup, pass: &mut Pass, due: Vec<Due>) {
         let config = &setup.config;
         let thresholds = Thresholds::percent(config.threshold_percent);
+        let calls_per_minute = config.calls_per_minute as usize;
         for screen in due {
-            let deadline = {
-                let mut judge = lock(&self.judge);
-                let now = Instant::now();
-                judge.prune(now);
-                if !judge.current(setup.generation)
-                    || judge.backoff_until.is_some_and(|until| now < until)
-                    || judge.calls.len() >= config.calls_per_minute as usize
-                {
-                    break;
-                }
-                judge.deadline
-            };
+            // Not worth reading the screen again for a call that could not go.
+            let refused =
+                lock(&self.judge).refusal(setup.generation, calls_per_minute, Instant::now());
+            if refused.is_some() {
+                break;
+            }
+            #[cfg(test)]
+            self.admit_pause().await;
             if !self.unchanged(pass, &screen).await {
                 continue;
             }
-            {
-                let mut judge = lock(&self.judge);
-                if !judge.current(setup.generation) {
-                    break;
-                }
-                judge.calls.push_back(Instant::now());
-            }
+            // Checked again as the place is taken: while the screen was
+            // read, a memory's call may have spent the budget or failed
+            // into a backoff.
+            let admitted =
+                lock(&self.judge).admit(setup.generation, calls_per_minute, Instant::now());
+            let Ok(deadline) = admitted else {
+                break;
+            };
             let body = judgment::screen_request(&config.model, &screen.lines);
             let (url, key) = (config.url.clone(), setup.key.clone());
             let answered = tokio::task::spawn_blocking(move || call(&url, &key, &body, deadline))
@@ -1060,6 +1222,17 @@ impl Daemon {
         }
     }
 
+    /// Where a test holds a due screen, once, after its budget was looked
+    /// at and before it takes its place.
+    #[cfg(test)]
+    async fn admit_pause(&self) {
+        let pause = lock(&self.judge).admit_pause.take();
+        if let Some((reached, resume)) = pause {
+            reached.wait().await;
+            resume.wait().await;
+        }
+    }
+
     /// A screen asked about is not asked about again until it changes.
     fn settle(&self, agent: &AgentId, screen: &str) {
         if let Some(watched) = lock(&self.judge).screens.get_mut(agent)
@@ -1071,7 +1244,11 @@ impl Daemon {
 
     /// Keep a promotion on the agent's record, if it still applies: the
     /// setup it was asked under still in force by the state lock, the same live process,
-    /// nothing reported by its adapter since the screen was read,
+    /// nothing first-hand reported since the screen was read
+    /// (`ScreenJudgment::superseded_on`: the record's newest first-hand
+    /// time, which a weak word that replaced that report on the record does
+    /// not hide; a weak word itself, such as the idle timer, does not
+    /// count),
     /// working, idle or unknown by its record, and, for a herdr pane,
     /// still the only live agent claiming the session it was read by.
     fn record_judgment(
@@ -1101,10 +1278,7 @@ impl Daemon {
         if !record.status.is_live()
             || record.process_started_at != judgment.process_started_at
             || record.judged.is_some()
-            || record
-                .reported_activity
-                .as_ref()
-                .is_some_and(|observation| observation.observed_at > judgment.judged_at)
+            || judgment.superseded_on(&record)
             || !matches!(
                 state.recorded_activity_of(&record, now),
                 Activity::Working { .. } | Activity::Idle { .. } | Activity::Unknown
@@ -1228,6 +1402,8 @@ mod tests {
         stall: StdDuration,
         /// Hold every answer until this is set back to false.
         hold: bool,
+        /// The answers about memories, `note_1` on.
+        notes: Vec<f64>,
         /// Each request: its authorization header and body.
         seen: Vec<(String, Value)>,
     }
@@ -1242,6 +1418,7 @@ mod tests {
             nouls,
             stall: StdDuration::ZERO,
             hold: false,
+            notes: Vec::new(),
             seen: Vec::new(),
         }));
         let fake = shared.clone();
@@ -1282,19 +1459,24 @@ mod tests {
                     while fake.lock().unwrap().hold {
                         std::thread::sleep(StdDuration::from_millis(10));
                     }
-                    let (status, nouls) = {
+                    let (status, nouls, notes) = {
                         let fake = fake.lock().unwrap();
-                        (fake.status, fake.nouls)
+                        (fake.status, fake.nouls, fake.notes.clone())
                     };
                     let reply = if status == 200 {
+                        let mut answers = json!({
+                            "approval": {"type": "noul", "noul": nouls[0]},
+                            "question": {"type": "noul", "noul": nouls[1]},
+                            "running": {"type": "noul", "noul": nouls[2]},
+                            "draft": {"type": "noul", "noul": nouls[3]},
+                        });
+                        for (index, noul) in notes.iter().enumerate() {
+                            answers[format!("note_{}", index + 1)] =
+                                json!({"type": "noul", "noul": noul});
+                        }
                         json!({
                             "model": "jev-1.13.0",
-                            "answers": {
-                                "approval": {"type": "noul", "noul": nouls[0]},
-                                "question": {"type": "noul", "noul": nouls[1]},
-                                "running": {"type": "noul", "noul": nouls[2]},
-                                "draft": {"type": "noul", "noul": nouls[3]},
-                            },
+                            "answers": answers,
                             "usage": {"input_tokens": 600, "output_tokens": 20},
                         })
                         .to_string()
@@ -1595,6 +1777,332 @@ mod tests {
         }
     }
 
+    /// The daemon's three-part answer for one agent.
+    async fn identity(
+        daemon: &Arc<Daemon>,
+        agent: &AgentId,
+    ) -> Option<agentdocker_core::IdentityStatus> {
+        let Response::Activity { activity } = daemon
+            .handle(Request::Activity {
+                agent: Some(agent.to_string()),
+                project: None,
+                all: false,
+            })
+            .await
+        else {
+            panic!("no activity");
+        };
+        activity.into_iter().next().unwrap().identity()
+    }
+
+    /// An observation as a client sends it.
+    async fn report(daemon: &Arc<Daemon>, agent: &AgentId, observation: Value) {
+        let observation: agentdocker_core::ActivityObservation =
+            serde_json::from_value(observation).unwrap();
+        assert!(matches!(
+            daemon
+                .handle(Request::ReportActivity {
+                    agent: agent.to_string(),
+                    observation,
+                })
+                .await,
+            Response::Ok
+        ));
+    }
+
+    /// A record a daemon wrote before `first_hand_at` was kept, stored as
+    /// that daemon left it: a judgment, and the agent's own report made
+    /// after the judged screen, which hid the judgment but did not take it
+    /// off. Opened again, the judgment comes off, said once and written,
+    /// and once that report has expired a weak idle does not bring it
+    /// back. One whose latest stored report is weak keeps its judgment:
+    /// whether a first-hand word came between was not kept, and the
+    /// judge's own pass takes it off once the screen moves.
+    #[tokio::test]
+    async fn a_judgment_stored_before_first_hand_at_stays_off_after_a_restart() {
+        use agentdocker_core::judgment::ScreenJudgment;
+        use agentdocker_core::status::{Status, WaitingFor};
+        let dir = TempDir::new().unwrap();
+        let mut processes = Vec::new();
+        let daemon = open(&dir);
+        let mut agents = Vec::new();
+        for name in ["reported-after", "weak-after"] {
+            let process = std::process::Command::new("sleep")
+                .arg("60")
+                .spawn()
+                .unwrap();
+            let Response::Agent { agent } = daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: name.into(),
+                        workdir: Some(dir.path().to_path_buf()),
+                        ..AgentSpec::default()
+                    },
+                    pid: Some(process.id()),
+                    session: None,
+                })
+                .await
+            else {
+                panic!("registered");
+            };
+            processes.push(process);
+            agents.push(agent.id);
+        }
+        let (strong, weak) = (agents[0].clone(), agents[1].clone());
+        let now = Utc::now();
+        let minutes = chrono::Duration::minutes;
+        {
+            let mut state = lock(&daemon.state);
+            for (agent, report) in [
+                (
+                    &strong,
+                    json!({"activity": "working", "observed_at": now - minutes(7)}),
+                ),
+                (
+                    &weak,
+                    json!({"activity": "idle", "observed_at": now - minutes(7), "evidence": "weak"}),
+                ),
+            ] {
+                let record = state.registry.get_mut(agent).unwrap();
+                record.judged = Some(ScreenJudgment {
+                    reason: agentdocker_core::WaitReason::Permission,
+                    permille: 960,
+                    since: now - minutes(10),
+                    judged_at: now - minutes(9),
+                    process_started_at: record.process_started_at,
+                    screen: "0123456789abcdef".into(),
+                    model: "a-model".into(),
+                });
+                record.reported_activity = Some(serde_json::from_value(report).unwrap());
+                record.first_hand_at = None;
+                let record = record.clone();
+                assert!(
+                    serde_json::to_value(&record)
+                        .unwrap()
+                        .get("first_hand_at")
+                        .is_none(),
+                    "stored as the older daemon wrote it"
+                );
+                state.store.upsert_agent(&record).unwrap();
+            }
+        }
+        drop(daemon);
+
+        let daemon = open(&dir);
+        let settled = record(&daemon, &strong);
+        assert!(settled.judged.is_none(), "taken off as it was opened");
+        assert_eq!(settled.first_hand_at, Some(now - minutes(7)));
+        let said: Vec<String> = lock(&daemon.state)
+            .store
+            .recent_events(50)
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event.kind {
+                EventKind::AgentJudgmentCleared { agent, reason } if agent == strong => {
+                    Some(reason)
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(said, ["superseded"], "said once");
+        let kept = record(&daemon, &weak);
+        assert!(
+            kept.judged.as_ref().is_some_and(|j| j.stands_for(&kept)),
+            "a weak latest report keeps it"
+        );
+        assert_eq!(
+            identity(&daemon, &weak).await.map(|i| i.waiting_for),
+            Some(WaitingFor::Permission)
+        );
+        drop(daemon);
+
+        // Written: opened a third time, it is as it was left; and the
+        // report having expired, a weak idle does not bring it back.
+        let daemon = open(&dir);
+        assert!(record(&daemon, &strong).judged.is_none(), "written");
+        report(
+            &daemon,
+            &strong,
+            json!({"activity": "idle", "observed_at": Utc::now(), "evidence": "weak"}),
+        )
+        .await;
+        let now_status = identity(&daemon, &strong).await.unwrap();
+        assert_eq!(
+            (now_status.status, now_status.waiting_for),
+            (Status::Idle, WaitingFor::None)
+        );
+        assert!(record(&daemon, &strong).judged.is_none());
+        for mut process in processes {
+            let _ = process.kill();
+            let _ = process.wait();
+        }
+    }
+
+    /// A weak word made after the judged screen was read — Claude Code's
+    /// idle timer — leaves the judgment standing and the agent waiting on
+    /// the person, through the next pass over the same screen too. A
+    /// first-hand word made after it takes it off for good: once that word
+    /// has expired, neither the idle timer nor another reporter's weak word
+    /// brings it back, and a call still out for a screen read before the
+    /// first-hand word is refused when it returns.
+    #[tokio::test]
+    async fn a_weak_idle_after_a_judgment_leaves_it_standing() {
+        use agentdocker_core::IdentityStatus;
+        use agentdocker_core::status::{Evidence, State, Status, WaitingFor};
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.96, 0.31, 0.02, 0.01]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let mut events = daemon.subscribe_events();
+        let agent = showing(&daemon, &dir, "timer-after-judgment", DIALOG).await;
+        daemon.judge_once().await;
+        assert_eq!(calls(&fake), 1);
+        let judged = record(&daemon, &agent)
+            .judged
+            .expect("judged from the screen");
+        let waiting = IdentityStatus {
+            state: State::Working,
+            status: Status::Waiting,
+            waiting_for: WaitingFor::Permission,
+            evidence: Evidence::Strong,
+        };
+        assert_eq!(identity(&daemon, &agent).await, Some(waiting));
+
+        // The idle timer fires after the screen was read.
+        report(
+            &daemon,
+            &agent,
+            json!({"activity": "idle", "observed_at": Utc::now(), "evidence": "weak"}),
+        )
+        .await;
+        assert_eq!(
+            record(&daemon, &agent)
+                .reported_activity
+                .and_then(|observation| observation.evidence),
+            Some(Evidence::Weak),
+            "recorded"
+        );
+        assert!(matches!(
+            activity(&daemon, &agent).await,
+            Activity::Waiting {
+                judged: Some(_),
+                ..
+            }
+        ));
+        assert_eq!(identity(&daemon, &agent).await, Some(waiting));
+        // The next pass finds the same screen: not asked again, and the
+        // judgment still stands.
+        daemon.judge_once().await;
+        assert_eq!(calls(&fake), 1);
+        assert!(record(&daemon, &agent).judged.is_some());
+        assert_eq!(identity(&daemon, &agent).await, Some(waiting));
+
+        // The agent's own first-hand word after it takes it off.
+        let before_report = Utc::now();
+        report(
+            &daemon,
+            &agent,
+            json!({"activity": "working", "observed_at": Utc::now()}),
+        )
+        .await;
+        assert!(matches!(
+            activity(&daemon, &agent).await,
+            Activity::Working { .. }
+        ));
+        assert_eq!(
+            identity(&daemon, &agent).await,
+            Some(IdentityStatus {
+                status: Status::Busy,
+                waiting_for: WaitingFor::None,
+                ..waiting
+            })
+        );
+        // Off the record, said with the report, and the time of that word
+        // kept apart from the observation.
+        let off = record(&daemon, &agent);
+        assert!(off.judged.is_none(), "taken off the record");
+        assert!(off.first_hand_at.is_some_and(|at| at > before_report));
+        let mut cleared = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentJudgmentCleared { agent: a, reason } = event.kind
+                && a == agent
+            {
+                cleared.push(reason);
+            }
+        }
+        assert_eq!(cleared, vec!["superseded".to_owned()]);
+        let idle = IdentityStatus {
+            status: Status::Idle,
+            waiting_for: WaitingFor::None,
+            evidence: Evidence::Weak,
+            ..waiting
+        };
+
+        // The working word expires and the idle timer fires again: idle,
+        // and no permission is waited for.
+        {
+            let mut state = lock(&daemon.state);
+            let working = state
+                .registry
+                .get_mut(&agent)
+                .unwrap()
+                .reported_activity
+                .as_mut()
+                .unwrap();
+            working.observed_at -= chrono::Duration::minutes(6);
+        }
+        report(
+            &daemon,
+            &agent,
+            json!({"activity": "idle", "observed_at": Utc::now(), "evidence": "weak"}),
+        )
+        .await;
+        assert!(matches!(
+            activity(&daemon, &agent).await,
+            Activity::Idle { .. }
+        ));
+        assert_eq!(identity(&daemon, &agent).await, Some(idle));
+        // Nor does another reporter's weak word, which replaces any word
+        // of the agent's own at once.
+        {
+            let now = Utc::now();
+            let herdr = agentdocker_core::ActivityObservation {
+                activity: agentdocker_core::ReportedActivity::Idle,
+                observed_at: now,
+                reason: None,
+                detail: None,
+                source: Some(agentdocker_core::ActivitySource::Herdr),
+                evidence: None,
+            };
+            let mut state = lock(&daemon.state);
+            assert!(matches!(
+                state.record_activity(&agent, herdr, now),
+                Response::Ok
+            ));
+        }
+        assert_eq!(identity(&daemon, &agent).await, Some(idle));
+        assert!(record(&daemon, &agent).judged.is_none());
+
+        // A call still out for a screen read before the first-hand word is
+        // refused when it returns; one for a screen read after it is kept.
+        let generation = lock(&daemon.state).judge_generation;
+        let stale = ScreenJudgment {
+            judged_at: before_report,
+            ..judged.clone()
+        };
+        assert!(!daemon.record_judgment(&agent, &Source::Terminal, stale, generation));
+        assert!(record(&daemon, &agent).judged.is_none(), "refused");
+        let now = Utc::now();
+        let fresh = ScreenJudgment {
+            since: now,
+            judged_at: now,
+            ..judged
+        };
+        assert!(daemon.record_judgment(&agent, &Source::Terminal, fresh, generation));
+        assert_eq!(identity(&daemon, &agent).await, Some(waiting));
+        stop(&daemon, &agent).await;
+    }
+
     /// The budget holds whatever goes quiet: with one call a minute, a
     /// second quiet screen waits for the next minute.
     #[tokio::test]
@@ -1734,6 +2242,366 @@ mod tests {
             Activity::Waiting { .. }
         ));
         stop(&daemon, &agent).await;
+    }
+
+    /// With `memories` alone no screen is read, and what `screens` left
+    /// standing comes off.
+    #[tokio::test]
+    async fn memories_alone_reads_no_screen_and_keeps_no_screen_judgment() {
+        let dir = TempDir::new().unwrap();
+        let (url, _fake) = server([0.1, 0.92, 0.0, 0.0]);
+        configure(&dir, &url, "");
+        let daemon = open(&dir);
+        let agent = showing(&daemon, &dir, "asks", "Which branch should I use?\\n> \\n").await;
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_some());
+        configure_memories(&dir, &url, "");
+        let reads = lock(&daemon.judge).reads;
+        daemon.judge_once().await;
+        assert!(record(&daemon, &agent).judged.is_none());
+        assert_eq!(lock(&daemon.judge).reads, reads, "no screen was read");
+        stop(&daemon, &agent).await;
+    }
+
+    fn configure_memories(dir: &TempDir, url: &str, extra: &str) {
+        let key = write_key(dir, 0o600);
+        std::fs::write(
+            dir.path().join(agentdocker_core::config::FILE_NAME),
+            format!(
+                "[judge]\njudgments = [\"memories\"]\nkey_file = {:?}\nurl = {url:?}\n{extra}",
+                key.display().to_string()
+            ),
+        )
+        .unwrap();
+    }
+
+    /// An agent to keep memories as, in `dir`'s project.
+    async fn author(daemon: &Arc<Daemon>, dir: &TempDir) {
+        let response = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: "author".into(),
+                    workdir: Some(dir.path().to_path_buf()),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        assert!(matches!(response, Response::Agent { .. }), "{response:?}");
+    }
+
+    async fn keep(
+        daemon: &Arc<Daemon>,
+        from: &str,
+        project: Option<&TempDir>,
+        text: &str,
+        roles: &[&str],
+    ) -> (
+        agentdocker_core::memory::Memory,
+        Vec<MaySupersede>,
+        Option<Suggestion>,
+    ) {
+        let response = daemon
+            .handle(Request::MemoryAdd {
+                from: from.into(),
+                project: project.map(|dir| dir.path().display().to_string()),
+                text: text.into(),
+                links: vec![agentdocker_core::Link::new(
+                    agentdocker_core::LinkKind::Url,
+                    "https://example.com/secret-link",
+                )],
+                supersedes: None,
+                standing: false,
+                forget_after: None,
+                roles: roles.iter().map(|r| (*r).to_owned()).collect(),
+                valid_from: None,
+            })
+            .await;
+        let Response::Memory {
+            memory,
+            may_supersede,
+            suggestion,
+            ..
+        } = response
+        else {
+            panic!("{response:?}");
+        };
+        (memory, may_supersede, suggestion)
+    }
+
+    /// The likeliest first, those under the threshold left out, only the
+    /// texts sent, and nothing superseded by the answer.
+    #[tokio::test]
+    async fn a_new_memory_is_told_which_it_may_replace_and_nothing_is_written() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.0; 4]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        let mut kept = Vec::new();
+        for text in [
+            "deploys go out on Mondays",
+            "deploys need the staging check",
+            "deploys are frozen in December",
+        ] {
+            kept.push(keep(&daemon, "author", None, text, &[]).await.0);
+        }
+        configure_memories(&dir, &url, "");
+        fake.lock().unwrap().notes = vec![0.2, 0.75, 0.9];
+        let (new, may_supersede, suggestion) = keep(
+            &daemon,
+            "author",
+            None,
+            "deploys go out on Fridays now",
+            &[],
+        )
+        .await;
+        assert_eq!(suggestion, Some(Suggestion::Made));
+        let (auth, body) = fake.lock().unwrap().seen[0].clone();
+        assert_eq!(auth, format!("Bearer {KEY}"));
+        let state = body["state"].as_object().unwrap();
+        assert_eq!(state["new"], "deploys go out on Fridays now");
+        assert_eq!(state.len(), 5, "about, new and three notes: {state:?}");
+        let id_of = |field: &str| {
+            kept.iter()
+                .find(|m| state[field] == m.text.as_str())
+                .unwrap()
+                .id
+                .clone()
+        };
+        assert_eq!(
+            may_supersede,
+            [
+                MaySupersede {
+                    memory: id_of("note_3"),
+                    probability: 0.9
+                },
+                MaySupersede {
+                    memory: id_of("note_2"),
+                    probability: 0.75
+                },
+            ]
+        );
+        let sent = body.to_string();
+        for private in [
+            "secret-link",
+            "author",
+            kept[0].id.as_str(),
+            new.id.as_str(),
+        ] {
+            assert!(!sent.contains(private), "{private} went out: {sent}");
+        }
+        assert_eq!(new.supersedes, None);
+        let Response::Memories { memories, .. } = daemon
+            .handle(Request::MemorySearch {
+                from: Some("author".into()),
+                project: None,
+                query: "deploys".into(),
+                limit: None,
+                as_of: None,
+                include_superseded: false,
+                min_score: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        assert_eq!(memories.len(), 4, "every memory stands");
+    }
+
+    /// Off, nothing alike, the budget spent, a server that fails: the memory
+    /// is kept all the same, and the answer says what came of asking.
+    #[tokio::test]
+    async fn a_memory_is_kept_whatever_becomes_of_asking() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.0; 4]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        let text = "deploys go out on Mondays";
+        // Off: no section, and a section that names only screens.
+        let (_, none, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!((none.len(), word), (0, Some(Suggestion::Off)));
+        configure(&dir, &url, "");
+        let (_, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::Off));
+        assert_eq!(calls(&fake), 0, "nothing is sent while off");
+
+        // Nothing shares a word with it: nothing to ask.
+        configure_memories(&dir, &url, "calls_per_minute = 1\n");
+        let (_, _, word) = keep(&daemon, "author", None, "the cache lives in target", &[]).await;
+        assert_eq!(word, Some(Suggestion::Made));
+        assert_eq!(calls(&fake), 0);
+
+        // One call a minute: the second finds the budget spent.
+        fake.lock().unwrap().notes = vec![0.1, 0.1];
+        let (_, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::Made));
+        let (kept, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::OverBudget));
+        assert_eq!(calls(&fake), 1);
+        assert_eq!(kept.text, text);
+
+        // A service that fails says so, and the next add finds it backing off.
+        lock(&daemon.judge).calls.clear();
+        fake.lock().unwrap().status = 500;
+        let (kept, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::Unavailable));
+        assert_eq!(kept.text, text);
+        let JudgeStatus::On { problem, .. } = daemon.judge_status() else {
+            panic!("the judge is on");
+        };
+        assert!(problem.is_some());
+        let sent = calls(&fake);
+        let (_, _, word) = keep(&daemon, "author", None, text, &[]).await;
+        assert_eq!(word, Some(Suggestion::Unavailable));
+        assert_eq!(calls(&fake), sent, "no call while backing off");
+    }
+
+    /// A memory kept is the answer through the whole request, whatever
+    /// becomes of asking about it: a handover offered while the call is
+    /// out, and the failure the fence then keeps from being announced, do
+    /// not turn it into a refusal, which its client would send again and
+    /// so keep the memory twice.
+    #[tokio::test]
+    async fn a_memory_kept_before_a_handover_stays_the_answer() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.0; 4]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        keep(&daemon, "author", None, "deploys go out on Mondays", &[]).await;
+        configure_memories(&dir, &url, "");
+        {
+            let mut fake = fake.lock().unwrap();
+            fake.status = 500;
+            fake.hold = true;
+        }
+        let add = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move {
+                keep(&daemon, "author", None, "deploys go out on Fridays", &[]).await
+            })
+        };
+        eventually(async || (calls(&fake) == 1).then_some(())).await;
+        let _offer = daemon
+            .offer_transfer(4242)
+            .expect("the add holds no place while it asks");
+        fake.lock().unwrap().hold = false;
+        let (kept, may_supersede, word) = add.await.unwrap();
+        assert_eq!(word, Some(Suggestion::Unavailable));
+        assert!(may_supersede.is_empty());
+        assert_eq!(kept.text, "deploys go out on Fridays");
+        let memories = lock(&daemon.state).project_memories(&kept.project).unwrap();
+        assert!(memories.iter().any(|m| m.id == kept.id), "it was kept");
+    }
+
+    fn configure_both(dir: &TempDir, url: &str, extra: &str) {
+        let key = write_key(dir, 0o600);
+        std::fs::write(
+            dir.path().join(agentdocker_core::config::FILE_NAME),
+            format!(
+                "[judge]\njudgments = [\"screens\", \"memories\"]\nkey_file = {:?}\nurl = {url:?}\n{extra}",
+                key.display().to_string()
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Hold the next pass's first due screen after its budget was looked
+    /// at and before it takes its place.
+    fn hold_admission(
+        daemon: &Arc<Daemon>,
+    ) -> (Arc<tokio::sync::Barrier>, Arc<tokio::sync::Barrier>) {
+        let held = (
+            Arc::new(tokio::sync::Barrier::new(2)),
+            Arc::new(tokio::sync::Barrier::new(2)),
+        );
+        lock(&daemon.judge).admit_pause = Some(held.clone());
+        held
+    }
+
+    /// Screens and memories share one budget and one backoff, and each
+    /// call is admitted in the hold that takes its place: a memory's call
+    /// that takes the last place, or fails into a backoff, while a due
+    /// screen is between its look at the budget and its call, keeps that
+    /// screen's call from going.
+    #[tokio::test]
+    async fn a_screen_and_a_memory_never_both_take_the_last_place() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.1, 0.1, 0.1, 0.1]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        keep(&daemon, "author", None, "deploys go out on Mondays", &[]).await;
+        configure_both(&dir, &url, "calls_per_minute = 1\n");
+        fake.lock().unwrap().notes = vec![0.1];
+        let agent = showing(&daemon, &dir, "due", "first screen\\n").await;
+
+        // The memory's call takes the only place while the screen is held.
+        let (reached, resume) = hold_admission(&daemon);
+        let pass = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { daemon.judge_once().await })
+        };
+        tokio::time::timeout(StdDuration::from_secs(10), reached.wait())
+            .await
+            .expect("the screen is due");
+        let (_, _, word) = keep(&daemon, "author", None, "deploys go out on Fridays", &[]).await;
+        assert_eq!(word, Some(Suggestion::Made));
+        resume.wait().await;
+        pass.await.unwrap();
+        assert_eq!(calls(&fake), 1, "the screen found the place taken");
+        assert!(fake.lock().unwrap().seen[0].1["state"]["new"].is_string());
+
+        // A new minute: the memory's call fails, and the screen finds the
+        // service backing off.
+        lock(&daemon.judge).calls.clear();
+        fake.lock().unwrap().status = 500;
+        let (reached, resume) = hold_admission(&daemon);
+        let pass = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { daemon.judge_once().await })
+        };
+        tokio::time::timeout(StdDuration::from_secs(10), reached.wait())
+            .await
+            .expect("the screen is due");
+        let (_, _, word) = keep(&daemon, "author", None, "deploys go out on Sundays", &[]).await;
+        assert_eq!(word, Some(Suggestion::Unavailable));
+        resume.wait().await;
+        pass.await.unwrap();
+        assert_eq!(calls(&fake), 2, "the screen found the service backing off");
+        stop(&daemon, &agent).await;
+    }
+
+    /// A memory for everyone is compared only with what everyone can read:
+    /// one said to a role goes nowhere.
+    #[tokio::test]
+    async fn a_memory_said_to_a_role_is_not_sent_for_one_everyone_reads() {
+        let dir = TempDir::new().unwrap();
+        let (url, fake) = server([0.0; 4]);
+        let daemon = open(&dir);
+        author(&daemon, &dir).await;
+        keep(&daemon, "author", None, "deploys go out on Mondays", &[]).await;
+        let person = agentdocker_core::HUMAN;
+        keep(
+            &daemon,
+            person,
+            Some(&dir),
+            "deploys need the private review key",
+            &["reviewer"],
+        )
+        .await;
+        configure_memories(&dir, &url, "");
+        fake.lock().unwrap().notes = vec![0.9];
+        let (_, likely, _) = keep(
+            &daemon,
+            person,
+            Some(&dir),
+            "deploys go out on Fridays",
+            &[],
+        )
+        .await;
+        assert_eq!(likely.len(), 1);
+        let sent = fake.lock().unwrap().seen[0].1.to_string();
+        assert!(!sent.contains("private review key"), "{sent}");
     }
 
     fn promotions(events: &mut tokio::sync::broadcast::Receiver<Event>) -> usize {
@@ -1971,9 +2839,89 @@ mod tests {
         stop(&daemon, &agent).await;
     }
 
-    /// A tmux that never answers is given up on at the capture's deadline:
-    /// a managed terminal is still judged in the same pass, and switching
-    /// the judge off is seen while a capture hangs.
+    /// A fifo named `name` in `dir`: a gate for a stand-in to wait at
+    /// until the test lets it go.
+    #[cfg(unix)]
+    fn fifo(dir: &TempDir, name: &str) -> PathBuf {
+        let path = dir.path().join(name);
+        let raw = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a valid nul-terminated path is passed to mkfifo.
+        assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
+        path
+    }
+
+    /// A process of the test's own, ended and reaped however the test
+    /// ends, so a failed test leaves nothing holding its output open.
+    #[cfg(unix)]
+    struct Owned(std::process::Child);
+
+    #[cfg(unix)]
+    impl Owned {
+        fn sleeping() -> Self {
+            Self(
+                std::process::Command::new("sleep")
+                    .arg("60")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            )
+        }
+
+        fn id(&self) -> u32 {
+            self.0.id()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// Let the stand-in `pid` go from `gate`, where it waits to read. A
+    /// fifo opens to write without blocking only while a reader has it
+    /// open, and closing it then ends the read. With no reader yet the
+    /// open is tried again a moment later; a stand-in gone without
+    /// reading is an error as soon as that is seen, and one not at its
+    /// gate within `within` is an error then. Nothing here blocks, so a
+    /// test whose stand-in never reads fails instead of hanging.
+    #[cfg(unix)]
+    async fn release(gate: &Path, pid: u32, within: StdDuration) -> Result<(), String> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let deadline = tokio::time::Instant::now() + within;
+        loop {
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(gate)
+            {
+                // Closed as it is dropped here, which ends the read.
+                Ok(_writer) => return Ok(()),
+                Err(e) if e.raw_os_error() == Some(libc::ENXIO) => {}
+                Err(e) => return Err(format!("the gate could not be opened: {e}")),
+            }
+            if !agentdocker_host::procinfo::alive(pid) {
+                return Err(format!("stand-in {pid} is gone without reading its gate"));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "stand-in {pid} was not at its gate within {within:?}"
+                ));
+            }
+            tokio::time::sleep(StdDuration::from_millis(10)).await;
+        }
+    }
+
+    /// A tmux that hangs holds up neither a managed terminal, judged in
+    /// the same pass once the capture ends, nor the switch-off, seen while
+    /// the capture hangs. The stand-in writes its pid and then blocks on a
+    /// fifo until the test lets it go, so the test waits on what it
+    /// controls and never on a deadline: the capture's own is left as the
+    /// bound a stand-in never let go would meet.
     #[cfg(unix)]
     #[tokio::test]
     async fn a_hanging_tmux_holds_neither_a_terminal_nor_the_switch_off() {
@@ -1983,17 +2931,27 @@ mod tests {
         configure(&dir, &url, "");
         let daemon = open(&dir);
         let marker = dir.path().join("hung");
+        let gate = fifo(&dir, "gate");
         let stand_in = dir.path().join("tmux");
         std::fs::write(
             &stand_in,
-            format!("#!/bin/sh\necho $$ > {}\nexec sleep 30\n", marker.display()),
+            format!(
+                "#!/bin/sh\necho $$ > {}\nread line < {}\nexit 1\n",
+                marker.display(),
+                gate.display()
+            ),
         )
         .unwrap();
         std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
         {
             let mut judge = lock(&daemon.judge);
             judge.tmux = stand_in;
-            judge.capture_deadline = StdDuration::from_millis(500);
+            judge.capture_deadline = TMUX_BOUND;
+        }
+        /// The stand-in's pid, once the marker holds all of it: the
+        /// stand-in is then at its gate or on its way there.
+        async fn hanging(marker: &Path) -> u32 {
+            eventually(async || std::fs::read_to_string(marker).ok()?.trim().parse().ok()).await
         }
         let mut guest = std::process::Command::new("sleep")
             .arg("60")
@@ -2021,30 +2979,33 @@ mod tests {
         };
         let managed = showing(&daemon, &dir, "managed", DIALOG).await;
 
-        let started = Instant::now();
-        daemon.judge_once().await;
-        assert!(started.elapsed() < StdDuration::from_secs(5));
+        let pass = {
+            let daemon = daemon.clone();
+            tokio::spawn(async move { daemon.judge_once().await })
+        };
+        let hung = hanging(&marker).await;
+        assert!(!pass.is_finished(), "the capture hangs");
+        assert!(
+            record(&daemon, &managed).judged.is_none(),
+            "nothing judged while the pass reads"
+        );
+        if let Err(why) = release(&gate, hung, TMUX_BOUND).await {
+            panic!("{why}");
+        }
+        pass.await.unwrap();
         assert!(
             record(&daemon, &managed).judged.is_some(),
-            "the terminal was judged"
+            "the terminal was judged in the same pass"
         );
         assert_eq!(calls(&fake), 1, "nothing from the pane was sent");
-        let hung: u32 = std::fs::read_to_string(&marker)
-            .unwrap()
-            .trim()
-            .parse()
-            .unwrap();
-        assert!(
-            !agentdocker_host::procinfo::alive(hung),
-            "killed and reaped"
-        );
+        assert!(!agentdocker_host::procinfo::alive(hung), "reaped");
 
         std::fs::remove_file(&marker).unwrap();
         let pass = {
             let daemon = daemon.clone();
             tokio::spawn(async move { daemon.judge_once().await })
         };
-        eventually(async || marker.exists().then_some(())).await;
+        let hung = hanging(&marker).await;
         std::fs::remove_file(dir.path().join(agentdocker_core::config::FILE_NAME)).unwrap();
         let switched = tokio::time::timeout(StdDuration::from_secs(2), daemon.judge_setup())
             .await
@@ -2055,12 +3016,46 @@ mod tests {
             record(&daemon, &managed).judged.is_none(),
             "taken off with it"
         );
+        assert!(!pass.is_finished(), "the capture still hangs");
+        if let Err(why) = release(&gate, hung, TMUX_BOUND).await {
+            panic!("{why}");
+        }
         pass.await.unwrap();
         assert_eq!(calls(&fake), 1);
+        assert!(!agentdocker_host::procinfo::alive(hung), "reaped");
         let _ = guest.kill();
         let _ = guest.wait();
         stop(&daemon, &managed).await;
         let _ = in_tmux;
+    }
+
+    /// Letting a stand-in go never waits without end: a reader gone
+    /// before it was let go is reported gone at once, not at the bound,
+    /// and a gate nobody comes to read is given up on at the bound the
+    /// release was given. The error says which was met; no clock does.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_gate_nobody_reads_is_not_waited_on() {
+        let dir = TempDir::new().unwrap();
+        let gate = fifo(&dir, "gate");
+        let mut reader = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("read line < {}", gate.display()))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        reader.kill().unwrap();
+        reader.wait().unwrap();
+        let gone = release(&gate, reader.id(), TMUX_BOUND).await.unwrap_err();
+        assert!(gone.contains("is gone"), "{gone}");
+        // Nobody opens it to read, while the process waited on, this
+        // one, is still there.
+        let unread = release(&gate, std::process::id(), StdDuration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(unread.contains("within"), "{unread}");
     }
 
     /// How long one tmux command, or a server's exit, may take.
@@ -3062,7 +4057,15 @@ mod tests {
     /// tmux: a tmux that runs past its deadline clears the judgment only
     /// after [`judgment::OUTAGE_PASSES`] passes in a row; a pane tmux says
     /// is not there, or one that no longer holds the agent's process,
-    /// clears it in the pass that finds it so, one event each.
+    /// clears it in the pass that finds it so, one event each. The
+    /// hanging stand-in blocks on a gate nothing ever opens, so only the
+    /// capture's deadline ends it. The outage is counted at a short
+    /// deadline, whether or not a stand-in started in time to reach its
+    /// gate; that the deadline ends and reaps one is checked apart, on a
+    /// pass whose stand-in is seen to have reached its gate, the deadline
+    /// doubled from half a second up to the suite's bound until one is.
+    /// The agent's process and the stranger's are the test's own, ended
+    /// with it however it ends.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_unreadable_tmux_pane_clears_its_judgment() {
@@ -3072,20 +4075,17 @@ mod tests {
         configure(&dir, &url, "");
         let daemon = open(&dir);
         let mut events = daemon.subscribe_events();
-        let mut guest = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
-        let mut stranger = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
+        let guest = Owned::sleeping();
+        let stranger = Owned::sleeping();
         // How the stand-in answers: `ok`, `hang` (past its deadline),
         // `gone` (tmux says the pane is not there) or `replaced` (the pane
-        // holds a process that is not the agent's).
+        // holds a process that is not the agent's). A hanging stand-in
+        // leaves its pid in `hung` before it blocks.
         let mode = dir.path().join("mode");
         let set = |how: &str| std::fs::write(&mode, how).unwrap();
         set("ok");
+        let gate = fifo(&dir, "gate");
+        let hung = dir.path().join("hung");
         let stand_in = dir.path().join("tmux");
         std::fs::write(
             &stand_in,
@@ -3093,7 +4093,7 @@ mod tests {
                 "#!/bin/sh\n\
                  mode=$(cat '{mode}')\n\
                  case \"$mode\" in\n\
-                 hang) exec sleep 30;;\n\
+                 hang) echo $$ >> '{hung}'; read line < '{gate}'; exit 1;;\n\
                  gone) echo \"can't find pane: %0\" >&2; exit 1;;\n\
                  esac\n\
                  case \"$3\" in\n\
@@ -3101,17 +4101,20 @@ mod tests {
                  capture-pane) printf 'Bash command\\n\\n  rm -rf build\\n\\nDo you want to proceed?\\n> 1. Yes\\n  2. No\\n';;\n\
                  esac\n",
                 mode = mode.display(),
+                hung = hung.display(),
+                gate = gate.display(),
                 stranger = stranger.id(),
                 guest = guest.id(),
             ),
         )
         .unwrap();
         std::fs::set_permissions(&stand_in, std::fs::Permissions::from_mode(0o755)).unwrap();
-        {
-            let mut judge = lock(&daemon.judge);
-            judge.tmux = stand_in;
-            judge.capture_deadline = StdDuration::from_millis(300);
-        }
+        // A stand-in that answers is given the bound, so a slow start on a
+        // loaded machine is not taken for a hang; only the hanging phase
+        // shortens the deadline, which is then what ends the stand-in.
+        let bound = |deadline| lock(&daemon.judge).capture_deadline = deadline;
+        lock(&daemon.judge).tmux = stand_in;
+        bound(TMUX_BOUND);
         let Response::Agent { agent } = daemon
             .handle(Request::Register {
                 spec: AgentSpec {
@@ -3140,8 +4143,11 @@ mod tests {
             "judged from the pane"
         );
 
-        // tmux runs past its deadline: its server, not the pane.
+        // tmux runs past its deadline: its server, not the pane. The
+        // stand-in waits at a gate nobody opens, so the deadline is all
+        // that ends it, whatever the machine is doing meanwhile.
         set("hang");
+        bound(StdDuration::from_millis(300));
         for _ in 1..judgment::OUTAGE_PASSES {
             daemon.judge_once().await;
         }
@@ -3153,6 +4159,46 @@ mod tests {
             clearings(&mut events),
             [(agent.clone(), UNREADABLE.to_owned())]
         );
+        // A stand-in that reached its gate in those passes was ended at
+        // the deadline and reaped before its pass went on. On a loaded
+        // machine none may reach it in 300 ms; the passes' counting does
+        // not depend on it, and what follows does not either.
+        let gated = || -> Vec<u32> {
+            std::fs::read_to_string(&hung)
+                .unwrap_or_default()
+                .lines()
+                .map(|line| line.trim().parse().unwrap())
+                .collect()
+        };
+        for pid in gated() {
+            assert!(!agentdocker_host::procinfo::alive(pid), "{pid} reaped");
+        }
+        // And one seen to reach its gate is ended by the deadline alone. A
+        // pass whose stand-in wrote its pid had it at the gate before the
+        // deadline; nothing opens the gate, so the deadline is what ended
+        // it. A pass whose stand-in had not started by then proves
+        // nothing, and is run again with twice the deadline, up to the
+        // suite's bound to start in: half a second on a machine at rest,
+        // never a race on a loaded one.
+        let mut deadline = StdDuration::from_millis(500);
+        let at_gate = loop {
+            let before = gated().len();
+            bound(deadline);
+            daemon.judge_once().await;
+            if let Some(pid) = gated().get(before).copied() {
+                break pid;
+            }
+            assert!(
+                deadline < TMUX_BOUND,
+                "no stand-in reached its gate within {TMUX_BOUND:?}"
+            );
+            deadline = (deadline * 2).min(TMUX_BOUND);
+        };
+        assert!(
+            !agentdocker_host::procinfo::alive(at_gate),
+            "{at_gate} ended at the deadline and reaped"
+        );
+        bound(TMUX_BOUND);
 
         for (how, calls_before) in [("gone", 2), ("replaced", 3)] {
             set("ok");
@@ -3171,10 +4217,7 @@ mod tests {
             );
         }
         assert_eq!(calls(&fake), 3, "nothing sent of an unreadable pane");
-        for child in [&mut guest, &mut stranger] {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        drop((guest, stranger));
     }
 
     /// A judged agent whose screen there is no longer any source for — its

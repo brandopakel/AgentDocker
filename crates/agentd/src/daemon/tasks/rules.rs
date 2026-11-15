@@ -412,7 +412,6 @@ impl Daemon {
         Response::Rules { rules }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn rule_create(
         self: &Arc<Self>,
         from: &str,
@@ -670,7 +669,7 @@ impl Daemon {
     }
 
     async fn start_on_card_inner(self: &Arc<Self>, start: &Start) -> Response {
-        let roots = agentdocker_host::runtimes::Roots::from_env();
+        let roots = self.runtime_roots();
         let inventory = tokio::task::spawn_blocking(move || {
             agentdocker_host::runtimes::inventory(&roots, "agentdocker")
         })
@@ -888,29 +887,30 @@ fn prepare_card_input(
     executable: std::io::Result<PathBuf>,
 ) -> Result<(), Box<Response>> {
     use agentdocker_host::provider_input::{enable_claude_channel, enable_codex_input};
-    let unavailable = |message: String| Box::new(Response::error(ErrorCode::Unavailable, message));
     let enable = match spec.runtime.as_str() {
         "claude-code" => enable_claude_channel,
         "codex" => enable_codex_input,
         _ => {
-            return Err(unavailable(format!(
+            return Err(Box::new(Response::unavailable(format!(
                 "starting on a card needs idle message delivery; {} has no supported input adapter",
                 spec.runtime,
-            )));
+            ))));
         }
     };
-    let me =
-        executable.map_err(|error| unavailable(format!("Cannot locate this daemon: {error}")))?;
+    let me = executable.map_err(|error| {
+        Box::new(Response::unavailable(format!(
+            "Cannot locate this daemon: {error}"
+        )))
+    })?;
     let cli = me
         .parent()
         .map(|dir| dir.join(format!("agentdocker{}", std::env::consts::EXE_SUFFIX)))
         .filter(|cli| cli.is_file())
         .filter(|cli| cli.canonicalize().ok() != me.canonicalize().ok())
         .ok_or_else(|| {
-            unavailable(
-                "starting on a card requires the agentdocker command-line tool beside this daemon"
-                    .into(),
-            )
+            Box::new(Response::unavailable(
+                "starting on a card requires the agentdocker command-line tool beside this daemon",
+            ))
         })?;
     enable(spec, &cli).map_err(|error| {
         Box::new(Response::error(

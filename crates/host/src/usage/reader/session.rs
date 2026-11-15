@@ -11,6 +11,10 @@ use super::*;
 
 pub struct Preparation {
     pub ready: bool,
+    /// The accepted bytes this pass hashed: what it consumed, so a proof's
+    /// passes add up to its prefix however the deadline cuts them. The
+    /// reader may have taken more from the file into its buffer when the
+    /// deadline ended the pass; the next pass reads those bytes again.
     pub bytes_read: u64,
 }
 
@@ -21,6 +25,12 @@ pub struct Session {
     line: Vec<u8>,
     ready: bool,
     replay_parser: bool,
+    /// A version 7 cursor: its Codex parser lacks the parent thread, which
+    /// the whole proof reads from the first record it hashes. Nothing is
+    /// replayed and no token is read again.
+    recover_meta: bool,
+    /// What that first record says, kept until the proof is whole.
+    recovered: Option<agentdocker_core::codex_thread::ThreadMeta>,
     /// The proof started at byte zero: every accepted byte is rehashed.
     whole: bool,
     /// The last complete record hashed by this proof, as an anchor.
@@ -66,9 +76,13 @@ impl Session {
         // version 7 releases beyond the compatibility floor. Verify that proof
         // before replay; an upgrade must not hide a changed or truncated source.
         let replay_parser = previous.is_some_and(|previous| matches!(previous.version, 3..=6));
+        // Version 7 counted exactly as this version does, but its Codex
+        // parser did not keep the parent thread from `session_meta`, which
+        // a resumed parse never sees again. It takes a whole proof once.
+        let recover_meta = previous.is_some_and(|previous| previous.version == 7);
         let mut anchor = None;
         let cursor = if let Some(previous) = previous {
-            if (previous.version != CURSOR_VERSION && !replay_parser)
+            if (previous.version != CURSOR_VERSION && !replay_parser && !recover_meta)
                 || previous.runtime != runtime
                 || previous.offset > previous.generation.length
             {
@@ -79,7 +93,11 @@ impl Session {
             {
                 return Err(Error::Changed);
             }
-            if unchanged && !replay_parser && previous.generation == captured.generation {
+            if unchanged
+                && !replay_parser
+                && !recover_meta
+                && previous.generation == captured.generation
+            {
                 anchor = previous
                     .last_record
                     .filter(|last| last.offset < previous.offset);
@@ -100,6 +118,8 @@ impl Session {
             line: Vec::new(),
             ready: false,
             replay_parser,
+            recover_meta,
+            recovered: None,
             whole: anchor.is_none(),
             last_record: None,
         })
@@ -120,7 +140,23 @@ impl Session {
         bytes: u64,
         elapsed: Duration,
     ) -> Result<Preparation, Error> {
-        if bytes == 0 || bytes > MAX_BATCH || elapsed.is_zero() {
+        if elapsed.is_zero() {
+            return Err(Error::Budget);
+        }
+        self.prepare_while(path, bytes, |start| start.elapsed() < elapsed)
+    }
+
+    /// [`Self::prepare_next`], reading on while `more` says so: asked, with
+    /// the time the pass started, before each read of the file. The
+    /// deadline is one such answer; a test gives another, to end a pass at
+    /// a chosen point with no clock involved.
+    fn prepare_while(
+        &mut self,
+        path: &Path,
+        bytes: u64,
+        mut more: impl FnMut(Instant) -> bool,
+    ) -> Result<Preparation, Error> {
+        if bytes == 0 || bytes > MAX_BATCH {
             return Err(Error::Budget);
         }
         let mut file = crate::files::open_regular(path)?;
@@ -128,10 +164,11 @@ impl Session {
             .generation
             .check_within(Generation::capture(&file)?)?;
         let start = Instant::now();
-        file.seek(SeekFrom::Start(self.checked))?;
-        let allowance = bytes.min(self.cursor.offset - self.checked);
+        let from = self.checked;
+        file.seek(SeekFrom::Start(from))?;
+        let allowance = bytes.min(self.cursor.offset - from);
         let mut reader = BufReader::with_capacity(8192, file.take(allowance));
-        while self.checked < self.cursor.offset && start.elapsed() < elapsed {
+        while self.checked < self.cursor.offset && more(start) {
             let available = reader.fill_buf()?;
             if available.is_empty() {
                 break;
@@ -147,15 +184,28 @@ impl Session {
             reader.consume(count);
             self.checked += count as u64;
             if self.line.last() == Some(&b'\n') {
+                let offset = self.checked - self.line.len() as u64;
+                if self.recover_meta
+                    && offset == 0
+                    && self.cursor.runtime == Runtime::Codex
+                    && self.line.len() <= MAX_RECORD
+                {
+                    self.recovered = serde_json::from_slice(&self.line)
+                        .ok()
+                        .and_then(|first| agentdocker_core::codex_thread::session_meta(&first));
+                }
                 self.last_record = Some(Anchor {
-                    offset: self.checked - self.line.len() as u64,
+                    offset,
                     prefix_digest: self.prefix,
                 });
                 self.prefix = record_digest(self.prefix, &self.line);
                 self.line.clear();
             }
         }
-        let bytes_read = allowance - reader.get_ref().limit();
+        // Counted as consumed, not as taken from the file: a pass the
+        // deadline ends mid-buffer leaves up to the buffer's size read but
+        // unhashed, and `checked` is where the next pass starts again.
+        let bytes_read = self.checked - from;
         self.cursor
             .generation
             .check_within(Generation::capture(reader.get_ref().get_ref())?)?;
@@ -172,6 +222,14 @@ impl Session {
             // not empty, so this anchor matches the one the scan retained, and
             // a cursor written before anchors existed gains one here.
             self.cursor.last_record = self.last_record;
+        }
+        if self.ready && self.recover_meta {
+            // The proof covered the first record: what it says is the file's.
+            if let Some(meta) = self.recovered.take() {
+                self.cursor.codex.recover_parent(&meta);
+            }
+            self.cursor.version = CURSOR_VERSION;
+            self.recover_meta = false;
         }
         if self.ready && self.replay_parser {
             self.cursor.version = CURSOR_VERSION;
@@ -436,6 +494,86 @@ mod tests {
     }
 
     #[test]
+    fn a_v7_codex_cursor_learns_its_parent_from_its_first_record_without_replaying() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("child.jsonl");
+        std::fs::write(&path, include_str!("../fixtures/codex-0.164.0.jsonl")).unwrap();
+        let current = scan(&path, Runtime::Codex, None, Budget::default()).unwrap();
+        assert_eq!(current.samples.len(), 4);
+        // As a version 7 collector left it: the same offset and counts, its
+        // parser without the parent thread.
+        let mut old = current.cursor.clone();
+        old.version = 7;
+        old.codex.parent = None;
+        for unchanged in [false, true] {
+            let mut session = if unchanged {
+                Session::at_unchanged_snapshot(
+                    Cursor::capture(&path, Runtime::Codex).unwrap(),
+                    Some(&old),
+                )
+                .unwrap()
+            } else {
+                Session::open(&path, Runtime::Codex, Some(&old)).unwrap()
+            };
+            prepare(&mut session, &path).unwrap();
+            // Even an unchanged file is proven whole once, and resumes where
+            // it was: nothing is replayed and no token is read again.
+            assert!(session.proves_whole_prefix());
+            assert_eq!(session.offset(), old.offset);
+            let resumed = session.scan(&path, Budget::default()).unwrap();
+            assert!(resumed.samples.is_empty());
+            assert_eq!(resumed.cursor, current.cursor);
+            session.validate(&path, &resumed.cursor).unwrap();
+        }
+        // What is appended afterwards names the parent.
+        let usage = serde_json::json!({"input_tokens":3,"cached_input_tokens":0,
+            "cache_write_input_tokens":0,"output_tokens":1,"reasoning_output_tokens":0,"total_tokens":4});
+        let totals = serde_json::json!({"input_tokens":17,"cached_input_tokens":4,
+            "cache_write_input_tokens":0,"output_tokens":6,"reasoning_output_tokens":1,"total_tokens":23});
+        let appended = format!(
+            "{}\n{}\n",
+            serde_json::json!({"timestamp":"2026-10-20T09:00:20.000Z","type":"token_usage_record",
+                "payload":{"thread_id":"fixture-child-thread","turn_id":"fixture-turn-2",
+                    "response_id":"fixture-response-3","usage":usage,"turn_token_usage":usage,
+                    "thread_token_usage":totals}}),
+            serde_json::json!({"timestamp":"2026-10-20T09:00:20.010Z","type":"event_msg",
+                "payload":{"type":"token_count","info":{"total_token_usage":totals,"last_token_usage":usage}}})
+        );
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(appended.as_bytes())
+            .unwrap();
+        // The version 7 cursor resumed over the grown file: only what was
+        // appended is read, and it names the parent.
+        let mut session = Session::open(&path, Runtime::Codex, Some(&old)).unwrap();
+        prepare(&mut session, &path).unwrap();
+        assert_eq!(session.offset(), old.offset);
+        let next = session.scan(&path, Budget::default()).unwrap();
+        assert_eq!(next.samples.len(), 2);
+        for sample in &next.samples {
+            assert_eq!(
+                sample.parent_session.as_deref(),
+                Some("fixture-root-thread")
+            );
+        }
+        session.validate(&path, &next.cursor).unwrap();
+        // A version 7 cursor whose file does not begin with its session's
+        // metadata learns nothing, and is still upgraded in place.
+        let other = temp.path().join("claude.jsonl");
+        std::fs::write(&other, row(0)).unwrap();
+        let claude = scan(&other, Runtime::Claude, None, Budget::default()).unwrap();
+        let mut old = claude.cursor.clone();
+        old.version = 7;
+        let mut session = Session::open(&other, Runtime::Claude, Some(&old)).unwrap();
+        prepare(&mut session, &other).unwrap();
+        let resumed = session.scan(&other, Budget::default()).unwrap();
+        assert!(resumed.samples.is_empty());
+        assert_eq!(resumed.cursor, claude.cursor);
+    }
+
+    #[test]
     fn large_prefixes_resume_and_append_without_replaying_accepted_records() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("large.jsonl");
@@ -586,6 +724,44 @@ mod tests {
         let mut whole = Session::at_snapshot(captured, Some(&restored)).unwrap();
         assert!(whole.proves_whole_prefix());
         assert_eq!(prove(&mut whole, &path).unwrap(), text.len() as u64);
+    }
+
+    /// A proof's passes add up to its prefix however the deadline cuts
+    /// them. A pass the deadline ends stops at a record boundary with the
+    /// rest of its buffer taken from the file but not hashed; those bytes
+    /// are the next pass's, counted once. Each pass here is ended after
+    /// one read of the file, a record of about 5.8 KB out of an 8 KiB
+    /// buffer, so every pass stops mid-buffer, on any machine: counted as
+    /// taken, each would be 8,192 and the sum past the file.
+    #[test]
+    fn passes_cut_mid_buffer_count_each_byte_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cut.jsonl");
+        let rows: Vec<String> = (0..40).map(row).collect();
+        let text = rows.concat();
+        assert!(rows.iter().all(|row| row.len() < 8192 && row.len() > 4096));
+        std::fs::write(&path, &text).unwrap();
+        let (cursor, _) = collect(&path, None);
+        let captured = Cursor::capture(&path, Runtime::Claude).unwrap();
+        let mut session = Session::at_snapshot(captured, Some(&cursor)).unwrap();
+        let mut counted = Vec::new();
+        loop {
+            let mut reads = 0;
+            let progress = session
+                .prepare_while(&path, MAX_BATCH, |_| {
+                    reads += 1;
+                    reads == 1
+                })
+                .unwrap();
+            counted.push(progress.bytes_read);
+            if progress.ready {
+                break;
+            }
+            assert!(counted.len() <= rows.len(), "{counted:?}");
+        }
+        let lengths: Vec<u64> = rows.iter().map(|row| row.len() as u64).collect();
+        assert_eq!(counted, lengths, "a record a pass, each counted once");
+        assert_eq!(counted.iter().sum::<u64>(), text.len() as u64);
     }
 
     #[test]

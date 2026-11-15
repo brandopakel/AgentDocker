@@ -255,6 +255,9 @@ pub struct Settings {
     /// Tell the person when an agent finishes while the window is not in
     /// front, as Claude and the Codex app do by default.
     pub notify_finished: bool,
+    /// A menu-bar item with the mark and the count the dock shows; with
+    /// it on, closing the window keeps the app running (macOS).
+    pub menu_bar_item: bool,
 }
 
 impl Default for Settings {
@@ -265,6 +268,7 @@ impl Default for Settings {
             text_size: 14.0,
             roomy: false,
             notify_finished: true,
+            menu_bar_item: true,
         }
     }
 }
@@ -356,6 +360,7 @@ mod tests {
             text_size: 15.0,
             roomy: true,
             notify_finished: true,
+            menu_bar_item: false,
         };
         chosen.save(dir.path());
         assert_eq!(Settings::load(dir.path()), chosen);
@@ -372,6 +377,10 @@ mod tests {
         assert_eq!(recovered.terminal_size, 24.0);
         assert_eq!(recovered.text_size, 10.0);
         assert!(recovered.roomy);
+        assert!(
+            recovered.menu_bar_item,
+            "a file from before the menu bar item keeps it on, the default"
+        );
     }
 
     #[test]

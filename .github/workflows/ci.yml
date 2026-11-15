@@ -49,15 +49,18 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master; stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master; the version in rust-toolchain.toml
         with:
-          toolchain: stable
+          toolchain: "1.100.0"
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install test runner
         run: cargo install --locked cargo-nextest --version 0.9.143
       - name: Standard verification
         run: bash scripts/verify.sh check
+      - name: Packaging and the release build
+        if: runner.os == 'Linux'
+        run: bash scripts/verify.sh package
       - name: Preserve test report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -72,10 +75,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master; stable
+      - uses: dtolnay/rust-toolchain@d1031067263f94b142dd6c0ce24c5eb9d02d52a0 # master; the version in rust-toolchain.toml
         with:
-          toolchain: stable
-          components: llvm-tools-preview
+          toolchain: "1.100.0"
+          components: llvm-tools-preview, rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           key: coverage

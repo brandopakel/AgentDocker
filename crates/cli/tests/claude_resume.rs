@@ -166,10 +166,13 @@ fn a_resumed_session_whose_mcp_server_starts_first_resumes_its_record() {
     )
     .unwrap();
     assert_eq!(sent["type"], "sent", "{sent}");
-    let _ = earlier.kill();
-    let _ = earlier.wait();
+    // Ended by word before its process goes: the daemon looks for dead
+    // processes every second, and a record it found first would already
+    // have finished when the word arrived, refusing it.
     let gone = from_outside(&socket, &json!({"op": "deregister", "agent": c}));
     assert_eq!(gone["type"], "agent", "{gone}");
+    let _ = earlier.kill();
+    let _ = earlier.wait();
 
     // `claude --resume session-c`, staged: it starts its MCP server at
     // once and its SessionStart hook a moment later, as Claude Code does

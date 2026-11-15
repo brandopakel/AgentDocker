@@ -33,6 +33,7 @@ pub mod runtimes;
 
 pub mod codex_binary;
 pub mod codex_control;
+pub mod codex_rollout;
 pub mod codex_trust;
 pub mod dirs;
 pub mod editor;
@@ -58,5 +59,6 @@ pub mod relay;
 
 pub mod files;
 pub mod seed;
+pub mod teams;
 
 pub mod ipc;

@@ -65,8 +65,8 @@ pub(crate) fn argument_resources(args: &[String]) -> Result<Resources> {
                     resources.data.push(PathBuf::from(path));
                 }
             }
-            "--public-url" | "--bind" | "--allow-callback" | "--tunnel" | "--tunnel-name"
-            | "--tunnel-port" | "--client-ip-header" => {}
+            "--public-url" | "--authorize-url" | "--bind" | "--allow-callback" | "--tunnel"
+            | "--tunnel-name" | "--tunnel-port" | "--client-ip-header" => {}
             _ => bail!("unrecognized connector service argument; registration refused"),
         }
     }
@@ -816,6 +816,7 @@ mod tests {
         let serving = Serving {
             pid: 4242,
             public_url: "https://x.trycloudflare.com".into(),
+            authorize_url: Some("http://127.0.0.1:8765".into()),
             bind: "127.0.0.1:8765".into(),
             default_project: Some("/Users/p/orchard".into()),
             pairing_code: "ABCD-EFGH".into(),

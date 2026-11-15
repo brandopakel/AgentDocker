@@ -76,7 +76,6 @@ pub struct Rule {
 }
 
 impl Rule {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         project: ProjectId,
         board: &Board,

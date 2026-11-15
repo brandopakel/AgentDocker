@@ -294,7 +294,7 @@ async fn finish_with_attachments(
 /// Record everything pending, and report a gap if the OS or the queue
 /// dropped events since the last flush.
 async fn drain(
-    daemon: &Daemon,
+    daemon: &Arc<Daemon>,
     pending: &mut Vec<notify::Event>,
     watched: &BTreeMap<PathBuf, Watched>,
     gap: &AtomicBool,
@@ -744,6 +744,80 @@ mod tests {
                 .unwrap()
                 .unwrap(),
             vec![PathBuf::from("covered"), PathBuf::from("missing")]
+        );
+    }
+
+    /// A checkout in the project's worktrees folder is inside the main
+    /// checkout, and its edits are still its own: they are that
+    /// checkout's while it is watched, and never the main checkout's,
+    /// since the line that keeps the folder out of git keeps it out of
+    /// the main checkout's changes too. That makes an unwatched one
+    /// nobody's, which is why the daemon watches every checkout of a
+    /// project, a nested one included (`Daemon::watch_targets`).
+    #[test]
+    fn a_checkout_inside_the_project_owns_its_edits() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        let nested = main.join(".agentdocker/worktrees/agent-1");
+        std::fs::create_dir_all(main.join(".git/info")).unwrap();
+        std::fs::create_dir_all(main.join(".git/worktrees/agent-1")).unwrap();
+        std::fs::write(main.join(".git/worktrees/agent-1/commondir"), "../..\n").unwrap();
+        std::fs::create_dir_all(nested.join("src")).unwrap();
+        std::fs::write(
+            nested.join(".git"),
+            format!(
+                "gitdir: {}\n",
+                main.join(".git/worktrees/agent-1").display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(nested.join("src/lib.rs"), "fixture").unwrap();
+        std::fs::write(main.join("lib.rs"), "fixture").unwrap();
+        let watch = |dirs: &[&PathBuf]| {
+            dirs.iter()
+                .map(|dir| {
+                    (
+                        (*dir).clone(),
+                        Watched {
+                            checkout: Checkout {
+                                dir: (*dir).clone(),
+                                project: "project".into(),
+                                worktree: (*dir != &main).then(|| (*dir).clone()),
+                            },
+                            gitdir: None,
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let events = [nested.join("src/lib.rs"), main.join("lib.rs")]
+            .map(|path| notify::Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path));
+        let edits = |watched: &BTreeMap<PathBuf, Watched>| {
+            classify(&events, watched)
+                .0
+                .into_iter()
+                .map(|seen| (seen.checkout.dir, seen.path))
+                .collect::<Vec<_>>()
+        };
+        let in_main = (main.clone(), PathBuf::from("lib.rs"));
+
+        // Without the line, an unwatched checkout's edit reads as the
+        // main checkout's own, under the folder's path.
+        assert_eq!(
+            edits(&watch(&[&main])),
+            [
+                (
+                    main.clone(),
+                    PathBuf::from(".agentdocker/worktrees/agent-1/src/lib.rs")
+                ),
+                in_main.clone(),
+            ]
+        );
+        std::fs::write(main.join(".git/info/exclude"), "/.agentdocker/worktrees/\n").unwrap();
+        assert_eq!(edits(&watch(&[&main])), std::slice::from_ref(&in_main));
+        assert_eq!(
+            edits(&watch(&[&main, &nested])),
+            [(nested.clone(), PathBuf::from("src/lib.rs")), in_main]
         );
     }
 

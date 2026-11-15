@@ -14,7 +14,7 @@ reviews:
   collapse_walkthrough: false
   poem: false
   auto_review:
-    enabled: true
+    enabled: false   # Review is the reviewer agent's; ask for a CodeRabbit pass by comment when wanted.
     drafts: false
     base_branches:
       - ".*"      # Review every stacked base, including fix/test/docs branches.
