@@ -1146,15 +1146,6 @@ impl Daemon {
     /// already unavailable, or fails on this write, still retires the
     /// supervision in memory but answers false, so the caller keeps whatever
     /// external evidence of the exit it holds.
-    pub fn mark_ended(
-        &self,
-        id: &AgentId,
-        status: AgentStatus,
-        ending: Option<agentdocker_core::RunEnd>,
-    ) -> Option<AgentRecord> {
-        lock(&self.state).mark_ended(id, status, ending)
-    }
-
     pub fn mark_ended_durably(
         &self,
         id: &AgentId,
@@ -2089,6 +2080,26 @@ impl Daemon {
     #[cfg(test)]
     pub(crate) fn question_waiting(&self, question: &MessageId) -> bool {
         lock(&self.state).question_waiters.contains(question)
+    }
+
+    /// A record put straight into the registry and the store, for a test
+    /// outside this module that needs one in a given state.
+    #[cfg(test)]
+    pub(crate) fn insert_record_for_test(&self, record: AgentRecord) -> Response {
+        lock(&self.state).insert_record(record)
+    }
+
+    /// Every later store write fails, for a test outside this module.
+    #[cfg(test)]
+    pub(crate) fn reject_writes_for_test(&self) {
+        lock(&self.state).store.reject_writes_for_test();
+    }
+
+    /// The agent records as the store holds them, for a test outside this
+    /// module.
+    #[cfg(test)]
+    pub(crate) fn stored_agents_for_test(&self) -> Vec<AgentRecord> {
+        lock(&self.state).store.load_agents().unwrap()
     }
 
     /// Subscribe and validate durable history in the same state snapshot.

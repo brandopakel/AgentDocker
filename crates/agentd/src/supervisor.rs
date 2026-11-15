@@ -699,8 +699,13 @@ impl Spawned {
 /// How supervision ended: with the owner's exit report, or without one.
 enum Outcome {
     Exited(ExitReport),
-    /// It failed, with the evidence of how where there is any.
-    Failed(String, Option<agentdocker_core::RunEnd>),
+    /// It failed, with the evidence of how where there is any, and
+    /// whether an owner waits for its report to be acknowledged.
+    Failed {
+        reason: String,
+        ending: Option<agentdocker_core::RunEnd>,
+        owner_waits: bool,
+    },
 }
 
 /// Relay until the owner reports the exit or is gone for good. A dropped
@@ -804,7 +809,11 @@ async fn relay_until_exit(
                 return Outcome::Exited(report);
             }
             if !owner_alive(&spawned.owner) {
-                return Outcome::Failed("session owner lost".into(), None);
+                return Outcome::Failed {
+                    reason: "session owner lost".into(),
+                    ending: None,
+                    owner_waits: false,
+                };
             }
             // A daemon that has offered coordination away does not compete
             // for the owner: the successor is attaching, and reconnecting
@@ -847,15 +856,12 @@ pub fn supervise(
                 .controller
                 .send(&OwnerCommand::Stop { force: true })
                 .await;
-            // A command that could not be executed left an exit report the
-            // owner waits to have acknowledged, holding the id's lock while
-            // it waits: this failure is the record's now, so the owner may
-            // go at once rather than at its own deadline, and a relaunch
-            // under the same id (a session brought back after a wrong
-            // path) is not answered "did not answer" meanwhile. An owner
-            // whose command never ran ignores it.
-            let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
-            Outcome::Failed(reason, spawned.launch_ending.take())
+            // Its owner is acknowledged once the failure is recorded, below.
+            Outcome::Failed {
+                reason,
+                ending: spawned.launch_ending.take(),
+                owner_waits: true,
+            }
         } else {
             let mut keystrokes = spawned.keystrokes.take();
             let mut resizes = spawned.resizes.take();
@@ -876,9 +882,29 @@ pub fn supervise(
                 }
                 status
             }
-            Outcome::Failed(reason, ending) => {
+            Outcome::Failed {
+                reason,
+                ending,
+                owner_waits,
+            } => {
                 let status = AgentStatus::Failed { reason };
-                daemon.mark_ended(&id, status.clone(), ending);
+                // Durable first, then acknowledged, as an exit is. A command
+                // that could not be executed left an exit report the owner
+                // waits to have acknowledged, holding the id's lock while it
+                // waits: once this failure is the record's, the owner may go
+                // at once rather than at its own deadline, and a relaunch
+                // under the same id (a session brought back after a wrong
+                // path) is not answered "did not answer" meanwhile. A
+                // failure the store did not keep acknowledges nothing, so the
+                // report waits for a daemon that can keep it. An owner whose
+                // command never ran ignores the acknowledgement.
+                if daemon.mark_ended_durably(&id, status.clone(), ending) {
+                    if owner_waits {
+                        let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
+                    }
+                } else if owner_waits {
+                    tracing::warn!(agent = %id, "launch failure not recorded durably; the owner's report is not acknowledged");
+                }
                 status
             }
         };
@@ -1223,6 +1249,124 @@ mod tests {
             assert!(matches!(outcome, Outcome::Exited(_)));
             assert!(matches!(first, OwnerCommand::Stop { force: seen } if seen == force));
             assert_eq!(spawned.relayed, b"still writing".len() as u64);
+        }
+    }
+
+    /// A launch that fails before activation is recorded, with its owner's
+    /// proof of how it ended, before its owner is acknowledged: at the
+    /// acknowledgement the store holds the failure and its event. A store
+    /// that cannot keep it acknowledges nothing, so the owner's report
+    /// waits in its exit file for a daemon that can.
+    #[tokio::test]
+    async fn a_failed_activation_is_durable_before_its_owner_is_acknowledged() {
+        use agentdocker_core::RunEnd;
+        for store_fails in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let daemon = Arc::new(
+                Daemon::open(dir.path().join("state"), dir.path().join("daemon.sock")).unwrap(),
+            );
+            let mut record = AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: "unexecuted".into(),
+                    ..Default::default()
+                },
+                true,
+                Utc::now(),
+            );
+            // Running, as launch completion commits it before activation.
+            record.status = AgentStatus::Running;
+            let id = record.id.clone();
+            assert!(matches!(
+                daemon.insert_record_for_test(record),
+                agentdocker_core::Response::Agent { .. }
+            ));
+            if store_fails {
+                daemon.reject_writes_for_test();
+            }
+            let now = Utc::now();
+            let (stream, peer) = agentdocker_host::ipc::pair().await.unwrap();
+            let (reader, writer) = stream.into_split();
+            let (control, stop) = watch::channel(None);
+            let spawned = Spawned {
+                pid: std::process::id(),
+                process_started_at: now,
+                owner: SessionOwner {
+                    pid: std::process::id(),
+                    started_at: now,
+                },
+                link: OwnerLink::Detached,
+                controller: Controller {
+                    reader: BufReader::new(reader),
+                    writer,
+                    partial: Vec::new(),
+                },
+                launch_error: Some("command could not be launched".into()),
+                launch_ending: Some(RunEnd::NeverStarted),
+                activated: false,
+                control,
+                stop,
+                session: None,
+                keystrokes: None,
+                resizes: None,
+                output: None,
+                scrollback: None,
+                relayed: 0,
+            };
+            let supervision = supervise(daemon.clone(), id.clone(), spawned);
+            let (reader, _writer) = peer.into_split();
+            let mut reader = BufReader::new(reader);
+            let mut partial = Vec::new();
+            let first = tokio::time::timeout(
+                Duration::from_secs(5),
+                read_frame(&mut reader, &mut partial, 64 * 1024),
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                serde_json::from_str::<OwnerCommand>(&first).unwrap(),
+                OwnerCommand::Stop { force: true }
+            );
+            let second = tokio::time::timeout(
+                Duration::from_millis(500),
+                read_frame(&mut reader, &mut partial, 64 * 1024),
+            )
+            .await;
+            let durable = daemon
+                .stored_agents_for_test()
+                .into_iter()
+                .find(|a| a.id == id)
+                .unwrap();
+            if store_fails {
+                assert!(
+                    !matches!(&second, Ok(Ok(Some(_)))),
+                    "nothing is acknowledged when nothing was kept: {second:?}"
+                );
+                assert_eq!(durable.status, AgentStatus::Running);
+                assert_eq!(durable.ending, None);
+            } else {
+                let ack = second.unwrap().unwrap().unwrap();
+                assert_eq!(
+                    serde_json::from_str::<OwnerCommand>(&ack).unwrap(),
+                    OwnerCommand::Acknowledge
+                );
+                assert!(
+                    matches!(durable.status, AgentStatus::Failed { .. }),
+                    "{:?}",
+                    durable.status
+                );
+                assert_eq!(durable.ending, Some(RunEnd::NeverStarted));
+                assert!(daemon.recent_events(10).iter().any(|event| matches!(
+                    &event.kind,
+                    agentdocker_core::EventKind::AgentExited {
+                        agent,
+                        ending: Some(RunEnd::NeverStarted),
+                        ..
+                    } if *agent == id
+                )));
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(5), supervision).await;
         }
     }
 
