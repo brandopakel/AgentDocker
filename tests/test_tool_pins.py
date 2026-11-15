@@ -122,37 +122,72 @@ def under(found, at):
     return at + 1, end
 
 
+def listed(found, at, limit):
+    """The range of the rows of the list under key row `at`, no further
+    than `limit`. A list may start deeper than its key or at the key's own
+    column, where its dashes are what tell its items from the next key."""
+    start, end = under(found, at)
+    if start == end:
+        column = found[at][0]
+        while end < limit and (found[end][0] > column
+                               or (found[end][0] == column and (found[end][1] + " ").startswith("- "))):
+            end += 1
+    return start, end
+
+
+def key_of(said):
+    """The key a row opens, without quotes, and what follows its colon on
+    the same line; no key (None) when the row has no colon."""
+    key, colon, value = said.partition(":")
+    return (key.strip().strip("\"'"), value.strip()) if colon else (None, said)
+
+
 def pairs(found, start, end):
     """The `key: value` pairs of the block mapping in rows start to end,
-    read at the column of its first row and no deeper, values unquoted. A
-    mapping written any other way reads as empty."""
+    read at the column of its first row and no deeper, keys and values
+    unquoted. None when it holds what this cannot read as a pair: a merge
+    of another mapping (`<<`), or a row that opens no key."""
     read = {}
     for column, said, _ in found[start:end]:
-        key, colon, value = said.partition(":")
-        if column == found[start][0] and colon:
-            read[key.strip()] = value.strip().strip("\"'")
+        if column != found[start][0]:
+            continue
+        key, value = key_of(said)
+        if key is None or key == "<<":
+            return None
+        read[key] = value.strip("\"'")
     return read
 
 
 def env_under(found, start, end, column):
-    """The `env` mapping among the keys at `column` in rows start to end."""
+    """The `env` among the keys at `column` in rows start to end: its pairs,
+    and none ({}) when there is no such key. None when there is one this
+    cannot read, which is not the same as there being none: its value
+    written on the key's own line (an inline mapping, an alias, an
+    expression), or a mapping `pairs` cannot read."""
     for at in range(start, end):
-        if found[at][0] == column and found[at][1] == "env:":
-            return pairs(found, *under(found, at))
+        if found[at][0] != column:
+            continue
+        key, value = key_of(found[at][1])
+        if key == "env":
+            return None if value else pairs(found, *under(found, at))
     return {}
 
 
 def workflow_jobs(text):
     """A workflow's jobs, in file order: (name, env, steps, lines). `env` is
     what the job's steps start from, the workflow's own `env` with the
-    job's over it; `steps` is the `env` mapping of each of its steps; and
-    `lines` is the job as written, for `toolchain_steps`. Everything is
-    read from the mappings themselves, so a comment sets nothing."""
+    job's over it; `steps` is the `env` of each of its steps; and `lines`
+    is the job as written, for `toolchain_steps`. Everything is read from
+    the block mappings themselves, so a comment sets nothing. What is
+    written in a way this does not read is None, never an empty mapping:
+    the job's `env` when either of the two is, and a step when its `env`
+    is or when the step itself is written inline. A job whose steps are
+    not a block list has none."""
     found, lines = rows(text), text.splitlines()
     shared = env_under(found, 0, len(found), 0)
     jobs = []
     for at, (column, said, _) in enumerate(found):
-        if column != 0 or said != "jobs:":
+        if column != 0 or key_of(said) != ("jobs", ""):
             continue
         start, end = under(found, at)
         if start == end:
@@ -163,19 +198,23 @@ def workflow_jobs(text):
             keys = found[inside][0] if inside < done else None
             steps = []
             for key in range(inside, done):
-                if found[key][0] != keys or found[key][1] != "steps:":
+                if found[key][0] != keys or key_of(found[key][1]) != ("steps", ""):
                     continue
-                first, last = under(found, key)
+                first, last = listed(found, key, done)
                 items = [each for each in range(first, last)
                          if found[each][0] == found[first][0] and (found[each][1] + " ").startswith("- ")]
                 for item, opened in enumerate(items):
                     closed = items[item + 1] if item + 1 < len(items) else last
-                    dash = found[opened][0]
+                    dash, begins = found[opened][0], found[opened][1][2:].strip()
+                    if begins.startswith(("{", "*", "&")):
+                        steps.append(None)
+                        continue
                     # The step's first key sits on the line of its dash.
-                    step = [(dash + 2, found[opened][1][2:].strip(), found[opened][2]), *found[opened + 1:closed]]
+                    step = [(dash + 2, begins, found[opened][2]), *found[opened + 1:closed]]
                     steps.append(env_under(step, 0, len(step), dash + 2))
+            own = env_under(found, inside, done, keys)
             ends = found[named[which + 1]][2] if which + 1 < len(named) else (found[end][2] if end < len(found) else len(lines))
-            jobs.append((found[job][1].rstrip(":"), {**shared, **env_under(found, inside, done, keys)}, steps,
+            jobs.append((key_of(found[job][1])[0], None if shared is None or own is None else {**shared, **own}, steps,
                          "\n".join(lines[found[job][2]:ends])))
     return jobs
 
@@ -190,20 +229,30 @@ def unpinned(workflows, channel, wanted):
     problems, pinned = [], 0
     for name, text in sorted(workflows.items()):
         if name == "fuzz.yml":
-            placed = 0
+            placed, unread = 0, "is written in a way this check does not read (inline, or by an alias): whether it sets RUSTUP_TOOLCHAIN cannot be told"
             for job, env, steps, lines in workflow_jobs(text):
                 nightly = sum(version == "nightly" for version, _ in toolchain_steps(lines))
                 placed += nightly
                 if not nightly:
                     continue
-                said = env.get("RUSTUP_TOOLCHAIN")
-                if said != "nightly":
-                    problems.append(f"{name} installs nightly in job {job}, whose env "
-                                    + (f"sets RUSTUP_TOOLCHAIN to {said}" if said is not None else "does not set RUSTUP_TOOLCHAIN")
-                                    + ": the toolchain file would decide its plain cargo calls")
-                for other in (step["RUSTUP_TOOLCHAIN"] for step in steps if step.get("RUSTUP_TOOLCHAIN", "nightly") != "nightly"):
-                    problems.append(f"{name}: a step of job {job} sets RUSTUP_TOOLCHAIN to {other}, over the job's nightly: "
-                                    "its cargo calls would build with another Rust")
+                found = []
+                if env is None:
+                    found.append(f"{name} installs nightly in job {job}, whose env, or the workflow's, {unread}")
+                elif env.get("RUSTUP_TOOLCHAIN") != "nightly":
+                    said = env.get("RUSTUP_TOOLCHAIN")
+                    found.append(f"{name} installs nightly in job {job}, whose env "
+                                 + (f"sets RUSTUP_TOOLCHAIN to {said}" if said is not None else "does not set RUSTUP_TOOLCHAIN")
+                                 + ": the toolchain file would decide its plain cargo calls")
+                if not steps:
+                    found.append(f"{name} installs nightly in job {job}, whose steps are not a list this check reads: "
+                                 "whether one of them sets RUSTUP_TOOLCHAIN cannot be told")
+                for step in steps:
+                    if step is None:
+                        found.append(f"{name}: a step of job {job}, or its env, {unread}")
+                    elif step.get("RUSTUP_TOOLCHAIN", "nightly") != "nightly":
+                        found.append(f"{name}: a step of job {job} sets RUSTUP_TOOLCHAIN to {step['RUSTUP_TOOLCHAIN']}, "
+                                     "over the job's nightly: its cargo calls would build with another Rust")
+                problems.extend(dict.fromkeys(found))
             if placed != sum(version == "nightly" for version, _ in toolchain_steps(text)):
                 problems.append(f"{name} installs nightly in a step that is in no job this check can read: "
                                 "whether its job sets RUSTUP_TOOLCHAIN cannot be told")
@@ -331,6 +380,59 @@ class ToolPins(unittest.TestCase):
         self.assertEqual(len(problems(fuzz.replace(said, "      RUSTUP_TOOLCHAIN: stable\n").replace(
             "permissions:\n", "env:\n  RUSTUP_TOOLCHAIN: nightly\npermissions:\n", 1))), 1)
 
+    def test_an_override_this_check_cannot_read_is_refused_and_not_taken_for_none(self):
+        channel, wanted = self.toolchain_file()
+        real = self.workflows()
+        fuzz = real["fuzz.yml"]
+        said = "      RUSTUP_TOOLCHAIN: nightly\n"
+        step = "        env:\n          FUZZ_SECONDS: '120'\n"
+        shared = ("permissions:\n", "env:\n  RUSTUP_TOOLCHAIN: nightly\npermissions:\n")
+        self.assertEqual((fuzz.count(said), fuzz.count(step), fuzz.count(shared[0])), (1, 1, 1))
+        cannot = "is written in a way this check does not read (inline, or by an alias): whether it sets RUSTUP_TOOLCHAIN cannot be told"
+
+        def problems(text):
+            return unpinned({**real, "fuzz.yml": text}, channel, wanted)
+
+        # A step's env written inline: the override is there, and an env
+        # read as empty would have hidden it.
+        self.assertEqual(problems(fuzz.replace(step, "        env: {FUZZ_SECONDS: '120', RUSTUP_TOOLCHAIN: stable}\n")),
+                         [f"fuzz.yml: a step of job fuzz, or its env, {cannot}"])
+        # The workflow says nightly and the job's own env, inline, says
+        # stable: the job's is the one that counts, and it cannot be read.
+        inline_job = fuzz.replace(shared[0], shared[1], 1)
+        at = inline_job.index("    env:\n", inline_job.index("  fuzz:\n"))
+        inline_job = inline_job[:at] + "    env: {RUSTUP_TOOLCHAIN: stable}\n" + inline_job[at + len("    env:\n"):].replace(said, "", 1)
+        self.assertEqual(problems(inline_job), [f"fuzz.yml installs nightly in job fuzz, whose env, or the workflow's, {cannot}"])
+        # A quoted key is the same key.
+        self.assertEqual(problems(fuzz.replace(step, step + "          'RUSTUP_TOOLCHAIN': stable\n")), [
+            "fuzz.yml: a step of job fuzz sets RUSTUP_TOOLCHAIN to stable, over the job's nightly: "
+            "its cargo calls would build with another Rust"])
+        self.assertEqual(problems(fuzz.replace(said, '      "RUSTUP_TOOLCHAIN": stable\n')), [
+            "fuzz.yml installs nightly in job fuzz, whose env sets RUSTUP_TOOLCHAIN to stable: "
+            "the toolchain file would decide its plain cargo calls"])
+        # Steps whose dashes sit at the column of `steps:` are steps all the
+        # same: the real job written that way passes, and its override is found.
+        before, after = fuzz.split("    steps:\n")
+        flat = before + "    steps:\n" + "\n".join(line[2:] if line.startswith("      ") else line for line in after.split("\n"))
+        self.assertIn("    steps:\n    - uses: actions/checkout@", flat)
+        self.assertEqual(problems(flat), [])
+        flat_step = "      env:\n        FUZZ_SECONDS: '120'\n"
+        self.assertEqual(flat.count(flat_step), 1)
+        self.assertEqual(problems(flat.replace(flat_step, flat_step + "        RUSTUP_TOOLCHAIN: stable\n")), [
+            "fuzz.yml: a step of job fuzz sets RUSTUP_TOOLCHAIN to stable, over the job's nightly: "
+            "its cargo calls would build with another Rust"])
+        # A step written inline, an env that merges another mapping, and
+        # steps that are no block list at all.
+        self.assertEqual(problems(fuzz.replace("      - run: bash scripts/verify.sh fuzz\n" + step,
+                                               "      - {run: bash scripts/verify.sh fuzz, env: {RUSTUP_TOOLCHAIN: stable}}\n")),
+                         [f"fuzz.yml: a step of job fuzz, or its env, {cannot}"])
+        self.assertEqual(problems(fuzz.replace(step, step + "          <<: *elsewhere\n")),
+                         [f"fuzz.yml: a step of job fuzz, or its env, {cannot}"])
+        self.assertEqual(problems(fuzz.replace(said, "      <<: *elsewhere\n" + said)),
+                         [f"fuzz.yml installs nightly in job fuzz, whose env, or the workflow's, {cannot}"])
+        self.assertEqual(problems(fuzz.replace(shared[0], "env: ${{ fromJSON(vars.SHARED) }}\npermissions:\n", 1)),
+                         [f"fuzz.yml installs nightly in job fuzz, whose env, or the workflow's, {cannot}"])
+
     def test_a_workflows_jobs_are_read_with_their_env_and_their_steps(self):
         text = ("name: Example # not a job\n"
                 "env:\n"
@@ -380,6 +482,22 @@ class ToolPins(unittest.TestCase):
         # Each job's lines are its own: the toolchain it installs is found
         # in it and not in its neighbour.
         self.assertEqual([toolchain_steps(lines) for _, _, _, lines in jobs], [[("nightly", [])], []])
+        # What is not read is None, and what is not there is empty.
+        unread = workflow_jobs("jobs:\n"
+                               "  inline:\n"
+                               "    env: {A: b}\n"
+                               "    steps:\n"
+                               "    - run: echo flat\n"
+                               "      env:\n"
+                               "        'QUOTED': \"yes\"\n"
+                               "    - {run: echo inline}\n"
+                               "    - run: echo alias\n"
+                               "      env: *shared\n"
+                               "    timeout-minutes: 5\n"
+                               "  flow:\n"
+                               "    steps: [{run: echo no}]\n")
+        self.assertEqual([(name, env, steps) for name, env, steps, _ in unread],
+                         [("inline", None, [{"QUOTED": "yes"}, None, None]), ("flow", {}, [])])
         self.assertEqual(uncommented("  key: 'it''s # kept' # dropped"), "  key: 'it''s # kept'")
         self.assertEqual(uncommented("# all of it"), "")
         self.assertEqual(uncommented("  run: echo a#b"), "  run: echo a#b")
