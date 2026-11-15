@@ -1997,8 +1997,13 @@ mod tests {
         assert!(record(&daemon, &agent).judged.is_some());
         assert_eq!(identity(&daemon, &agent).await, Some(waiting));
 
-        // The agent's own first-hand word after it takes it off.
-        let before_report = Utc::now();
+        // The agent's own first-hand word after it takes it off. The time
+        // called "before the report" is stepped back from the clock: two
+        // reads of it can land on one microsecond, and what is read here
+        // has to be strictly earlier than the report's own time, both for
+        // the check below and for the judgment further down that is
+        // refused as read before the word.
+        let before_report = Utc::now() - chrono::Duration::milliseconds(1);
         report(
             &daemon,
             &agent,
@@ -2021,7 +2026,7 @@ mod tests {
         // kept apart from the observation.
         let off = record(&daemon, &agent);
         assert!(off.judged.is_none(), "taken off the record");
-        assert!(off.first_hand_at.is_some_and(|at| at >= before_report));
+        assert!(off.first_hand_at.is_some_and(|at| at > before_report));
         let mut cleared = Vec::new();
         while let Ok(event) = events.try_recv() {
             if let EventKind::AgentJudgmentCleared { agent: a, reason } = event.kind

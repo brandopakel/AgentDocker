@@ -581,6 +581,11 @@ pub struct App {
     discovered: Vec<DiscoveredProcess>,
     journal: Vec<JournalEntry>,
     journal_project: Option<String>,
+    /// The read of that project's journal was refused by the request
+    /// queue: asked again at the next look at the project's context. Kept
+    /// apart from `journal_project`, which is also what says the project
+    /// on view has changed.
+    journal_due: bool,
     inbox: Vec<agentdocker_core::Envelope>,
     /// What the person can read, as the daemon lists it; `None` until the
     /// daemon has answered, `Some(false)` from a daemon without it.
@@ -797,6 +802,7 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
+            journal_due: false,
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
@@ -893,6 +899,7 @@ impl App {
             discovered: Vec::new(),
             journal: Vec::new(),
             journal_project: None,
+            journal_due: false,
             inbox: Vec::new(),
             conversations: Vec::new(),
             conversations_supported: None,
@@ -985,160 +992,303 @@ impl App {
         }
     }
 
-    /// A command the worker queue would not take: whatever the person
-    /// started with it is told so, or it would wait for a reply that
-    /// never comes.
+    /// A command the worker queue would not take. It never reaches the
+    /// daemon and no answer to it will come, so whatever was waiting for
+    /// one is told here, or it would wait for good.
+    ///
+    /// Every command is named: no arm stands for "the rest", so a command
+    /// added later does not compile until it says here what a refusal of
+    /// it gives back. There are three kinds. What a person started has
+    /// its control given back and the reason said. A read the app makes
+    /// by itself is dropped without a word, since it is asked again on
+    /// the next tick, event or refresh. And a few say it in their own
+    /// place (the answer's card, the diff, the session log) and not in
+    /// the status line.
     fn rejected(&mut self, command: Cmd, reason: &'static str) {
-        {
-            match command {
-                Cmd::SecretAnswer(..) | Cmd::SecretCancel(_) => {
-                    self.say("Temporary input action was not queued. Edits were cleared; cancel this request rather than submitting it again.");
-                    return;
-                }
-                Cmd::Answer(id, _) | Cmd::AnswerChoices(id, ..) => {
-                    self.sending.remove(&id);
-                    if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
-                        self.shell.pending_answer_reveal = None;
-                    }
-                    // The card says why, after the toast has gone.
-                    self.shell.answer_errors.insert(id, reason.to_owned());
-                }
-                Cmd::DismissMessages(ids) => {
-                    self.dismissing.retain(|id| !ids.contains(id));
-                }
-                // A read of a conversation the app leaves to the CLI is
-                // asked again on the next refresh.
-                Cmd::MarkRead(conversation, _) => {
-                    self.hidden_reads.remove(&conversation);
-                    return;
-                }
-                Cmd::Pause { request, .. } | Cmd::ResumeProject(request) => {
-                    self.complete_pause(request, Err(reason.into()));
-                }
-                Cmd::ConnectorEnable(_) => {
-                    self.connector_busy = None;
-                    self.connector_error = Some(reason.into());
-                }
-                Cmd::Setup(_) => self.setup_busy = false,
-                Cmd::RestartDaemon => self.daemon_restarting = false,
-                Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
-                Cmd::Console(_, _) => {
-                    self.console_running = self.console_running.saturating_sub(1);
-                    self.append_console(&format!("Command not queued: {reason}\n"));
-                }
-                Cmd::Launch(_) | Cmd::Resume(..) => self.shell.launching = false,
-                Cmd::SessionSend(id, _) | Cmd::ProjectSend(id, _, _) => {
-                    if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
-                        entry.draft.complete(Err(reason.into()));
-                    }
-                }
-                // Never queued, so certainly not sent: the note goes to the
-                // message box, which says so itself.
-                Cmd::DenyNote(question, ..) => {
-                    if let Some(note) = self.shell.deny_notes.get_mut(&question) {
-                        note.failed = Some(shell::NoteFailure {
-                            reason: reason.into(),
-                            certain: true,
-                        });
-                    }
-                    self.place_failed_notes();
-                    return;
-                }
-                // A conversation draft that could not be queued is told so,
-                // or it would stay "sending" and never be retried.
-                Cmd::ConversationSend { draft, .. } => {
-                    self.shell
-                        .conversation_drafts
-                        .entry(draft)
-                        .or_default()
-                        .complete(Err(reason.into()));
-                }
-                // A filing that could not be queued is told so, or it
-                // would stay "Filing…" for good; a move, a hand or an
-                // archive says so in the status.
-                Cmd::TaskCreate {
-                    project, request, ..
-                } => {
-                    if let Some(draft) = self.shell.task_drafts.get_mut(&project)
-                        && draft.sending == Some(request)
-                    {
-                        draft.sending = None;
-                        draft.error = Some(reason.into());
-                    }
-                }
-                // A page asked for by hand that could not be queued is
-                // told so; a refresh is not.
-                Cmd::Usage { request, .. } => {
-                    if self.usage_pending.as_ref().is_some_and(|p| p.0 == request) {
-                        self.usage_pending = None;
-                        self.usage_error = Some(reason.into());
-                    }
-                    return;
-                }
-                Cmd::Tasks {
-                    project,
-                    request,
-                    offset,
-                    ..
-                } => {
-                    self.board_asks.remove(&request);
-                    if offset == 0 {
-                        return;
-                    }
-                    if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
-                        && board.pending_more == Some(request)
-                    {
-                        board.pending_more = None;
-                    }
-                }
-                Cmd::Adopt(pid) => {
-                    self.shell.adopting.remove(&pid);
-                }
-                Cmd::Palette(project) => {
-                    self.palettes_asked.remove(&project);
-                }
-                // A save that could not be queued never reaches the daemon
-                // and no answer to it will come: the draft that sent it is
-                // told so, or it would wait for one for good, with Save off.
-                // What the person wrote and its revision stay, unsaved.
-                Cmd::PlanSave { save, .. } => {
-                    self.shell.plan.refused(save);
-                }
-                // Not sent: the draft stays, and Keep is offered again.
-                Cmd::MemoryAdd { project, .. } => {
-                    if let Some(form) = self.shell.memory.get_mut(&project) {
-                        form.adding = None;
-                    }
-                }
-                // Not sent: asked again on a later tick, once there is room.
-                Cmd::MemorySearch { project, .. } => {
-                    if let Some(form) = self.shell.memory.get_mut(&project) {
-                        form.search_due = true;
-                    }
-                    return;
-                }
-                Cmd::TaskMove { .. }
-                | Cmd::TaskEdit { .. }
-                | Cmd::TaskArchive(_)
-                | Cmd::TaskComment { .. }
-                | Cmd::TaskDetail(_)
-                | Cmd::Boards(_)
-                | Cmd::BoardSave { .. }
-                | Cmd::BoardCreate { .. }
-                | Cmd::TaskArchiveLane { .. }
-                | Cmd::BoardAct { .. }
-                | Cmd::FileOpen(_)
-                | Cmd::FileUpload { .. }
-                | Cmd::AdoptAll
-                | Cmd::Stop(_)
-                | Cmd::ResumeProvider(..)
-                | Cmd::RetryController(_) => {}
-                // Full queues may omit refreshes: events and periodic refresh
-                // request another snapshot. User actions get an explicit error.
-                _ => return,
+        match command {
+            Cmd::SecretAnswer(..) | Cmd::SecretCancel(_) => {
+                self.say("Temporary input action was not queued. Edits were cleared; cancel this request rather than submitting it again.");
+                return;
             }
-            self.say(reason);
+            Cmd::Answer(id, _) | Cmd::AnswerChoices(id, ..) => {
+                self.sending.remove(&id);
+                if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
+                    self.shell.pending_answer_reveal = None;
+                }
+                // The card says why, after the toast has gone.
+                self.shell.answer_errors.insert(id, reason.to_owned());
+            }
+            Cmd::DismissMessages(ids) => {
+                self.dismissing.retain(|id| !ids.contains(id));
+            }
+            // A read of a conversation the app leaves to the CLI is
+            // asked again on the next refresh.
+            Cmd::MarkRead(conversation, _) => {
+                self.hidden_reads.remove(&conversation);
+                return;
+            }
+            Cmd::Pause { request, .. } | Cmd::ResumeProject(request) => {
+                self.complete_pause(request, Err(reason.into()));
+            }
+            Cmd::ConnectorEnable(_) => {
+                self.connector_busy = None;
+                self.connector_error = Some(reason.into());
+            }
+            Cmd::Setup(_) => self.setup_busy = false,
+            Cmd::RestartDaemon => self.daemon_restarting = false,
+            Cmd::Desktop(_) => self.desktop.receive(Err(reason.into())),
+            Cmd::Console(_, _) => {
+                self.console_running = self.console_running.saturating_sub(1);
+                self.append_console(&format!("Command not queued: {reason}\n"));
+            }
+            // A start that was never sent is not out: the form, or the
+            // session's own button, is usable again. Each gives back only
+            // its own, so neither frees the other's.
+            Cmd::Launch(_) => {
+                if self.shell.launching() {
+                    self.shell.start = None;
+                }
+            }
+            Cmd::Resume(session, _) => {
+                if self.shell.reconnecting(&session) {
+                    self.shell.start = None;
+                }
+            }
+            // A merge or a removal that was never sent: its button is
+            // usable again, and the reason is where its outcome would be.
+            Cmd::MergeBranch { agent, .. } => {
+                if self.merging.as_deref() == Some(agent.as_str()) {
+                    self.merging = None;
+                }
+                self.merge_outcome = Some((agent, Err(reason.into())));
+            }
+            Cmd::WorktreeRemove(agent) => {
+                if self.removing_worktree.as_deref() == Some(agent.as_str()) {
+                    self.removing_worktree = None;
+                }
+                self.merge_outcome = Some((agent, Err(reason.into())));
+            }
+            // The name the person typed was taken out of the field to be
+            // sent: it goes back, to be sent again.
+            Cmd::Rename(agent, name) => {
+                if self.shell.renaming.is_none() {
+                    self.shell.renaming = Some((agent, name));
+                }
+            }
+            Cmd::SessionSend(id, _) | Cmd::ProjectSend(id, _, _) => {
+                if let Some(entry) = self.shell.session_drafts.get_mut(&id) {
+                    entry.draft.complete(Err(reason.into()));
+                }
+            }
+            // Never queued, so certainly not sent: the note goes to the
+            // message box, which says so itself.
+            Cmd::DenyNote(question, ..) => {
+                if let Some(note) = self.shell.deny_notes.get_mut(&question) {
+                    note.failed = Some(shell::NoteFailure {
+                        reason: reason.into(),
+                        certain: true,
+                    });
+                }
+                self.place_failed_notes();
+                return;
+            }
+            // A conversation draft that could not be queued is told so,
+            // or it would stay "sending" and never be retried.
+            Cmd::ConversationSend { draft, .. } => {
+                self.shell
+                    .conversation_drafts
+                    .entry(draft)
+                    .or_default()
+                    .complete(Err(reason.into()));
+            }
+            // A filing that could not be queued is told so, or it
+            // would stay "Filing…" for good; a move, a hand or an
+            // archive says so in the status.
+            Cmd::TaskCreate {
+                project, request, ..
+            } => {
+                if let Some(draft) = self.shell.task_drafts.get_mut(&project)
+                    && draft.sending == Some(request)
+                {
+                    draft.sending = None;
+                    draft.error = Some(reason.into());
+                }
+            }
+            // A page asked for by hand that could not be queued is
+            // told so; a refresh is not.
+            Cmd::Usage { request, .. } => {
+                if self.usage_pending.as_ref().is_some_and(|p| p.0 == request) {
+                    self.usage_pending = None;
+                    self.usage_error = Some(reason.into());
+                }
+                return;
+            }
+            Cmd::Tasks {
+                project,
+                request,
+                offset,
+                ..
+            } => {
+                self.board_asks.remove(&request);
+                if offset == 0 {
+                    return;
+                }
+                if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
+                    && board.pending_more == Some(request)
+                {
+                    board.pending_more = None;
+                }
+            }
+            Cmd::Adopt(pid) => {
+                self.shell.adopting.remove(&pid);
+            }
+            Cmd::Palette(project) => {
+                self.palettes_asked.remove(&project);
+            }
+            // A save that could not be queued never reaches the daemon
+            // and no answer to it will come: the draft that sent it is
+            // told so, or it would wait for one for good, with Save off.
+            // What the person wrote and its revision stay, unsaved.
+            Cmd::PlanSave { save, .. } => {
+                self.shell.plan.refused(save);
+            }
+            // A plan the person asked to open, never asked of the daemon:
+            // the pane stops waiting for it and says why. A read of a
+            // plan already open is the app's own, asked again when the
+            // plan next changes.
+            Cmd::PlanGet(plan) => {
+                if !matches!(&self.shell.plan, shell::PlanPane::Opening(wanted) if *wanted == plan)
+                {
+                    return;
+                }
+                self.shell.plan = shell::PlanPane::Closed;
+            }
+            // Not sent: the draft stays, and Keep is offered again.
+            Cmd::MemoryAdd { project, .. } => {
+                if let Some(form) = self.shell.memory.get_mut(&project) {
+                    form.adding = None;
+                }
+            }
+            // Not sent: asked again on a later tick, once there is room.
+            Cmd::MemorySearch { project, .. } => {
+                if let Some(form) = self.shell.memory.get_mut(&project) {
+                    form.search_due = true;
+                }
+                return;
+            }
+            // The session's log, asked for by opening its delivery review:
+            // the reason stands where the log would.
+            Cmd::SessionLog(agent) => {
+                self.session_log = Some((agent, Err(reason.into())));
+                return;
+            }
+            // A session's changes against the main folder. Asked for by
+            // the person and again by the app after a merge or a removal:
+            // the reason stands where the diff would, unless a review of
+            // that session is already on view, which a failed refresh
+            // does not take away.
+            Cmd::ReviewBranch(agent) => {
+                if self.shell.selected.as_deref() == Some(agent.as_str())
+                    && !self
+                        .branch_review
+                        .as_ref()
+                        .is_some_and(|(shown, _)| *shown == agent)
+                {
+                    self.branch_review = Some((agent, Err(reason.into())));
+                }
+                return;
+            }
+            // The thread a person is opening, never asked of the daemon: its
+            // pane stops waiting and says why. A thread already on view is
+            // read again by the app when its conversation next moves.
+            Cmd::Thread(root, _) => {
+                let opening = self.shell.thread.as_ref() == Some(&root)
+                    && !self
+                        .thread
+                        .as_ref()
+                        .is_some_and(|(shown, _)| shown.envelope.id == root);
+                if !opening {
+                    return;
+                }
+                self.shell.thread = None;
+            }
+            // The To-do list, asked for by opening it. With nothing of it
+            // read the page would stay empty with no word; a list already
+            // on view is read again when a board next changes.
+            Cmd::Todo => {
+                if self.screen != Screen::Todo || self.todo.is_some() {
+                    return;
+                }
+            }
+            // A project's plans, files and memory, asked for by opening the
+            // project. With nothing of them read it is said; what is on view
+            // is read again when one of them next changes.
+            Cmd::Workspace(project) => {
+                if self.workspaces.contains_key(&project)
+                    || self.selected_project_root().as_deref() != Some(project.as_str())
+                {
+                    return;
+                }
+            }
+            // A project's journal is read once, when the project is chosen
+            // or the daemon comes back. Refused, the read is marked as
+            // still owed and asked again at the next look at the project's
+            // context, which every tick makes: nothing is said, since
+            // nothing is left waiting. The project on view is who it was:
+            // the mark is not the one that says it changed.
+            Cmd::Journal(project, _) => {
+                if self.journal_project.as_deref() == Some(project.as_str()) {
+                    self.journal_due = true;
+                }
+                return;
+            }
+            // What a person did that leaves nothing waiting: it was not
+            // done, and the status line says so. The page before the oldest
+            // message shown is one of them: its place is not kept, so it is
+            // asked for again by asking again.
+            Cmd::HistoryBefore(..)
+            | Cmd::TaskMove { .. }
+            | Cmd::TaskEdit { .. }
+            | Cmd::TaskArchive(_)
+            | Cmd::TaskComment { .. }
+            | Cmd::TaskDetail(_)
+            | Cmd::Boards(_)
+            | Cmd::BoardSave { .. }
+            | Cmd::BoardCreate { .. }
+            | Cmd::TaskArchiveLane { .. }
+            | Cmd::BoardAct { .. }
+            | Cmd::FileOpen(_)
+            | Cmd::FileUpload { .. }
+            | Cmd::AdoptAll
+            | Cmd::Stop(_)
+            | Cmd::ResumeProvider(..)
+            | Cmd::RetryController(_) => {}
+            // Reads the app repeats on its own timer, so a full queue may
+            // drop one and nothing is said: the lists and the inbox every
+            // refresh, deliveries with them, the runtimes and each agent's
+            // tokens on their own intervals. A conversation's newest page
+            // is among them: every answer to the conversations' list asks
+            // for the open one's again.
+            Cmd::Agents
+            | Cmd::Leases
+            | Cmd::Discovered
+            | Cmd::Questions
+            | Cmd::SecretReviews
+            | Cmd::Activity
+            | Cmd::Inbox
+            | Cmd::Delivery(_)
+            | Cmd::Runtimes
+            | Cmd::AgentTokens
+            | Cmd::Conversations(_)
+            | Cmd::History(..) => return,
+            // Reads made when the daemon is first reached, or comes back,
+            // and again when what they show changes. The queue is all but
+            // empty then; one dropped all the same is read at the next
+            // connection or event, and nothing is said. The update check
+            // is sent past this handler by its own caller.
+            Cmd::Ping | Cmd::Me | Cmd::Pauses | Cmd::Connector | Cmd::UpdateCheck => return,
         }
+        self.say(reason);
     }
 
     /// Responses identify the exact operation, not just the selected project.
@@ -1878,8 +2028,7 @@ impl App {
                     self.append_console("\n");
                 }
                 Msg::Launched(result) => {
-                    self.shell.launching = false;
-                    self.shell.reconnecting = None;
+                    self.shell.start = None;
                     match result {
                         Ok(id) => {
                             self.shell.launch = false;
@@ -1901,8 +2050,7 @@ impl App {
                     }
                 }
                 Msg::Reconnected(result) => {
-                    self.shell.launching = false;
-                    self.shell.reconnecting = None;
+                    self.shell.start = None;
                     match result {
                         Ok((id, generation)) => {
                             self.shell.selected = Some(id.clone());

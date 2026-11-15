@@ -37,6 +37,35 @@ pub enum BoardLayout {
     Table,
 }
 
+/// A session start that is with the daemon. The two kinds are one value
+/// so that neither can be read as the other: a reconnect holds the Launch
+/// form's controls without making its button say "Launching…", and only
+/// the session being resumed says "Reconnecting…".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Starting {
+    /// From the Launch form.
+    Launch,
+    /// A resume of this ended session, from its **Reconnect here**.
+    Reconnect(String),
+}
+
+impl State {
+    /// A session start is with the daemon: nothing else starts meanwhile.
+    pub fn starting(&self) -> bool {
+        self.start.is_some()
+    }
+
+    /// The start that is out is the Launch form's.
+    pub fn launching(&self) -> bool {
+        self.start == Some(Starting::Launch)
+    }
+
+    /// The start that is out is a resume of this session.
+    pub fn reconnecting(&self, id: &str) -> bool {
+        matches!(&self.start, Some(Starting::Reconnect(session)) if session == id)
+    }
+}
+
 /// Whether what is in a plan's editor is saved.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum PlanSaving {
@@ -485,11 +514,10 @@ pub(super) struct State {
     /// The window was closed to the menu bar: it exists, hidden, until
     /// the item is clicked or the app is activated again.
     pub hidden: bool,
-    pub launching: bool,
-    /// The session whose resume is on its way to the daemon, so its
-    /// button alone says "Reconnecting…" (a launch from the Launch form
-    /// sets `launching` too, and is not a reconnect).
-    pub reconnecting: Option<String>,
+    /// The one session start that is with the daemon, if any: a second
+    /// press, of either kind, does nothing until it is answered or its
+    /// command is refused.
+    pub start: Option<Starting>,
     /// A session just reconnected: its pane opens when the list shows the
     /// process the daemon started (by its start time) running, and the
     /// list decides — a session that ended at once stays in the list with
@@ -2211,8 +2239,11 @@ impl App {
                     self.shell.diff_file = None;
                     self.merge_outcome = None;
                 }
+                // Selected before its changes are asked for: a request the
+                // queue refuses is answered at once, and the answer is for
+                // the session on view.
+                self.shell.selected = Some(id.clone());
                 self.request_review(&id);
-                self.shell.selected = Some(id);
                 self.shell.session_details = false;
                 self.shell.editor_menu = None;
                 self.shell.review_delivery = false;
@@ -4125,13 +4156,13 @@ impl App {
             Message::LaunchChannel(on) => self.shell.launch_channel = on,
             Message::LaunchWorktree(on) => self.shell.launch_worktree = on,
             Message::Launch => {
-                if self.connected.is_ok() && !self.shell.launching {
+                if self.connected.is_ok() && !self.shell.starting() {
                     match self
                         .launch_spec()
                         .and_then(|spec| self.prepare_launch(spec, sibling_cli()))
                     {
                         Ok(spec) => {
-                            self.shell.launching = true;
+                            self.shell.start = Some(Starting::Launch);
                             self.shell.error = None;
                             self.send(Cmd::Launch(Box::new(spec)));
                         }
@@ -5314,6 +5345,7 @@ impl App {
         if self.journal_project != selected {
             self.journal_project = selected.clone();
             self.journal.clear();
+            self.journal_due = false;
             if let Some(project) = selected {
                 self.request_journal(project);
             }
@@ -5329,6 +5361,14 @@ impl App {
             // now rather than say "Reading…" until a filter is touched.
             if self.screen == Screen::Usage {
                 self.request_usage();
+            }
+        } else if self.journal_due {
+            // The same project, whose journal the queue would not take
+            // last time: asked again, and nothing else of the project is
+            // touched. Refused again, it is owed again.
+            self.journal_due = false;
+            if let Some(project) = selected {
+                self.request_journal(project);
             }
         }
     }
@@ -5529,11 +5569,10 @@ impl App {
     /// stale: the process is back, the checkout differs, somebody is
     /// attached) comes back as the error under the button.
     pub(super) fn reconnect(&mut self, id: &str, cli: Result<PathBuf, String>) {
-        if self.connected.is_ok() && !self.shell.launching {
+        if self.connected.is_ok() && !self.shell.starting() {
             match self.reconnect_spec(id, cli) {
                 Ok(spec) => {
-                    self.shell.launching = true;
-                    self.shell.reconnecting = Some(id.to_owned());
+                    self.shell.start = Some(Starting::Reconnect(id.to_owned()));
                     self.shell.error = None;
                     self.send(Cmd::Resume(id.to_owned(), Box::new(spec)));
                 }
@@ -6434,6 +6473,340 @@ mod tests {
             "{sent:?}"
         );
         assert_eq!(seen(&app).editor.unwrap().3, PlanSaving::Sending(save));
+    }
+
+    /// Fill the worker's queue, so that the next command the app sends is
+    /// refused.
+    fn fill_queue(app: &mut App) {
+        for _ in 0..super::super::queue::CAPACITY {
+            app.send(Cmd::Stop("fixture".into()));
+        }
+    }
+
+    /// A command the request queue will not take never reaches the daemon,
+    /// so no answer to it will come. What a person started gives its
+    /// control back at once, says why, and goes out when pressed again.
+    /// Before, a merge and a worktree removal left "Merging…" and
+    /// "Removing…" for good and held off every other one; a rename lost
+    /// the name typed; the opening of a plan waited for ever.
+    #[test]
+    fn a_command_the_queue_would_not_take_gives_its_control_back() {
+        let (mut app, commands, _messages) = app();
+        let full = "queue is full";
+        let capacity = super::super::queue::CAPACITY;
+
+        // A merge.
+        fill_queue(&mut app);
+        let _ = app.update(Message::MergeBranch("agent-1".into(), "abc1234".into()));
+        assert_eq!(app.merging, None, "the button is usable again");
+        assert!(
+            matches!(&app.merge_outcome, Some((agent, Err(why))) if agent == "agent-1" && why.contains(full)),
+            "the reason stands where the merge's outcome would: {:?}",
+            app.merge_outcome
+        );
+        assert!(app.status.contains(full), "{}", app.status);
+        assert_eq!(
+            commands.try_iter().count(),
+            capacity,
+            "and nothing of it was queued"
+        );
+        let _ = app.update(Message::MergeBranch("agent-1".into(), "abc1234".into()));
+        assert_eq!(app.merging.as_deref(), Some("agent-1"));
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::MergeBranch { agent, .. }] if agent == "agent-1"
+        ));
+        // A refusal of another session's merge does not free this one's.
+        app.rejected(
+            Cmd::MergeBranch {
+                agent: "agent-2".into(),
+                head: "def5678".into(),
+            },
+            "refused",
+        );
+        assert_eq!(app.merging.as_deref(), Some("agent-1"));
+        app.merging = None;
+
+        // A worktree removal.
+        fill_queue(&mut app);
+        let _ = app.update(Message::RemoveWorktree("agent-1".into()));
+        assert_eq!(app.removing_worktree, None, "the button is usable again");
+        assert!(
+            matches!(&app.merge_outcome, Some((agent, Err(why))) if agent == "agent-1" && why.contains(full)),
+            "{:?}",
+            app.merge_outcome
+        );
+        assert_eq!(commands.try_iter().count(), capacity);
+        let _ = app.update(Message::RemoveWorktree("agent-1".into()));
+        assert_eq!(app.removing_worktree.as_deref(), Some("agent-1"));
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::WorktreeRemove(agent)] if agent == "agent-1"
+        ));
+        app.rejected(Cmd::WorktreeRemove("agent-2".into()), "refused");
+        assert_eq!(app.removing_worktree.as_deref(), Some("agent-1"));
+
+        // A rename: the name typed goes back into its field.
+        app.shell.renaming = Some(("agent-1".into(), "builder".into()));
+        fill_queue(&mut app);
+        app.status.clear();
+        let _ = app.update(Message::SubmitRename);
+        assert_eq!(
+            app.shell.renaming,
+            Some(("agent-1".into(), "builder".into())),
+            "the name is still there to send"
+        );
+        assert!(app.status.contains(full), "{}", app.status);
+        assert_eq!(commands.try_iter().count(), capacity);
+        let _ = app.update(Message::SubmitRename);
+        assert_eq!(app.shell.renaming, None);
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::Rename(agent, name)] if agent == "agent-1" && name == "builder"
+        ));
+
+        // The opening of a plan: the pane stops waiting for it.
+        fill_queue(&mut app);
+        app.status.clear();
+        let _ = app.update(Message::PlanOpen("abc123def456".into()));
+        assert!(
+            matches!(app.shell.plan, PlanPane::Closed),
+            "nothing is waited for"
+        );
+        assert!(app.status.contains(full), "{}", app.status);
+        let _ = commands.try_iter().count();
+        let _ = app.update(Message::PlanOpen("abc123def456".into()));
+        assert!(matches!(&app.shell.plan, PlanPane::Opening(id) if id == "abc123def456"));
+        assert!(
+            commands
+                .try_iter()
+                .any(|command| matches!(command, Cmd::PlanGet(id) if id == "abc123def456"))
+        );
+    }
+
+    /// A read the person asked for, by choosing a session, opening a
+    /// thread or asking for earlier messages, says so when the queue will
+    /// not take it. Each waited without a word: the session's changes
+    /// because the session was selected only after they were asked for,
+    /// so the refusal found another session on view; the thread and the
+    /// earlier page because they were taken for reads the app makes
+    /// again by itself, which it does not.
+    #[test]
+    fn a_read_a_person_asked_for_says_when_it_was_never_sent() {
+        let (mut app, commands, _messages) = app();
+        let full = "queue is full";
+        let capacity = super::super::queue::CAPACITY;
+
+        // Choosing a session asks for its changes. With nobody selected,
+        // and then with another session selected, the refusal is the
+        // chosen session's, shown where its changes would be.
+        for before in [None, Some("agent-2")] {
+            app.shell.selected = before.map(str::to_owned);
+            app.branch_review = None;
+            fill_queue(&mut app);
+            let _ = app.update(Message::SelectSession("agent-1".into()));
+            assert_eq!(app.shell.selected.as_deref(), Some("agent-1"));
+            assert!(
+                matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why.contains(full)),
+                "from {before:?}: {:?}",
+                app.branch_review
+            );
+            assert_eq!(commands.try_iter().count(), capacity);
+        }
+        // Chosen again once there is room, the read is queued.
+        let _ = app.update(Message::SelectSession("agent-1".into()));
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::ReviewBranch(agent)] if agent == "agent-1"
+        ));
+        // A review already on view is not taken away by a refresh of it
+        // that could not be asked.
+        app.branch_review = Some(("agent-1".into(), Err("what was on view".into())));
+        fill_queue(&mut app);
+        let _ = app.update(Message::ReviewChanges("agent-1".into()));
+        assert!(
+            matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why == "what was on view")
+        );
+        let _ = commands.try_iter().count();
+
+        // Opening a thread: its pane stops waiting and says why; opened
+        // again, the read is queued and the pane waits for it.
+        let root = MessageId::from("thread-root".to_owned());
+        fill_queue(&mut app);
+        app.status.clear();
+        let _ = app.update(Message::OpenThread(root.clone()));
+        assert_eq!(app.shell.thread, None, "no ring left turning");
+        assert!(app.status.contains(full), "{}", app.status);
+        assert_eq!(commands.try_iter().count(), capacity);
+        let _ = app.update(Message::OpenThread(root.clone()));
+        assert_eq!(app.shell.thread.as_ref(), Some(&root));
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::Thread(asked, _)] if *asked == root
+        ));
+        // A thread already on view, read again by the app: the pane stays
+        // and nothing is said.
+        let stored = |id: &MessageId, seq: u64| {
+            let mut envelope = agentdocker_core::Envelope::new(
+                "sender",
+                agentdocker_core::Destination::Broadcast,
+                "chat",
+                serde_json::json!({"text": "a message"}),
+                None,
+                Utc::now(),
+            );
+            envelope.id = id.clone();
+            agentdocker_core::ArchivedMessage {
+                seq,
+                conversation: agentdocker_core::ConversationId::from("room".to_owned()),
+                envelope,
+                replies: 0,
+            }
+        };
+        app.thread = Some((stored(&root, 7), Vec::new()));
+        app.status.clear();
+        app.rejected(Cmd::Thread(root.clone(), app.history_epoch), "refused");
+        assert_eq!(app.shell.thread.as_ref(), Some(&root));
+        assert!(app.status.is_empty(), "{}", app.status);
+
+        // Show earlier messages: the page before the oldest one shown.
+        let oldest = MessageId::from("oldest-shown".to_owned());
+        app.history
+            .insert("room".into(), vec![stored(&oldest, 801)]);
+        fill_queue(&mut app);
+        app.status.clear();
+        let _ = app.update(Message::EarlierHistory("room".into()));
+        assert!(app.status.contains(full), "{}", app.status);
+        assert_eq!(commands.try_iter().count(), capacity);
+        let _ = app.update(Message::EarlierHistory("room".into()));
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::HistoryBefore(room, 801, _)] if room == "room"
+        ));
+    }
+
+    /// What is refused says so in one place. A session's log and its
+    /// changes say it where the answer would have been shown, and a
+    /// review already on view is not taken away by a refresh that could
+    /// not be asked. A read the app makes by itself is dropped without a
+    /// word, since it is asked again; what a person did that leaves
+    /// nothing waiting says so in the status line.
+    #[test]
+    fn a_refused_command_says_so_in_its_own_place_or_not_at_all() {
+        let (mut app, _commands, _messages) = app();
+        app.shell.selected = Some("agent-1".into());
+
+        // The session's log, and its changes when none are on view.
+        app.rejected(Cmd::SessionLog("agent-1".into()), "refused");
+        assert_eq!(
+            app.session_log,
+            Some(("agent-1".into(), Err("refused".into())))
+        );
+        app.rejected(Cmd::ReviewBranch("agent-1".into()), "refused");
+        assert!(
+            matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why == "refused")
+        );
+        // A review already on view stays; one of a session not on view
+        // is not put there.
+        app.branch_review = Some(("agent-1".into(), Err("what was on view".into())));
+        app.rejected(Cmd::ReviewBranch("agent-1".into()), "refused");
+        app.rejected(Cmd::ReviewBranch("agent-2".into()), "refused");
+        assert!(
+            matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why == "what was on view")
+        );
+        assert!(
+            app.status.is_empty(),
+            "none of these is said twice: {}",
+            app.status
+        );
+
+        // Reads the app repeats by itself, or makes when the daemon is
+        // reached: nothing is said.
+        for command in [
+            Cmd::Agents,
+            Cmd::Leases,
+            Cmd::Runtimes,
+            Cmd::Connector,
+            Cmd::Discovered,
+            Cmd::Inbox,
+            Cmd::Activity,
+            Cmd::AgentTokens,
+            Cmd::Pauses,
+            Cmd::Ping,
+            Cmd::Me,
+            Cmd::Questions,
+            Cmd::SecretReviews,
+            Cmd::UpdateCheck,
+            Cmd::Conversations(None),
+            Cmd::History("room".into(), 1),
+            // A plan that is open, read again; not one being opened.
+            Cmd::PlanGet("abc123def456".into()),
+        ] {
+            let named = format!("{command:?}");
+            app.rejected(command, "refused");
+            assert!(app.status.is_empty(), "{named} said: {}", app.status);
+        }
+
+        // Reads a person asks for by going somewhere are told apart from
+        // the same reads made again by the app: said when nothing of what
+        // was asked for is on view, dropped quietly when something is.
+        app.shell.catalog.selected = Some("/work/a".into());
+        let quiet = |app: &mut App, command: Cmd| {
+            let named = format!("{command:?}");
+            app.status.clear();
+            app.rejected(command, "refused");
+            assert!(app.status.is_empty(), "{named} said: {}", app.status);
+        };
+        let said = |app: &mut App, command: Cmd| {
+            let named = format!("{command:?}");
+            app.status.clear();
+            app.rejected(command, "refused");
+            assert_eq!(app.status, "refused", "{named}");
+        };
+        // The To-do list: only while its page is open with nothing read.
+        quiet(&mut app, Cmd::Todo);
+        app.screen = Screen::Todo;
+        said(&mut app, Cmd::Todo);
+        app.todo = Some(Vec::new());
+        quiet(&mut app, Cmd::Todo);
+        // A project's plans, files and memory: the project on view, with
+        // nothing of them read.
+        quiet(&mut app, Cmd::Workspace("/work/b".into()));
+        said(&mut app, Cmd::Workspace("/work/a".into()));
+        app.workspaces
+            .insert("/work/a".into(), Workspace::default());
+        quiet(&mut app, Cmd::Workspace("/work/a".into()));
+        // A project's journal: for the project on view the read is marked
+        // as owed, to be asked again, and the project stays who it is.
+        app.journal_project = Some("project-a".into());
+        quiet(
+            &mut app,
+            Cmd::Journal("project-b".into(), "project-b".into()),
+        );
+        assert!(!app.journal_due);
+        quiet(
+            &mut app,
+            Cmd::Journal("project-a".into(), "project-a".into()),
+        );
+        assert!(app.journal_due, "asked again on the next look");
+        assert_eq!(app.journal_project.as_deref(), Some("project-a"));
+
+        // What a person did that leaves nothing waiting: said.
+        for command in [
+            Cmd::TaskArchive(agentdocker_core::TaskId::from("aaaaaaaaaaaa".to_owned())),
+            Cmd::FileOpen("file".into()),
+            Cmd::AdoptAll,
+            Cmd::Stop("agent-1".into()),
+            Cmd::RetryController("agent-1".into()),
+            Cmd::Boards("/work/a".into()),
+            // The page before the oldest message shown.
+            Cmd::HistoryBefore("room".into(), 9, 1),
+        ] {
+            let named = format!("{command:?}");
+            app.status.clear();
+            app.rejected(command, "refused");
+            assert_eq!(app.status, "refused", "{named}");
+        }
     }
 
     /// The pane opens on the plan the person asked for last, whatever
@@ -10766,7 +11139,7 @@ mod tests {
         // Through the message the app's own sibling CLI is required; a
         // test binary has none, and that is said rather than launched.
         let _ = app.update(Message::Reconnect("ended-claude".into()));
-        assert!(!app.shell.launching);
+        assert!(!app.shell.starting());
         assert!(
             app.shell
                 .error
@@ -10781,8 +11154,11 @@ mod tests {
         // record at the daemon, and a second press while it is unanswered
         // is nothing: the button waits for the answer.
         app.reconnect("ended-claude", Ok(cli_path.clone()));
-        assert!(app.shell.launching);
-        assert_eq!(app.shell.reconnecting.as_deref(), Some("ended-claude"));
+        assert!(app.shell.reconnecting("ended-claude"));
+        assert!(
+            !app.shell.launching(),
+            "a reconnect is not a launch: the Launch form does not say Launching"
+        );
         assert_eq!(app.shell.error, None);
         app.reconnect("ended-claude", Ok(cli_path.clone()));
         let sent: Vec<Cmd> = commands.try_iter().collect();
@@ -10804,9 +11180,9 @@ mod tests {
             )))
             .unwrap();
         app.drain();
-        assert!(!app.shell.launching);
+        assert!(!app.shell.starting());
         assert_eq!(
-            app.shell.reconnecting, None,
+            app.shell.start, None,
             "the button says Reconnect here again"
         );
         assert!(
@@ -10815,6 +11191,30 @@ mod tests {
                 .as_deref()
                 .is_some_and(|e| e.contains("still live"))
         );
+        // The request queue is full: the resume never reaches the daemon
+        // and no answer to it will come. The button is pressable again at
+        // once and the reason is said; before, it read "Reconnecting…"
+        // for good and every other start was held off with it.
+        fill_queue(&mut app);
+        app.reconnect("ended-claude", Ok(cli_path.clone()));
+        assert_eq!(app.shell.start, None, "nothing is waited for");
+        assert!(app.status.contains("queue is full"), "{}", app.status);
+        assert_eq!(commands.try_iter().count(), super::super::queue::CAPACITY);
+        // Each start gives back only its own: a refused launch does not
+        // free a reconnect that is out, nor a refused reconnect a launch,
+        // nor one session's another's.
+        app.shell.start = Some(Starting::Reconnect("ended-claude".into()));
+        app.rejected(Cmd::Launch(Box::default()), "refused");
+        app.rejected(Cmd::Resume("another".into(), Box::default()), "refused");
+        assert!(app.shell.reconnecting("ended-claude"));
+        app.shell.start = Some(Starting::Launch);
+        app.rejected(
+            Cmd::Resume("ended-claude".into(), Box::default()),
+            "refused",
+        );
+        assert!(app.shell.launching());
+        app.rejected(Cmd::Launch(Box::default()), "refused");
+        assert_eq!(app.shell.start, None);
         // The daemon's yes selects the same record, and asks for the list.
         let generation = Some(Utc::now());
         app.reconnect("ended-claude", Ok(cli_path.clone()));
@@ -10823,7 +11223,7 @@ mod tests {
             .send(Msg::Reconnected(Ok(("ended-claude".into(), generation))))
             .unwrap();
         app.drain();
-        assert!(!app.shell.launching);
+        assert!(!app.shell.starting());
         assert_eq!(app.shell.error, None);
         assert_eq!(app.shell.selected.as_deref(), Some("ended-claude"));
         assert!(commands.try_iter().any(|cmd| matches!(cmd, Cmd::Agents)));
@@ -10870,7 +11270,7 @@ mod tests {
             Some("Exit the session in its terminal first (/exit); this enables when it has.")
         );
         let _ = app.update(Message::Reconnect("ended-claude".into()));
-        assert!(!app.shell.launching);
+        assert!(!app.shell.starting());
         assert!(
             app.shell
                 .error
@@ -11032,7 +11432,7 @@ mod tests {
             app.shell.conversation_drafts[&thread_key].text,
             "Thread draft"
         );
-        assert!(!app.shell.launching);
+        assert!(!app.shell.starting());
     }
 
     #[test]
@@ -11651,6 +12051,90 @@ mod tests {
     /// The screen and the project on view.
     fn on(app: &App) -> (Screen, Option<PathBuf>) {
         (app.screen, app.shell.catalog.selected.clone())
+    }
+
+    /// A read of the project's journal that the queue will not take is
+    /// asked again by itself, and the project on view stays the project
+    /// it is. The mark that says "another project is on view" also closes
+    /// the open card and empties its editor, its comment line and the link
+    /// being added: a refused read must not be taken for that. A real
+    /// change of project still clears them.
+    #[test]
+    fn a_refused_journal_read_is_asked_again_and_closes_nothing() {
+        let (mut app, alpha, beta, kept) = travel();
+        let commands = &kept._commands;
+        let capacity = super::super::queue::CAPACITY;
+        let project = ProjectRef::directory(&beta).id().to_string();
+
+        // The project is on view with a card open, and words in its
+        // editor, its comment line and the link being added.
+        let _ = app.update(Message::SelectProject(beta.clone()));
+        app.refresh_project_context();
+        assert_eq!(app.journal_project.as_deref(), Some(project.as_str()));
+        let card = card_in("aaaaaaaaaaaa", &beta, "Port the parser");
+        let _ = app.update(Message::TaskOpen(card.id.clone()));
+        app.shell.card_draft.title = "Port the parser, carefully".into();
+        app.shell.card_draft.description = "what the person is writing".into();
+        app.shell.card_draft.comment = "half a comment".into();
+        app.shell.link_kind = Some(agentdocker_core::LinkKind::Url);
+        app.shell.link_target = "https://example.com/half".into();
+        app.board_asks.insert(41, (project.clone(), 50));
+        let whole = |app: &App| {
+            (
+                app.task_open.clone(),
+                app.shell.card_draft.clone(),
+                app.shell.link_kind,
+                app.shell.link_target.clone(),
+                app.board_asks.clone(),
+                app.journal_project.clone(),
+            )
+        };
+        let before = whole(&app);
+        assert_eq!(before.0, Some(card.id.clone()), "the card is open");
+
+        // The daemon comes back and the journal is asked for again, as it
+        // is on every connection; the queue is full and refuses it.
+        let _ = commands.try_iter().count();
+        fill_queue(&mut app);
+        app.status.clear();
+        app.request_journal(project.clone());
+        assert!(app.journal_due, "the read is owed");
+        assert!(app.status.is_empty(), "nothing waits, nothing is said");
+        // The next looks at the project's context, with the queue still
+        // full: the project has not changed, and nothing of the card goes.
+        app.refresh_project_context();
+        app.refresh_project_context();
+        assert_eq!(
+            whole(&app),
+            before,
+            "the card, its drafts and the board's asks, whole"
+        );
+        assert!(app.journal_due, "refused again, owed again");
+        let waiting: Vec<_> = commands.try_iter().collect();
+        assert_eq!(waiting.len(), capacity);
+        assert!(!waiting.iter().any(|c| matches!(c, Cmd::Journal(..))));
+
+        // With room, the journal alone is asked for, once.
+        app.refresh_project_context();
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::Journal(asked, _)] if *asked == project
+        ));
+        assert!(!app.journal_due);
+        assert_eq!(whole(&app), before);
+        app.refresh_project_context();
+        assert_eq!(commands.try_iter().count(), 0, "and not again");
+
+        // Another project chosen is a change of project: its journal is
+        // asked for, and the card of the one before is closed.
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        app.refresh_project_context();
+        assert_eq!(app.task_open, None);
+        assert_eq!(app.shell.card_draft.comment, "");
+        assert!(app.shell.link_target.is_empty());
+        assert!(app.board_asks.is_empty());
+        let other = ProjectRef::directory(&alpha).id().to_string();
+        assert_eq!(app.journal_project.as_deref(), Some(other.as_str()));
     }
 
     /// Back and Forward walk the places the person went, in order, each

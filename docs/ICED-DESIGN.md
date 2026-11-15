@@ -742,6 +742,23 @@ command.
 - Commands run the actual bundled CLI in the selected project, without a shell.
   Output, history, request queues and execution deadlines remain bounded. Late
   results do not steal navigation focus.
+- The app's requests to the daemon go through one bounded queue, which refuses
+  a request when it is full or its worker has stopped. A refused request never
+  reaches the daemon and nothing will answer it, so whatever was waiting for
+  its answer is told at once: what a person started (a merge, a worktree's
+  removal, a launch or a reconnect, a rename, a save, a send, opening a plan)
+  gets its control back and says why, in the status line or where its answer
+  would have been shown, and can be sent again. So does a read a person asks
+  for by going somewhere: a session's changes, a thread being opened (its pane
+  closes), the messages before the oldest shown, and the To-do page and a
+  project's plans, files and memory while nothing of them is on view. A read
+  the app repeats by itself is dropped without a word: the lists, the inbox
+  and deliveries on its timer, a conversation's newest page with them, the
+  same reads as above once something of them is on view, and a project's
+  journal, which is marked as owed and asked again on the next tick without
+  the project on view being taken for another. Every request
+  names what its refusal gives back: the handler has no catch-all, so a request
+  added later does not compile until it does.
 - Setup and installation preserve their existing exact-preview/apply and
   undo/rollback checks. A framework migration does not relax process identity,
   release lifetime pins, queue limits or private state requirements.
