@@ -383,7 +383,7 @@ mod tests {
         let (tx, _commands) = super::super::queue::channel();
         let (_messages, rx) = std::sync::mpsc::sync_channel(super::super::MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         let project = agentdocker_core::ProjectRef::directory("/fixture/plans");
         let root = project.root.display().to_string();
         app.shell.catalog.remember(project.clone(), true).unwrap();

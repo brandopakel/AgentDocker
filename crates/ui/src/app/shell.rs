@@ -6983,7 +6983,7 @@ mod tests {
     fn the_person_keeps_searches_and_forgets_a_projects_memory() {
         use agentdocker_core::memory::Memory;
         let (mut app, commands, messages) = app();
-        app.link.connected();
+        app.link.open();
         let memory = |id: &str, text: &str| Memory {
             id: id.into(),
             project: agentdocker_core::ProjectId::from("a"),
@@ -7199,7 +7199,7 @@ mod tests {
     #[test]
     fn palettes_are_read_for_the_agents_on_view_and_again_on_a_change() {
         let (mut app, commands, messages) = app();
-        app.link.connected();
+        app.link.open();
         let agent = |name: &str, root: &str| {
             let mut record = agentdocker_core::AgentRecord::new(
                 agentdocker_core::AgentSpec {
@@ -7280,8 +7280,11 @@ mod tests {
             "the failed one again, not the answered one"
         );
         // A reconnect asks every palette again with its next list.
-        app.link.lost("gone".into());
-        messages.send(Msg::Connected).unwrap();
+        app.link
+            .lost(crate::app::link::Report::Stream, "gone".into());
+        messages
+            .send(Msg::Connected(crate::app::link::Report::Stream))
+            .unwrap();
         app.drain();
         let _ = palettes_asked(&commands);
         messages
@@ -7793,7 +7796,7 @@ mod tests {
     #[test]
     fn a_card_save_sends_only_what_the_person_changed() {
         let (mut app, requests, messages) = app();
-        app.link.connected();
+        app.link.open();
         let id = agentdocker_core::TaskId::from("aaaaaaaaaaaa".to_owned());
         let words = CardWords {
             title: "Port the parser".into(),
@@ -7911,7 +7914,7 @@ mod tests {
     #[test]
     fn a_card_draft_survives_other_board_actions_late_replies_and_refused_queues() {
         let (mut app, requests, messages) = app();
-        app.link.connected();
+        app.link.open();
         let dir = tempfile::tempdir().unwrap();
         let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
@@ -8080,7 +8083,7 @@ mod tests {
     #[test]
     fn the_board_shows_more_a_page_at_a_time_and_stays_expanded_through_a_refresh() {
         let (mut app, requests, messages) = app();
-        app.link.connected();
+        app.link.open();
         let dir = tempfile::tempdir().unwrap();
         let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
@@ -8344,7 +8347,7 @@ mod tests {
             secret::{SecretField, SecretReview, SecretReviewSpec, SecretText},
         };
         let (mut app, commands, messages) = app();
-        app.link.connected();
+        app.link.open();
         let now = Utc::now();
         let review = SecretReview {
             id: "temporary".into(),
@@ -8393,7 +8396,12 @@ mod tests {
             0,
             "no double click resubmission"
         );
-        messages.send(Msg::Disconnected("fixture".into())).unwrap();
+        messages
+            .send(Msg::Disconnected(
+                crate::app::link::Report::Stream,
+                "fixture".into(),
+            ))
+            .unwrap();
         app.drain();
         assert!(app.secrets.drafts.is_empty() && app.secrets.reviews.is_empty());
         assert_eq!(app.shell.draft_snapshot(), before);
@@ -8408,7 +8416,7 @@ mod tests {
             (true, agentdocker_core::ALLOW_FOR_SESSION),
         ] {
             let (mut app, commands, messages) = app();
-            app.link.connected();
+            app.link.open();
             let presentation = QuestionPresentation::CodexFiles {
                 cwd: "/owned".into(),
                 reason: "Fixture".into(),
@@ -8464,7 +8472,7 @@ mod tests {
     #[test]
     fn structured_choices_use_one_answer_command_and_reject_stale_or_invalid_clicks() {
         let (mut app, commands, _) = app();
-        app.link.connected();
+        app.link.open();
         let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
             command: "printf hello".into(),
             cwd: "/owned".into(),
@@ -8514,7 +8522,7 @@ mod tests {
     #[test]
     fn a_denial_carries_its_note_to_the_agent_once_accepted() {
         let (mut app, commands, messages) = app();
-        app.link.connected();
+        app.link.open();
         for (choice, noted) in [("Deny", true), ("Allow", false)] {
             let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
                 command: "rm -rf build".into(),
@@ -8565,7 +8573,7 @@ mod tests {
     #[test]
     fn a_refused_denial_note_lands_in_the_message_box_and_leaves_other_sends_alone() {
         let (mut app, commands, messages) = app();
-        app.link.connected();
+        app.link.open();
         let note = "Denied `rm -rf build`: Use the fixture script instead";
         let deny = |app: &mut App, id: &str| -> MessageId {
             let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
@@ -8687,7 +8695,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let (mut app, commands, messages) = app();
         app.shell = State::load(home.path());
-        app.link.connected();
+        app.link.open();
         let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
             command: "rm -rf build".into(),
             cwd: "/owned".into(),
@@ -8733,7 +8741,7 @@ mod tests {
 
         // Delivered: the saved copy goes with it.
         let (mut app, _commands, messages) = self::app();
-        app.link.connected();
+        app.link.open();
         app.shell.deny_notes.insert(
             id.clone(),
             DenyNote {
@@ -8757,7 +8765,7 @@ mod tests {
     #[test]
     fn a_denial_note_the_queue_rejects_goes_to_the_message_box() {
         let (mut app, _commands, messages) = app();
-        app.link.connected();
+        app.link.open();
         let id = MessageId::from("question-full".to_owned());
         let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
             command: "make clean".into(),
@@ -9066,7 +9074,7 @@ mod tests {
     #[test]
     fn asking_an_agent_to_repair_sends_it_the_words() {
         let (mut app, commands, _messages) = app();
-        app.link.connected();
+        app.link.open();
         let _ = commands.try_iter().count();
         let _ = app.update(Message::AskAgent(
             "worker".into(),
@@ -9485,7 +9493,7 @@ mod tests {
     #[test]
     fn mcp_url_questions_never_submit_or_save_a_typed_draft() {
         let (mut app, commands, _) = app();
-        app.link.connected();
+        app.link.open();
         let presentation = agentdocker_core::QuestionPresentation::McpUrl {
             server: "example-tools".into(),
             elicitation_id: "one".into(),
@@ -9527,7 +9535,7 @@ mod tests {
     #[test]
     fn explicit_choices_bypass_full_draft_storage_and_failed_delivery_keeps_text() {
         let (mut app, commands, messages) = app();
-        app.link.connected();
+        app.link.open();
         for index in 0..128 {
             assert!(
                 app.shell
@@ -9643,7 +9651,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let (mut app, commands, messages) = app();
         app.shell = State::load(home.path());
-        app.link.connected();
+        app.link.open();
         let id = MessageId::from("question-one".to_owned());
         let other = MessageId::from("question-two".to_owned());
         let question = Question {
@@ -9727,7 +9735,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let (mut app, commands, messages) = app();
         app.shell = State::load(home.path());
-        app.link.connected();
+        app.link.open();
         let alpha = agentdocker_core::ProjectRef::directory(home.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(home.path().join("beta"));
         for project in [&alpha, &beta] {
@@ -10301,7 +10309,7 @@ mod tests {
     fn answering_reveals_the_next_question_only_while_that_interaction_is_current() {
         let (mut app, commands, messages) = app();
         app.screen = Screen::Questions;
-        app.link.connected();
+        app.link.open();
         let first = MessageId::from("first".to_owned());
         let second = MessageId::from("second".to_owned());
         let question = Question {
@@ -10352,7 +10360,7 @@ mod tests {
         for response_before_back in [false, true] {
             let (mut app, commands, messages) = app();
             app.screen = Screen::Questions;
-            app.link.connected();
+            app.link.open();
             app.shell.inbox_open = true;
             app.shell.inbox_thread = Some("first-asker".into());
             let first = MessageId::from("first".to_owned());
@@ -10504,7 +10512,9 @@ mod tests {
     #[test]
     fn a_failed_notification_reply_comes_back_as_the_conversations_draft() {
         let (mut app, _commands, messages, _home, action) = notification_app();
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
         let conversation = agentdocker_core::ConversationId::dm("user", "sender-1")
@@ -10542,7 +10552,9 @@ mod tests {
         assert!(app.status.contains("in the composer"));
 
         let (mut app, _commands, messages, _home, action) = notification_app();
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
         let _ = app.update(Message::Notification(
@@ -10578,7 +10590,9 @@ mod tests {
         // Draft storage full: the words are kept beside the composer to
         // copy or dismiss, not lost in a status line.
         let (mut app, _commands, messages, _home, action) = notification_app();
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
         for kind in [DraftKind::Session, DraftKind::Conversation] {
@@ -10669,7 +10683,9 @@ mod tests {
         // conversation opens — leaves the words reachable at the top of
         // the Messages list, not bound to whatever conversation is on view.
         let (mut app, _commands, messages, _home, action) = notification_app();
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
         app.shell.reply_recoveries.push(ReplyRecovery {
@@ -10696,7 +10712,9 @@ mod tests {
     fn an_archived_notification_opens_its_conversation_without_a_live_sender() {
         // A direct message from a sender nobody has a record of.
         let (mut app, commands, messages, _home, action) = notification_app();
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
         let _ = app.update(Message::Notification(
@@ -10723,7 +10741,9 @@ mod tests {
         let (mut app, _commands, messages, _home, action) = notification_app();
         app.aliases
             .insert("sender-1".to_owned(), "sender-now".to_owned());
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
         let _ = app.update(Message::Notification(
@@ -10750,7 +10770,9 @@ mod tests {
         // A channel message, read already, from an agent.
         let (mut app, commands, messages, _home, mut action) = notification_app();
         action.target.channel = Some(agentdocker_core::ChannelId::from("planning".to_owned()));
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
         let _ = app.update(Message::Notification(
@@ -10787,7 +10809,9 @@ mod tests {
             Utc::now(),
         );
         envelope.id = action.target.message.clone();
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         messages.send(Msg::Inbox(vec![envelope])).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
         let _ = app.update(Message::Notification(
@@ -10810,7 +10834,9 @@ mod tests {
             agentdocker_core::AgentId::from(agentdocker_core::conversation::DAEMON);
         action.target.channel = Some(agentdocker_core::ChannelId::from("contested".to_owned()));
         app.shell.conversation = Some("everyone:project".into());
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         messages.send(Msg::Inbox(Vec::new())).unwrap();
         messages.send(Msg::Questions(Vec::new())).unwrap();
         let _ = app.update(Message::Notification(
@@ -10892,7 +10918,7 @@ mod tests {
     #[test]
     fn needs_you_review_opens_the_sessions_delivery_review() {
         let (mut app, commands, _) = app();
-        app.link.connected();
+        app.link.open();
         let now = Utc::now();
         let mut paused = AgentRecord::new(
             agentdocker_core::AgentSpec {
@@ -11058,7 +11084,7 @@ mod tests {
     #[test]
     fn reconnect_here_relaunches_an_ended_claude_session_with_its_conversation_and_the_channel() {
         let (mut app, commands, messages) = app();
-        app.link.connected();
+        app.link.open();
         let cli = tempfile::NamedTempFile::new().unwrap();
         let cli_path = cli.path().to_path_buf();
         app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
@@ -12769,7 +12795,7 @@ mod tests {
     #[test]
     fn a_todo_card_of_another_project_opens_on_its_board_and_stays_open() {
         let (mut app, alpha, beta, kept) = travel();
-        app.link.connected();
+        app.link.open();
         let card = card_in("aaaaaaaaaaaa", &beta, "Port the parser");
         let _ = app.update(Message::SelectProject(alpha.clone()));
         let _ = app.update(Message::Navigate(Screen::Todo));
@@ -12821,7 +12847,7 @@ mod tests {
     /// the second and then to itself.
     fn linked_cards() -> (App, PathBuf, Kept, [agentdocker_core::Task; 2]) {
         let (mut app, alpha, beta, kept) = travel();
-        app.link.connected();
+        app.link.open();
         let mut first = card_in("aaaaaaaaaaaa", &alpha, "Port the parser");
         let second = card_in("bbbbbbbbbbbb", &alpha, "Write the release notes");
         for target in [second.id.to_string(), first.id.to_string()] {

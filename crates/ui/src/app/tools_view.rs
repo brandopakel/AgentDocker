@@ -2849,7 +2849,7 @@ mod tests {
         let (tx, _commands) = crate::app::queue::channel();
         let (_sender, rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         let runtime = RuntimeInfo {
             name: "codex".into(),
             vendor: "fixture".into(),
@@ -2966,7 +2966,7 @@ mod tests {
         let (tx, _commands) = crate::app::queue::channel();
         let (_sender, rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         let mut runtime = RuntimeInfo {
             name: "claude-code".into(),
             vendor: "fixture".into(),
@@ -3096,7 +3096,7 @@ mod tests {
         let (tx, _commands) = crate::app::queue::channel();
         let (_sender, rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         let c = Colors::new(false);
         let plan = |channel: &str| {
             serde_json::json!({
@@ -3186,7 +3186,7 @@ mod tests {
         let (tx, _commands) = crate::app::queue::channel();
         let (_sender, rx) = std::sync::mpsc::channel();
         let mut app = crate::app::App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         let c = Colors::new(false);
         let plan = |phase: &str| {
             serde_json::json!({

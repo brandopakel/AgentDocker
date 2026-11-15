@@ -2508,7 +2508,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let project = agentdocker_core::ProjectRef::directory("/work/orchard");
         let board = agentdocker_core::Board::from_template(
             project.id(),
@@ -2588,7 +2588,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let project = agentdocker_core::ProjectRef::directory("/work/orchard");
         let now = chrono::Utc::now();
         let hours = |h: i64| now - chrono::Duration::hours(h);

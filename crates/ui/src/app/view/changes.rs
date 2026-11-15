@@ -460,7 +460,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let root = std::path::Path::new("/fixture/alpha");
         let merged_head = "1111111111111111111111111111111111111111";
         let new_head = "2222222222222222222222222222222222222222";

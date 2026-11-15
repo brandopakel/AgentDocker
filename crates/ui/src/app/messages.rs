@@ -2021,7 +2021,7 @@ mod tests {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         app.with_conversations(true);
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = AgentId::from("human-id");
@@ -2078,7 +2078,7 @@ mod tests {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         app.with_conversations(true);
         let mut project = ProjectRef::directory("/fixture/alpha");
         project.fingerprint = Some("alpha-fingerprint".into());
@@ -2213,7 +2213,7 @@ mod tests {
         let (commands, requests) = queue::channel();
         let (_messages, receiver) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, receiver);
-        app.link.connected();
+        app.link.open();
         let mut agent = AgentRecord::new(Default::default(), false, Utc::now());
         agent.id = "worker".into();
         app.agents.push(agent);
@@ -2265,7 +2265,7 @@ mod tests {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         app.with_conversations(true);
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = AgentId::from("human-id");
@@ -2439,7 +2439,7 @@ mod tests {
         let (commands, _requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = AgentId::from("human-id");
         let mut agent = record("codex-1", "codex", Some(1));

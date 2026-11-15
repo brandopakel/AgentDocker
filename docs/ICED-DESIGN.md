@@ -718,8 +718,15 @@ command.
   said. What a service says of itself (its version and place, whether it
   keeps conversations, the open restart question) belongs to its connection.
   A new connection asks all of it again and shows the last answer until the
-  new one arrives, so nothing on view jumps; an answer that arrives while no
-  service answers is dropped.
+  new one arrives, so nothing on view jumps. The event stream and the worker
+  report on the service each in its own time, so the link counts its
+  connections (`link::Connection`, one more each time it comes up or goes
+  down), the worker reads the count as it starts a call, and what the call
+  brings back carries it: the answer, and the call's own word that the link is
+  up or down. The link takes only what was asked on the connection it has
+  now, so what a replaced service answers late is never recorded as its
+  successor's, and a call to it that returns late neither brings the link up
+  nor takes it down. The event stream's own reports are always taken.
 - Questions preserve drafts across navigation and failed sends. Duplicate sends
   are disabled while waiting. A successful reply means delivery, not proof that
   an agent consumed it or resumed work.

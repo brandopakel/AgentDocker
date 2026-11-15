@@ -413,7 +413,7 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (_sender, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         for name in ["alpha", "beta"] {
             let mut project = ProjectRef::directory(format!("/fixture/{name}"));
             project.fingerprint = Some(name.to_owned());

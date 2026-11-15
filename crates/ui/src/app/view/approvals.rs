@@ -1999,7 +1999,7 @@ mod tests {
         let (tx, commands) = super::super::super::queue::channel();
         let (_, rx) = std::sync::mpsc::sync_channel(super::super::super::MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         (app, commands)
     }
 

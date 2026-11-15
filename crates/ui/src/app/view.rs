@@ -4377,15 +4377,16 @@ fn unreachable_service(
     link: &link::Link,
 ) -> Option<(&'static str, &'static str, super::chip::Tone, String)> {
     use super::chip::Tone;
-    match link {
-        link::Link::Up(_) => None,
-        link::Link::Connecting { reason: None } => Some((
+    use link::State;
+    match link.state() {
+        State::Up(_) => None,
+        State::Connecting { reason: None } => Some((
             "service-connecting",
             "Connecting…",
             Tone::Info,
             "Connecting to the background service…".to_owned(),
         )),
-        link::Link::Connecting {
+        State::Connecting {
             reason: Some(reason),
         } => Some((
             "service-connecting",
@@ -4393,7 +4394,7 @@ fn unreachable_service(
             Tone::Attention,
             format!("The background service has not answered yet ({reason}). Still trying…"),
         )),
-        link::Link::Down { reason, .. } => Some((
+        State::Down { reason, .. } => Some((
             "service-reconnecting",
             "Reconnecting…",
             Tone::Attention,
@@ -4536,7 +4537,7 @@ mod tests {
         let (commands, requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let c = Colors::new(false);
         let mut agent = AgentRecord::new(
             AgentSpec {
@@ -4681,7 +4682,7 @@ mod tests {
         let mut app = App::bare(commands, results);
         let c = Colors::new(true);
         let r = c.rail();
-        app.link.connected();
+        app.link.open();
         assert!(app.service_chip(r).is_none(), "healthy: nothing");
         assert!(app.daemon_notice(c).is_none(), "and no bottom strip");
         app.desktop.update = Some(serde_json::json!({
@@ -4690,7 +4691,8 @@ mod tests {
         }));
         assert!(app.service_chip(r).is_some(), "an update to install");
         app.desktop.update = None;
-        app.link.lost("gone".into());
+        app.link
+            .lost(crate::app::link::Report::Stream, "gone".into());
         assert!(app.service_chip(r).is_some(), "reconnecting");
     }
 
@@ -4714,7 +4716,10 @@ mod tests {
 
         // A try failed: still connecting, since nothing was lost, and now
         // with why.
-        link.lost("no socket at the usual place".to_owned());
+        link.lost(
+            crate::app::link::Report::Stream,
+            "no socket at the usual place".to_owned(),
+        );
         let (id, words, tone, detail) = said(&link).expect("still nothing");
         assert_eq!((id, words), ("service-connecting", "Connecting…"));
         assert_eq!(tone, Tone::Attention);
@@ -4724,10 +4729,13 @@ mod tests {
              Still trying…"
         );
 
-        link.connected();
+        link.open();
         assert_eq!(said(&link), None, "a healthy service says nothing");
 
-        link.lost("event stream ended".to_owned());
+        link.lost(
+            crate::app::link::Report::Stream,
+            "event stream ended".to_owned(),
+        );
         let (id, words, tone, detail) = said(&link).expect("lost");
         assert_eq!((id, words), ("service-reconnecting", "Reconnecting…"));
         assert_eq!(tone, Tone::Attention);
@@ -4745,8 +4753,9 @@ mod tests {
         let chip = seen(app.service_chip(r).expect("connecting"));
         assert!(chip.reads("Connecting…"), "{:?}", chip.texts);
         assert!(!chip.reads("Reconnecting…"), "{:?}", chip.texts);
-        app.link.connected();
-        app.link.lost("gone".to_owned());
+        app.link.open();
+        app.link
+            .lost(crate::app::link::Report::Stream, "gone".to_owned());
         let chip = seen(app.service_chip(r).expect("reconnecting"));
         assert!(chip.reads("Reconnecting…"), "{:?}", chip.texts);
     }
@@ -4951,7 +4960,8 @@ mod tests {
             app.input_readiness(&agent).label(),
             "Not receiving messages"
         );
-        app.link.lost("offline".into());
+        app.link
+            .lost(crate::app::link::Report::Stream, "offline".into());
         assert!(!app.tool_reports("codex"));
         assert_eq!(app.input_readiness(&agent).label(), "Readiness unavailable");
     }
@@ -5052,7 +5062,7 @@ mod tests {
         let root = project.root.display().to_string();
         app.shell.catalog.remember(project.clone(), true).unwrap();
         app.shell.catalog.selected = Some(project.root.clone());
-        app.link.connected();
+        app.link.open();
         app.screen = Screen::Board;
         app.shell.board_layout = BoardLayout::Table;
         let now = chrono::Utc::now();
@@ -5355,7 +5365,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let mut agent = AgentRecord::new(
             AgentSpec {
                 name: "worker".into(),
@@ -5413,7 +5423,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let mut agent = AgentRecord::new(
             AgentSpec {
                 name: "worker".into(),
@@ -5511,7 +5521,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let root = std::path::PathBuf::from("/work/orchard");
         app.shell.catalog.projects.push(crate::catalog::Entry {
             project: ProjectRef::directory(&root),
@@ -5708,7 +5718,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let c = Colors::new(false);
 
         let service = app.link.serving().expect("a daemon answers");
@@ -5852,7 +5862,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let c = Colors::new(false);
         let now = Utc::now();
         let agent = AgentRecord::new(

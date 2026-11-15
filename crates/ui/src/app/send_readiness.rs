@@ -348,7 +348,7 @@ mod tests {
         let (tx, _commands) = super::super::queue::channel();
         let (_messages, rx) = std::sync::mpsc::sync_channel(super::super::MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         app.agents = agents;
         app
     }

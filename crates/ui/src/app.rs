@@ -488,14 +488,17 @@ enum Msg {
     Answered(MessageId, Result<(), String>),
     MessagesDismissed(Vec<MessageId>, Result<(), String>),
     Event(Box<Event>),
-    Connected,
-    Disconnected(String),
+    /// The link came up, by whoever says so (`link::Report`).
+    Connected(link::Report),
+    /// The link went down, by whoever says so, and why.
+    Disconnected(link::Report, String),
     Status(String),
     Setup(Result<serde_json::Value, String>),
     Desktop(Result<serde_json::Value, String>),
     UpdateChecked(Result<serde_json::Value, String>),
     /// Which daemon answered the last ping.
-    Daemon(DaemonInfo),
+    /// Which daemon answered a ping, and the connection it was asked on.
+    Daemon(link::Connection, DaemonInfo),
     /// A Connect's outcome for that process: the session's name, or why not.
     Adopted(u32, Result<String, String>),
     /// How a restart of the daemon went.
@@ -508,7 +511,12 @@ enum Msg {
     SessionSent(String, Result<QueuedSend, String>),
     DenyNoteSent(MessageId, Result<(), shell::NoteFailure>),
     /// `Err` when the daemon does not know conversations at all.
-    Conversations(Result<Vec<agentdocker_core::ConversationSummary>, String>),
+    /// The conversations, or `invalid` from a daemon without them, and
+    /// the connection that was asked.
+    Conversations(
+        link::Connection,
+        Result<Vec<agentdocker_core::ConversationSummary>, String>,
+    ),
     History(String, u64, Vec<agentdocker_core::ArchivedMessage>),
     /// An earlier page, complete when it is shorter than a page.
     HistoryEarlier(String, u64, Vec<agentdocker_core::ArchivedMessage>),
@@ -743,12 +751,16 @@ impl App {
         let (cmd_tx, cmd_rx) = queue::channel();
         let (msg_tx, msg_rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let worker_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        // The worker reads the link's connection as it starts each call,
+        // so an answer says which connection it was asked on.
+        let link = link::Link::default();
         spawn_worker(
             client.clone(),
             cmd_rx,
             msg_tx.clone(),
             wake.clone(),
             worker_stop.clone(),
+            link.watch(),
         );
         spawn_events(client.clone(), msg_tx, wake.clone());
         // The window is a person being present, so the person is an
@@ -821,7 +833,7 @@ impl App {
             status_at: Instant::now(),
             console_running: 0,
             confirm_stop: None,
-            link: link::Link::default(),
+            link,
             last_seq: 0,
             status: String::new(),
             last_refresh: Instant::now(),
@@ -1907,11 +1919,13 @@ impl App {
                     }
                 }
                 Msg::Event(event) => self.on_event(*event),
-                Msg::Connected => {
+                Msg::Connected(from) => {
                     // A new connection, to another daemon perhaps: what
                     // the last one said of itself is asked again
                     // (`Link::connected`), and so is everything it serves.
-                    if self.link.connected() {
+                    // A call asked on an earlier connection does not make
+                    // one.
+                    if self.link.connected(from) {
                         // Every palette is asked again with the next list,
                         // kept until it answers.
                         self.palettes_asked.clear();
@@ -1946,15 +1960,18 @@ impl App {
                         }
                     }
                 }
-                Msg::Disconnected(reason) => {
-                    self.secrets.disconnect();
-                    self.link.lost(reason);
-                    // A page asked for will not come: a notification's
-                    // search ends rather than wait on it, and a usage read
-                    // on its way is not waited for either — the next
-                    // request is not deduplicated against it.
-                    self.shell.route.end_search();
-                    self.usage_pending = None;
+                // A call asked on an earlier connection failed against
+                // the daemon of that time: it says nothing of this one.
+                Msg::Disconnected(from, reason) => {
+                    if self.link.lost(from, reason) {
+                        self.secrets.disconnect();
+                        // A page asked for will not come: a notification's
+                        // search ends rather than wait on it, and a usage
+                        // read on its way is not waited for either — the
+                        // next request is not deduplicated against it.
+                        self.shell.route.end_search();
+                        self.usage_pending = None;
+                    }
                 }
                 Msg::Status(text) => self.say(text),
                 Msg::Desktop(result) => self.desktop.receive(result),
@@ -1965,15 +1982,17 @@ impl App {
                         Err(error) => self.say(format!("Could not connect that session: {error}")),
                     }
                 }
-                Msg::Daemon(info) => {
+                Msg::Daemon(asked, info) => {
                     if self.own_release.is_none() {
                         self.own_release = agentdocker_host::procinfo::executable_path()
                             .ok()
                             .and_then(|path| installed_release(&path));
                     }
-                    // The daemon that answers says who it is; an answer
-                    // that outlived its daemon is about nothing.
-                    if let Some(service) = self.link.serving() {
+                    // The daemon that answers says who it is. A ping asked
+                    // on another connection was answered by the daemon of
+                    // that time, replaced since perhaps: it is not this
+                    // one's.
+                    if let Some(service) = self.link.answering(asked) {
                         service.info = Some(info);
                     }
                 }
@@ -2066,9 +2085,13 @@ impl App {
                         Err(error) => self.shell.error = Some(error),
                     }
                 }
-                Msg::Conversations(result) => match result {
+                // Asked on another connection: neither the list nor
+                // what the daemon keeps is this one's, which is asked
+                // its own.
+                Msg::Conversations(asked, _) if self.link.answering(asked).is_none() => {}
+                Msg::Conversations(asked, result) => match result {
                     Ok(conversations) => {
-                        self.answer_conversations(true);
+                        self.answer_conversations(asked, true);
                         self.conversations = conversations;
                         self.read_hidden_conversations();
                         // A thread opened before the daemon answered (a
@@ -2096,7 +2119,7 @@ impl App {
                             if known.shown().is_none() {
                                 eprintln!("conversations unavailable, the inbox stays: {error}");
                             }
-                            self.answer_conversations(false);
+                            self.answer_conversations(asked, false);
                         }
                     }
                 },
@@ -3370,6 +3393,7 @@ fn spawn_worker(
     tx: SyncSender<Msg>,
     ctx: Wake,
     cancelled: Arc<std::sync::atomic::AtomicBool>,
+    link: link::Watch,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let (consoles, console_worker) = lane(
@@ -3447,7 +3471,13 @@ fn spawn_worker(
                         }
                         _ => None,
                     };
-                    let outcome = run(&client, daemon);
+                    // The connection this call is asked on, read before
+                    // it starts: what it brings back says so, and the
+                    // link takes it only while that is still its
+                    // connection. Read after the call, it would name
+                    // whatever connection the answer arrived on.
+                    let asked = link.now();
+                    let outcome = run(&client, daemon, asked);
                     let disconnected = outcome
                         .as_ref()
                         .err()
@@ -3496,13 +3526,14 @@ fn spawn_worker(
                                     break;
                                 }
                             }
-                            failure_message(err)
+                            failure_message(err, asked)
                         }
                     };
                     if tx.send(msg).is_err() {
                         break;
                     }
-                    if !disconnected && tx.send(Msg::Connected).is_err() {
+                    if !disconnected && tx.send(Msg::Connected(link::Report::Call(asked))).is_err()
+                    {
                         break;
                     }
                     ctx.request_repaint();
@@ -3537,9 +3568,9 @@ fn spawn_worker(
     })
 }
 
-fn failure_message(error: anyhow::Error) -> Msg {
+fn failure_message(error: anyhow::Error, asked: link::Connection) -> Msg {
     if error.downcast_ref::<RemoteError>().is_none() {
-        Msg::Disconnected(format!("{error:#}"))
+        Msg::Disconnected(link::Report::Call(asked), format!("{error:#}"))
     } else {
         Msg::Status(format!("{error:#}"))
     }
@@ -3561,7 +3592,7 @@ fn memory_search(project: &str, query: &str) -> Request {
     }
 }
 
-fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
+fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Option<Msg>> {
     Ok(match cmd {
         Cmd::Agents => match client.call(&Request::List {
             all: true,
@@ -3628,10 +3659,13 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 version,
                 executable,
                 ..
-            } => Some(Msg::Daemon(DaemonInfo {
-                version,
-                executable,
-            })),
+            } => Some(Msg::Daemon(
+                asked,
+                DaemonInfo {
+                    version,
+                    executable,
+                },
+            )),
             _ => None,
         },
         Cmd::Me => match client.call(&Request::Me {
@@ -4451,7 +4485,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             reader: None,
         }) {
             Ok(Response::Conversations { conversations }) => {
-                Some(Msg::Conversations(Ok(conversations)))
+                Some(Msg::Conversations(asked, Ok(conversations)))
             }
             Ok(_) => None,
             // An older daemon answers `invalid` for a request it has never
@@ -4463,7 +4497,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                     .downcast_ref::<RemoteError>()
                     .is_some_and(|e| e.code == agentdocker_core::ErrorCode::Invalid) =>
             {
-                Some(Msg::Conversations(Err(error.to_string())))
+                Some(Msg::Conversations(asked, Err(error.to_string())))
             }
             Err(error) => return Err(error),
         },
@@ -4736,11 +4770,11 @@ impl App {
         self.daemon_restarting
     }
 
-    /// The daemon that answers says whether it keeps conversations. An
-    /// answer that arrives with no daemon answering is dropped: the next
-    /// connection asks its own.
-    fn answer_conversations(&mut self, keeps: bool) {
-        if let Some(service) = self.link.serving() {
+    /// The daemon that answers says whether it keeps conversations, to
+    /// something asked on `asked`. An answer to another connection's
+    /// question is dropped: this one asks its own.
+    fn answer_conversations(&mut self, asked: link::Connection, keeps: bool) {
+        if let Some(service) = self.link.answering(asked) {
             service.conversations = link::Capability::Answered(keeps);
         }
     }
@@ -4750,8 +4784,8 @@ impl App {
     /// from.
     #[cfg(test)]
     pub(crate) fn with_conversations(&mut self, keeps: bool) {
-        self.link.connected();
-        self.answer_conversations(keeps);
+        self.link.open();
+        self.answer_conversations(self.link.connection(), keeps);
     }
 
     /// What a daemon restart costs: live sessions AgentDocker started
@@ -5019,7 +5053,7 @@ fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: Wake) {
             let result = client.events(
                 100,
                 move || {
-                    let _ = ready_tx.send(Msg::Connected);
+                    let _ = ready_tx.send(Msg::Connected(link::Report::Stream));
                     ready_ctx.request_repaint();
                 },
                 move |event| {
@@ -5032,7 +5066,10 @@ fn spawn_events(client: Arc<Client>, tx: SyncSender<Msg>, ctx: Wake) {
                 Ok(()) => "event stream ended".to_owned(),
                 Err(err) => err.to_string(),
             };
-            if tx.send(Msg::Disconnected(reason)).is_err() {
+            if tx
+                .send(Msg::Disconnected(link::Report::Stream, reason))
+                .is_err()
+            {
                 return;
             }
             ctx.request_repaint();
@@ -5825,7 +5862,7 @@ pub(crate) mod tests {
         let (commands, requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let summary = |conversation: &str, kind: &str, unread: u64, last: u64| {
             serde_json::from_value::<agentdocker_core::ConversationSummary>(serde_json::json!({
                 "conversation": conversation, "kind": kind, "title": "",
@@ -5855,7 +5892,9 @@ pub(crate) mod tests {
             reads.sort();
             reads
         };
-        messages.send(Msg::Conversations(Ok(list(12)))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(list(12))))
+            .unwrap();
         app.drain();
         assert_eq!(
             reads(&requests),
@@ -5867,15 +5906,21 @@ pub(crate) mod tests {
         );
         // The same list again asks for nothing; a newer message in one
         // asks for that one alone.
-        messages.send(Msg::Conversations(Ok(list(12)))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(list(12))))
+            .unwrap();
         app.drain();
         assert!(reads(&requests).is_empty());
-        messages.send(Msg::Conversations(Ok(list(17)))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(list(17))))
+            .unwrap();
         app.drain();
         assert_eq!(reads(&requests), [("all".to_owned(), 17)]);
         // A refused ask is asked again on the next list.
         app.rejected(Cmd::MarkRead("channel:named".into(), 13), "full");
-        messages.send(Msg::Conversations(Ok(list(17)))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(list(17))))
+            .unwrap();
         app.drain();
         assert_eq!(reads(&requests), [("channel:named".to_owned(), 13)]);
         assert!(app.status.is_empty(), "a background read says nothing");
@@ -6009,6 +6054,7 @@ pub(crate) mod tests {
         let error = run(
             &Client::isolated(socket),
             Cmd::DismissMessages(vec![id.clone()]),
+            link::Watch::default().now(),
         )
         .err()
         .expect("unexpected success response must fail");
@@ -6525,6 +6571,7 @@ pub(crate) mod tests {
             messages,
             Wake::default(),
             Default::default(),
+            link::Watch::default(),
         );
         commands.send(cmd).unwrap();
         drop(commands);
@@ -6591,12 +6638,12 @@ pub(crate) mod tests {
         assert!(
             replies
                 .iter()
-                .any(|message| matches!(message, Msg::Connected))
+                .any(|message| matches!(message, Msg::Connected(_)))
         );
         assert!(
             !replies
                 .iter()
-                .any(|message| matches!(message, Msg::Disconnected(_)))
+                .any(|message| matches!(message, Msg::Disconnected(..)))
         );
         let (commands, _requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
@@ -6666,17 +6713,17 @@ pub(crate) mod tests {
             assert_eq!(
                 messages
                     .iter()
-                    .any(|message| matches!(message, Msg::Disconnected(_))),
+                    .any(|message| matches!(message, Msg::Disconnected(..))),
                 transport_failed
             );
             assert_eq!(
                 messages
                     .iter()
-                    .any(|message| matches!(message, Msg::Connected)),
+                    .any(|message| matches!(message, Msg::Connected(_))),
                 !transport_failed
             );
             assert!(messages.iter().any(|message| match message {
-                Msg::Status(text) | Msg::Disconnected(text) =>
+                Msg::Status(text) | Msg::Disconnected(_, text) =>
                     text.contains("Connected 1 session before one could not be connected"),
                 _ => false,
             }));
@@ -6732,7 +6779,7 @@ pub(crate) mod tests {
         let (commands, requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         let now = Utc::now();
         let mut agent = AgentRecord::new(agentdocker_core::AgentSpec::default(), true, now);
         agent.process_started_at = Some(now);
@@ -6854,17 +6901,18 @@ pub(crate) mod tests {
             messages,
             Wake::default(),
             Default::default(),
+            link::Watch::default(),
         );
         commands.send(cmd).unwrap();
         drop(commands);
         worker.join().unwrap();
         let messages: Vec<_> = results.try_iter().collect();
         assert!(
-            messages.iter().any(|m| matches!(m, Msg::Disconnected(_))),
+            messages.iter().any(|m| matches!(m, Msg::Disconnected(..))),
             "failed command must report disconnection"
         );
         assert!(
-            !messages.iter().any(|m| matches!(m, Msg::Connected)),
+            !messages.iter().any(|m| matches!(m, Msg::Connected(_))),
             "failed command must not report connectivity"
         );
         messages
@@ -6963,7 +7011,7 @@ pub(crate) mod tests {
                 );
                 assert!(!messages.iter().any(|m| matches!(m, Msg::SecretReviews(_))));
             }
-            assert!(!messages.iter().any(|m| matches!(m, Msg::Disconnected(_))));
+            assert!(!messages.iter().any(|m| matches!(m, Msg::Disconnected(..))));
         }
         let messages = command_with_replies(
             Cmd::SecretReviews,
@@ -6999,6 +7047,7 @@ pub(crate) mod tests {
                     message: "launcher cannot be read".into(),
                 }
                 .into(),
+                app.link.connection(),
             ))
             .unwrap();
         app.drain();
@@ -7013,8 +7062,8 @@ pub(crate) mod tests {
         // because `spawn_worker` takes them off the daemon's thread
         // before it runs them.
         assert!(matches!(
-            failure_message(anyhow::anyhow!("socket closed")),
-            Msg::Disconnected(_)
+            failure_message(anyhow::anyhow!("socket closed"), app.link.connection()),
+            Msg::Disconnected(link::Report::Call(asked), _) if asked == app.link.connection()
         ));
         assert!(matches!(
             failure_message(
@@ -7022,7 +7071,8 @@ pub(crate) mod tests {
                     code: agentdocker_core::ErrorCode::Unavailable,
                     message: "the daemon said no".into(),
                 }
-                .into()
+                .into(),
+                app.link.connection(),
             ),
             Msg::Status(_)
         ));
@@ -7142,7 +7192,7 @@ pub(crate) mod tests {
         let (tx, requests) = queue::channel();
         let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         let room = "everyone:project".to_owned();
         app.shell.conversation = Some(room.clone());
         let archived = |seq: u64| {
@@ -7231,7 +7281,7 @@ pub(crate) mod tests {
         let (tx, requests) = queue::channel();
         let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         app.with_conversations(true);
         app.screen = Screen::Questions;
         let room = "channel:abc".to_owned();
@@ -7369,7 +7419,7 @@ pub(crate) mod tests {
         let (tx, requests) = queue::channel();
         let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         let room = "channel:abc".to_owned();
         app.shell.conversation = Some(room.clone());
         app.history.insert(room.clone(), Vec::new());
@@ -7429,7 +7479,7 @@ pub(crate) mod tests {
                 let (tx, requests) = queue::channel();
                 let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
                 let mut app = App::bare(tx, rx);
-                app.link.connected();
+                app.link.open();
                 let room = "channel:abc".to_owned();
                 app.shell.conversation = Some(room.clone());
                 let target = MessageId::from("missing".to_owned());
@@ -7496,7 +7546,7 @@ pub(crate) mod tests {
         let (tx, requests) = queue::channel();
         let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         app.with_conversations(true);
         app.screen = Screen::Questions;
         let room = "channel:abc".to_owned();
@@ -7624,13 +7674,18 @@ pub(crate) mod tests {
         app.shell.route.start_seek(seek("m300"));
         app.seek_archived(&room);
         assert_eq!(asked(&requests), 1);
-        messages.send(Msg::Disconnected("gone".into())).unwrap();
+        messages
+            .send(Msg::Disconnected(
+                crate::app::link::Report::Stream,
+                "gone".into(),
+            ))
+            .unwrap();
         app.drain();
         assert!(app.shell.route.seek().is_none(), "ended on disconnect");
 
         // A window holding all it keeps is not paged further, and is not
         // told that Show earlier messages would help.
-        app.link.connected();
+        app.link.open();
         let full: Vec<_> = (1..=HISTORY_KEEP as u64).map(archived).collect();
         app.keep_history(room.clone(), full);
         app.shell.route.start_seek(seek("m0"));
@@ -7650,7 +7705,7 @@ pub(crate) mod tests {
         let (tx, requests) = queue::channel();
         let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         let a = "/fixture/a".to_owned();
         let b = "/fixture/b".to_owned();
         for project in [&a, &b] {
@@ -7728,7 +7783,7 @@ pub(crate) mod tests {
         let (tx, requests) = queue::channel();
         let (_messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.connected();
+        app.link.open();
         let project = "/fixture/a".to_owned();
         let _ = app.update(Message::PauseStart(project.clone()));
         let _ = app.update(Message::PauseDraft(project.clone(), "keep this".into()));
@@ -7771,9 +7826,12 @@ pub(crate) mod tests {
         let (tx, requests) = queue::channel();
         let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.link.lost("offline".into());
+        app.link
+            .lost(crate::app::link::Report::Stream, "offline".into());
         app.journal_project = Some("project-a".into());
-        messages.send(Msg::Connected).unwrap();
+        messages
+            .send(Msg::Connected(crate::app::link::Report::Stream))
+            .unwrap();
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.link.is_up());
@@ -7824,7 +7882,10 @@ pub(crate) mod tests {
 
         // A daemon from before conversations: it has never heard of them.
         messages
-            .send(Msg::Conversations(Err("invalid: unknown request".into())))
+            .send(Msg::Conversations(
+                app.link.connection(),
+                Err("invalid: unknown request".into()),
+            ))
             .unwrap();
         app.drain();
         assert!(!app.has_conversations(), "the legacy Inbox");
@@ -7834,11 +7895,16 @@ pub(crate) mod tests {
 
         // It is replaced by one that keeps them.
         messages
-            .send(Msg::Disconnected("event stream ended".into()))
+            .send(Msg::Disconnected(
+                crate::app::link::Report::Stream,
+                "event stream ended".into(),
+            ))
             .unwrap();
         app.drain();
         assert!(!app.has_conversations(), "nothing answers: the Inbox stays");
-        messages.send(Msg::Connected).unwrap();
+        messages
+            .send(Msg::Connected(crate::app::link::Report::Stream))
+            .unwrap();
         app.drain();
         assert_eq!(asked(), 1, "the new daemon is asked");
         assert!(
@@ -7847,14 +7913,19 @@ pub(crate) mod tests {
         );
         app.on_conversation_activity();
         assert_eq!(asked(), 1, "it is asked for as long as it has not said no");
-        messages.send(Msg::Conversations(Ok(Vec::new()))).unwrap();
+        messages
+            .send(Msg::Conversations(app.link.connection(), Ok(Vec::new())))
+            .unwrap();
         app.drain();
         assert!(app.has_conversations(), "the window leaves the Inbox");
 
         // A daemon that has listed them keeps them: one `invalid` from it
         // is about that request, and used to turn Messages off for good.
         messages
-            .send(Msg::Conversations(Err("invalid: no such project".into())))
+            .send(Msg::Conversations(
+                app.link.connection(),
+                Err("invalid: no such project".into()),
+            ))
             .unwrap();
         app.drain();
         assert!(app.has_conversations(), "Messages stays");
@@ -7862,12 +7933,22 @@ pub(crate) mod tests {
         assert_eq!(asked(), 1, "and its list is still kept current");
 
         // Back to a daemon without them: it says so, on its connection.
-        messages.send(Msg::Disconnected("gone".into())).unwrap();
-        messages.send(Msg::Connected).unwrap();
+        messages
+            .send(Msg::Disconnected(
+                crate::app::link::Report::Stream,
+                "gone".into(),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Connected(crate::app::link::Report::Stream))
+            .unwrap();
         app.drain();
         assert!(app.has_conversations(), "shown until the new one answers");
         messages
-            .send(Msg::Conversations(Err("invalid: unknown request".into())))
+            .send(Msg::Conversations(
+                app.link.connection(),
+                Err("invalid: unknown request".into()),
+            ))
             .unwrap();
         app.drain();
         assert!(!app.has_conversations(), "the Inbox again");
@@ -7886,7 +7967,9 @@ pub(crate) mod tests {
             version: "0.0.1".into(),
             executable: None,
         };
-        messages.send(Msg::Daemon(old.clone())).unwrap();
+        messages
+            .send(Msg::Daemon(app.link.connection(), old.clone()))
+            .unwrap();
         app.drain();
         assert_eq!(app.daemon_behind_now(), Some("0.0.1"));
         let _ = app.update(Message::ConfirmDaemonRestart(true));
@@ -7894,7 +7977,12 @@ pub(crate) mod tests {
 
         // It goes. What it said is still what the window knows, but there
         // is no daemon to ask about restarting.
-        messages.send(Msg::Disconnected("gone".into())).unwrap();
+        messages
+            .send(Msg::Disconnected(
+                crate::app::link::Report::Stream,
+                "gone".into(),
+            ))
+            .unwrap();
         app.drain();
         assert_eq!(app.daemon_behind_now(), Some("0.0.1"), "kept while down");
         assert!(!app.link.confirming_restart());
@@ -7905,28 +7993,236 @@ pub(crate) mod tests {
         );
         // An answer that outlived its daemon is about nothing.
         messages
-            .send(Msg::Daemon(DaemonInfo {
-                version: "0.0.2".into(),
-                executable: None,
-            }))
+            .send(Msg::Daemon(
+                app.link.connection(),
+                DaemonInfo {
+                    version: "0.0.2".into(),
+                    executable: None,
+                },
+            ))
             .unwrap();
         app.drain();
         assert_eq!(app.link.info(), Some(&old));
 
         // Another answers: it has not said who it is, and is not "older".
-        messages.send(Msg::Connected).unwrap();
+        messages
+            .send(Msg::Connected(crate::app::link::Report::Stream))
+            .unwrap();
         app.drain();
         assert_eq!(app.link.info(), None);
         assert_eq!(app.daemon_behind_now(), None);
         assert!(!app.link.confirming_restart());
         messages
-            .send(Msg::Daemon(DaemonInfo {
-                version: env!("CARGO_PKG_VERSION").into(),
-                executable: None,
-            }))
+            .send(Msg::Daemon(
+                app.link.connection(),
+                DaemonInfo {
+                    version: env!("CARGO_PKG_VERSION").into(),
+                    executable: None,
+                },
+            ))
             .unwrap();
         app.drain();
         assert_eq!(app.daemon_behind_now(), None, "the new one is current");
+    }
+
+    /// A daemon is replaced while the worker's calls to it are still
+    /// out. The event stream and the worker report each in its own time,
+    /// so the old daemon's answers, and its calls' word that the link is
+    /// up or down, can arrive after the stream has reported the new one.
+    /// They were recorded on whichever daemon the link had by then: an
+    /// upgraded service could be given its predecessor's version, with
+    /// "Service is older" and the restart prompt, or its predecessor's
+    /// "no conversations here", and stop being asked.
+    #[test]
+    fn what_a_replaced_daemon_answers_late_is_not_recorded_on_its_successor() {
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        let old = || DaemonInfo {
+            version: "0.0.1".into(),
+            executable: None,
+        };
+        let current = || DaemonInfo {
+            version: env!("CARGO_PKG_VERSION").into(),
+            executable: None,
+        };
+        // Everything a call to daemon A can bring back, asked on A's
+        // connection: its answers, then that the call went through, or
+        // that it did not.
+        let on_a = app.link.connection();
+        let late = |messages: &std::sync::mpsc::SyncSender<Msg>| {
+            messages.send(Msg::Daemon(on_a, old())).unwrap();
+            messages
+                .send(Msg::Conversations(
+                    on_a,
+                    Err("invalid: unknown request".into()),
+                ))
+                .unwrap();
+            messages
+                .send(Msg::Connected(link::Report::Call(on_a)))
+                .unwrap();
+        };
+
+        // The stream reports A gone, and B there.
+        messages
+            .send(Msg::Disconnected(
+                link::Report::Stream,
+                "event stream ended".into(),
+            ))
+            .unwrap();
+        app.drain();
+        // A's calls return while nothing answers: they do not bring the
+        // link up, so no fresh service stands there for A's word.
+        late(&messages);
+        app.drain();
+        assert!(!app.link.is_up(), "an old call does not bring the link up");
+        assert_eq!(requests.try_iter().count(), 0, "and nothing is asked");
+
+        messages.send(Msg::Connected(link::Report::Stream)).unwrap();
+        app.drain();
+        let on_b = app.link.connection();
+        assert_ne!(on_b, on_a);
+        let asked = requests.try_iter().count();
+        assert!(asked > 0, "B is asked everything");
+        let fresh = app.link.service().cloned().expect("B answers");
+        assert_eq!(fresh.info, None);
+
+        // A's calls return now, before B has said anything.
+        late(&messages);
+        messages
+            .send(Msg::Disconnected(
+                link::Report::Call(on_a),
+                "agentd closed the connection without answering".into(),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.link.is_up(), "A's failed call does not take B down");
+        assert_eq!(app.link.connection(), on_b, "nor make another connection");
+        assert_eq!(app.link.service(), Some(&fresh), "B's service is untouched");
+        assert_eq!(app.daemon_behind_now(), None, "B is not A's version");
+        assert!(app.link.conversations().ask(), "B is still to be asked");
+        assert_eq!(requests.try_iter().count(), 0, "and is not asked twice");
+
+        // B's own answers are taken, and the person asks about a restart.
+        messages.send(Msg::Daemon(on_b, current())).unwrap();
+        messages
+            .send(Msg::Conversations(on_b, Ok(Vec::new())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.link.info(), Some(&current()));
+        assert!(app.has_conversations());
+        let _ = app.update(Message::ConfirmDaemonRestart(true));
+        assert!(app.link.confirming_restart());
+
+        // And A's return after B has answered: nothing of B's changes.
+        late(&messages);
+        messages
+            .send(Msg::Disconnected(
+                link::Report::Call(on_a),
+                "agentd closed the connection without answering".into(),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(app.link.is_up());
+        assert_eq!(app.link.connection(), on_b);
+        assert_eq!(app.link.info(), Some(&current()), "B's version stays");
+        assert_eq!(app.daemon_behind_now(), None);
+        assert!(app.has_conversations(), "B's conversations stay");
+        assert!(
+            app.link.confirming_restart(),
+            "the question about B stays open"
+        );
+    }
+
+    /// The same through the real worker and a socket, with the answer
+    /// held: daemon A has the ping and answers only once the event
+    /// stream has reported A gone and B there. What the worker brings
+    /// back names A's connection, the answer and the call's own "the
+    /// link is up" alike, because it read the connection before the call
+    /// and not when the answer came.
+    #[cfg(unix)]
+    #[test]
+    fn a_call_out_across_a_replacement_brings_back_the_connection_it_was_asked_on() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixListener;
+        let temp = tempfile::tempdir().unwrap();
+        let socket = temp.path().join("fixture.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        let (taken, has_ping) = std::sync::mpsc::channel::<()>();
+        let (let_go, held) = std::sync::mpsc::channel::<()>();
+        let daemon_a = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            for timeout in [
+                stream.set_read_timeout(Some(Duration::from_secs(5))),
+                stream.set_write_timeout(Some(Duration::from_secs(5))),
+            ] {
+                timeout.unwrap();
+            }
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            assert!(line.contains(r#""op":"ping""#), "{line}");
+            taken.send(()).unwrap();
+            held.recv_timeout(Duration::from_secs(5))
+                .expect("the answer is let go");
+            reader
+                .get_mut()
+                .write_all(b"{\"type\":\"pong\",\"version\":\"0.0.1\",\"uptime_secs\":1}\n")
+                .unwrap();
+        });
+
+        let (tx, _requests) = queue::channel();
+        let (to_app, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        let on_a = app.link.connection();
+        let (commands, asked) = queue::channel();
+        let (brought, results) = sync_channel(MESSAGE_CAPACITY);
+        let worker = spawn_worker(
+            Arc::new(Client::isolated(socket)),
+            asked,
+            brought,
+            Wake::default(),
+            Default::default(),
+            app.link.watch(),
+        );
+        commands.send(Cmd::Ping).unwrap();
+        has_ping
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the ping reached daemon A");
+
+        // A's answer is out. The stream reports A gone and B there.
+        for report in [
+            Msg::Disconnected(link::Report::Stream, "event stream ended".into()),
+            Msg::Connected(link::Report::Stream),
+        ] {
+            to_app.send(report).unwrap();
+        }
+        app.drain();
+        let on_b = app.link.connection();
+        assert!(app.link.is_up() && on_b != on_a);
+
+        let_go.send(()).unwrap();
+        drop(commands);
+        worker.join().unwrap();
+        daemon_a.join().unwrap();
+        let brought: Vec<Msg> = results.try_iter().collect();
+        assert!(
+            matches!(
+                brought.as_slice(),
+                [Msg::Daemon(asked, info), Msg::Connected(link::Report::Call(up))]
+                    if *asked == on_a && *up == on_a && info.version == "0.0.1"
+            ),
+            "the answer and the call's report both name A's connection"
+        );
+
+        // On B's link they change nothing.
+        for message in brought {
+            to_app.send(message).unwrap();
+        }
+        app.drain();
+        assert_eq!(app.link.connection(), on_b);
+        assert_eq!(app.link.info(), None, "A's version is not B's");
+        assert_eq!(app.daemon_behind_now(), None);
     }
 
     /// A window that has just opened is connecting, and a try that fails
@@ -7939,17 +8235,22 @@ pub(crate) mod tests {
         let mut app = App::bare(tx, rx);
         app.link = link::Link::default();
         messages
-            .send(Msg::Disconnected("no socket yet".into()))
+            .send(Msg::Disconnected(
+                crate::app::link::Report::Stream,
+                "no socket yet".into(),
+            ))
             .unwrap();
         app.drain();
         assert_eq!(
-            app.link,
-            link::Link::Connecting {
+            app.link.state(),
+            &link::State::Connecting {
                 reason: Some("no socket yet".into())
             }
         );
         assert_eq!(requests.try_iter().count(), 0, "nothing is asked of nobody");
-        messages.send(Msg::Connected).unwrap();
+        messages
+            .send(Msg::Connected(crate::app::link::Report::Stream))
+            .unwrap();
         app.drain();
         assert!(app.link.is_up());
         assert!(
@@ -8701,7 +9002,7 @@ pub(crate) mod tests {
         let (commands, requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         app.with_conversations(true);
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = agentdocker_core::AgentId::from("human-id");
@@ -8741,7 +9042,7 @@ pub(crate) mod tests {
         let (commands, requests) = queue::channel();
         let (_messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         app.with_conversations(true);
         let mut human = record("user", agentdocker_core::HUMAN_RUNTIME, None);
         human.id = agentdocker_core::AgentId::from("human-id");
@@ -8887,7 +9188,7 @@ pub(crate) mod tests {
         let (commands, requests) = queue::channel();
         let (messages, results) = sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.link.connected();
+        app.link.open();
         app.with_conversations(true);
         app.screen = Screen::Questions;
         let room = "channel:abc".to_owned();
