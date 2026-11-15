@@ -920,7 +920,15 @@ Discovery is continuous while anyone listens: the daemon scans every five second
 ## Native desktop app
 
 Local desktop installation uses immutable payload versions and one activation
-pointer. `desktop uninstall` removes owned launchers and deactivates the prefix;
+pointer. An activation makes the command links, and the launcher file where the
+launcher is a file, before it moves the pointer, and publishes the application
+bundle, where the launcher is one, after it; an uninstall removes the links
+first and the pointer last. So the pointer alone does not say the installation
+is whole: `desktop status` reads the rest (`condition`: the retained releases,
+each command link, the launcher against the active release) and derives one
+answer from those facts by a pure function, with the way out of each state an
+interrupted command leaves; it changes nothing and takes no lock. Its output
+keeps every key it had and adds that one. `desktop uninstall` removes owned launchers and deactivates the prefix;
 `desktop prune` removes verified unused payloads. CLI and GUI previews carry a
 plan hash rechecked at apply. Host installation helpers give each managed
 binary a shared lifetime pin; cleanup holds the exclusive pin through deletion

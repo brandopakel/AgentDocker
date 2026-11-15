@@ -68,6 +68,25 @@ previous version. Updates apply on the next launch; running sessions keep their
 current binaries. Windows uses its own preview channel, separate from the stable
 and Mac/Linux feeds. It is unsigned and requires explicit preview consent.
 
+`desktop status` says what is installed without starting the daemon: the active
+and the previous release, and under `condition` what the installation's files
+say of it. `installation` is `absent`, `active`, `deactivated` (releases are
+kept and none is active, as after an uninstall) or `interrupted` (launchers or
+commands are in place and no release is active: an install stopped before it
+was activated). For an active one, `launcher` says whether the application
+people open is the active release's (`published`), another release's (`stale`,
+with `launcher_release`), an earlier release's kept because the active one
+supplies none (`kept`), an older form that follows the active release by itself
+(`earlier`), `missing`, or not this installation's (`foreign`); `links` says
+whether the commands in `.local/bin` are all there (`complete`, `partial` with
+`missing_links`, or `none`). `foreign` lists what is in the installer's places
+and is not its own, which it never replaces or removes, and `way_out` says what
+to do about each thing that is wrong. The same words end the refusal of an
+install, a rollback, an uninstall or a prune that finds such a thing in its way.
+It only reads: it cannot tell an uninstall from a first install that stopped
+before it made anything outside its own folder, since nothing on disk records
+either, and it does not say whether another command is running now.
+
 `desktop prune --preview` reports removable old builds; omit `--preview` to remove
 them. `desktop uninstall --preview` reports launcher removal; omit `--preview` to
 apply. Both preserve settings, running versions and unrecognized files.
