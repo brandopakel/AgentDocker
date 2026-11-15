@@ -38,24 +38,83 @@ impl Drop for Committing<'_> {
     }
 }
 
+/// Holds a linked worktree marked as being removed for as long as it
+/// lives, and lets go however the removal ends. The mark itself is made
+/// by the step that found the worktree idle, under the state lock it
+/// looked under, so that being idle and being reserved are one step.
+///
+/// Dropping it takes the state lock, so it must never be dropped by a
+/// holder of a state guard.
+struct Removing<'a> {
+    daemon: &'a Daemon,
+    path: PathBuf,
+}
+
+impl Drop for Removing<'_> {
+    fn drop(&mut self) {
+        lock(&self.daemon.state).removing.remove(&self.path);
+    }
+}
+
 /// The subject of a commit message: what a journal line can carry.
 fn first_line(message: &str) -> &str {
     message.lines().next().unwrap_or("").trim()
 }
 
+/// A project's worktrees folder: the one place inside the project a
+/// linked checkout may sit.
+pub(super) struct Home {
+    /// The project's main root.
+    pub project_root: PathBuf,
+    /// The folder, with every link on its way resolved: inside the
+    /// project it has none ([`through_a_link`]).
+    pub dir: PathBuf,
+}
+
+impl Home {
+    /// Whether `path` is a place in the folder, and not the folder.
+    fn holds(&self, path: &Path) -> bool {
+        path != self.dir && path.starts_with(&self.dir)
+    }
+}
+
 /// `git worktree add -b <branch> <path> HEAD` in `root`, for a new path
-/// outside the checkout and a branch name git accepts. Shared by
+/// and a branch name git accepts. The path is outside the checkout and
+/// outside the project, or inside the project's own worktrees folder
+/// (`home`), in a folder of its own there: nowhere else in a checkout,
+/// where its files would be the checkout's own untracked files. Shared by
 /// `worktree-create` and `run --isolate`.
 pub(super) async fn add_worktree(
     root: PathBuf,
     path: &Path,
     branch: &str,
     from: Option<&str>,
+    home: Option<&Home>,
 ) -> Result<(), Box<Response>> {
-    if path.exists() || path.starts_with(&root) {
+    let nested =
+        path.starts_with(&root) || home.is_some_and(|home| path.starts_with(&home.project_root));
+    let in_home = home.is_some_and(|home| home.holds(path));
+    // A checkout in the worktrees folder holds no other: the new one's
+    // files would be its untracked files.
+    let in_another = home.filter(|_| in_home).is_some_and(|home| {
+        path.ancestors()
+            .skip(1)
+            .take_while(|folder| *folder != home.dir)
+            .any(|folder| folder.join(".git").exists())
+    });
+    if in_another {
         return Err(Box::new(Response::invalid(
-            "worktree path must be new and outside the current checkout",
+            "worktree path is inside another checkout of the worktrees folder: give it a folder of its own",
         )));
+    }
+    if path.exists() || (nested && !in_home) {
+        return Err(Box::new(Response::invalid(match home {
+            Some(home) if home.dir.starts_with(&home.project_root) => format!(
+                "worktree path must be new, and outside the checkout or inside the project's worktrees folder ({})",
+                home.dir.display()
+            ),
+            _ => "worktree path must be new and outside the current checkout".to_owned(),
+        })));
     }
     match git(
         root.clone(),
@@ -363,6 +422,33 @@ pub(super) async fn remove_finished(
     }
 }
 
+/// One checkout as `git worktree list --porcelain -z` names it: where it
+/// is, and the branch checked out there when it has one.
+#[derive(Debug, PartialEq, Eq)]
+struct Listed {
+    path: PathBuf,
+    branch: Option<String>,
+}
+
+/// The checkouts of a repository from `git worktree list --porcelain -z`,
+/// the main one first, as git lists them.
+fn listed(porcelain: &str) -> Vec<Listed> {
+    let mut all: Vec<Listed> = Vec::new();
+    for line in porcelain.split('\0') {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            all.push(Listed {
+                path: project::canonical(Path::new(path)),
+                branch: None,
+            });
+        } else if let Some(branch) = line.strip_prefix("branch refs/heads/")
+            && let Some(last) = all.last_mut()
+        {
+            last.branch = Some(branch.to_owned());
+        }
+    }
+    all
+}
+
 /// Remove only a clean, unstarted isolated checkout whose branch did not advance.
 /// Git's normal (non-force) removal/deletion checks remain authoritative.
 pub(super) async fn cleanup_unstarted(record: &AgentRecord) -> (bool, bool, Option<String>) {
@@ -460,7 +546,231 @@ pub(super) async fn cleanup_unstarted(record: &AgentRecord) -> (bool, bool, Opti
     }
 }
 
+/// The line that keeps a project's worktrees folder out of git, when the
+/// folder is inside the project: rooted at the repository's top, as
+/// `info/exclude` reads it, and naming that folder and no other. A folder
+/// name is taken to the letter, so what git would read as a pattern
+/// (`*`, `?`, `[`, `]`, `\`) is escaped; a name no line can hold (a
+/// control character, or one that is not text) is said.
+fn exclude_line(project_root: &Path, home: &Path) -> Result<Option<String>, String> {
+    let Ok(relative) = home.strip_prefix(project_root) else {
+        return Ok(None);
+    };
+    let mut line = String::new();
+    for part in relative.components() {
+        let name = part
+            .as_os_str()
+            .to_str()
+            .filter(|name| !name.chars().any(char::is_control))
+            .ok_or_else(|| {
+                format!(
+                    "{} has a name no git ignore rule can hold; name another folder with `[worktrees] dir`",
+                    home.display()
+                )
+            })?;
+        line.push('/');
+        for letter in name.chars() {
+            if matches!(letter, '\\' | '*' | '?' | '[' | ']') {
+                line.push('\\');
+            }
+            line.push(letter);
+        }
+    }
+    Ok((!line.is_empty()).then(|| line + "/"))
+}
+
+/// Whether git leaves the worktrees folder alone, in git's own word.
+/// The line in `info/exclude` is the least of git's ignore rules: one in
+/// a `.gitignore` the project tracks (`!*/`) wins over it, and the
+/// checkouts in the folder would then read as the project's untracked
+/// files, to be staged by the next `git add -A`. So the folder is asked
+/// about once it exists and the line is there.
+///
+/// The answer is git's exit status and nothing read out of its text:
+/// `check-ignore -q` succeeds for an ignored path and fails, silently,
+/// for one that is not. The rule that keeps the folder in view is then
+/// shown as git prints it (`check-ignore -v`), for the person to read:
+/// its file may hold a colon or a number, so it is never taken apart.
+async fn kept_out_of_git(project_root: &Path, home: &Path) -> Result<(), String> {
+    let ask = |how: &str| {
+        git(
+            project_root.to_path_buf(),
+            vec![
+                "check-ignore".into(),
+                how.to_owned(),
+                "--".into(),
+                home.to_string_lossy().into_owned(),
+            ],
+        )
+    };
+    let around = "name another folder with `[worktrees] dir` in agentd.toml (an absolute one is outside every project), or give the worktree a path of its own";
+    let answer = ask("-q").await.map_err(|e| {
+        format!(
+            "git could not say whether {} is ignored: {e}",
+            home.display()
+        )
+    })?;
+    if answer.success {
+        return Ok(());
+    }
+    // Not ignored is said with no word; anything said is why git could
+    // not answer.
+    let said = answer.text.trim();
+    if !said.is_empty() {
+        return Err(format!(
+            "git could not say whether {} is ignored ({said}): {around}",
+            home.display()
+        ));
+    }
+    let rule = ask("-v").await.ok().and_then(|shown| {
+        let line = shown.stdout.lines().next()?;
+        let rule = line.split('\t').next()?.trim();
+        (!rule.is_empty()).then(|| rule.to_owned())
+    });
+    Err(match rule {
+        Some(rule) => format!(
+            "git does not ignore {}, so a checkout there would read as the project's own untracked files. The rule that keeps it in view, as git names it (file, line, rule): `{rule}`. Change that rule, or {around}",
+            home.display()
+        ),
+        None => format!(
+            "git does not ignore {}, so a checkout there would read as the project's own untracked files: {around}",
+            home.display()
+        ),
+    })
+}
+
+/// The folder a project's worktrees go in is reached through real
+/// folders only when it is inside the project: a checkout someone else's
+/// commit made can hold a link where the folder goes, and the checkouts
+/// would land wherever it points.
+fn through_a_link(project_root: &Path, home: &Path) -> Option<String> {
+    let real = project::canonical(home);
+    (home.starts_with(project_root) && real != home).then(|| {
+        format!(
+            "{} is reached through a symbolic link (to {}), and worktrees are not made through one: remove the link, or name another folder with `[worktrees] dir`",
+            home.display(),
+            real.display()
+        )
+    })
+}
+
+/// Make the worktrees folder and, when it is inside the project, keep it
+/// out of git through the repository's own `info/exclude`: local to this
+/// clone, shared by its worktrees, and never the project's `.gitignore`,
+/// which is the project's to write. Without the line every checkout in
+/// the folder would read as the main checkout's untracked files. The
+/// line is added to the end of the file, whose other lines are left as
+/// they are. Answers the folders it made, the deepest first, for a
+/// caller that finds the place unusable after all.
+fn prepare_home(project_root: &Path, home: &Path) -> Result<Vec<PathBuf>, String> {
+    // One at a time: two checkouts asked for at once would both find the
+    // line missing and write it twice.
+    static ONE: Mutex<()> = Mutex::new(());
+    let _one = lock(&ONE);
+    if let Some(why) = through_a_link(project_root, home) {
+        return Err(why);
+    }
+    let line = exclude_line(project_root, home)?;
+    let made: Vec<PathBuf> = home
+        .ancestors()
+        .take_while(|folder| *folder != project_root)
+        .filter(|folder| !folder.exists())
+        .map(Path::to_path_buf)
+        .collect();
+    std::fs::create_dir_all(home).map_err(|e| format!("cannot create {}: {e}", home.display()))?;
+    let Some(line) = line else {
+        return Ok(Vec::new());
+    };
+    // Looked at again now that it exists: what was missing a moment ago
+    // may have been made a link meanwhile.
+    if let Some(why) = through_a_link(project_root, home) {
+        return Err(why);
+    }
+    let Some((_, common)) = vcs::git_dirs(project_root) else {
+        return Err(format!("{} is not a git checkout", project_root.display()));
+    };
+    let file = common.join("info").join("exclude");
+    let known = std::fs::read_to_string(&file).unwrap_or_default();
+    if known.lines().any(|known| known.trim() == line) {
+        return Ok(made);
+    }
+    let mut text = String::new();
+    if !known.is_empty() && !known.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("# Checkouts AgentDocker makes for this project's agents.\n");
+    text.push_str(&line);
+    text.push('\n');
+    if let Some(folder) = file.parent() {
+        std::fs::create_dir_all(folder)
+            .map_err(|e| format!("cannot create {}: {e}", folder.display()))?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&file)
+        .and_then(|mut file| std::io::Write::write_all(&mut file, text.as_bytes()))
+        .map_err(|e| format!("cannot write {}: {e}", file.display()))?;
+    Ok(made)
+}
+
 impl Daemon {
+    /// Where the checkouts made for a project's agents go: inside the
+    /// project unless the daemon's settings name another place
+    /// (`[worktrees] dir`). Nothing is made here. A settings file that
+    /// cannot be read is said and passed over, as elsewhere; a setting
+    /// that names no usable place is refused with its reason.
+    pub(super) fn worktree_place(&self, project: &ProjectRef) -> Result<Home, Box<Response>> {
+        let settings = match crate::config::read(&self.home) {
+            Ok(config) => config.worktrees,
+            Err(error) => {
+                warn!(%error, "agentd.toml could not be read; worktrees go inside each project");
+                Default::default()
+            }
+        };
+        let project_root = project::canonical(&project.root);
+        let named = settings
+            .home(&project_root, project.id().short())
+            .map_err(|e| Box::new(Response::invalid(e)))?;
+        if let Some(why) = through_a_link(&project_root, &named) {
+            return Err(Box::new(Response::invalid(why)));
+        }
+        Ok(Home {
+            dir: project::canonical(&named),
+            project_root,
+        })
+    }
+
+    /// Make a project's worktrees folder and keep it out of git: asked
+    /// only for a checkout that goes in it, so a project whose worktrees
+    /// all have a path of their own never gets the folder. A folder git
+    /// would not leave alone is refused, with the rule that says so, and
+    /// what was made for it is taken away again.
+    pub(super) async fn worktree_make(&self, home: &Home) -> Result<(), Box<Response>> {
+        let (root, dir) = (home.project_root.clone(), home.dir.clone());
+        let made = match tokio::task::spawn_blocking(move || prepare_home(&root, &dir)).await {
+            Ok(Ok(made)) => made,
+            Ok(Err(why)) => {
+                return Err(Box::new(Response::error(
+                    ErrorCode::StorageUnavailable,
+                    why,
+                )));
+            }
+            Err(e) => return Err(Box::new(Response::internal(e))),
+        };
+        if !home.dir.starts_with(&home.project_root) {
+            return Ok(());
+        }
+        if let Err(why) = kept_out_of_git(&home.project_root, &home.dir).await {
+            // Only what this call made, and only while it is empty.
+            for folder in made {
+                let _ = std::fs::remove_dir(folder);
+            }
+            return Err(Box::new(Response::invalid(why)));
+        }
+        Ok(())
+    }
+
     /// A linked checkout on a new branch, from this session's HEAD or
     /// from `from` (a branch, tag or commit of the same repository). The
     /// daemon remembers who asked, so commits made there with git alone
@@ -475,7 +785,7 @@ impl Daemon {
     pub(super) async fn worktree_create(
         &self,
         reference: &str,
-        path: String,
+        path: Option<String>,
         branch: String,
         from: Option<String>,
         seed_build: Vec<String>,
@@ -488,11 +798,48 @@ impl Daemon {
             Ok(v) => v,
             Err(e) => return *e,
         };
-        let path = match physical(PathBuf::from(path)).await {
+        // The project's worktrees folder: where a checkout goes when no
+        // path is given, and the one place inside the project a path may
+        // name.
+        let project = lock(&self.state)
+            .registry
+            .get(&agent)
+            .and_then(|record| record.project.clone())
+            .filter(|project| project.source == ProjectSource::Git);
+        let home = match project.as_ref().map(|project| self.worktree_place(project)) {
+            Some(Ok(home)) => Some(home),
+            // A named path does not need the folder; no path does.
+            Some(Err(response)) if path.is_none() => return *response,
+            Some(Err(_)) | None => None,
+        };
+        let named = path.is_some();
+        let path = match (path, &home) {
+            (Some(path), _) => PathBuf::from(path),
+            (None, Some(home)) => home.dir.join(paths::worktree_folder(&branch)),
+            (None, None) => {
+                return Response::invalid(
+                    "name a path: this agent's checkout is not a git project with a worktrees folder of its own",
+                );
+            }
+        };
+        let path = match physical(path).await {
             Ok(p) => p,
             Err(e) => return Response::invalid(e),
         };
-        if let Err(response) = add_worktree(root.clone(), &path, &branch, from.as_deref()).await {
+        if !named && path.exists() {
+            return Response::invalid(format!(
+                "{} is there already: name another branch, or a path",
+                path.display()
+            ));
+        }
+        if let Some(home) = home.as_ref().filter(|home| home.holds(&path))
+            && let Err(response) = self.worktree_make(home).await
+        {
+            return *response;
+        }
+        if let Err(response) =
+            add_worktree(root.clone(), &path, &branch, from.as_deref(), home.as_ref()).await
+        {
             return *response;
         }
         {
@@ -562,6 +909,204 @@ impl Daemon {
                 });
                 Response::WorktreeRemoved {
                     path,
+                    branch_removed,
+                    note: reason,
+                }
+            }
+            Err(reason) => Response::error(ErrorCode::Conflict, reason),
+        }
+    }
+
+    /// Remove a linked worktree of the asking agent's project that nobody
+    /// works in, named by its path or by the branch checked out in it.
+    ///
+    /// Any running agent of the project may ask, not only the one that
+    /// made the worktree: sessions end, and a rule naming the maker would
+    /// leave a checkout nobody is allowed to remove. What protects the
+    /// work is the same as for an ended session's worktree: it must be
+    /// clean, git removes it without force, and its branch goes only when
+    /// git considers it merged. What protects the others is said first:
+    /// the main folder is never removed, nor the checkout the asker
+    /// stands in, nor one a live agent works in, nor one in which
+    /// anybody holds a path or whose branch anybody holds.
+    ///
+    /// Git takes several commands to remove a worktree, and the state
+    /// lock is not held across them. So the look that finds the worktree
+    /// idle also marks it as being removed ([`Removing`]), and until the
+    /// removal has ended a record that would come to work there, by any
+    /// of the ways one comes to life ([`State::removal_refuses_record`]),
+    /// and a claim in it, over it or on its branch are refused: nobody is
+    /// told they have a checkout that is about to go.
+    pub(super) async fn worktree_remove_named(
+        &self,
+        reference: &str,
+        path: Option<String>,
+        branch: Option<String>,
+    ) -> Response {
+        let (agent, checkout, _) = match self.reader_checkout(reference) {
+            Ok(v) => v,
+            Err(e) => return *e,
+        };
+        let path = match (path, &branch) {
+            (Some(path), None) => match physical(PathBuf::from(path)).await {
+                Ok(path) => Some(path),
+                Err(e) => return Response::invalid(e),
+            },
+            (None, Some(_)) => None,
+            _ => {
+                return Response::invalid(
+                    "name the worktree by its path or by its branch, one of the two",
+                );
+            }
+        };
+        let listing = match git(
+            checkout.clone(),
+            vec![
+                "worktree".into(),
+                "list".into(),
+                "--porcelain".into(),
+                "-z".into(),
+            ],
+        )
+        .await
+        {
+            Ok(output) if output.success => listed(&output.stdout),
+            Ok(output) => return Response::invalid(output.text),
+            Err(e) => return Response::invalid(e),
+        };
+        let Some(main) = listing.first().map(|main| main.path.clone()) else {
+            return Response::invalid("this agent's checkout is not a git repository's");
+        };
+        let found = listing.iter().find(|listed| match (&path, &branch) {
+            (Some(path), _) => listed.path == *path,
+            (None, branch) => listed.branch.is_some() && listed.branch == *branch,
+        });
+        let Some(target) = found else {
+            return Response::error(
+                ErrorCode::NotFound,
+                match (&path, &branch) {
+                    (Some(path), _) => {
+                        format!("no worktree of this project is at {}", path.display())
+                    }
+                    (None, branch) => format!(
+                        "no worktree of this project has {} checked out",
+                        branch.as_deref().unwrap_or_default()
+                    ),
+                },
+            );
+        };
+        let target_branch = target.branch.clone();
+        let target = target.path.clone();
+        if target == main {
+            return Response::invalid("that is the project's main folder, which is not removed");
+        }
+        if checkout.starts_with(&target) {
+            return Response::error(
+                ErrorCode::Conflict,
+                "you are working in that worktree: ask from another checkout once you have left it",
+            );
+        }
+        // Found idle and reserved in one step: from here until the
+        // removal has ended, whichever way, nobody new comes to work
+        // there and nothing there, nor its branch, is claimed.
+        let _removing = {
+            let mut state = lock(&self.state);
+            state.expire_leases();
+            if state.removing.contains_key(&target) {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "that worktree is being removed already",
+                );
+            }
+            // Working there, or about to be again: a record waiting for
+            // its restart is not live yet, and its process is spawned
+            // before it is, so it is counted here rather than met later.
+            let working = state.registry.all().find(|record| {
+                record.id != agent
+                    && (record.status.is_live() || state.pending_restarts.contains(&record.id))
+                    && record.project.as_ref().is_some_and(|project| {
+                        project::canonical(project.dir()).starts_with(&target)
+                    })
+            });
+            if let Some(working) = working {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    format!(
+                        "{} ({}) is {} in that worktree",
+                        working.spec.name,
+                        working.id.short(),
+                        if working.status.is_live() {
+                            "working"
+                        } else {
+                            "about to be restarted"
+                        }
+                    ),
+                );
+            }
+            // A lease on a path there, or on its branch, is somebody's
+            // word that it is in use, the asker's own included: it is
+            // theirs to release first, rather than left behind on a path
+            // or a branch that is gone.
+            let key = ResourceKey::new(format!("path:{}", target.display()));
+            let on_branch = target_branch
+                .as_ref()
+                .map(|branch| ResourceKey::new(format!("branch:{branch}")));
+            let held = state
+                .leases
+                .holders_of(&key)
+                .into_iter()
+                .next()
+                .or_else(|| {
+                    on_branch
+                        .as_ref()
+                        .and_then(|key| state.leases.holders_of(key).into_iter().next())
+                });
+            if let Some(lease) = held {
+                let who = if lease.holder == agent {
+                    "you hold".to_owned()
+                } else {
+                    let name = state
+                        .registry
+                        .get(&lease.holder)
+                        .map(|record| record.spec.name.clone())
+                        .unwrap_or_else(|| lease.holder.short().to_owned());
+                    format!("{name} holds")
+                };
+                return Response::error(
+                    ErrorCode::Conflict,
+                    format!(
+                        "{who} {}: it is released before the worktree goes",
+                        lease.resource
+                    ),
+                );
+            }
+            state.removing.insert(target.clone(), target_branch.clone());
+            Removing {
+                daemon: self,
+                path: target.clone(),
+            }
+        };
+        #[cfg(test)]
+        {
+            let hold = lock(&self.removal_hold).take();
+            if let Some(hold) = hold {
+                hold.wait().await;
+                hold.wait().await;
+            }
+        }
+        match remove_finished(main, target.clone()).await {
+            Ok((branch_removed, reason)) => {
+                let mut state = lock(&self.state);
+                state.worktree_creators.remove(&target);
+                state.emit(EventKind::WorktreeRemoved {
+                    by: agent,
+                    path: target.clone(),
+                    branch: target_branch,
+                    branch_removed,
+                    reason: reason.clone(),
+                });
+                Response::WorktreeRemoved {
+                    path: target,
                     branch_removed,
                     note: reason,
                 }
@@ -955,15 +1500,18 @@ impl Daemon {
         match self
             .claim(
                 reference,
-                format!("path:{}", target.display()),
-                LeaseMode::Exclusive,
-                None,
-                600,
-                Some(format!("integrating verified source {head}")),
-                0,
-                0,
-                false,
-                None,
+                super::leases::ClaimArgs {
+                    resource: format!("path:{}", target.display()),
+                    mode: LeaseMode::Exclusive,
+                    amount: None,
+                    ttl_secs: 600,
+                    note: Some(format!("integrating verified source {head}")),
+                    wait_secs: 0,
+                    priority: 0,
+                    automatic: false,
+                    fresh: false,
+                    actor: None,
+                },
             )
             .await
         {
@@ -1208,7 +1756,7 @@ mod tests {
             daemon
                 .worktree_create(
                     "target",
-                    branch.to_string_lossy().into_owned(),
+                    Some(branch.to_string_lossy().into_owned()),
                     "feature".into(),
                     None,
                     Vec::new(),
@@ -1388,7 +1936,7 @@ mod lifecycle_tests {
             run(&root, &["config", "user.email", "fixture@example.invalid"]).await;
             run(&root, &["config", "user.name", "Fixture"]).await;
             run(&root, &["commit", "--allow-empty", "-qm", "initial"]).await;
-            add_worktree(root.clone(), &worktree, "old-reviewed-branch", None)
+            add_worktree(root.clone(), &worktree, "old-reviewed-branch", None, None)
                 .await
                 .unwrap();
             let reviewed_head = output(&worktree, &["rev-parse", "HEAD"]).await;
@@ -1475,7 +2023,7 @@ mod lifecycle_tests {
         std::fs::write(outside.join("victim"), "untouched").unwrap();
 
         let wt = tmp.path().join("wt");
-        add_worktree(root.clone(), &wt, "agent/two", None)
+        add_worktree(root.clone(), &wt, "agent/two", None, None)
             .await
             .unwrap();
         // What a checkout could have put there.
@@ -1489,6 +2037,756 @@ mod lifecycle_tests {
             "untouched"
         );
         assert!(!outside.join("settings.json").exists());
+    }
+
+    /// A repository with one commit, and a daemon with one agent working
+    /// in it.
+    async fn project_with_an_agent(tmp: &Path) -> (PathBuf, Arc<Daemon>) {
+        let root = tmp.join("repo");
+        std::fs::create_dir(&root).unwrap();
+        run(&root, &["init", "-q", "-b", "main"]).await;
+        run(&root, &["config", "user.email", "t@example.com"]).await;
+        run(&root, &["config", "user.name", "T"]).await;
+        run(&root, &["commit", "--allow-empty", "-qm", "initial"]).await;
+        let daemon = Arc::new(Daemon::open(tmp.join("state"), tmp.join("sock")).unwrap());
+        register(&daemon, "builder", &root).await;
+        (project::canonical(&root), daemon)
+    }
+
+    async fn register(daemon: &Arc<Daemon>, name: &str, workdir: &Path) -> AgentId {
+        let answer = daemon
+            .handle(Request::Register {
+                spec: AgentSpec {
+                    name: name.into(),
+                    workdir: Some(workdir.to_path_buf()),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+            .await;
+        match answer {
+            Response::Agent { agent } => agent.id,
+            other => panic!("{name}: {other:?}"),
+        }
+    }
+
+    async fn create(
+        daemon: &Arc<Daemon>,
+        agent: &str,
+        path: Option<&Path>,
+        branch: &str,
+    ) -> Response {
+        daemon
+            .handle(Request::WorktreeCreate {
+                agent: agent.into(),
+                path: path.map(|path| path.to_string_lossy().into_owned()),
+                branch: branch.into(),
+                from: None,
+                seed_build: Vec::new(),
+            })
+            .await
+    }
+
+    fn made(answer: Response) -> PathBuf {
+        match answer {
+            Response::Worktree { path, .. } => path,
+            other => panic!("no worktree: {other:?}"),
+        }
+    }
+
+    fn refused(answer: &Response, why: &str) {
+        assert!(
+            matches!(answer, Response::Error { code: ErrorCode::Invalid, message, .. } if message.contains(why)),
+            "expected a refusal saying `{why}`: {answer:?}"
+        );
+    }
+
+    fn exclude_lines(root: &Path, line: &str) -> usize {
+        std::fs::read_to_string(root.join(".git/info/exclude"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|known| known.trim() == line)
+            .count()
+    }
+
+    /// A worktree asked for by branch alone goes in the project's own
+    /// worktrees folder, which git is told once to leave alone, so the
+    /// main checkout stays clean; a path of the caller's is still theirs
+    /// to name, outside the checkout or in that folder, and a project
+    /// whose worktrees all have one never gets the folder.
+    #[tokio::test]
+    async fn a_worktree_with_no_path_goes_in_the_projects_own_folder() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        let home = root.join(paths::PROJECT_WORKTREES);
+
+        let outside = project::canonical(&tmp.path().join("outside"));
+        assert_eq!(
+            made(create(&daemon, "builder", Some(&outside), "agent/outside").await),
+            outside
+        );
+        assert!(
+            !root.join(".agentdocker").exists(),
+            "a worktree with a path of its own makes no folder in the project"
+        );
+
+        let first = made(create(&daemon, "builder", None, "agent/first").await);
+        assert_eq!(first, home.join("agent-first"));
+        assert!(first.join(".git").is_file(), "a linked checkout");
+        let second = made(create(&daemon, "builder", None, "second").await);
+        assert_eq!(second, home.join("second"));
+        assert_eq!(
+            exclude_lines(&root, "/.agentdocker/worktrees/"),
+            1,
+            "git is told once"
+        );
+        let status = git(root.clone(), vec!["status".into(), "--porcelain".into()])
+            .await
+            .unwrap();
+        assert_eq!(
+            status.stdout.trim(),
+            "",
+            "the main checkout does not see the checkouts inside it"
+        );
+
+        // An agent working in one of them is in the same project: its
+        // own worktree goes beside, not inside.
+        register(&daemon, "nested", &first).await;
+        assert_eq!(
+            made(create(&daemon, "nested", None, "agent/third").await),
+            home.join("agent-third")
+        );
+        refused(
+            &create(&daemon, "nested", Some(&first.join("inner")), "agent/inner").await,
+            "inside another checkout",
+        );
+        refused(
+            &create(&daemon, "builder", Some(&second.join("a/b")), "agent/inner").await,
+            "inside another checkout",
+        );
+
+        // Two branches whose names make one folder name: the second is
+        // told, rather than given the first one's folder.
+        refused(
+            &create(&daemon, "builder", None, "agent-first").await,
+            "is there already",
+        );
+
+        // Inside the project, the folder is the one place a path may name.
+        refused(
+            &create(
+                &daemon,
+                "builder",
+                Some(&root.join("inside")),
+                "agent/inside",
+            )
+            .await,
+            "worktrees folder",
+        );
+        refused(
+            &create(&daemon, "builder", Some(&home), "agent/home").await,
+            "worktrees folder",
+        );
+        assert!(!root.join("inside").exists());
+        assert_eq!(
+            made(create(&daemon, "builder", Some(&home.join("mine")), "agent/mine").await),
+            home.join("mine")
+        );
+    }
+
+    /// A checkout someone else's commit made can hold a link where the
+    /// worktrees folder goes. Nothing is made through it, and nothing
+    /// where it points; a path of the caller's own is still theirs.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn worktrees_are_not_made_through_a_link_in_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::create_dir(&elsewhere).unwrap();
+        let untouched = || std::fs::read_dir(&elsewhere).unwrap().next().is_none();
+
+        std::os::unix::fs::symlink(&elsewhere, root.join(".agentdocker")).unwrap();
+        refused(
+            &create(&daemon, "builder", None, "agent/first").await,
+            "symbolic link",
+        );
+        assert!(untouched(), "nothing is made where the link points");
+
+        std::fs::remove_file(root.join(".agentdocker")).unwrap();
+        std::fs::create_dir(root.join(".agentdocker")).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join(paths::PROJECT_WORKTREES)).unwrap();
+        refused(
+            &create(&daemon, "builder", None, "agent/first").await,
+            "symbolic link",
+        );
+        assert!(untouched(), "nothing is made where the link points");
+        assert_eq!(exclude_lines(&root, "/.agentdocker/worktrees/"), 0);
+
+        let named = project::canonical(&tmp.path().join("named"));
+        assert_eq!(
+            made(create(&daemon, "builder", Some(&named), "agent/first").await),
+            named
+        );
+    }
+
+    /// The line in `info/exclude` is the least of git's ignore rules. A
+    /// project whose own `.gitignore` keeps every folder in view defeats
+    /// it: the worktree is refused with that rule named and the way
+    /// around said, nothing is left behind, and the answer is the same
+    /// once the line is there.
+    #[tokio::test]
+    async fn a_folder_the_projects_own_rules_keep_in_view_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        std::fs::write(
+            root.join(".gitignore"),
+            "# every folder stays in view\n!*/\n",
+        )
+        .unwrap();
+        run(&root, &["add", ".gitignore"]).await;
+        run(&root, &["commit", "-qm", "rules"]).await;
+
+        for round in ["the line is written", "the line is there"] {
+            let answer = create(&daemon, "builder", None, "agent/first").await;
+            refused(&answer, "`.gitignore:2:!*/`");
+            refused(&answer, "[worktrees] dir");
+            assert!(
+                !root.join(".agentdocker").exists(),
+                "{round}: what was made for it is taken away"
+            );
+            assert_eq!(
+                exclude_lines(&root, "/.agentdocker/worktrees/"),
+                1,
+                "{round}"
+            );
+        }
+        let listed = git(root.clone(), vec!["worktree".into(), "list".into()])
+            .await
+            .unwrap();
+        assert_eq!(listed.stdout.lines().count(), 1, "{}", listed.stdout);
+        let branches = git(
+            root.clone(),
+            vec!["branch".into(), "--list".into(), "agent/*".into()],
+        )
+        .await
+        .unwrap();
+        assert_eq!(branches.stdout.trim(), "", "no branch was made either");
+
+        // A folder somebody else put there is not taken away with the refusal.
+        std::fs::create_dir(root.join(".agentdocker")).unwrap();
+        refused(
+            &create(&daemon, "builder", None, "agent/first").await,
+            ".gitignore:2:!*/",
+        );
+        assert!(root.join(".agentdocker").is_dir());
+        assert!(!root.join(paths::PROJECT_WORKTREES).exists());
+
+        // The ways around it: a folder outside the project, or a path.
+        std::fs::write(
+            daemon.home.join(agentdocker_core::config::FILE_NAME),
+            format!(
+                "[worktrees]\ndir = '{}'\n",
+                tmp.path().join("elsewhere").display()
+            ),
+        )
+        .unwrap();
+        let first = made(create(&daemon, "builder", None, "agent/first").await);
+        assert!(!first.starts_with(&root), "{}", first.display());
+    }
+
+    /// Whether the folder is ignored is git's answer and not a reading of
+    /// its text: a rule that keeps the folder in view is found wherever
+    /// it is written, a file whose path looks like git's own `file:line:`
+    /// included, when the line is first written and when it is there.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_rule_that_keeps_the_folder_in_view_is_found_in_any_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        std::fs::write(
+            daemon.home.join(agentdocker_core::config::FILE_NAME),
+            "[worktrees]\ndir = 'part:1:two/worktrees'\n",
+        )
+        .unwrap();
+        std::fs::create_dir(root.join("part:1:two")).unwrap();
+        std::fs::write(root.join("part:1:two/.gitignore"), "!worktrees/\n").unwrap();
+        run(&root, &["add", "part:1:two/.gitignore"]).await;
+        run(&root, &["commit", "-qm", "rules"]).await;
+
+        for round in ["the line is written", "the line is there"] {
+            let answer = create(&daemon, "builder", None, "agent/one").await;
+            refused(&answer, "git does not ignore");
+            refused(&answer, "`part:1:two/.gitignore:1:!worktrees/`");
+            assert!(
+                !root.join("part:1:two/worktrees").exists(),
+                "{round}: what was made for it is taken away"
+            );
+            assert_eq!(exclude_lines(&root, "/part:1:two/worktrees/"), 1, "{round}");
+        }
+        let untracked = git(
+            root.clone(),
+            vec![
+                "status".into(),
+                "--porcelain".into(),
+                "--untracked-files=all".into(),
+            ],
+        )
+        .await
+        .unwrap();
+        assert_eq!(untracked.stdout.trim(), "", "no checkout was made");
+        let listed = git(root.clone(), vec!["worktree".into(), "list".into()])
+            .await
+            .unwrap();
+        assert_eq!(listed.stdout.lines().count(), 1, "{}", listed.stdout);
+
+        // Without the rule the same folder is taken.
+        std::fs::write(root.join("part:1:two/.gitignore"), "").unwrap();
+        assert_eq!(
+            made(create(&daemon, "builder", None, "agent/one").await),
+            root.join("part:1:two/worktrees/agent-one")
+        );
+    }
+
+    /// A folder name is taken to the letter in the line that keeps it out
+    /// of git. What git would read as a pattern is escaped, so the folder
+    /// is ignored and a folder the pattern would have matched is not; a
+    /// name no line can hold is refused.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_folder_name_git_would_read_as_a_pattern_is_named_to_the_letter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        let settings = daemon.home.join(agentdocker_core::config::FILE_NAME);
+        // What the unescaped lines would have matched as well.
+        for sibling in ["checkXoutsl1", "backslash"] {
+            std::fs::create_dir(root.join(sibling)).unwrap();
+            std::fs::write(root.join(sibling).join("seen.txt"), "seen").unwrap();
+        }
+        let untracked = async || {
+            git(
+                root.clone(),
+                vec![
+                    "status".into(),
+                    "--porcelain".into(),
+                    "--untracked-files=all".into(),
+                ],
+            )
+            .await
+            .unwrap()
+            .stdout
+        };
+        let siblings = "?? backslash/seen.txt\n?? checkXoutsl1/seen.txt\n";
+
+        std::fs::write(&settings, "[worktrees]\ndir = 'check*outs[local]?'\n").unwrap();
+        assert_eq!(
+            made(create(&daemon, "builder", None, "agent/first").await),
+            root.join("check*outs[local]?/agent-first")
+        );
+        assert_eq!(exclude_lines(&root, r"/check\*outs\[local\]\?/"), 1);
+        assert_eq!(untracked().await, siblings);
+
+        std::fs::write(&settings, "[worktrees]\ndir = 'back\\slash'\n").unwrap();
+        assert_eq!(
+            made(create(&daemon, "builder", None, "agent/second").await),
+            root.join("back\\slash/agent-second")
+        );
+        assert_eq!(exclude_lines(&root, r"/back\\slash/"), 1);
+        assert_eq!(untracked().await, siblings);
+
+        std::fs::write(&settings, "[worktrees]\ndir = \"two\\nlines\"\n").unwrap();
+        refused(
+            &create(&daemon, "builder", None, "agent/third").await,
+            "no git ignore rule can hold",
+        );
+        assert_eq!(untracked().await, siblings);
+    }
+
+    /// The line itself: one folder, rooted at the project's top, with
+    /// what git reads as a pattern escaped; none for a folder outside the
+    /// project, and a reason for a name a line cannot hold.
+    #[cfg(unix)]
+    #[test]
+    fn the_exclude_line_names_one_folder_to_the_letter() {
+        let root = Path::new("/work/app");
+        let line = |folder: &str| exclude_line(root, &root.join(folder));
+        assert_eq!(
+            line(".agentdocker/worktrees"),
+            Ok(Some("/.agentdocker/worktrees/".to_owned()))
+        );
+        assert_eq!(
+            line("a*b/c[d]?\\e f"),
+            Ok(Some(r"/a\*b/c\[d\]\?\\e f/".to_owned()))
+        );
+        assert_eq!(exclude_line(root, Path::new("/elsewhere/trees")), Ok(None));
+        assert_eq!(exclude_line(root, root), Ok(None));
+        for unnamable in ["two\nlines", "tab\there", "bell\u{7}"] {
+            assert!(line(unnamable).is_err(), "{unnamable:?}");
+        }
+    }
+
+    async fn remove(
+        daemon: &Arc<Daemon>,
+        agent: &str,
+        path: Option<&Path>,
+        branch: Option<&str>,
+    ) -> Response {
+        daemon
+            .handle(Request::WorktreeRemoveNamed {
+                agent: agent.into(),
+                path: path.map(|path| path.to_string_lossy().into_owned()),
+                branch: branch.map(str::to_owned),
+            })
+            .await
+    }
+
+    fn answered(answer: &Response, code: ErrorCode, why: &str) {
+        assert!(
+            matches!(answer, Response::Error { code: said, message, .. } if *said == code && message.contains(why)),
+            "expected {code:?} saying `{why}`: {answer:?}"
+        );
+    }
+
+    async fn request(daemon: &Arc<Daemon>, request: serde_json::Value) -> Response {
+        daemon
+            .handle(serde_json::from_value(request).expect("a request"))
+            .await
+    }
+
+    /// A running agent removes a worktree of its project that nobody
+    /// works in, by its path or its branch, whichever agent made it. The
+    /// main folder, the asker's own checkout, one another agent works in
+    /// or holds a path in, and one with unsaved work all stay, each with
+    /// its reason; a branch git does not consider merged is kept when its
+    /// worktree goes.
+    #[tokio::test]
+    async fn an_agent_removes_a_worktree_nobody_works_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        let first = made(create(&daemon, "builder", None, "agent/first").await);
+        let second = made(create(&daemon, "builder", None, "agent/second").await);
+
+        // Named by exactly one of the two, and a worktree of this project.
+        refused(
+            &remove(&daemon, "builder", None, None).await,
+            "one of the two",
+        );
+        refused(
+            &remove(&daemon, "builder", Some(&first), Some("agent/first")).await,
+            "one of the two",
+        );
+        answered(
+            &remove(&daemon, "builder", None, Some("agent/none")).await,
+            ErrorCode::NotFound,
+            "agent/none",
+        );
+        answered(
+            &remove(&daemon, "builder", Some(&tmp.path().join("nowhere")), None).await,
+            ErrorCode::NotFound,
+            "nowhere",
+        );
+        refused(
+            &remove(&daemon, "builder", Some(&root), None).await,
+            "main folder",
+        );
+        refused(
+            &remove(&daemon, "builder", None, Some("main")).await,
+            "main folder",
+        );
+
+        // Nobody is removed from under: not another agent, not the asker.
+        let nested = register(&daemon, "nested", &first).await;
+        answered(
+            &remove(&daemon, "builder", Some(&first), None).await,
+            ErrorCode::Conflict,
+            "nested",
+        );
+        answered(
+            &remove(&daemon, "nested", None, Some("agent/first")).await,
+            ErrorCode::Conflict,
+            "you are working in that worktree",
+        );
+
+        // Unsaved work stays where it is.
+        std::fs::write(second.join("note.txt"), "unsaved").unwrap();
+        answered(
+            &remove(&daemon, "builder", Some(&second), None).await,
+            ErrorCode::Conflict,
+            "uncommitted or untracked",
+        );
+        std::fs::remove_file(second.join("note.txt")).unwrap();
+
+        // A path held there keeps it, whoever holds it: the holder
+        // releases it first.
+        let held = format!("path:{}", second.join("held.rs").display());
+        let claimed = request(
+            &daemon,
+            serde_json::json!({"op": "claim", "agent": "nested", "resource": held}),
+        )
+        .await;
+        assert!(!matches!(claimed, Response::Error { .. }), "{claimed:?}");
+        answered(
+            &remove(&daemon, "builder", Some(&second), None).await,
+            ErrorCode::Conflict,
+            "nested holds",
+        );
+        answered(
+            &remove(&daemon, "nested", None, Some("agent/second")).await,
+            ErrorCode::Conflict,
+            "you hold",
+        );
+        assert!(second.exists());
+        let released = request(
+            &daemon,
+            serde_json::json!({"op": "release_resource", "agent": "nested", "resource": held}),
+        )
+        .await;
+        assert!(!matches!(released, Response::Error { .. }), "{released:?}");
+        // And so does its branch, held.
+        let claimed = request(
+            &daemon,
+            serde_json::json!({"op": "claim", "agent": "nested", "resource": "branch:agent/second"}),
+        )
+        .await;
+        assert!(!matches!(claimed, Response::Error { .. }), "{claimed:?}");
+        answered(
+            &remove(&daemon, "builder", Some(&second), None).await,
+            ErrorCode::Conflict,
+            "nested holds branch:agent/second",
+        );
+        let released = request(
+            &daemon,
+            serde_json::json!({"op": "release_resource", "agent": "nested", "resource": "branch:agent/second"}),
+        )
+        .await;
+        assert!(!matches!(released, Response::Error { .. }), "{released:?}");
+
+        // The agent that did not make it removes it, by its branch.
+        let answer = remove(&daemon, "nested", None, Some("agent/second")).await;
+        let Response::WorktreeRemoved {
+            path,
+            branch_removed,
+            ..
+        } = &answer
+        else {
+            panic!("not removed: {answer:?}");
+        };
+        assert_eq!(*path, second);
+        assert!(
+            *branch_removed,
+            "a branch with nothing of its own is merged"
+        );
+        assert!(!second.exists());
+        assert!(
+            daemon.recent_events(50).iter().any(|event| matches!(
+                &event.kind,
+                EventKind::WorktreeRemoved { by, path, branch, branch_removed: true, .. }
+                    if *by == nested && *path == second && branch.as_deref() == Some("agent/second")
+            )),
+            "the removal is announced, with who asked"
+        );
+        let listed = git(
+            first.clone(),
+            vec!["worktree".into(), "list".into(), "--porcelain".into()],
+        )
+        .await
+        .unwrap();
+        assert!(!listed.stdout.contains("agent-second"), "{}", listed.stdout);
+
+        // A branch with a commit of its own is kept when its worktree goes.
+        let third = made(create(&daemon, "builder", None, "agent/third").await);
+        std::fs::write(third.join("work.txt"), "work").unwrap();
+        run(&third, &["add", "work.txt"]).await;
+        run(&third, &["commit", "-qm", "work"]).await;
+        let answer = remove(&daemon, "builder", Some(&third), None).await;
+        assert!(
+            matches!(&answer, Response::WorktreeRemoved { branch_removed: false, note: Some(note), .. } if note.contains("is kept")),
+            "{answer:?}"
+        );
+        assert!(!third.exists());
+        let branches = git(
+            root.clone(),
+            vec!["branch".into(), "--list".into(), "agent/third".into()],
+        )
+        .await
+        .unwrap();
+        assert!(
+            branches.stdout.contains("agent/third"),
+            "{}",
+            branches.stdout
+        );
+    }
+
+    /// Git takes several commands to remove a worktree, and the daemon
+    /// does not hold its state while they run. The look that finds the
+    /// worktree idle reserves it in the same step: with the removal
+    /// stopped between that look and git, nobody registers there and
+    /// nothing in it, over it or on its branch is claimed, by anybody;
+    /// the rest of the project is not held up; and the reservation ends
+    /// with the removal, whether it removed the worktree or refused to.
+    #[tokio::test]
+    async fn nobody_enters_a_worktree_while_it_is_being_removed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        register(&daemon, "bystander", &tmp.path().join("repo")).await;
+        let target = made(create(&daemon, "builder", None, "agent/going").await);
+        let enter = async |name: &str, workdir: &Path| {
+            daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: name.into(),
+                        workdir: Some(workdir.to_path_buf()),
+                        ..AgentSpec::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await
+        };
+        let claim = async |who: &str, resource: &str| {
+            request(
+                &daemon,
+                serde_json::json!({"op": "claim", "agent": who, "resource": resource}),
+            )
+            .await
+        };
+
+        let hold = Arc::new(tokio::sync::Barrier::new(2));
+        *lock(&daemon.removal_hold) = Some(hold.clone());
+        let removal = tokio::spawn({
+            let (daemon, target) = (daemon.clone(), target.clone());
+            async move { remove(&daemon, "builder", Some(&target), None).await }
+        });
+        // The removal has found the worktree idle and reserved it; git has
+        // not been asked yet.
+        hold.wait().await;
+        assert!(target.exists());
+        answered(
+            &enter("late", &target).await,
+            ErrorCode::Conflict,
+            "is being removed",
+        );
+        let inside = format!("path:{}", target.join("src/lib.rs").display());
+        let over = format!("path:{}", target.parent().unwrap().display());
+        for resource in [inside.as_str(), over.as_str(), "branch:agent/going"] {
+            for who in ["bystander", "builder"] {
+                answered(
+                    &claim(who, resource).await,
+                    ErrorCode::Conflict,
+                    "is being removed",
+                );
+            }
+        }
+        answered(
+            &remove(&daemon, "bystander", Some(&target), None).await,
+            ErrorCode::Conflict,
+            "being removed already",
+        );
+        // The rest of the project is not held up.
+        let elsewhere = format!("path:{}", root.join("src/lib.rs").display());
+        let granted = claim("bystander", &elsewhere).await;
+        assert!(!matches!(granted, Response::Error { .. }), "{granted:?}");
+
+        hold.wait().await;
+        let answer = removal.await.unwrap();
+        assert!(
+            matches!(&answer, Response::WorktreeRemoved { path, .. } if *path == target),
+            "{answer:?}"
+        );
+        assert!(!target.exists());
+        // Its reservation went with it.
+        let granted = claim("bystander", "branch:agent/going").await;
+        assert!(!matches!(granted, Response::Error { .. }), "{granted:?}");
+
+        // A removal that is refused lets go as well.
+        let kept = made(create(&daemon, "builder", None, "agent/kept").await);
+        std::fs::write(kept.join("note.txt"), "unsaved").unwrap();
+        answered(
+            &remove(&daemon, "builder", Some(&kept), None).await,
+            ErrorCode::Conflict,
+            "uncommitted or untracked",
+        );
+        let granted = claim(
+            "bystander",
+            &format!("path:{}", kept.join("src/lib.rs").display()),
+        )
+        .await;
+        assert!(!matches!(granted, Response::Error { .. }), "{granted:?}");
+        let entered = enter("late", &kept).await;
+        assert!(matches!(entered, Response::Agent { .. }), "{entered:?}");
+    }
+
+    /// `git worktree list --porcelain -z` as the removal reads it: each
+    /// checkout's place and branch, the main one first, a detached one
+    /// with no branch.
+    #[test]
+    fn the_worktree_listing_is_read_by_place_and_branch() {
+        let text = "worktree /work/app\0HEAD 1111\0branch refs/heads/main\0\0\
+                    worktree /work/app/.agentdocker/worktrees/agent-fix\0HEAD 2222\0branch refs/heads/agent/fix\0\0\
+                    worktree /work/detached\0HEAD 3333\0detached\0\0";
+        let all = listed(text);
+        let places: Vec<(&Path, Option<&str>)> = all
+            .iter()
+            .map(|one| (one.path.as_path(), one.branch.as_deref()))
+            .collect();
+        assert_eq!(
+            places,
+            [
+                (Path::new("/work/app"), Some("main")),
+                (
+                    Path::new("/work/app/.agentdocker/worktrees/agent-fix"),
+                    Some("agent/fix")
+                ),
+                (Path::new("/work/detached"), None),
+            ]
+        );
+    }
+
+    /// `[worktrees] dir` in the daemon's settings moves the folder: an
+    /// absolute one holds a folder per project and leaves the project
+    /// untouched, a relative one is inside the project and kept out of
+    /// git like the default, and one that names no usable place refuses a
+    /// worktree that has no path of its own, with the reason.
+    #[tokio::test]
+    async fn the_daemons_settings_say_where_worktrees_go() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (root, daemon) = project_with_an_agent(tmp.path()).await;
+        let settings = daemon.home.join(agentdocker_core::config::FILE_NAME);
+
+        let elsewhere = tmp.path().join("elsewhere");
+        std::fs::write(
+            &settings,
+            format!("[worktrees]\ndir = '{}'\n", elsewhere.display()),
+        )
+        .unwrap();
+        let first = made(create(&daemon, "builder", None, "agent/first").await);
+        let elsewhere = project::canonical(&elsewhere);
+        assert_eq!(first.file_name().unwrap(), "agent-first");
+        assert_eq!(
+            first.parent().and_then(Path::parent),
+            Some(elsewhere.as_path()),
+            "a folder per project under the one the settings name: {}",
+            first.display()
+        );
+        assert!(!root.join(".agentdocker").exists());
+        assert_eq!(exclude_lines(&root, "/.agentdocker/worktrees/"), 0);
+
+        std::fs::write(&settings, "[worktrees]\ndir = \".trees\"\n").unwrap();
+        assert_eq!(
+            made(create(&daemon, "builder", None, "agent/second").await),
+            root.join(".trees/agent-second")
+        );
+        assert_eq!(exclude_lines(&root, "/.trees/"), 1);
+
+        std::fs::write(&settings, "[worktrees]\ndir = \"../beside\"\n").unwrap();
+        refused(&create(&daemon, "builder", None, "agent/third").await, "..");
+        let named = project::canonical(&tmp.path().join("named"));
+        assert_eq!(
+            made(create(&daemon, "builder", Some(&named), "agent/third").await),
+            named,
+            "a path of the caller's own does not need the folder"
+        );
     }
 
     /// `seed_build` brings the asking agent's build output into the new
@@ -1525,7 +2823,7 @@ mod lifecycle_tests {
         let answer = daemon
             .handle(Request::WorktreeCreate {
                 agent: "builder".into(),
-                path: refused.to_string_lossy().into_owned(),
+                path: Some(refused.to_string_lossy().into_owned()),
                 branch: "agent/refused".into(),
                 from: None,
                 seed_build: vec!["../outside".into()],
@@ -1541,7 +2839,7 @@ mod lifecycle_tests {
         let Response::Worktree { path, seeded, .. } = daemon
             .handle(Request::WorktreeCreate {
                 agent: "builder".into(),
-                path: wt.to_string_lossy().into_owned(),
+                path: Some(wt.to_string_lossy().into_owned()),
                 branch: "agent/seeded".into(),
                 from: None,
                 seed_build: vec!["target".into(), "node_modules".into()],
@@ -1612,7 +2910,7 @@ mod lifecycle_tests {
         std::fs::write(root.join("scratch.txt"), "not listed").unwrap();
 
         let wt = tmp.path().join("wt");
-        add_worktree(root.clone(), &wt, "agent/one", None)
+        add_worktree(root.clone(), &wt, "agent/one", None, None)
             .await
             .unwrap();
         let (copied, trouble) = copy_includes(root.clone(), wt.clone()).await;

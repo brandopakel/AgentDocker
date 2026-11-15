@@ -556,6 +556,8 @@ each one by pid.
 | `webhook deliveries <name>` | A webhook sink's latest attempts to post, oldest first: the event, which attempt, whether it was delivered, will be retried (and when) or was given up, the receiver's status code or a word for why there was none, and how long it took; `--limit` (up to 200), `--json` |
 | `ping` | Check the daemon is reachable |
 
+An agent that has ended shows the exit code that was recorded for it: `exited (0)`, `exited (1)`. `exited (code unknown)` means no code was recorded, and says nothing of why the process ended: the daemon found a process it only watches (a registered or adopted session) gone without seeing it end, or the process ended without a code, as one ended by a signal does. `up` says the same of an entry as `exited with unknown code`; an entry waiting for that one to exit 0 is not started, since an unknown code is not a 0.
+
 ### Start, adopt and stop
 
 | Command | What it does |
@@ -581,7 +583,7 @@ each one by pid.
 
 | Command | What it does |
 |---|---|
-| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. `--idempotency-key <key>` is your own token for this one send (a UUID, say): repeating the command with the same key after a lost answer queues nothing and prints the first message id again, for up to 24 hours; the daemon keeps the newest 4,096 keys in memory, so after they turn over or it restarts the same key is a new send (see [the protocol](ARCHITECTURE.md#messaging)). |
+| `send` | Message an agent (or `role:<name>`, the one agent with that role in your project), the project, a topic, or everyone. An agent reaches only its own project and you; its `all` means its project, and you can still send anywhere. A `--link kind:target` (repeatable) travels beside the text: a path, a commit, a pr, a url, a task, a message or a memory for the reader. A task is named by its card's key or id (`--link task:AD-12`), here and wherever a command takes `--link`. `--idempotency-key <key>` is your own token for this one send (a UUID, say): repeating the command with the same key after a lost answer queues nothing and prints the first message id again, for up to 24 hours; the daemon keeps the newest 4,096 keys in memory, so after they turn over or it restarts the same key is a new send (see [the protocol](ARCHITECTURE.md#messaging)). |
 | `delivery <message>` | Where one of your messages stands with each agent it was queued for: answered, delivered, received by the model, shown to its session, or why it is still waiting (next prompt, a browser agent's check-in, paused, blocked, ended). Never "read": nothing says a model read it. `send` prints the id; `--json` |
 | `watch` | Stream messages for an agent or matching topics. Topics keep their messages: `watch --as <agent> 'repo/#'` first shows what each matching topic kept since the last topic message that agent acknowledged there (everything kept, the first time), then streams live; `inbox --as <agent> --ack <id>` on a topic message moves that topic on past it. A topic line shows its `seq:`; without an agent, topics are live only unless `--after-seq <n>` replays from that point. One watch replays at most a topic's newest 500, 5,000 in all, and says how many older ones it did not replay |
 | `inbox` | Messages queued while an agent was not watching |
@@ -641,13 +643,13 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `claim` | Claim a lease on `path:`, `branch:`, `task:`, or anything |
-| `renew` / `release` | Extend or give up a lease you hold |
+| `claim` | Claim a lease on `path:`, `branch:`, `task:`, or anything. Claiming what you already hold renews it; `--fresh` asks for a new lease only, so a lease you already hold that would stop another agent (on the resource, over or under it, in a conflicting mode) is in the way too (with `--wait` the command asks again until it is released or the wait is spent; a daemon older than the command is told apart by asking it, and nothing is claimed from one): for a slot one process at a time may use, whoever its workers claim as |
+| `renew` / `release` | Extend or give up a lease you hold. `release` takes the lease's id or the resource it is on, as `claim` took it (`release task:build`, `release src/main.rs`), and prints the id it released for a resource: the lease on exactly that resource, never one on a folder above it or a file beneath it, and `not_found` when you hold none there. A word of hex digits alone is read as a lease id, so a file of such a name is written `./abc` or `path:abc`; `--all` releases everything you hold |
 | `request-release <resource>` | Ask whoever holds it to let go: each holder gets a `release_request` message with your `--reason`; the answer comes back to you as a `release_response` message. Asking again for the same resource repeats the pending request rather than sending another |
 | `respond-release <request>` | Answer a release request put to you, by its message id: `--accept --summary "…"` has the daemon release those leases for you and journal the summary; `--decline --reason "…"` keeps them and says why |
 | `leases` | Every lease held right now |
 | `waiting` | Claims waiting for a resource, in the order they will be served: higher priority first, then oldest |
-| `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card, from any open lane when nobody holds it; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; an agent moves only a card it holds, and takes one nobody holds by pulling it by name; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off\|rule-on\|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|mine\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts); `--assignee mine` is your cards together with those held by your agents — launched with `run` or `up` from your own terminal, the app's launch, or `task start` and start rules, or a Claude Code or Codex session you started yourself in a terminal app or IDE (root's install, or one whose signature verifies), or over SSH, with no agent's session anywhere above it (their records carry `launched_by=user`, so `ps --label launched_by=user` lists them; a session inside a multiplexer server such as tmux cannot be told apart from an agent's and is not counted) — and, with `--as <agent>`, that agent's own |
+| `task` | The board of work. `task create "Fix login" --acceptance "SSO works" --lane ready --priority high --size m --due YYYY-MM-DD --tag auth --blocked-by AD-7 --link pr:#<n>` files a card and prints its key (`AD-12`); `--parent`, `--description` and `--blocker "waiting on legal"` say more, and `--board` files it on another board. `task create-many cards.json` files up to 50 at once, all or none, each able to name another of the batch by its `ref` as its parent or in `--blocked-by`. `task pull --as <agent>` takes the next ready card (the first in the board's pull source, free and waiting on nothing; it says how many are held or waiting when there is none), `task pull AD-12 --as <agent>` that card, from any open lane when nobody holds it; either holds it as a `task:<id>` lease (four hours; `renew` extends it, an exit releases it; a card whose hold lapsed is taken over only with `--take-over-from <holder>`). A card that waits on something off the board (`--blocker "waiting on legal"`) is not taken while it waits; when nobody holds it and what it waited on has happened, any agent of the project takes it with `task pull AD-12 --unblock "legal signed off"`, which clears the wait and keeps those words and what it waited on as a comment on the card and a line in the journal, so nobody has to remember who filed the card or wait for you to clear it. `task move AD-12 review --comment "ready for eyes"` moves it to a lane by slug, name or category (`--after`/`--before` another card places it; anybody in the project moves a card: it stays its holder's, who is told when it was somebody else, except that a card somebody else sends back to Backlog or Ready is freed for the next taker; moving a card is not taking it, and an agent takes one nobody holds by pulling it by name; back to Ready or to Done ends the hold). `task show AD-12` is the card in full: fields, comments, history, what it waits on. `task update AD-12 --assignee bob --priority low --tag ui` edits it (`--size ""`, `--due ""`, `--parent ""`, `--no-tags`, `--no-blocked-by`, `--no-links` clear). `task comment AD-12 "…" [--reply-to <comment>]`, `task comment-edit <comment> "…"`, `task comment-delete <comment>`. `task archive AD-12`, `task unarchive AD-12`, `task archive-lane done`. `task boards`, `task board-create Sprint --template agents` (classic, agents or simple), `task board-update sprint --lanes lanes.json --pull-source approved`. `task search "logn page"` finds cards by words, slips forgiven, a key exactly. `task start AD-12 --runtime codex` starts an agent on a card nobody holds that waits on nothing, and hands it the card. `task rules`, `task rule-add "Stale review" --idle review --days 14 --comment "Still waiting?"` (or `--enter LANE`; `--move LANE`, `--archive`, `--start RUNTIME [--max N]`), `task rule-off\|rule-on\|rule-rm <id>`. `task tags`, `task tag ui --color teal [--rename frontend]`, `task tag-rm ui`; `--plan` on `create` and `update` names the plan a card carries out. `task list [--board B] [--lane L] [--assignee me --as <agent>\|mine\|none] [--open] [--query words] [--tag T] [--archived] [--limit 100] [--offset N]` (a page; it says when the board goes on and where the next page starts); `--assignee mine` is your cards together with those held by your agents — launched with `run` or `up` from your own terminal, the app's launch, or `task start` and start rules, or a Claude Code or Codex session you started yourself in a terminal app or IDE (root's install, or one whose signature verifies), or over SSH, with no agent's session anywhere above it (their records carry `launched_by=user`, so `ps --label launched_by=user` lists them; a session inside a multiplexer server such as tmux cannot be told apart from an agent's and is not counted) — and, with `--as <agent>`, that agent's own |
 | `plan` | A project's plans, specs in Markdown that cards carry out: `plan list [--all]`, `plan show <id>`, `plan new "Auth rewrite" --body spec.md` (or `-` for stdin), `plan edit <id> [--title …] [--body FILE] [--status draft\|active\|done\|archived]` |
 | `file` | A project's files, kept beside the work: `file list [--task AD-12]`, `file put notes.md [--task AD-12] [--name …]` (at most 4 MiB; the same name again is a new version), `file get <id> [--out PATH]`, `file link <id> AD-12 [--unlink]`, `file rm <id>` |
 | `pause` | `agentdocker pause "sleeping the laptop"` tells every agent in this directory's project to hold: they get the reason as a `pause` message and their new leases are refused until `agentdocker pause --lift`; `--project` names another project; `pause --list` lists what is paused and why |
@@ -661,15 +663,17 @@ turn. A copied instruction is not executed by AgentDocker.
 | `blame <path>` | Who changed a file, oldest first |
 | `overlap` | Paths changed in more than one checkout: what will collide |
 | `observe` / `reads` / `stale` | Record what was read, and check it is still true |
-| `memory add <text>` / `search <words>` / `profile` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one, `add --standing` keeps a convention said first, `add --forget-after <when>` (an RFC 3339 time, or `90m`, `12h`, `7d`, `2w` from now) stops saying it after then, `add --role reviewer` says it only to that role's holders and you, `add --valid-from <when>` (an RFC 3339 time, a date, or `3d` ago) records a fact that became true no later than now; `search --as-of <when>` and `profile --as-of <when>` read memory as it stood then, `search --history` lists replaced memories too with what replaced each; `search` and `profile` read as the agent whose session runs them, or as you, who read every memory |
+| `brief` | Where the work stands in the project, from AgentDocker's own records: your open cards, the cards ended sessions left open with their newest comment, cards nobody holds in a working lane, the newest checkpoint for each role with the command that resumes it where you can, the questions waiting on you, the leases held, and the checkouts where work stands with the gate's word at a pushed head; what a new session is told at its start, and, from this command only, GitHub's open pull requests with the gate's word at each head, asked in a checkout of the project the brief is of. An agent reads its own project's; you read the working directory's, or `--project`. The text, pull requests included, is at most 16 KiB and counts what it leaves out; GitHub is asked for 100 open pull requests and the text says when it has more. `--all` prints all of it and asks for up to 2,000, `--json` the structured brief and the pull requests |
+| `memory add <text>` / `search <words>` / `profile` / `retire <id> --reason <why>` / `forget <id>` | The project's memory: facts its agents and you keep for each other, told to every new session; `add --supersedes <id>` replaces one, `retire` stops one that is no longer true being said when nothing takes its place (any agent of the project may, whoever kept it; it stays in the history with the reason, and `forget <the retirement's id>`, which `retire` prints, brings it back), `forget` drops one for good (your own, or any as you), `add --standing` keeps a convention said first (when a new session will not be told it in full, `add` says so on stderr: either it is too long by itself, to be superseded by a shorter one, or what a session is told in full has no room for it, with how full that is; sessions are then told it by its first words until room is made), `add --forget-after <when>` (an RFC 3339 time, or `90m`, `12h`, `7d`, `2w` from now) stops saying it after then, `add --role reviewer` says it only to that role's holders and you, `add --valid-from <when>` (an RFC 3339 time, a date, or `3d` ago) records a fact that became true no later than now; `search --as-of <when>` and `profile --as-of <when>` read memory as it stood then, `search --history` lists replaced and retired memories too, with what replaced each or who retired it and why; `search` and `profile` read as the agent whose session runs them, or as you, who read every memory; `profile` lists what agents should know first, within 4000 characters, and `profile --session` exactly what a new session is told in full at its start, which is less (2000 characters of memories, as lines within 4 KiB); each lists on stderr the standing memories it had no room for, by id and first words, and `profile` says there when a session's start leaves any out |
 
 ### Work in isolation, then merge
 
 | Command | What it does |
 |---|---|
-| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]…` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
+| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]… [<path>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files. With no path it goes in the project's own worktrees folder, `.agentdocker/worktrees/<name>` inside the project (a `/` in the branch name becomes `-`), which the daemon keeps out of git through the repository's own exclude file, so everything of a project stays in the one folder you cloned; the command prints where. If a rule in the project's own `.gitignore` keeps that folder in git's view, the command refuses and names the rule: change it, move the folder with the setting below, or give a path. `[worktrees] dir = "…"` in `~/.agentdocker/agentd.toml` moves the folder: a relative path is another place inside each project, an absolute one holds every project's checkouts outside them (for a project whose tools search its whole folder and would find the checkouts inside it). A path you give is outside the checkout, or inside that folder; a relative one is read where you run the command. A path lease covers everything under its folder, so hold files and folders of your own checkout rather than the project's root; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged. The worktree's build cache (`target/`) goes with it |
+| `worktree-remove --path <path>` or `--branch <name>` | Remove a worktree of your project that nobody works in, named by where it is or by the branch checked out in it: one you made with `worktree-create` and are done with, or one another session left behind. Any running agent of the project may ask. It is refused, with what is in the way, for the project's main folder, the worktree you are in, one another agent works in, one in which anybody holds a path or whose branch anybody holds (release yours first), and one with uncommitted or untracked files. The branch is deleted only when git considers it merged; otherwise the worktree goes, the branch stays and the command says so. The worktree's build cache (`target/`) goes with it |
 | `review-branch <agent>` | What an agent's branch would bring to the branch in the project's main checkout: commits, files and lines, and what stops a merge now (uncommitted work, uncommitted changes in the main checkout, conflicts, held files); `--patch` prints the diff, `--json` the whole review |
 | `merge-branch <agent> --head <sha>` | Merge that branch into the main checkout's branch with a merge commit, if its head is still the one `review-branch` printed and nothing stops it; refused with nothing changed otherwise. It does not push |
 | `commit` | Commit the agent's checkout, journaled and attributed to it |
@@ -681,7 +685,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `checkpoint` / `checkpoints` | Persist task context and content identity; `checkpoints prune --older-than <duration>` forgets finished sessions' old ones |
+| `checkpoint` / `checkpoints` | Persist task context and content identity; `checkpoints` lists those of `--as` or the session, `checkpoints --all` every one (whoever wrote it, a forgotten agent included); `checkpoints prune --older-than <duration>` forgets finished sessions' old ones |
 | `handoff` / `handoffs` | Hand an agent's work to another, with everything around it `--link kind:target` names what the recipient should open first; `checkpoint --link` does the same for a replacement session. |
 | `resume` | Inspect or accept a verified handoff |
 | `export` / `import` | Carry a bundle to another host |
@@ -693,7 +697,8 @@ turn. A copied instruction is not executed by AgentDocker.
 | `channels` / `channel` | The rooms agents share when they are on the same work; `channel open --name planning` gives one a `#name` (made from the task otherwise); `--project <id or path>` opens it in a project the opener is not in, which is how a person opens one; `channel prune --before <seconds>` forgets channels closed longer ago than that (two weeks by default) |
 | `review-request` / `review` | Ask for and give verdicts; requested changes block |
 | `verdict <branch> --head <commit> --pass\|--changes\|--none [--from <commit>] [--findings important,nit,pre-existing] [note]` | Give your verdict on a branch at the commit you read, with what you found counted by severity (`0,1,0`; all zero when left out); it counts for the roles you hold, and only for that commit. Prints the verdict's id, then its parseable line (`verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`) on stderr. Refused on a branch you hold, are checked out on, or committed to |
-| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: passed at its head as it is now (exit 0), else changes asked, stale (commits since the pass) or unreviewed (exit 1). Prints what it said, then a line a job can gate on: `gate=approved branch=… head=… verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`. `--publish` sets the `agentdocker/review` commit status on GitHub, whose text carries the word, the reviewer, its runtime and the counts |
+| `verdict --supersede <verdict id> [--reason <text>]` | Set a verdict aside so it counts at no gate (the person only): the way out when a reviewer asked for changes and is gone |
+| `gate <PR\|branch> [--head <commit>] [--role <role>] [--publish] [--json]` | Whether it may land: passed at its head as it is now (exit 0), else changes asked, stale (commits since the pass) or unreviewed (exit 1). Prints what it said, then a line a job can gate on: `gate=approved branch=… head=… verdict=pass head=… important=0 nit=1 pre_existing=0 runtime=codex by=…`, then one line per verdict set aside and by whom. `--publish` sets the `agentdocker/review` commit status on GitHub, whose text carries the word, the reviewer, its runtime and the counts |
 | `contest` / `contests` | Several agents attempt one task, ranked by a measure declared first; `contest close <id> [--winner <agent>]` declares the answer, by the ranking when the metric separated the entries |
 
 ### Containers
@@ -707,7 +712,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent |
+| `runtimes` | Agent tools installed here, and whether we are wired in; UNREGISTERED counts that tool's processes nobody registered (what `discover` lists), not its sessions — `ps` shows those; browser extensions per profile, with the note that their sessions never appear; anything the inventory could not read within its bounds is listed as `inventory incomplete` rather than passed off as absent, and so is a browser whose data the system will not let it list (macOS asks the person before a program reads another app's data); the rest of the table is still shown |
 | `setup` | Wire us in: MCP registration, and hooks for Claude Code. Docker Agent keeps its MCP servers in each agent's YAML, so `setup docker-agent --agent <file>` adds the toolset to that file's default agent (`root`, else the first) and `setup --remove docker-agent --agent <file>` takes it out; `--git-hook` plans the pre-commit backstop for this repository (below) |
 | `skill` | Print the portable coordination `SKILL.md`, the one `setup` installs for the providers that take one, without connecting to a daemon |
 | `ui` | Open the desktop app |
@@ -792,7 +797,7 @@ cursor where it is; `mark_journal_read` moves it past what `read_journal`
 shows, so the next read starts after it; the since argument reads from a sequence
 number instead.
 
-`create_worktree` · `worktree_diff` · `commit` · `integrate_worktree` ·
+`create_worktree` · `worktree_diff` · `remove_worktree` · `commit` · `integrate_worktree` ·
 `validate` · `validation_results`
 
 `save_checkpoint` · `list_checkpoints` · `resume_checkpoint` · `handoff` ·
@@ -810,7 +815,10 @@ number instead.
 `list_plans` · `get_plan` · `save_plan` · `list_files` · `get_file` ·
 `put_file` · `link_file`
 
-`add_memory` · `search_memory` · `get_profile` · `forget_memory`
+`add_memory` · `search_memory` · `get_profile` · `retire_memory` ·
+`forget_memory`
+
+`get_brief`
 
 A browser agent on the remote connector has the messaging tools and
 `list_tasks`, `get_task`, `search_tasks`, `comment_task`, `list_plans` and
@@ -1103,6 +1111,24 @@ be anything the agent printed, so turn it on only for work you are content to
 show TypeSafe. TypeSafe's own terms and costs apply; at most
 `calls_per_minute` requests go each minute (6 unless you set it, 1–60).
 
+**Suggesting which memory a new one replaces.** Add `"memories"` to
+`judgments` (`judgments = ["screens", "memories"]`, or `["memories"]` alone,
+which reads no screen). When a memory is kept, the judge is asked whether it
+restates, contradicts or replaces each of up to 8 current memories most like
+it. `agentdocker memory add` prints the likely ones to stderr, and the
+`add_memory` tool answers them as `may_supersede`, the likeliest first, above
+`threshold_percent`. It is only a suggestion: nothing is replaced until you
+or the agent say so with `--supersedes`. The memory is kept whatever becomes
+of asking, and `suggestion` says what did: `made`, `off`, `over_budget` or
+`unavailable`.
+
+What is sent: the new memory's text and the other memories' texts, with a
+fixed sentence and one yes/no question each. No id, link, author, role or
+project goes. Those texts can include memories said only to some roles,
+compared only with memories all their readers can read, so name this judgment
+only for memories you are content to show TypeSafe. Each new memory that
+shares a word with another costs one of the `calls_per_minute`.
+
 **Whose screens.** The terminals of agents AgentDocker started (from the app
 or with `run --tty`); the tmux pane an agent registered from — at the tmux
 server that pane belongs to, and only while the pane still runs that agent's
@@ -1217,6 +1243,23 @@ Current behaviour that the sections above do not already state, by area.
   tools' replies, `events`) the word is written `approve`, `changes` or
   `comment`, the spelling older clients read: `pass` is `approve` and
   `none` is `comment`.
+
+- **A departed reviewer does not hold the gate for good.** A request for
+  changes blocks until the same reviewer says otherwise, and a verdict
+  belongs to the agent that gave it, not to the role: a successor
+  holding the role inherits nothing. Once that reviewer's record has
+  ended (exited or forgotten), a pass of the commit it read, or of
+  a later one, by an agent holding the role now, or by you, lifts the
+  request at that role's gate; `agentdocker gate` then says which
+  verdict was set aside and by whom, the journal has a line for it, and
+  the mark stays on the verdict. "Later" is what git says in the
+  project's repository, so a commit it does not have lifts nothing. A
+  `none`, a pass of an older commit, or a pass by an agent
+  without the role lifts nothing, and a reviewer that is still running
+  keeps its word. To lift a verdict yourself at every gate, whoever gave
+  it, `agentdocker verdict --supersede <verdict id> [--reason <text>]`.
+  A reviewer's latest verdict is its word: once that one is lifted, it
+  has no word at that gate, and nothing it said before comes back.
 
 - **Rules, tags, plans and files on the board.** A board's rules comment on,
   move, archive or start an agent on a card when it comes into a lane or
@@ -1569,9 +1612,38 @@ Current behaviour that the sections above do not already state, by area.
 
 ### Sessions and worktrees
 
+- Where the work stands. `agentdocker brief` prints, from AgentDocker's own
+  records rather than from a note anyone kept: your open cards; the open
+  cards of sessions that have ended, grouped by who held them and the role
+  their record last carried, each with its lane, its pull-request links and
+  its newest comment cut to a headline (`agentdocker task show <card>` has
+  the rest); cards nobody holds in a working lane; the newest checkpoint for
+  each role, with `agentdocker resume <id> --as <you>` when it was left in
+  your own checkout and where it must be resumed from otherwise; the
+  questions waiting on you; the leases held; and the checkouts where work
+  stands (uncommitted paths, commits not pushed or a branch never pushed,
+  commits not yet in the base, and at a pushed branch's head what the review
+  gate says), as git said when it last read them. A checkout is counted clean
+  only when git said so: a branch with no remote counts as never pushed, even
+  merged into the main checkout's branch; what git could not count is said. The brief finds
+  the project's checkouts itself, so a worktree nobody works in is told even
+  when no agent of the project is running. Quoted text in it is what
+  agents and you wrote. An agent reads its own project's; you read the
+  project of the directory you are in, or `--project`. It prints the first
+  16 KiB and says what it left out; `--all` prints everything, `--json` the
+  same records as JSON. The command also asks GitHub (`gh`, run in a checkout
+  of the project the brief is of, not the directory you are in) for the open
+  pull requests and says what the gate says at each one's head: the first
+  100, or 2,000 with `--all`, saying when GitHub has more, within the same
+  16 KiB as the rest. What it leaves out it offers by a command that names
+  the project, so it means the same in any directory. A session's start and the `get_brief` tool never ask
+  GitHub, and say so. The `get_brief` tool
+  gives a session the brief's text.
+
 - Sessions start in their own worktree. In a git project, **Launch agent…**
   has **Own worktree: On** by default: the session works on a branch of its
-  own in its own folder, its changes are reviewed and merged from Changes, and
+  own in its own folder inside the project (`.agentdocker/worktrees/<name>`,
+  kept out of git), its changes are reviewed and merged from Changes, and
   once merged and ended, **Remove its worktree** (or `agentdocker
   worktree-remove`) cleans up. Files git ignores that the project lists in
   `.worktreeinclude` (one pathspec per line, e.g. `.env`) are copied into each
@@ -1613,8 +1685,18 @@ Current behaviour that the sections above do not already state, by area.
   holder's, so `git commit` there is journaled as that agent's rather than
   `external`. `claim`, `renew` and `release` act as this session without
   `--as`. `scripts/verify.sh` takes the machine's `task:local-cargo-campaign`
-  lease for its run, keeps one the caller already held, renews either while
-  the run lasts, and stops instead of starting on top of another campaign —
+  lease for its run as a fresh one (`claim --fresh`), so a second run under
+  the same identity waits behind the first instead of being answered with
+  its lease and building beside it; it works inside a lease the caller
+  holds on purpose when that lease is named
+  (`AGENTDOCKER_CAMPAIGN_LEASE=<lease id>`): it checks that the named
+  lease is an exclusive one on the build slot and renews it, which only
+  its holder can, never releases it, and does not start when either is
+  refused (a lease on something else, a shared hold and a lapsed id all
+  stop the run); where the running daemon is
+  older than the CLI and does not know a fresh claim, the CLI refuses it
+  with nothing claimed and the run claims as it did before; it
+  renews either while the run lasts, and stops instead of starting on top of another campaign —
   before the first step, or at whichever step a renewal fails, ending only
   the processes that step started; when the daemon cannot tell which
   session is calling, the run registers itself as an agent (`verify-<pid>`,
@@ -1783,12 +1865,15 @@ Current behaviour that the sections above do not already state, by area.
   `agentdocker memory add`. Every new Claude Code, Codex and OpenCode
   session in the project is told them as it starts, the standing ones
   first and then the newest, as context for the model, never typed into
-  its terminal (Codex runs its start hook at a conversation's first turn,
+  its terminal; a standing one there is no room to tell in full is named
+  by its first words and its id, so put the point of a memory first (Codex runs its start hook at a conversation's first turn,
   and again after `/clear` or a compaction). Search finds whole words, the
   rarer ones counting for more and the newer memory first on a tie; an
   identifier such as `task_id` is one word, so `task` does not find it,
   while `-` and `:` separate words. A memory that is no longer true is
-  replaced (`--supersedes`) or forgotten. Each prompt you type is also told
+  replaced (`--supersedes`), retired (`memory retire`, `retire_memory`:
+  any agent of the project may, so tidying memory does not wait for
+  whoever wrote it, or for you) or forgotten. Each prompt you type is also told
   the few memories that answer it: each once a session in Claude Code and
   Codex, and in OpenCode again with each prompt it answers, since OpenCode
   keeps a prompt's context only for that prompt's turn. After a session is
@@ -1837,7 +1922,14 @@ Current behaviour that the sections above do not already state, by area.
   one agent per consent — registered when its code is redeemed, after the
   pairing code from the terminal is typed on the consent page — with the
   messaging tools only. `connector grants` lists consents and what each
-  client said about its software, `connector revoke <agent>` ends one.
+  client said about its software, `connector revoke <agent>` ends one at
+  once: every request that begins after it returns is refused, whether or
+  not the daemon is running. It then asks the daemon to mark the agent
+  finished and says what came of it. If the daemon could not, it exits
+  with the daemon's class, or 1 when the answer was lost; run it again to
+  retry that half. If the revocation is written but cannot be made durable,
+  it says so and exits 1 without asking the daemon; run it again once the
+  connector's state can be saved.
   `--tunnel tailscale` exposes it through Tailscale Funnel on this machine's
   own stable name and `--tunnel cloudflared` starts a quick tunnel;
   `connector install` runs it as a login service, `connector status` shows

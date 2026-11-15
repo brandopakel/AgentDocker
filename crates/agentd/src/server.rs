@@ -1731,6 +1731,7 @@ mod tests {
             note: Some("x".repeat(1024 * 1024)),
             automatic: false,
             actor: None,
+            fresh: false,
         })
         .unwrap()
             + "\n";
@@ -1794,6 +1795,7 @@ mod tests {
                 priority: 0,
                 automatic: false,
                 actor: None,
+                fresh: false,
             })
             .await;
         let mut events = daemon.subscribe_events();

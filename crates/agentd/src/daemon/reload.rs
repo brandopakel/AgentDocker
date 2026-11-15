@@ -1415,6 +1415,7 @@ mod fence_tests {
             priority: 0,
             automatic: false,
             actor: None,
+            fresh: false,
         }
     }
 
@@ -2025,6 +2026,7 @@ mod fence_tests {
                         amount: None,
                         automatic: false,
                         actor: None,
+                        fresh: false,
                     })
                     .await
             }
@@ -2067,6 +2069,7 @@ mod fence_tests {
                 priority: 0,
                 automatic: false,
                 actor: None,
+                fresh: false,
             })
             .await
         else {

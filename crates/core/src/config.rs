@@ -46,6 +46,65 @@ pub struct DaemonConfig {
     /// unless the person names judgments here.
     #[serde(default)]
     pub judge: JudgeConfig,
+    /// Where the checkouts made for agents go, when not inside each
+    /// project.
+    #[serde(default)]
+    pub worktrees: WorktreesConfig,
+}
+
+/// Where the checkouts made for agents go (`worktree-create` without a
+/// path, an isolated launch).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorktreesConfig {
+    /// The folder for them. Absent, each project keeps its own inside
+    /// itself ([`crate::paths::PROJECT_WORKTREES`]). A relative folder is
+    /// another place inside each project; an absolute one is one place
+    /// for every project, each in a folder of its own there.
+    #[serde(default)]
+    pub dir: Option<std::path::PathBuf>,
+}
+
+impl WorktreesConfig {
+    /// The folder the checkouts of the project at `root` go in. `project`
+    /// keeps projects apart under an absolute folder. A relative folder
+    /// stays inside the project and out of its git directory: anything
+    /// else is a broken setting, said rather than guessed at.
+    pub fn home(
+        &self,
+        root: &std::path::Path,
+        project: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        use std::path::Component;
+        match &self.dir {
+            None => Ok(root.join(crate::paths::PROJECT_WORKTREES)),
+            Some(dir) if dir.is_absolute() => Ok(dir.join(project)),
+            Some(dir) => {
+                let mut parts = dir.components();
+                let leaves = dir.as_os_str().is_empty()
+                    || !dir.components().all(|c| matches!(c, Component::Normal(_)));
+                let in_git =
+                    matches!(parts.next(), Some(Component::Normal(first)) if first == ".git");
+                // Git is told to leave the folder alone by a line naming
+                // it, and a line holds no control character.
+                let unnamable = dir
+                    .to_str()
+                    .is_none_or(|name| name.chars().any(char::is_control));
+                if unnamable {
+                    return Err(format!(
+                        "worktrees.dir: {dir:?} has a character no git ignore rule can hold; give a plain folder name, or an absolute path"
+                    ));
+                }
+                if leaves || in_git {
+                    return Err(format!(
+                        "worktrees.dir: `{}` is not a folder inside a project (no `.`, no `..`, not under `.git`); give one, or an absolute path",
+                        dir.display()
+                    ));
+                }
+                Ok(root.join(dir))
+            }
+        }
+    }
 }
 
 /// The experimental switches. Each is off until the file turns it on,
@@ -856,6 +915,54 @@ pub fn parse_duration(text: &str) -> Result<Duration, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A project's worktrees go in a folder inside it unless the setting
+    /// names another: a relative one stays inside each project, an
+    /// absolute one holds a folder per project, and one that leaves the
+    /// project, sits in its git directory or cannot be named in a git
+    /// ignore rule is a broken setting, said.
+    #[test]
+    fn worktrees_go_inside_the_project_unless_the_setting_says_where() {
+        use std::path::{Path, PathBuf};
+        let root = Path::new("/work/app");
+        let at = |text: &str| {
+            toml::from_str::<DaemonConfig>(text)
+                .unwrap()
+                .worktrees
+                .home(root, "abc123")
+        };
+        assert_eq!(
+            at(""),
+            Ok(PathBuf::from("/work/app/.agentdocker/worktrees")),
+            "inside the project by default"
+        );
+        assert_eq!(
+            at("[worktrees]\ndir = \"checkouts\"\n"),
+            Ok(PathBuf::from("/work/app/checkouts"))
+        );
+        assert_eq!(
+            at("[worktrees]\ndir = \"/srv/checkouts\"\n"),
+            Ok(PathBuf::from("/srv/checkouts/abc123")),
+            "one place for every project, each apart"
+        );
+        for broken in ["..", "../beside", "a/../b", "./a", ".git/worktrees", ""] {
+            let text = format!("[worktrees]\ndir = \"{broken}\"\n");
+            assert!(at(&text).is_err(), "{broken}");
+        }
+        for unnamable in ["two\\nlines", "tab\\there"] {
+            let text = format!("[worktrees]\ndir = \"{unnamable}\"\n");
+            assert!(
+                at(&text).is_err_and(|why| why.contains("no git ignore rule can hold")),
+                "{unnamable}"
+            );
+        }
+        assert_eq!(
+            at("[worktrees]\ndir = 'check*outs[local]'\n"),
+            Ok(PathBuf::from("/work/app/check*outs[local]")),
+            "a name git reads as a pattern is the daemon's to escape, not refused"
+        );
+        assert!(toml::from_str::<DaemonConfig>("[worktrees]\nfolder = \"x\"\n").is_err());
+    }
 
     /// The mirror is off unless turned on, names its projects, keeps its
     /// key in an absolute file and talks https (or http to this machine).

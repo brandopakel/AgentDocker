@@ -611,6 +611,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             })
             .await;
         assert!(
@@ -640,6 +641,7 @@ mod tests {
                     priority: 0,
                     automatic: false,
                     actor: None,
+                    fresh: false,
                 })
                 .await,
             Response::Lease { .. }

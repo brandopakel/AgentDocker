@@ -473,6 +473,7 @@ mod tests {
                 priority: 0,
                 automatic: false,
                 actor: None,
+                fresh: false,
             })
             .await
         {
@@ -909,6 +910,7 @@ mod tests {
                         priority: 0,
                         automatic: false,
                         actor: None,
+                        fresh: false,
                     })
                     .await,
                 Response::Lease { .. }
@@ -1247,6 +1249,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             })
             .await
         else {

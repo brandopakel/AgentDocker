@@ -69,12 +69,28 @@ pub struct DigestRequest {
     pub reader: String,
     pub max_entries: usize,
     pub max_chars: usize,
+    /// The UTF-8 bytes the digest's text may take as well, for a reader
+    /// whose room is counted in bytes. A daemon that predates it bounds
+    /// the characters alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
     #[serde(default)]
     pub all_branches: bool,
     /// Move the reader's cursor to the digest's head in the same request.
     #[serde(default)]
     pub advance: bool,
 }
+
+/// A claim's `fresh` is honoured: the claimer's own conflicting leases
+/// are in its way ([`Request::Claim`]).
+pub const FEATURE_FRESH_CLAIM: &str = "fresh_claim";
+
+/// A journal digest bounds its text by `digest.max_bytes` as well as by
+/// its characters; a daemon that does not list it bounds characters alone.
+pub const FEATURE_DIGEST_MAX_BYTES: &str = "digest_max_bytes";
+
+/// The names a daemon of this build answers in `pong.features`.
+pub const FEATURES: &[&str] = &[FEATURE_FRESH_CLAIM, FEATURE_DIGEST_MAX_BYTES];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -104,7 +120,12 @@ pub enum Request {
     Images,
     WorktreeCreate {
         agent: String,
-        path: String,
+        /// Where the new checkout goes. Absent, it goes in the project's
+        /// own worktrees folder, in a folder named for the branch: inside
+        /// the project ([`crate::paths::PROJECT_WORKTREES`]) unless the
+        /// daemon's settings name another place.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
         branch: String,
         /// The start point: a branch, tag or commit of the repository;
         /// the agent's HEAD when absent.
@@ -123,6 +144,18 @@ pub enum Request {
     /// branch when git considers it merged. Answers `worktree_removed`.
     WorktreeRemove {
         agent: String,
+    },
+    /// Remove a linked worktree of the asking agent's project that nobody
+    /// works in, named by its path or by the branch checked out in it
+    /// (one of the two): clean and without force as `worktree_remove`
+    /// does, its branch deleted only when git considers it merged.
+    /// Answers `worktree_removed`.
+    WorktreeRemoveNamed {
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
     },
     /// What an agent's branch would bring to the branch in the project's
     /// main checkout, and whether it can be merged now. Answers
@@ -827,6 +860,15 @@ pub enum Request {
         project: Option<String>,
         #[serde(default)]
         board: Option<String>,
+        /// What happened to end the named card's wait on something off the
+        /// board: the wait is cleared and the card taken in one change,
+        /// with these words and what it waited on kept on the card, in the
+        /// journal and in `task_unblocked`. For a card nobody holds, by an
+        /// agent of its project: no agent in particular, since the one
+        /// that filed the card is a session that ends. `invalid` without
+        /// words, for a card that waits on nothing, or with a take-over.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unblock: Option<String>,
     },
     /// Move a card: its assignee may, the person always may. Answers
     /// `task`, or `forbidden`. `to` names a lane by slug, name or
@@ -1154,7 +1196,8 @@ pub enum Request {
     },
     /// What a project's agents should know first, within `max_chars`: its
     /// standing memories, the oldest first, then the others, newest first;
-    /// `as_of` as they stood then. Answers `memories`.
+    /// `as_of` as they stood then. Answers `memories`, with `left_out`
+    /// naming the standing memories that had no room.
     MemoryProfile {
         #[serde(default)]
         from: Option<String>,
@@ -1165,11 +1208,31 @@ pub enum Request {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         as_of: Option<chrono::DateTime<chrono::Utc>>,
     },
+    /// Where the work stands in a project, from the daemon's own records
+    /// ([`crate::brief`]): for an agent, in its own project (a `project`
+    /// naming another is `forbidden`); for the person (`user`), in the
+    /// project `project` names. Answers `brief`.
+    Brief {
+        from: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        project: Option<String>,
+    },
     /// Forget a memory for good: its author's or the person's to do.
-    /// Answers `ok`.
+    /// Forgetting a retirement brings back the memory it retired, and is
+    /// that memory's author's to do as well. Answers `ok`.
     MemoryForget {
         from: String,
         memory: String,
+    },
+    /// Retire a memory, with a reason: it is no longer said, stays in the
+    /// history with who retired it and why, and comes back when the
+    /// retirement is forgotten. Anybody working in the memory's project
+    /// who can read it may, and the person. Answers `memory` with the
+    /// retirement, a record of its own that is never said.
+    MemoryRetire {
+        from: String,
+        memory: String,
+        reason: String,
     },
     /// One plan in full, with the cards that carry it out. Answers
     /// `plan`.
@@ -1362,6 +1425,17 @@ pub enum Request {
         /// a refusal; never an agent of its own.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         actor: Option<String>,
+        /// Only a new lease will do: a lease the agent already holds that
+        /// would stop another agent (the same resource, one over or under
+        /// it, a conflicting mode) is in this claim's way too, and nothing
+        /// is renewed. Answered `conflict` at once, with `details.own`,
+        /// however long the claim would wait: the agent is not queued
+        /// behind itself. For a resource one process at a time may use,
+        /// whoever its workers claim as. A daemon that does not list
+        /// [`FEATURE_FRESH_CLAIM`] in `pong.features` ignores this field
+        /// and renews: ask before relying on it.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        fresh: bool,
     },
     Renew {
         agent: String,
@@ -1378,6 +1452,21 @@ pub enum Request {
         summary: Option<String>,
         /// `explicit` (the default) is journaled even when nothing was
         /// held; `transcript` only describes leases actually released.
+        #[serde(default)]
+        summary_source: SummarySource,
+    },
+    /// Release the leases an agent holds on exactly this resource, named
+    /// as `claim` takes it (a `path:`, or a `file:` alias the daemon turns
+    /// into the same physical path). A lease over or under the resource is
+    /// another resource's and is left alone: which lease a name stands for
+    /// is the daemon's to say, since only it knows a resource's own
+    /// spelling. Answers `leases` with what was released, `not_found` when
+    /// the agent holds none there.
+    ReleaseResource {
+        agent: String,
+        resource: String,
+        #[serde(default)]
+        summary: Option<String>,
         #[serde(default)]
         summary_source: SummarySource,
     },
@@ -1628,7 +1717,10 @@ pub enum Request {
     },
     /// Whether a branch at a commit may land: approved at exactly that
     /// commit by a holder of `role` (`reviewer` when absent) or the person,
-    /// with nobody asking for changes. Answers `review_gate`.
+    /// with nobody asking for changes. A departed reviewer's request for
+    /// changes is set aside at the role's gate here, once a holder of the
+    /// role or the person passed that commit or a later one after it, and
+    /// the lift kept on the verdict. Answers `review_gate`.
     ReviewGate {
         #[serde(default)]
         agent: Option<String>,
@@ -1638,6 +1730,19 @@ pub enum Request {
         head: String,
         #[serde(default)]
         role: Option<String>,
+    },
+    /// The person sets a verdict aside, so that it counts at no gate:
+    /// the way out when a reviewer asked for changes and is gone with no
+    /// successor's pass to lift it. Answers `code_verdict` with the
+    /// verdict as marked.
+    SupersedeVerdict {
+        agent: String,
+        #[serde(default)]
+        project: Option<String>,
+        /// The verdict's id.
+        verdict: String,
+        #[serde(default)]
+        reason: Option<String>,
     },
     /// Attach a terminal to a managed agent that was given one. The reply
     /// is a stream of `output`; the client may then send `attach_input`
@@ -1938,6 +2043,11 @@ pub enum Response {
     },
     ReviewGate {
         gate: crate::gate::Gate,
+        /// The branch's verdicts that would count at this gate but are
+        /// superseded there, each with its marks: who set it aside, why
+        /// and for which role.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        superseded: Vec<crate::gate::CodeVerdict>,
     },
     BranchReview {
         review: crate::review::Review,
@@ -2025,6 +2135,14 @@ pub enum Response {
         /// Absent from a daemon older than the judge.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         judge: Option<crate::judgment::JudgeStatus>,
+        /// What this daemon knows how to do beyond what every daemon does
+        /// ([`FEATURES`]). A request field a daemon does not know is one it
+        /// ignores without a word, so a client that depends on such a field
+        /// being honoured asks here first: a name that is missing means the
+        /// daemon would do the old thing. Empty from a daemon older than
+        /// the list.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        features: Vec<String>,
     },
     DaemonProcess {
         pid: u32,
@@ -2264,9 +2382,33 @@ pub enum Response {
     },
     Memory {
         memory: crate::memory::Memory,
+        /// From `memory_add` when the judge's `memories` judgment is on: the
+        /// current memories this one may replace, the likeliest first.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        may_supersede: Vec<crate::memory::MaySupersede>,
+        /// From `memory_add`: what came of asking, so a client can tell a
+        /// suggestion nobody made from one nobody could make.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        suggestion: Option<crate::memory::Suggestion>,
+        /// From `memory_add` of a standing memory that has no room in what
+        /// a new session is told ([`crate::memory::SESSION_PROFILE_CHARS`]):
+        /// how full that profile is, so the adder knows a session will meet
+        /// this memory by its first words only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        left_out: Option<crate::memory::NoRoom>,
+    },
+    /// From `brief`: what its reader is told, as [`crate::brief::render`]
+    /// says it.
+    Brief {
+        brief: crate::brief::Brief,
     },
     Memories {
         memories: Vec<crate::memory::Memory>,
+        /// From `memory_profile`: the standing memories that had no room
+        /// in it, by their first words, the oldest first. A client says
+        /// them after the profile so that none goes untold in silence.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        left_out: Vec<crate::memory::LeftOut>,
     },
     /// Memories with their history: `replaced` names, for each superseded
     /// one, what replaced it.
@@ -2466,6 +2608,35 @@ fn default_human() -> String {
 mod tests {
     use super::*;
 
+    /// `worktree_create` names a path only when the caller wants one: a
+    /// request without it reads, and one made without it sends none, so
+    /// an older daemon refuses it as lacking a field instead of guessing.
+    #[test]
+    fn a_worktree_is_asked_for_with_or_without_a_path() {
+        let asked =
+            serde_json::json!({"op":"worktree_create","agent":"agent-1","branch":"agent/fix"});
+        let request: Request = serde_json::from_value(asked.clone()).unwrap();
+        assert!(
+            matches!(&request, Request::WorktreeCreate { path: None, branch, .. } if branch == "agent/fix"),
+            "{request:?}"
+        );
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("path")
+                .is_none(),
+            "no path is sent when none was named"
+        );
+        let mut placed = asked;
+        placed["path"] = "/work/fix".into();
+        let request: Request = serde_json::from_value(placed.clone()).unwrap();
+        assert!(
+            matches!(&request, Request::WorktreeCreate { path: Some(path), .. } if path == "/work/fix"),
+            "{request:?}"
+        );
+        assert_eq!(serde_json::to_value(&request).unwrap()["path"], "/work/fix");
+    }
+
     #[test]
     fn old_send_responses_keep_readiness_unknown() {
         let legacy = serde_json::json!({"type":"sent", "message":"m1", "subscribers":5});
@@ -2572,6 +2743,7 @@ mod tests {
                 priority: 0,
                 automatic: false,
                 actor: None,
+                fresh: false,
             }
         );
         let back = serde_json::to_string(&req).unwrap();

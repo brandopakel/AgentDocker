@@ -10,7 +10,9 @@ use super::panes::{Grid, Slot};
 use super::style::{Colors, alpha, weight};
 use super::view::{empty, first_line, pill, rule, split_style};
 use super::*;
-use crate::controls::{Kind, custom, custom_sized, framed_composer, input_enabled, popover};
+use crate::controls::{
+    ComposerSpec, Kind, custom, custom_sized, framed_composer, input_enabled, popover,
+};
 use agentdocker_core::conversation::line_of;
 use agentdocker_core::{
     AgentId, AgentRecord, ArchivedMessage, ConversationKind, ConversationSummary, MessageId,
@@ -1110,13 +1112,17 @@ impl App {
             left: 14.0,
         });
         let field = framed_composer(
-            input_id,
-            key.clone(),
-            &placeholder,
-            &text_now,
-            move |t| Message::ConversationDraft(owner.clone(), t),
-            can_send && !sending,
-            submit,
+            ComposerSpec {
+                id: input_id,
+                destination: key.clone(),
+                label: &placeholder,
+                value: &text_now,
+                change: std::sync::Arc::new(move |t: String| {
+                    Message::ConversationDraft(owner.clone(), t)
+                }),
+                enabled: can_send && !sending,
+                submit,
+            },
             footer.into(),
         );
         // Mention suggestions include only the conversation's recipients.

@@ -338,6 +338,19 @@ pub enum EventKind {
         branch_removed: bool,
         reason: Option<String>,
     },
+    /// An agent removed a linked worktree of its project that nobody
+    /// worked in (`worktree_remove_named`). `by` is who asked, `branch`
+    /// what was checked out there, and `branch_removed` whether git let
+    /// it go as merged; `reason` says why it was kept.
+    WorktreeRemoved {
+        by: crate::AgentId,
+        path: std::path::PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        branch: Option<String>,
+        branch_removed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
     IntegrationPrepared {
         agent: crate::AgentId,
         source_head: String,
@@ -617,6 +630,15 @@ pub enum EventKind {
         by: String,
         comment: crate::CommentId,
     },
+    /// A card nobody held stopped waiting on something off the board: the
+    /// agent taking it said what happened. `was` is what it waited on.
+    TaskUnblocked {
+        task: crate::TaskId,
+        project: ProjectId,
+        by: String,
+        was: String,
+        reason: String,
+    },
     /// A comment was rewritten, or deleted.
     TaskCommentChanged {
         task: crate::TaskId,
@@ -678,6 +700,14 @@ pub enum EventKind {
     MemoryForgotten {
         project: ProjectId,
         memory: String,
+        by: String,
+    },
+    /// A memory was retired: no longer said, kept in the history.
+    /// `retirement` is the record that says so, which forgetting undoes.
+    MemoryRetired {
+        project: ProjectId,
+        memory: String,
+        retirement: String,
         by: String,
     },
     /// The copy of a project's memory kept elsewhere caught up: how many
@@ -958,6 +988,20 @@ pub enum EventKind {
         #[serde(default)]
         runtime: String,
     },
+    /// A verdict was set aside: a departed reviewer's request for changes
+    /// at `role`'s gate, by a successor's pass of that commit or a later
+    /// one (`reviewer_ended`), or any verdict at every gate by the person
+    /// (`person`, no `role`). `was_by` gave it; `by` set it aside.
+    CodeVerdictSuperseded {
+        project: ProjectId,
+        branch: String,
+        verdict: String,
+        was_by: AgentId,
+        by: AgentId,
+        reason: crate::gate::SupersedeReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+    },
     /// A journal entry was appended to a project.
     JournalAppended {
         entry: JournalEntry,
@@ -1109,6 +1153,7 @@ impl EventKind {
         "committed",
         "branch_merged",
         "worktree_cleanup",
+        "worktree_removed",
         "integration_prepared",
         "access_granted",
         "access_revoked",
@@ -1153,6 +1198,7 @@ impl EventKind {
         "task_archived",
         "task_unarchived",
         "task_commented",
+        "task_unblocked",
         "task_comment_changed",
         "board_changed",
         "rule_changed",
@@ -1161,6 +1207,7 @@ impl EventKind {
         "role_changed",
         "memory_added",
         "memory_forgotten",
+        "memory_retired",
         "memory_mirrored",
         "plan_changed",
         "project_file_changed",
@@ -1206,6 +1253,7 @@ impl EventKind {
         "channels_pruned",
         "review_submitted",
         "code_verdict_given",
+        "code_verdict_superseded",
         "journal_appended",
         "journal_read",
         "journal_pruned",
@@ -1283,6 +1331,13 @@ mod tests {
             EventKind::WorktreeCreated {
                 agent: AgentId::from("a1b2c3"),
                 path: std::path::PathBuf::from("/tmp/w"),
+            },
+            EventKind::WorktreeRemoved {
+                by: AgentId::from("a1b2c3"),
+                path: std::path::PathBuf::from("/tmp/w"),
+                branch: Some("agent/fix".to_owned()),
+                branch_removed: false,
+                reason: None,
             },
             EventKind::InputHeldForTyping {
                 agent: AgentId::from("a1b2c3"),

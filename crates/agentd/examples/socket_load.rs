@@ -159,6 +159,7 @@ fn main() -> Result<()> {
                                     priority: 0,
                                     automatic: false,
                                     actor: None,
+                                    fresh: false,
                                 },
                             )?;
                             match reply {

@@ -136,7 +136,8 @@ never chooses a Cargo target directory itself: Cargo's own configuration and
 `CARGO_TARGET_DIR` decide, so no extra build cache appears, and packaging
 reads the artifact directory the build reports.
 
-Requirements: Rust (see `rust-version` in `crates/ui/Cargo.toml`), Python 3.11+,
+Requirements: Rust through rustup (the checkout's `rust-toolchain.toml` names
+the version, which rustup installs on the first build), Python 3.11+,
 and on macOS the Xcode command-line tools. End users of a packaged app need
 none of these. Public, signed builds are described in
 [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).

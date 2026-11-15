@@ -581,7 +581,7 @@ new leases until **Resume**, and while it holds the header shows a chip
 beside **Resume** that starts the reason (*Paused · reason*), the whole
 reason in its detail when the chip cuts it. What an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message.
-**Launch agent…** opens the form, led by its **Task** field. For Claude and Codex it offers **Model** and **Effort**, each a chip that opens its list: the provider's default first, named (*Default (&lt;model&gt;)*), then the models the provider shows on this machine (Codex's `models_cache.json`; Claude's aliases) and the efforts the chosen model takes. The defaults are read from the provider's own settings (`~/.codex/config.toml`, `~/.claude/settings.json`) off the UI thread; nothing is fetched. A choice becomes the tool's own options (`--model`, `--effort`, `-c model_reasoning_effort=…`) before **More options**' arguments, which win where they name one (in any spelling the tool takes, the last in force): the chip then shows the argument's value and gives way to it, and an effort the model in force does not take is dropped. Changing the tool starts from its defaults, and a read made for an earlier tool never applies. The session's panel says the model and effort it was launched with (`<model> · xhigh`). In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
+**Launch agent…** opens the form, led by its **Task** field. For Claude and Codex it offers **Model** and **Effort**, each a chip that opens its list: the provider's default first, named (*Default (&lt;model&gt;)*), then the models the provider shows on this machine (Codex's `models_cache.json`; Claude's aliases) and the efforts the chosen model takes. The defaults are read from the provider's own settings (`~/.codex/config.toml`, `~/.claude/settings.json`) off the UI thread; nothing is fetched. A choice becomes the tool's own options (`--model`, `--effort`, `-c model_reasoning_effort=…`) before **More options**' arguments, which win where they name one (in any spelling the tool takes, the last in force): the chip then shows the argument's value and gives way to it, and an effort the model in force does not take is dropped. Changing the tool starts from its defaults, and a read made for an earlier tool never applies. The session's panel says the model and effort it was launched with (`<model> · xhigh`). In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder inside the project (`.agentdocker/worktrees/<name>`, which AgentDocker keeps out of git), with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
 or a press outside the dialog closes it) to choose an installed CLI and start it at the project root
 (the folder on the header title's tooltip). With Codex chosen and no saved trusted entry found for the project root, the form shows *Trust unconfirmed* in amber, whose tooltip directs the person to open Codex in that folder to review trust before launching. A missing trust entry alone does not establish effective sandbox or approval policy; explicit provider configuration can override those defaults. Saved trust is read off the UI thread only for an open Codex form; results for an older form, project or tool are ignored, and unreadable paths remain unknown. Every project-selection path, including notifications while the form stays open, clears the previous notice and checks the newly selected project. AgentDocker never trusts a folder on the person's behalf. Claude and Codex launches default to **Idle messages: On**;
 each switch says what it means on its tooltip, and turned off this one says
@@ -948,21 +948,27 @@ detail, beside a chip with the queued count (*2 queued*); an ended session's
 latest receipt is *Last message* under its **Details**.
 A setup review is named for its tool; its files show their MCP, Hooks or Shell
 lines as a diff, and its state is the footer's chip (*Waiting for you*,
-*Applying…*, *Nothing to change*). Applying a plan turns that chip to *Saved*,
+*Applying…*, *Undoing…*, *Nothing to change*). Applying a plan turns that chip to *Saved*,
 whose detail says what loads it (*Start a fresh session to load it*, or a new
-terminal for the shell), with **Undo** available afterwards. Fresh
+terminal for the shell), with **Undo** available afterwards. A plan whose
+receipt was left part-way through an apply or an undo, while this window runs
+no setup operation, was interrupted, and is not shown as in progress: the chip
+reads *Apply interrupted* or *Undo interrupted* with the alert mark and no
+progress ring, its detail says what finishes it (*Connect again to finish it*,
+*Undo again to finish it*), and that button is offered. Fresh
 sessions load saved setup; only the provider can request its required approval.
 The connection check is one line per installed tool, a *Configuration
 checked* chip when configuration passes or the alert mark with the first
 problem printed and all of them its detail, and closes with **Close**. Busy is a *Checking…*
 chip, and a failure one line beside the alert mark. Setup history lists each
-saved setup with its phase as a chip (*Applied*, *Prepared*, *Undone*). A connection
+saved setup with its phase as a chip (*Applied*, *Prepared*, *Undone*), or
+with *Apply interrupted* or *Undo interrupted* for one left part-way. A connection
 failure retains the last snapshot and clearly pauses daemon actions.
 
 ## Settings and installation
 
 Settings is a column of names beside their controls: Appearance (Theme, Text
-size, Notifications, Roomy rows), Terminal (Terminal text, Terminal colours)
+size, Notifications, Roomy rows and, on macOS, Menu bar item), Terminal (Terminal text, Terminal colours)
 and Installation (Update checks, Installation), with no line of explanation
 under any of them. Preferences are stored privately in the AgentDocker state directory.
 A malformed preference file is preserved and reported rather than silently reset.
@@ -1055,6 +1061,14 @@ and notarization; locally signed builds are explicit previews.
 
 On macOS the dock icon shows how many questions and prompts are waiting on you,
 in every project: the rows Needs you holds. It shows nothing when none are waiting.
+A menu-bar item shows the mark and, beside it as text, the same number, nothing at
+zero; its tooltip says it in words (*AgentDocker · 3 waiting on you*). With the item
+on (Settings → Appearance → **Menu bar item**, on by default), closing the window
+keeps the app running with the item as its one presence, and a click on the item
+brings the window back; clicked while the window is open, it brings the window to
+the front. The item has no menu and opens no panel. Quit is the app menu's or the
+Dock's **Quit** as before. With the item off, closing the window quits, as it does
+on Linux and Windows, which have no menu-bar item.
 
 Text inputs and the terminal support native input methods. Focus indicators,
 and the words every state chip prints and carries as its accessible name,

@@ -172,3 +172,93 @@ fn shell_setup_and_explicit_preview_still_wait_for_apply() {
             .success()
     );
 }
+
+/// Rewrite the phase word of a saved receipt, as an interruption or a hand
+/// edit leaves it. Returns the receipt as it now stands.
+fn set_phase(root: &Path, id: &str, from: &str, to: &str) -> String {
+    let receipt = root.join("state/setup").join(format!("{id}.json"));
+    let saved = fs::read_to_string(&receipt).unwrap();
+    let from = format!(r#""phase": "{from}""#);
+    assert_eq!(saved.matches(&from).count(), 1);
+    let edited = saved.replace(&from, &format!(r#""phase": "{to}""#));
+    fs::write(&receipt, &edited).unwrap();
+    edited
+}
+
+fn applied_codex_setup(root: &Path) -> String {
+    fs::create_dir(root.join("codex")).unwrap();
+    fs::write(root.join("codex/config.toml"), "model = 'example'\n").unwrap();
+    let id = String::from_utf8(success(cli(root, &["setup", "codex"])).stdout).unwrap();
+    id.trim().to_owned()
+}
+
+/// A plan whose undo stopped part-way is half undone, not undone: apply
+/// says so and names the command that finishes it, and that command does.
+#[test]
+fn a_half_undone_plan_refuses_apply_and_names_the_undo_that_finishes_it() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let id = applied_codex_setup(root);
+    let config = root.join("codex/config.toml");
+    let after = fs::read_to_string(&config).unwrap();
+    set_phase(root, &id, "applied", "undoing");
+
+    let refused = cli(root, &["setup", "--apply", &id]);
+    assert!(!refused.status.success());
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "this plan's undo was interrupted and is not finished; finish it with \
+             `agentdocker setup --undo {id}`, then create a fresh preview to apply again"
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("was undone"), "{stderr}");
+    assert_eq!(fs::read_to_string(&config).unwrap(), after);
+    assert_eq!(
+        value(root, &["setup", "--show", &id, "--json"])["phase"],
+        "undoing"
+    );
+
+    assert_eq!(
+        value(root, &["setup", "--undo", &id, "--json"])["phase"],
+        "undone"
+    );
+    assert_eq!(fs::read_to_string(&config).unwrap(), "model = 'example'\n");
+    let refused = cli(root, &["setup", "--apply", &id]);
+    assert!(!refused.status.success());
+    assert!(
+        String::from_utf8_lossy(&refused.stderr)
+            .contains("this plan was undone; create a fresh preview to apply again")
+    );
+}
+
+/// A receipt whose phase this version does not know is unreadable: show,
+/// apply and undo refuse it by that word, the list counts it, and neither
+/// the receipt nor the configuration it describes is touched.
+#[test]
+fn a_receipt_with_an_unknown_phase_is_refused_as_unreadable_and_counted() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let id = applied_codex_setup(root);
+    let config = root.join("codex/config.toml");
+    let after = fs::read_to_string(&config).unwrap();
+    let edited = set_phase(root, &id, "applied", "paused");
+
+    for command in ["--show", "--apply", "--undo"] {
+        let refused = cli(root, &["setup", command, &id, "--json"]);
+        assert!(!refused.status.success(), "{command}");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            stderr.contains("unreadable setup receipt: unknown phase `paused`"),
+            "{command}: {stderr}"
+        );
+        assert!(!stderr.contains("was undone"), "{command}: {stderr}");
+    }
+    let listed = value(root, &["setup", "--list", "--json"]);
+    assert!(listed["plans"].as_array().unwrap().is_empty());
+    assert_eq!(listed["skipped_receipts"], 1);
+    let receipt = root.join("state/setup").join(format!("{id}.json"));
+    assert_eq!(fs::read_to_string(receipt).unwrap(), edited);
+    assert_eq!(fs::read_to_string(&config).unwrap(), after);
+}

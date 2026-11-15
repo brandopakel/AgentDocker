@@ -275,6 +275,12 @@ pub(super) struct State {
     launch_codex_trust_generation: u64,
     /// The count last shown on the dock icon, so it is set only on a change.
     pub dock_badge: Option<usize>,
+    /// What the menu-bar item last showed (`Some(None)` is taken down), so
+    /// it is touched only on a change.
+    pub status_item: Option<Option<usize>>,
+    /// The window was closed to the menu bar: it exists, hidden, until
+    /// the item is clicked or the app is activated again.
+    pub hidden: bool,
     pub launching: bool,
     /// The session whose resume is on its way to the daemon, so its
     /// button alone says "Reconnecting…" (a launch from the Launch form
@@ -1285,6 +1291,10 @@ pub enum Message {
     Palette(String),
     Roomy(bool),
     NotifyFinished(bool),
+    MenuBarItem(bool),
+    /// The menu-bar item was clicked: the window comes back, or comes to
+    /// the front. A panel on the item would hang off this message.
+    StatusItemClicked,
     /// Mark a session as something to come back to, and leave it.
     MarkUnread(String),
     /// A notice the window posted itself was taken or refused; either way
@@ -1695,6 +1705,9 @@ impl App {
                 for activation in crate::notification_route::take() {
                     tasks.push(self.update(Message::Notification(activation)));
                 }
+                if crate::status_item::take_click() {
+                    tasks.push(self.update(Message::StatusItemClicked));
+                }
                 for action in crate::accessibility::take_actions() {
                     tasks.push(self.update(action));
                 }
@@ -1748,10 +1761,7 @@ impl App {
                 }
             }
             Message::Notification(activation) => {
-                if let Some(id) = self.shell.window {
-                    crate::notification_route::unhide_application();
-                    tasks.push(window::minimize(id, false).chain(window::gain_focus(id)));
-                }
+                tasks.push(self.raise_window());
                 match activation {
                     crate::notification_route::Activation::Open(action)
                         if action.home == self.home
@@ -2200,8 +2210,7 @@ impl App {
 
             Message::TaskOpen(task) => {
                 if self.task_open.as_ref() == Some(&task) {
-                    self.task_open = None;
-                    self.card = None;
+                    self.close_card();
                 } else {
                     self.open_card(task);
                 }
@@ -2219,8 +2228,7 @@ impl App {
             Message::BoardPick(slug) => {
                 if let Some(project) = self.selected_project_root() {
                     self.shell.board_choice.insert(project, slug);
-                    self.task_open = None;
-                    self.card = None;
+                    self.close_card();
                     self.shell.lane_settings = None;
                 }
             }
@@ -2338,9 +2346,14 @@ impl App {
                             }
                         }
                         LinkDestination::Card(task) => {
-                            self.task_open = Some(task.clone());
-                            self.card = None;
-                            self.send(Cmd::TaskDetail(task));
+                            if self.task_open.as_ref() == Some(&task) {
+                                // The card the link is on: read again,
+                                // what is typed on it left as it is.
+                                self.card = None;
+                                self.send(Cmd::TaskDetail(task));
+                            } else {
+                                self.open_card(task);
+                            }
                         }
                         LinkDestination::Copy(text) => {
                             self.say("Copied to the clipboard");
@@ -4221,6 +4234,12 @@ impl App {
                 self.shell.catalog.appearance = Some(self.settings.clone());
                 self.shell.changed();
             }
+            Message::MenuBarItem(on) => {
+                self.settings.menu_bar_item = on;
+                self.shell.catalog.appearance = Some(self.settings.clone());
+                self.shell.changed();
+            }
+            Message::StatusItemClicked => tasks.push(self.raise_window()),
             Message::DismissError => {
                 self.shell.error = None;
                 self.status.clear();
@@ -4302,8 +4321,7 @@ impl App {
                             } else if self.shell.quick_add.is_some() {
                                 self.shell.quick_add = None;
                             } else if self.task_open.is_some() {
-                                self.task_open = None;
-                                self.card = None;
+                                self.close_card();
                             } else if self.shell.lane_settings.is_some() {
                                 self.shell.lane_settings = None;
                             } else {
@@ -4500,7 +4518,21 @@ impl App {
             && (!self.shell.save_enabled
                 || (!self.shell.saving && self.shell.generation == self.shell.saved_generation))
         {
-            return iced::exit();
+            if !self.menu_bar_item_wanted() {
+                return iced::exit();
+            }
+            // Closed to the menu bar: the window keeps its state out of
+            // sight and the item stays, the app's one presence until the
+            // item is clicked. The close attempt is over with it: a Close
+            // without saving was chosen for this close alone, and must not
+            // wave a later one past a draft that is dirty or failing.
+            self.shell.closing = false;
+            self.shell.hidden = true;
+            self.shell.drafts.discard_on_close = false;
+            self.shell.drafts.close_blocked = false;
+            if let Some(id) = self.shell.window {
+                tasks.push(window::set_mode(id, window::Mode::Hidden));
+            }
         }
         if self.shell.save_enabled
             && !self.shell.saving
@@ -4706,6 +4738,13 @@ impl App {
             self.shell.dock_badge = Some(waiting);
             crate::dock::badge(waiting);
         }
+        // The menu-bar item says the same number, and is taken down when
+        // the setting is off (the window then closes as it always has).
+        let shown = self.menu_bar_item_wanted().then_some(waiting);
+        if self.shell.status_item != Some(shown) {
+            self.shell.status_item = Some(shown);
+            crate::status_item::sync(shown);
+        }
         tasks.push(match self.shell.window {
             Some(id) if self.smoke.is_none() => crate::accessibility::collect_and_update(
                 id,
@@ -4714,6 +4753,30 @@ impl App {
             _ => crate::accessibility::collect(),
         });
         Task::batch(tasks)
+    }
+
+    /// Whether the menu-bar item is on: the platform draws one, the person
+    /// has not turned it off, and this is not a smoke run (whose window
+    /// stays beneath theirs and must not put anything in their menu bar).
+    pub(super) fn menu_bar_item_wanted(&self) -> bool {
+        crate::status_item::offered() && self.settings.menu_bar_item && self.smoke.is_none()
+    }
+
+    /// Bring the window to the front: back from hidden (closed to the menu
+    /// bar), out of the Dock, and above other windows. A click on the
+    /// menu-bar item, a notification and a second launch all land here.
+    pub(super) fn raise_window(&mut self) -> Task<Message> {
+        let Some(id) = self.shell.window else {
+            return Task::none();
+        };
+        crate::notification_route::unhide_application();
+        let mut task = Task::none();
+        if self.shell.hidden {
+            self.shell.hidden = false;
+            task = window::set_mode(id, window::Mode::Windowed);
+        }
+        task.chain(window::minimize(id, false))
+            .chain(window::gain_focus(id))
     }
 
     /// The tags whose notice stopped being true, forgotten as noticed: a
@@ -5056,7 +5119,7 @@ impl App {
             // Another project's board, and a card open on the old one
             // is not open on this.
             self.tasks = None;
-            self.task_open = None;
+            self.close_card();
             self.board_asks.clear();
             if self.screen == Screen::Board {
                 self.request_tasks();
@@ -5895,6 +5958,7 @@ mod tests {
             forget_after: None,
             roles: vec![],
             valid_from: None,
+            retirement: false,
         };
         let drain = |commands: &CommandReceiver| commands.try_iter().collect::<Vec<_>>();
         app.shell
@@ -7742,6 +7806,126 @@ mod tests {
         let _ = app.update(Message::Event(iced::Event::Window(window::Event::Focused)));
         assert_eq!(app.waiting_on_you(), 2);
         assert_eq!(app.shell.dock_badge, Some(2));
+    }
+
+    /// The menu-bar item says the dock's number while the setting is on
+    /// and is taken down when it is off; with it on, closing the window
+    /// hides it instead of quitting, and a click on the item brings it
+    /// back. Only macOS draws the item; elsewhere the window closes as it
+    /// always has and nothing is shown.
+    #[test]
+    fn closing_goes_to_the_menu_bar_only_while_the_item_is_on() {
+        let (mut app, _, _) = app();
+        app.shell.window = Some(window::Id::unique());
+        let _ = app.update(Message::Tick);
+        let offered = crate::status_item::offered();
+        assert_eq!(
+            app.shell.status_item,
+            Some(offered.then_some(0)),
+            "the item is shown with nothing beside the mark, where there is a menu bar"
+        );
+        assert_eq!(app.menu_bar_item_wanted(), offered);
+
+        let _ = app.update(Message::Event(iced::Event::Window(
+            window::Event::CloseRequested,
+        )));
+        if offered {
+            assert!(app.shell.hidden, "closed to the menu bar, not quit");
+            assert!(!app.shell.closing);
+            assert_eq!(app.shell.status_item, Some(Some(0)), "the item stays");
+            let _ = app.update(Message::StatusItemClicked);
+            assert!(!app.shell.hidden, "the item's click brings the window back");
+            // Clicked while the window is open: raised, nothing else.
+            let _ = app.update(Message::StatusItemClicked);
+            assert!(!app.shell.hidden && !app.shell.closing);
+        } else {
+            assert!(
+                app.shell.closing,
+                "closing quits where there is no menu bar"
+            );
+            assert!(!app.shell.hidden);
+            app.shell.closing = false;
+        }
+
+        let _ = app.update(Message::MenuBarItem(false));
+        assert!(!app.settings.menu_bar_item);
+        assert_eq!(
+            app.shell
+                .catalog
+                .appearance
+                .as_ref()
+                .map(|s| s.menu_bar_item),
+            Some(false),
+            "the setting is kept with the other appearance settings"
+        );
+        assert_eq!(app.shell.status_item, Some(None), "taken down");
+        let _ = app.update(Message::Event(iced::Event::Window(
+            window::Event::CloseRequested,
+        )));
+        assert!(app.shell.closing, "with the item off, closing quits");
+        assert!(!app.shell.hidden);
+        app.shell.closing = false;
+        let _ = app.update(Message::MenuBarItem(true));
+        assert_eq!(app.shell.status_item, Some(offered.then_some(0)));
+    }
+
+    /// Close without saving is a choice for one close. Closed to the menu
+    /// bar instead of quit, the window comes back; a later close with new
+    /// draft text waits for its flush and is blocked by its failure as a
+    /// first close is, and with the item off it does not reach the exit
+    /// before the flush completes.
+    #[test]
+    fn close_without_saving_does_not_outlive_the_close_it_was_chosen_for() {
+        let close = || Message::Event(iced::Event::Window(window::Event::CloseRequested));
+        let (mut app, _, _) = app();
+        app.shell.window = Some(window::Id::unique());
+        app.shell.drafts = crate::drafts::Persistence::loaded();
+        app.shell.drafts.changed();
+        // The close starts the flush (generation 1) and waits for it.
+        let _ = app.update(close());
+        assert!(app.shell.closing && app.shell.drafts.saving());
+        let _ = app.update(Message::DraftsSaved(1, Err("disk full".into())));
+        assert!(
+            app.shell.drafts.close_blocked,
+            "a failed flush blocks the close"
+        );
+        assert!(!app.shell.closing);
+        let _ = app.update(Message::CloseWithoutDraftSave);
+        if !crate::status_item::offered() {
+            assert!(app.shell.closing, "quits, as it always has");
+            return;
+        }
+        assert!(app.shell.hidden, "closed to the menu bar");
+        assert!(
+            !app.shell.drafts.discard_on_close && !app.shell.drafts.close_blocked,
+            "the choice ends with the close it was made for"
+        );
+
+        // Back, saved after all, then new text: the next close is a new close.
+        let _ = app.update(Message::StatusItemClicked);
+        assert!(!app.shell.hidden);
+        let _ = app.update(Message::RetryDraftSave);
+        let _ = app.update(Message::DraftsSaved(1, Ok(())));
+        assert!(app.shell.drafts.clean());
+        app.shell.drafts.changed();
+        let _ = app.update(close());
+        assert!(!app.shell.hidden, "a dirty draft is flushed before hiding");
+        assert!(app.shell.closing && app.shell.drafts.saving());
+        let _ = app.update(Message::DraftsSaved(2, Err("disk full".into())));
+        assert!(app.shell.drafts.close_blocked && !app.shell.closing && !app.shell.hidden);
+
+        // With the item off the same gate holds before the exit.
+        let _ = app.update(Message::MenuBarItem(false));
+        let _ = app.update(Message::RetryDraftSave);
+        let _ = app.update(Message::DraftsSaved(2, Ok(())));
+        app.shell.drafts.changed();
+        let _ = app.update(close());
+        assert!(
+            app.shell.closing && app.shell.drafts.saving(),
+            "the exit waits for the flush instead of passing on the stale choice"
+        );
+        let _ = app.update(Message::DraftsSaved(3, Err("disk full".into())));
+        assert!(app.shell.drafts.close_blocked && !app.shell.closing);
     }
 
     /// A launched agent's terminal opens as soon as the list shows it
@@ -11196,6 +11380,237 @@ mod tests {
         let _ = app.update(Message::TodoOpen("/nowhere".into(), card.id.clone()));
         assert_eq!(app.screen, Screen::Todo);
         assert_eq!(app.status, "This card's project is no longer on the list.");
+    }
+
+    /// `alpha`'s board on view with two cards on it, the first linking to
+    /// the second and then to itself.
+    fn linked_cards() -> (App, PathBuf, Kept, [agentdocker_core::Task; 2]) {
+        let (mut app, alpha, beta, kept) = travel();
+        app.connected = Ok(());
+        let mut first = card_in("aaaaaaaaaaaa", &alpha, "Port the parser");
+        let second = card_in("bbbbbbbbbbbb", &alpha, "Write the release notes");
+        for target in [second.id.to_string(), first.id.to_string()] {
+            first.links.push(agentdocker_core::Link {
+                kind: agentdocker_core::LinkKind::Task,
+                target,
+                note: None,
+            });
+        }
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let (request, _, _) = board_asks(&kept._commands)
+            .pop()
+            .expect("the board is asked for");
+        kept.messages
+            .send(Msg::Tasks(
+                alpha.display().to_string(),
+                request,
+                Ok((vec![first.clone(), second.clone()], false)),
+            ))
+            .unwrap();
+        app.drain();
+        (app, beta, kept, [first, second])
+    }
+
+    /// Open `card` from the board and bring its detail.
+    fn open_in_full(app: &mut App, kept: &Kept, card: &agentdocker_core::Task) {
+        let _ = app.update(Message::TaskOpen(card.id.clone()));
+        bring_detail(app, kept, card);
+    }
+
+    /// The daemon's answer to a read of `card` in full.
+    fn bring_detail(app: &mut App, kept: &Kept, card: &agentdocker_core::Task) {
+        let detail = CardDetail {
+            task: card.clone(),
+            board: agentdocker_core::Board::main(card.project.clone(), "alpha", Utc::now()),
+            comments: vec![],
+            history: vec![],
+            blockers: vec![],
+            children: vec![],
+            plan: None,
+            files: vec![],
+        };
+        kept.messages
+            .send(Msg::TaskDetail(card.id.clone(), Ok(Box::new(detail))))
+            .unwrap();
+        app.drain();
+    }
+
+    /// The comments sent since the last look: which card, what words.
+    fn comments_sent(kept: &Kept) -> Vec<(agentdocker_core::TaskId, String)> {
+        kept._commands
+            .try_iter()
+            .filter_map(|c| match c {
+                Cmd::TaskComment { task, body } => Some((task, body)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A card a link opens has a comment line of its own: what was typed
+    /// on the card the link was on is not sent to it, and what is typed
+    /// there is.
+    #[test]
+    fn a_comment_typed_on_one_card_is_not_sent_to_the_card_a_link_opens() {
+        let (mut app, _, kept, [first, second]) = linked_cards();
+        open_in_full(&mut app, &kept, &first);
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Comment,
+            "for the parser card".into(),
+        ));
+        let _ = app.update(Message::LinkOpen(0));
+        assert_eq!(app.task_open.as_ref(), Some(&second.id));
+        assert!(
+            kept._commands
+                .try_iter()
+                .any(|c| matches!(c, Cmd::TaskDetail(ref task) if *task == second.id)),
+            "the linked card is asked for in full"
+        );
+
+        let _ = app.update(Message::CardCommentSend);
+        let sent = comments_sent(&kept);
+        assert!(
+            sent.is_empty(),
+            "nothing was typed on this card, so nothing is sent to it: {sent:?}"
+        );
+        let draft = &app.shell.card_draft;
+        assert_eq!(draft.task.as_ref(), Some(&second.id));
+        assert_eq!(
+            (draft.title.as_str(), draft.comment.as_str()),
+            ("Write the release notes", ""),
+            "the editor shows the linked card's words and an empty comment line"
+        );
+
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Comment,
+            "for the notes card".into(),
+        ));
+        let _ = app.update(Message::CardCommentSend);
+        assert_eq!(
+            comments_sent(&kept),
+            vec![(second.id.clone(), "for the notes card".to_owned())]
+        );
+    }
+
+    /// The link form and the card's menu belong to the card they were
+    /// opened on: however that card closes or gives way to another, they
+    /// close with it, and the next card opens with neither.
+    #[test]
+    fn the_link_form_and_the_card_menu_close_with_their_card() {
+        let escape = || {
+            let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+            Message::Event(iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: keyboard::key::Physical::Unidentified(
+                    keyboard::key::NativeCode::Unidentified,
+                ),
+                location: keyboard::Location::Standard,
+                modifiers: keyboard::Modifiers::default(),
+                text: None,
+                repeat: false,
+            }))
+        };
+        for route in [
+            "pressed again",
+            "Esc",
+            "another board",
+            "another project",
+            "Back",
+            "another card",
+        ] {
+            let (mut app, beta, kept, [first, second]) = linked_cards();
+            open_in_full(&mut app, &kept, &first);
+            let _ = app.update(Message::LinkKind(agentdocker_core::LinkKind::Task));
+            let _ = app.update(Message::LinkTarget(second.id.to_string()));
+            let _ = app.update(Message::CardMenu(CardMenu::Plan));
+            assert_eq!(
+                (app.shell.link_kind, app.shell.card_menu),
+                (Some(agentdocker_core::LinkKind::Task), Some(CardMenu::Plan))
+            );
+
+            // Each way a card closes; the last gives way to another card
+            // without closing first.
+            let closes = route != "another card";
+            let messages = match route {
+                "pressed again" => vec![Message::TaskOpen(first.id.clone())],
+                // The first press closes the menu, the second the card.
+                "Esc" => vec![escape(), escape()],
+                "another board" => vec![Message::BoardPick("main".into())],
+                "another project" => vec![Message::SelectProject(beta)],
+                "Back" => vec![Message::GoBack],
+                _ => vec![Message::TaskOpen(second.id.clone())],
+            };
+            for message in messages {
+                let _ = app.update(message);
+            }
+            if closes {
+                assert_eq!(app.task_open, None, "{route}: the card is closed");
+                assert_eq!(app.card, None, "{route}: its detail goes with it");
+                let _ = app.update(Message::TaskOpen(second.id.clone()));
+            }
+            assert_eq!(app.task_open.as_ref(), Some(&second.id), "{route}");
+            assert_eq!(
+                (app.shell.link_kind, app.shell.link_target.as_str()),
+                (None, ""),
+                "{route}: the next card's link form is closed and empty"
+            );
+            assert_eq!(app.shell.card_menu, None, "{route}: and so is its menu");
+        }
+    }
+
+    /// Words typed on a card and not saved are that card's: a link to the
+    /// card itself leaves them where they are, and a card a link opens
+    /// shows its own, has nothing to save, and is a new opening of the
+    /// editor.
+    #[test]
+    fn unsaved_edits_on_one_card_are_not_shown_on_the_card_a_link_opens() {
+        let (mut app, _, kept, [first, second]) = linked_cards();
+        open_in_full(&mut app, &kept, &first);
+        let opening = app.shell.card_draft.generation;
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Title,
+            "Rewrite the parser".into(),
+        ));
+        let _ = app.update(Message::CardField(
+            CardFieldKind::Description,
+            "half a thought".into(),
+        ));
+        assert!(app.card_change(&first.id).is_some());
+
+        let _ = app.update(Message::LinkOpen(1));
+        assert_eq!(app.task_open.as_ref(), Some(&first.id));
+        assert_eq!(
+            (
+                app.shell.card_draft.generation,
+                app.shell.card_draft.title.as_str()
+            ),
+            (opening, "Rewrite the parser"),
+            "a link to the card itself opens nothing anew"
+        );
+        bring_detail(&mut app, &kept, &first);
+
+        let _ = app.update(Message::LinkOpen(0));
+        assert_eq!(app.task_open.as_ref(), Some(&second.id));
+        let draft = &app.shell.card_draft;
+        assert_eq!(draft.task.as_ref(), Some(&second.id));
+        assert_eq!(
+            (draft.title.as_str(), draft.description.as_str()),
+            ("Write the release notes", ""),
+            "the editor shows the linked card's words"
+        );
+        assert_eq!(draft.base.title, "Write the release notes");
+        assert!(draft.generation > opening, "a new opening of the editor");
+        assert_eq!(app.card_change(&second.id), None, "nothing to save");
+        let _ = kept._commands.try_iter().count();
+        let _ = app.update(Message::CardSave);
+        assert!(
+            !kept
+                ._commands
+                .try_iter()
+                .any(|c| matches!(c, Cmd::TaskEdit { .. })),
+            "the first card's words are not saved to the second"
+        );
     }
 
     /// A compact window shows the list of conversations or one of them:

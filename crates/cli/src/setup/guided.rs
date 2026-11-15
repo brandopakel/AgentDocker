@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use agentdocker_core::runtime::{McpWiring, RUNTIMES, RuntimeInfo, RuntimeSpec, Wiring};
+use agentdocker_core::setup::{Files, Phase, Refusal, Step};
 use agentdocker_core::{Request, Response};
 use agentdocker_host::{
     dirs, project,
@@ -93,7 +94,9 @@ struct Delegated {
 struct Plan {
     format: u32,
     id: String,
-    phase: String,
+    /// Where the plan stands, stored as its word. A receipt whose word
+    /// names no phase does not load.
+    phase: Phase,
     executable: PathBuf,
     changes: Vec<Change>,
     /// Absent from receipts written before delegated steps existed.
@@ -679,7 +682,7 @@ fn prepare_remove_for(
     let mut plan = Plan {
         format: 2,
         id: uuid::Uuid::new_v4().to_string(),
-        phase: "prepared".into(),
+        phase: Phase::Prepared,
         executable: std::env::current_exe()?,
         changes: Vec::new(),
         delegated: Vec::new(),
@@ -1034,7 +1037,7 @@ fn prepare_for(
         let mut plan = Plan {
             format: 1,
             id: uuid::Uuid::new_v4().to_string(),
-            phase: "prepared".into(),
+            phase: Phase::Prepared,
             executable: executable.to_owned(),
             changes: Vec::new(),
             delegated: Vec::new(),
@@ -1068,7 +1071,7 @@ fn prepare_for(
     let mut plan = Plan {
         format: 1,
         id: uuid::Uuid::new_v4().to_string(),
-        phase: "prepared".into(),
+        phase: Phase::Prepared,
         executable: executable.to_owned(),
         changes: Vec::new(),
         delegated: Vec::new(),
@@ -1558,7 +1561,19 @@ fn settle_mode(change: &Change, undo: bool) -> Result<()> {
     Ok(())
 }
 
+/// Why a plan in its phase is not applied, and what to do instead.
+fn refused(refusal: Refusal, id: &str) -> String {
+    match refusal {
+        Refusal::Undone => "this plan was undone; create a fresh preview to apply again".to_owned(),
+        Refusal::UndoUnfinished => format!(
+            "this plan's undo was interrupted and is not finished; finish it with \
+             `agentdocker setup --undo {id}`, then create a fresh preview to apply again"
+        ),
+    }
+}
+
 /// Apply or undo a saved plan, allowing mixed states only during recovery.
+/// What the move does from the plan's phase is [`Phase::next`]'s to say.
 fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     let mutation = super::mutation::Guard::acquire(
         plan.changes
@@ -1566,15 +1581,10 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
             .map(|change| change.path.clone())
             .chain(plan.delegated.iter().map(|step| step.path.clone())),
     )?;
-    let allowed = if undo {
-        ["prepared", "applying", "applied", "undoing", "undone"].as_slice()
-    } else {
-        ["prepared", "applying", "applied"].as_slice()
+    let step = match plan.phase.next(undo) {
+        Ok(step) => step,
+        Err(refusal) => bail!(refused(refusal, &plan.id)),
     };
-    ensure!(
-        allowed.contains(&plan.phase.as_str()),
-        "this plan was undone; create a fresh preview to apply again"
-    );
     if !undo {
         let executable = std::fs::metadata(&plan.executable)
             .context("the previewed agentdocker executable is no longer available")?;
@@ -1594,10 +1604,10 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
     for change in &plan.changes {
         mutation.covers(&change.path)?;
         let current = check(change)?;
-        let expected = match plan.phase.as_str() {
-            "prepared" | "undone" => Some(change.before.as_deref()),
-            "applied" => Some(change.after.as_deref()),
-            _ => None,
+        let expected = match plan.phase.files() {
+            Files::Before => Some(change.before.as_deref()),
+            Files::After => Some(change.after.as_deref()),
+            Files::Either => None,
         };
         if let Some(expected) = expected {
             ensure!(
@@ -1611,14 +1621,15 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
         mutation.covers(&step.path)?;
         check_delegated(step, undo)?;
     }
-    if (!undo && plan.phase == "applied") || (undo && plan.phase == "undone") {
-        return Ok(());
-    }
-    if undo && plan.phase == "prepared" {
-        plan.phase = "undone".into();
-        return save(directory, plan);
-    }
-    plan.phase = if undo { "undoing" } else { "applying" }.into();
+    let (through, to) = match step {
+        Step::Stay => return Ok(()),
+        Step::Record(to) => {
+            plan.phase = to;
+            return save(directory, plan);
+        }
+        Step::Work { through, to } => (through, to),
+    };
+    plan.phase = through;
     save(directory, plan)?; // durable recovery/undo snapshots precede configuration writes
     for change in &plan.changes {
         mutation.covers(&change.path)?;
@@ -1694,7 +1705,7 @@ fn apply(directory: &Path, plan: &mut Plan, undo: bool) -> Result<()> {
         }
         register(&plan.delegated[index])?;
     }
-    plan.phase = if undo { "undone" } else { "applied" }.into();
+    plan.phase = to;
     save(directory, plan)
 }
 
@@ -3002,11 +3013,11 @@ path.write_text(json.dumps(value))
         // The interruption itself: a receipt that claimed the
         // registration and stopped before the command could make it.
         let mut interrupted = load(&directory, &plan.id).unwrap();
-        interrupted.phase = "applying".into();
+        interrupted.phase = Phase::Applying;
         std::fs::write(temp.path().join(".claude.json"), "{}").unwrap();
         save(&directory, &interrupted).unwrap();
         apply(&directory, &mut interrupted, true).unwrap();
-        assert_eq!(interrupted.phase, "undone");
+        assert_eq!(interrupted.phase, Phase::Undone);
         assert!(!interrupted.delegated[0].created);
     }
 
@@ -3039,7 +3050,7 @@ path.write_text(json.dumps(value))
                 json!({"mcpServers":{"agentdocker":entry}, "userState":"preserve"}).to_string();
             std::fs::write(&plan.delegated[0].path, &changed).unwrap();
             assert!(apply(&directory, &mut plan, true).is_err(), "{field}");
-            assert_eq!(plan.phase, "applied");
+            assert_eq!(plan.phase, Phase::Applied);
             assert_eq!(read_config(&plan.changes[0].path).unwrap(), hooks);
             assert_eq!(
                 read_config(&plan.delegated[0].path).unwrap().unwrap(),
@@ -3073,7 +3084,7 @@ path.write_text(json.dumps(value))
                 if undo {
                     apply(&directory, &mut plan, false).unwrap();
                 }
-                let phase = plan.phase.clone();
+                let phase = plan.phase;
                 let hooks = read_config(&plan.changes[0].path).unwrap();
                 std::fs::write(&plan.delegated[0].path, raw).unwrap();
                 assert!(
@@ -3100,7 +3111,7 @@ path.write_text(json.dumps(value))
             false,
         )
         .unwrap();
-        plan.phase = "applying".into();
+        plan.phase = Phase::Applying;
         plan.delegated[0].created = true;
         save(&directory, &plan).unwrap();
         let mut entry = plan.delegated[0].expected.clone().unwrap();
@@ -3494,7 +3505,7 @@ path.write_text(json.dumps(value))
         let directory = directory(&tmp.path().join("state")).unwrap();
         save(&directory, &prepared).unwrap();
         apply(&directory, &mut prepared, false).unwrap();
-        assert_eq!(prepared.phase, "applied");
+        assert_eq!(prepared.phase, Phase::Applied);
         assert!(config.is_symlink());
         assert!(
             std::fs::read_to_string(&config)
@@ -3518,7 +3529,7 @@ path.write_text(json.dumps(value))
         );
         let mut loaded = load(&directory, &prepared.id).unwrap();
         apply(&directory, &mut loaded, true).unwrap();
-        assert_eq!(loaded.phase, "undone");
+        assert_eq!(loaded.phase, Phase::Undone);
         assert_eq!(std::fs::read(&config).unwrap(), original);
         assert!(config.is_symlink());
         assert!(!tmp.path().join(".claude/settings.json").exists());
@@ -3560,7 +3571,7 @@ path.write_text(json.dumps(value))
         let original = std::fs::read(&config).unwrap();
         let mut prepared = plan(tmp.path(), &["codex", "claude-code"]);
         let directory = directory(&tmp.path().join("state")).unwrap();
-        prepared.phase = "applying".into();
+        prepared.phase = Phase::Applying;
         save(&directory, &prepared).unwrap();
         let first = &prepared.changes[0];
         super::super::write_config(
@@ -3571,8 +3582,8 @@ path.write_text(json.dumps(value))
         .unwrap();
         let mut resumed = load(&directory, &prepared.id).unwrap();
         apply(&directory, &mut resumed, false).unwrap();
-        assert_eq!(resumed.phase, "applied");
-        resumed.phase = "undoing".into();
+        assert_eq!(resumed.phase, Phase::Applied);
+        resumed.phase = Phase::Undoing;
         save(&directory, &resumed).unwrap();
         let first = &resumed.changes[0];
         super::super::write_config(
@@ -3657,5 +3668,111 @@ path.write_text(json.dumps(value))
             apply(&directory, &mut prepared, false).is_err(),
             "a completed plan cannot reapply after external undo"
         );
+    }
+
+    /// An undo that stopped part-way left the plan half undone, not undone.
+    /// Apply refuses it without writing anything and names the undo that
+    /// finishes it; that undo finishes, and only then is the plan undone.
+    #[test]
+    fn an_interrupted_undo_refuses_apply_and_names_the_undo_that_finishes_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = old_codex(tmp.path());
+        let original = std::fs::read(&config).unwrap();
+        let mut prepared = plan(tmp.path(), &["codex", "claude-code"]);
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &prepared).unwrap();
+        apply(&directory, &mut prepared, false).unwrap();
+        // The interruption: the undo recorded its start and put one file back.
+        prepared.phase = Phase::Undoing;
+        save(&directory, &prepared).unwrap();
+        let first = &prepared.changes[0];
+        super::super::write_config(
+            &first.path,
+            first.after.as_deref(),
+            first.before.as_ref().unwrap(),
+        )
+        .unwrap();
+        let path = receipt(&directory, &prepared.id).unwrap();
+        let stored = std::fs::read(&path).unwrap();
+
+        let mut half = load(&directory, &prepared.id).unwrap();
+        let refused = apply(&directory, &mut half, false).unwrap_err();
+        assert_eq!(
+            refused.to_string(),
+            format!(
+                "this plan's undo was interrupted and is not finished; finish it with \
+                 `agentdocker setup --undo {}`, then create a fresh preview to apply again",
+                prepared.id
+            )
+        );
+        assert_eq!(half.phase, Phase::Undoing);
+        assert_eq!(std::fs::read(&path).unwrap(), stored);
+        assert!(
+            tmp.path().join(".claude/settings.json").exists(),
+            "the refusal put nothing back"
+        );
+
+        apply(&directory, &mut half, true).unwrap();
+        assert_eq!(half.phase, Phase::Undone);
+        assert_eq!(std::fs::read(&config).unwrap(), original);
+        assert!(!tmp.path().join(".claude/settings.json").exists());
+        assert_eq!(
+            apply(&directory, &mut half, false).unwrap_err().to_string(),
+            "this plan was undone; create a fresh preview to apply again"
+        );
+    }
+
+    /// A receipt whose phase names none this version knows (a hand edit, a
+    /// newer writer) is unreadable, not in progress: it does not load, so
+    /// no apply or undo starts from it, and the listing counts it beside
+    /// the healthy plans and leaves the file as it is.
+    #[test]
+    fn a_receipt_with_an_unknown_phase_is_unreadable_and_counted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let healthy = plan(tmp.path(), &["claude-code"]);
+        let strange = plan(tmp.path(), &["claude-code"]);
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &healthy).unwrap();
+        save(&directory, &strange).unwrap();
+        let path = receipt(&directory, &strange.id).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(saved.matches(r#""phase": "prepared""#).count(), 1);
+        let edited = saved.replace(r#""phase": "prepared""#, r#""phase": "paused""#);
+        std::fs::write(&path, &edited).unwrap();
+
+        let error = load(&directory, &strange.id).unwrap_err().to_string();
+        assert!(
+            error.contains("unreadable setup receipt: unknown phase `paused`"),
+            "{error}"
+        );
+        let listed = list_plans(&directory).unwrap();
+        assert_eq!(listed["plans"].as_array().unwrap().len(), 1);
+        assert_eq!(listed["plans"][0]["id"], healthy.id);
+        assert_eq!(listed["skipped_receipts"], 1);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
+        assert!(!tmp.path().join(".claude").exists());
+    }
+
+    /// The receipt on disk and the printed description carry the phase as
+    /// the same five words as ever: each loads, and saves back to the byte.
+    #[test]
+    fn a_receipt_stores_and_prints_its_phase_as_the_same_five_words() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prepared = plan(tmp.path(), &["claude-code"]);
+        let directory = directory(&tmp.path().join("state")).unwrap();
+        save(&directory, &prepared).unwrap();
+        let path = receipt(&directory, &prepared.id).unwrap();
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(saved.matches(r#""phase": "prepared""#).count(), 1);
+        assert_eq!(prepared.view()["phase"], "prepared");
+        for word in ["prepared", "applying", "applied", "undoing", "undone"] {
+            let stored = saved.replace(r#""phase": "prepared""#, &format!(r#""phase": "{word}""#));
+            std::fs::write(&path, &stored).unwrap();
+            let loaded = load(&directory, &prepared.id).unwrap();
+            assert_eq!(loaded.phase.as_str(), word);
+            assert_eq!(loaded.view()["phase"], word);
+            save(&directory, &loaded).unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), stored);
+        }
     }
 }

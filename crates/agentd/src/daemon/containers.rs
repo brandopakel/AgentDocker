@@ -867,6 +867,7 @@ mod tests {
                 priority: 0,
                 automatic: false,
                 actor: None,
+                fresh: false,
             })
             .await
         else {

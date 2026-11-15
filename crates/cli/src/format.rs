@@ -178,7 +178,7 @@ pub fn question_line(question: &Question) -> String {
     if question.stale(now) {
         marks.push_str("  [stale]");
     }
-    format!(
+    let mut line = format!(
         "{}  {}  {} → {}  ({} left){marks}  {}",
         clock(question.asked_at),
         question.id,
@@ -190,8 +190,28 @@ pub fn question_line(question: &Question) -> String {
                 .max(0)
                 .unsigned_abs()
         ),
-        single_line(&question.prompt())
-    )
+        single_line(&question.text)
+    );
+    // The options as their own rows under the words, headed by how they
+    // are chosen, on separators of this function's own: a label or
+    // description is kept to one row.
+    if !question.form.options.is_empty() {
+        line.push_str(&format!("\n    {}", question.form.choose_line()));
+    }
+    for (index, option) in question.form.options.iter().enumerate() {
+        line.push_str(&format!(
+            "\n    {}. {}",
+            index + 1,
+            single_line(&option.label)
+        ));
+        if !option.description.trim().is_empty() {
+            line.push_str(&format!(" — {}", single_line(option.description.trim())));
+        }
+    }
+    if !question.form.options.is_empty() && question.form.allow_other {
+        line.push_str("\n    Other: answer in your own words.");
+    }
+    line
 }
 
 /// The typed part of `ask`, from its flags. An option is `Label` or
@@ -517,6 +537,7 @@ pub fn event_line(event: &Event) -> String {
         EventKind::TaskArchived { task, by, .. } => format!("card archived    {task} by {by}"),
         EventKind::TaskUnarchived { task, by, .. } => format!("card restored    {task} by {by}"),
         EventKind::TaskCommented { task, by, .. } => format!("card comment     {task} by {by}"),
+        EventKind::TaskUnblocked { task, by, .. } => format!("card unblocked   {task} by {by}"),
         EventKind::TaskCommentChanged {
             task, by, deleted, ..
         } => format!(
@@ -565,6 +586,9 @@ pub fn event_line(event: &Event) -> String {
         EventKind::MemoryAdded { memory, by, .. } => format!("memory kept     {memory} by {by}"),
         EventKind::MemoryForgotten { memory, by, .. } => {
             format!("memory forgot   {memory} by {by}")
+        }
+        EventKind::MemoryRetired { memory, by, .. } => {
+            format!("memory retired  {memory} by {by}")
         }
         EventKind::MemoryMirrored { added, removed, .. } => {
             format!("memory mirrored +{added} -{removed}")
@@ -715,6 +739,25 @@ pub fn event_line(event: &Event) -> String {
                 .map(|r| format!(", {r}"))
                 .unwrap_or_default()
         ),
+        EventKind::WorktreeRemoved {
+            by,
+            path,
+            branch,
+            branch_removed,
+            reason,
+        } => format!(
+            "{by} removed the worktree {}{}{}",
+            path.display(),
+            match (branch, branch_removed) {
+                (Some(branch), true) => format!(" and its branch {branch}"),
+                (Some(branch), false) => format!("; its branch {branch} stays"),
+                (None, _) => String::new(),
+            },
+            reason
+                .as_ref()
+                .map(|r| format!(" ({r})"))
+                .unwrap_or_default()
+        ),
         EventKind::IntegrationPrepared {
             agent,
             source_head,
@@ -839,6 +882,23 @@ pub fn event_line(event: &Event) -> String {
                 runtime.as_str()
             },
             findings.said()
+        ),
+        EventKind::CodeVerdictSuperseded {
+            branch,
+            verdict,
+            was_by,
+            by,
+            reason,
+            role,
+            ..
+        } => format!(
+            "verdict          {} set aside {}'s {verdict} on {branch} ({}{})",
+            by.short(),
+            was_by.short(),
+            reason.as_str(),
+            role.as_deref()
+                .map(|role| format!(", at the {role} gate"))
+                .unwrap_or_default()
         ),
         EventKind::WatcherStarting => "watcher starting".to_owned(),
         EventKind::WatcherStarted => "watcher started".to_owned(),
@@ -1679,6 +1739,61 @@ pub fn webhook_attempt_row(attempt: &agentdocker_core::WebhookAttempt) -> Vec<St
 
 #[cfg(test)]
 mod tests {
+    /// `questions` prints a typed question's options as rows under its
+    /// words, with the Other line, on separators of its own: a control
+    /// character in the words, a label or a description is escaped, never
+    /// a row.
+    #[test]
+    fn a_question_line_lists_its_options_and_escapes_what_they_carry() {
+        use agentdocker_core::{Destination, MessageId, Question, QuestionForm, QuestionOption};
+        use chrono::Utc;
+        let question = Question {
+            id: MessageId::from("q".to_owned()),
+            from: "asker".into(),
+            to: Destination::Agent("human".into()),
+            text: "Which\ntheme?".into(),
+            presentation: None,
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: QuestionForm {
+                options: vec![
+                    QuestionOption {
+                        label: "Blue\nRed".into(),
+                        description: "the current\ntheme".into(),
+                    },
+                    QuestionOption {
+                        label: "Green".into(),
+                        description: String::new(),
+                    },
+                ],
+                ..QuestionForm::default()
+            },
+            stale_since: None,
+        };
+        let line = super::question_line(&question);
+        let rows: Vec<&str> = line.split('\n').collect();
+        assert_eq!(rows.len(), 5, "{line}");
+        assert!(rows[0].ends_with("Which\\ntheme?"), "{line}");
+        assert_eq!(rows[1], "    Choose one, by number or label:");
+        assert_eq!(rows[2], "    1. Blue\\nRed — the current\\ntheme");
+        assert_eq!(rows[3], "    2. Green");
+        assert_eq!(rows[4], "    Other: answer in your own words.");
+        let mut strict = question;
+        strict.form.allow_other = false;
+        strict.form.multi_select = true;
+        let rows: Vec<String> = super::question_line(&strict)
+            .split('\n')
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(rows.len(), 4, "no Other line");
+        assert!(
+            rows[1].starts_with("    Choose any that apply")
+                && rows[1].contains("a text answer is one choice"),
+            "{}",
+            rows[1]
+        );
+    }
+
     /// `ask`'s flags make the question form: an option is a label with an
     /// optional description after a colon, the kind and the stale action
     /// are their wire spellings, and a spelling outside them is refused.

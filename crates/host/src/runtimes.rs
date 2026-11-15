@@ -119,6 +119,26 @@ impl Roots {
             hook_stamps: Some(hook_stamps()),
         }
     }
+
+    /// A machine with nothing on it but `home`: no `PATH`, no install,
+    /// app or desktop directories, this platform's browser layout beneath
+    /// `home`, no shell and no CLI asked for its version. What a test
+    /// inventories when it must not read the machine it runs on.
+    pub fn bare(home: &Path) -> Self {
+        Self {
+            home: home.to_owned(),
+            codex_home: None,
+            claude_config_dir: None,
+            path: Vec::new(),
+            install_dirs: Vec::new(),
+            desktop_dirs: Vec::new(),
+            app_dirs: Vec::new(),
+            browser_dirs: browser::browser_dirs(home, std::env::consts::OS, None),
+            shell: None,
+            versions: false,
+            hook_stamps: None,
+        }
+    }
 }
 
 /// How long one `--version` may take.
@@ -162,7 +182,7 @@ pub fn inspect(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> std::io::Resu
     let browser::Inventory {
         found: extensions,
         incomplete,
-    } = browser::extensions(spec, roots)?;
+    } = browser::extensions(spec, roots);
     let config_dir = if spec.name == "codex" {
         roots.codex_home.clone()
     } else if spec.name == "claude-code" {

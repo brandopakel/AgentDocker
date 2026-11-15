@@ -2909,6 +2909,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             take_over_from: None,
             project: None,
             board: None,
+            unblock: None,
         })
         .await
     else {
@@ -3898,6 +3899,7 @@ async fn a_refused_claim_names_the_holder() {
         priority: 0,
         automatic: false,
         actor: None,
+        fresh: false,
     };
     assert!(matches!(
         daemon.handle(claim(&writer, "path:/work/src")).await,
@@ -3917,6 +3919,118 @@ async fn a_refused_claim_names_the_holder() {
             writer.id.short()
         )
     );
+}
+
+/// Two workers that claim the build slot as one agent are kept apart: the
+/// second fresh claim is refused, at once even when it would wait, with
+/// the first one's lease named as the asker's own; the first hold is
+/// neither renewed nor ended by it. A plain claim still renews. Once the
+/// slot is released the second worker's fresh claim takes it.
+#[tokio::test]
+async fn a_fresh_claim_keeps_two_workers_of_one_agent_apart() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let builder = register(&daemon, "builder", None).await;
+    let claim = |fresh: bool, wait_secs: u64| Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Exclusive,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs,
+        priority: 0,
+        automatic: false,
+        fresh,
+        actor: None,
+    };
+    // A client asks before it relies on a fresh claim: a daemon that did
+    // not know the word would renew instead, and say nothing.
+    let Response::Pong { features, .. } = daemon.handle(Request::Ping).await else {
+        panic!("ping")
+    };
+    assert!(
+        features
+            .iter()
+            .any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM),
+        "{features:?}"
+    );
+    let Response::Lease { lease: first } = daemon.handle(claim(true, 0)).await else {
+        panic!("the first worker takes the slot")
+    };
+    // The other mode on the same slot is this agent's own conflict too.
+    let shared = Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Shared,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs: 0,
+        priority: 0,
+        automatic: false,
+        fresh: true,
+        actor: None,
+    };
+    assert!(matches!(
+        daemon.handle(shared).await,
+        Response::Error { code: ErrorCode::Conflict, details: Some(details), .. } if details["own"] == true
+    ));
+    for wait_secs in [0, 30] {
+        let asked = std::time::Instant::now();
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = daemon.handle(claim(true, wait_secs)).await
+        else {
+            panic!("the second worker is not told it holds the slot")
+        };
+        assert_eq!(code, ErrorCode::Conflict);
+        assert!(
+            message.contains("already held by this agent")
+                && message.contains(&first.id.to_string()),
+            "{message}"
+        );
+        let details = details.expect("which lease is in the way");
+        assert_eq!(details["own"], true);
+        assert_eq!(details["held_by"][0]["id"], first.id.to_string());
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(5),
+            "an agent is not queued behind itself"
+        );
+    }
+    let Response::Leases { leases } = daemon
+        .handle(Request::Leases {
+            agent: None,
+            resource: Some("task:local-cargo-campaign".into()),
+        })
+        .await
+    else {
+        panic!("leases")
+    };
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].expires_at, first.expires_at, "not renewed");
+    // A plain claim is the holder extending its own hold, as before.
+    let Response::Lease { lease: renewed } = daemon.handle(claim(false, 0)).await else {
+        panic!("a plain claim renews")
+    };
+    assert_eq!(renewed.id, first.id);
+    assert!(matches!(
+        daemon
+            .handle(Request::Release {
+                agent: builder.id.to_string(),
+                lease: first.id.clone(),
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await,
+        Response::Ok | Response::Lease { .. } | Response::Leases { .. }
+    ));
+    let Response::Lease { lease: second } = daemon.handle(claim(true, 0)).await else {
+        panic!("the slot is free for the second worker")
+    };
+    assert_ne!(second.id, first.id);
 }
 
 #[tokio::test]
@@ -3942,6 +4056,7 @@ async fn a_clean_shutdown_hands_the_leases_back_and_says_it_did() {
             priority: 0,
             automatic: false,
             actor: None,
+            fresh: false,
         })
         .await
     else {
@@ -4122,6 +4237,7 @@ async fn claim_waiting_at(
             priority,
             automatic: false,
             actor: None,
+            fresh: false,
         })
         .await
 }
@@ -4639,6 +4755,7 @@ async fn a_granted_wait_is_not_picked_to_break_a_later_ring() {
         priority,
         automatic: false,
         actor: None,
+        fresh: false,
     };
     let mut events = daemon.subscribe_events();
     let hold = hold_claim(&daemon, super::waiting::ClaimPoint::Answered, &alpha.id);
@@ -7163,6 +7280,7 @@ async fn a_quota_is_spent_by_several_agents_until_it_runs_out() {
                     priority: 0,
                     automatic: false,
                     actor: None,
+                    fresh: false,
                 })
                 .await
         }
@@ -7219,6 +7337,7 @@ async fn a_quota_nobody_set_a_capacity_for_is_unlimited() {
             priority: 0,
             automatic: false,
             actor: None,
+            fresh: false,
         })
         .await;
     assert!(matches!(response, Response::Lease { .. }), "{response:?}");
@@ -7327,6 +7446,333 @@ async fn a_commit_in_a_worktree_nobody_registered_still_reaches_the_journal() {
     );
 }
 
+/// The same promise for a worktree in the project's own folder. The main
+/// checkout's watch reaches it, and the line that keeps the folder out of
+/// git hides it from the main checkout's changes, so it has to be watched
+/// as a checkout of its own: from the moment the sweep finds it, with
+/// nobody registered in it, and still once an agent that worked there has
+/// ended while the main checkout stays live.
+#[tokio::test]
+async fn a_worktree_inside_the_project_is_watched_whoever_is_in_it() {
+    if !have_git() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("kept.txt"), "one\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "t"],
+        vec!["config", "user.email", "t@example.com"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["add", "."],
+        vec!["commit", "-q", "-m", "root"],
+    ] {
+        assert!(git(dir.path(), &repo, &args), "{args:?}");
+    }
+    let daemon = open(&dir);
+    daemon.expect_watcher();
+    tokio::spawn(crate::watcher::run(
+        daemon.clone(),
+        std::time::Duration::from_millis(100),
+        std::time::Duration::from_millis(50),
+    ));
+    register_in(&daemon, "home", &repo).await;
+    let Response::Worktree { path: nested, .. } = daemon
+        .handle(Request::WorktreeCreate {
+            agent: "home".into(),
+            path: None,
+            branch: "side".into(),
+            from: None,
+            seed_build: Vec::new(),
+        })
+        .await
+    else {
+        panic!("no worktree")
+    };
+    assert_eq!(
+        nested,
+        project::canonical(&repo)
+            .join(paths::PROJECT_WORKTREES)
+            .join("side")
+    );
+
+    // Watched, and its ledger kept, with nobody registered in it.
+    let covered = async || {
+        daemon.refresh_project_checkouts().await;
+        let targets: Vec<_> = daemon.watch_targets().into_iter().map(|c| c.dir).collect();
+        assert!(
+            targets.contains(&nested),
+            "the nested checkout is a target of its own: {targets:?}"
+        );
+        eventually(async || {
+            lock(&daemon.state)
+                .ledger_since
+                .contains_key(&nested)
+                .then_some(())
+        })
+        .await;
+    };
+    // An edit there is that checkout's own change, under its own path;
+    // a commit there is its own commit.
+    let seen = async |text: &str, message: &str| {
+        // Only what is recorded from here on counts for this round.
+        let before = ledger(&daemon, &repo, None)
+            .await
+            .iter()
+            .map(|change| change.seq)
+            .max()
+            .unwrap_or(0);
+        let mut attempt = 0;
+        let change = eventually(async || {
+            attempt += 1;
+            std::fs::write(nested.join("kept.txt"), format!("{text} {attempt}\n")).unwrap();
+            ledger(&daemon, &repo, None)
+                .await
+                .into_iter()
+                .find(|change| {
+                    change.seq > before && change.checkout.as_deref() == Some(nested.as_path())
+                })
+        })
+        .await;
+        assert_eq!(change.path, Path::new("kept.txt"), "{change:?}");
+        assert!(git(dir.path(), &nested, &["add", "."]));
+        assert!(git(dir.path(), &nested, &["commit", "-q", "-m", message]));
+        let entry = eventually(async || {
+            let Response::Journal { entries, .. } = daemon
+                .handle(Request::Journal {
+                    project: repo.display().to_string(),
+                    agent: None,
+                    since_seq: None,
+                    until_seq: None,
+                    branch: None,
+                    kind: Some("commit".into()),
+                    path: None,
+                    grep: None,
+                    limit: 10,
+                    digest: None,
+                })
+                .await
+            else {
+                panic!("journal failed")
+            };
+            entries
+                .into_iter()
+                .find(|entry| entry.summary.contains(message))
+        })
+        .await;
+        assert_eq!(
+            entry.checkout.as_deref(),
+            Some(nested.as_path()),
+            "{message}: attributed to the checkout it happened in"
+        );
+    };
+    covered().await;
+    seen("changed with nobody in it", "work nobody registered").await;
+
+    // An agent comes to work there and ends; the main checkout stays live.
+    let side = register_in(&daemon, "side", &nested).await;
+    assert!(matches!(
+        daemon
+            .handle(Request::Deregister {
+                agent: side.id.to_string()
+            })
+            .await,
+        Response::Agent { .. }
+    ));
+    covered().await;
+    seen(
+        "changed after its agent ended",
+        "work after its agent ended",
+    )
+    .await;
+
+    // None of it was ever the main checkout's, under the folder's path.
+    let main = project::canonical(&repo);
+    assert!(
+        ledger(&daemon, &repo, None).await.iter().all(|change| {
+            change.checkout.as_deref() != Some(main.as_path())
+                || !change.path.starts_with(".agentdocker")
+        }),
+        "the main checkout never records the folder's files"
+    );
+}
+
+/// A worktree being removed takes back nobody who ended there. A record
+/// waiting for its restart counts as working in it, so it is not removed
+/// under one. And with the removal stopped between the step that reserved
+/// the worktree and git, an ended record in it comes back by none of the
+/// ways one does: its keyed conversation heard from again, that
+/// conversation's proven terminal, its session relaunched under
+/// supervision, or a supervised start (the check a launch, a restart and
+/// a restore each make before a process is spawned and when it is
+/// committed as running). Each is refused with the record as it was;
+/// released, the removal completes.
+#[tokio::test]
+async fn a_worktree_being_removed_takes_back_nobody_who_ended_there() {
+    use agentdocker_core::AdapterKind;
+    if !have_git() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("kept.txt"), "one\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "t"],
+        vec!["config", "user.email", "t@example.com"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["add", "."],
+        vec!["commit", "-q", "-m", "root"],
+    ] {
+        assert!(git(dir.path(), &repo, &args), "{args:?}");
+    }
+    let daemon = open(&dir);
+    register_in(&daemon, "home", &repo).await;
+    let Response::Worktree { path: target, .. } = daemon
+        .handle(Request::WorktreeCreate {
+            agent: "home".into(),
+            path: None,
+            branch: "going".into(),
+            from: None,
+            seed_build: Vec::new(),
+        })
+        .await
+    else {
+        panic!("no worktree")
+    };
+    let remove = || Request::WorktreeRemoveNamed {
+        agent: "home".into(),
+        path: Some(target.to_string_lossy().into_owned()),
+        branch: None,
+    };
+
+    // A keyed conversation that ended there.
+    let thread = "f00dcafe-0000-7000-8000-00000000000a";
+    let attach = || Request::SessionAttach {
+        runtime: "codex".into(),
+        profile: "/p/.codex".into(),
+        session: thread.into(),
+        workdir: target.clone(),
+        adapter: AdapterKind::Hooks,
+    };
+    let Response::Agent { agent: keyed } = daemon.handle(attach()).await else {
+        panic!("attached")
+    };
+    assert!(matches!(
+        daemon
+            .handle(Request::Deregister {
+                agent: keyed.id.to_string()
+            })
+            .await,
+        Response::Agent { .. }
+    ));
+    let mut terminal = spec_in("codex-terminal", &target);
+    terminal.runtime = "codex".into();
+    terminal.labels.insert("session_id".into(), thread.into());
+    terminal.labels.insert(
+        agentdocker_core::agent::PROFILE_LABEL.into(),
+        "/p/.codex".into(),
+    );
+    // A session that ended there, to relaunch under supervision.
+    let mut claude = spec_in("claude-s", &target);
+    claude.runtime = "claude-code".into();
+    claude
+        .labels
+        .insert("session_id".into(), "session-s".into());
+    let session = register_spec(&daemon, claude).await;
+    daemon.mark_exited(&session.id, AgentStatus::Exited { code: Some(0) });
+    let relaunch = || Request::ResumeSession {
+        agent: session.id.to_string(),
+        spec: AgentSpec {
+            runtime: "claude-code".into(),
+            command: ["sh", "-c", "sleep 30", "--resume", "session-s"]
+                .map(str::to_owned)
+                .into(),
+            workdir: Some(target.clone()),
+            tty: true,
+            ..Default::default()
+        },
+    };
+    let as_it_is = |id: &AgentId| lock(&daemon.state).registry.get(id).cloned().unwrap();
+    let (keyed_was, session_was) = (as_it_is(&keyed.id), as_it_is(&session.id));
+    assert!(!keyed_was.status.is_live() && !session_was.status.is_live());
+
+    // Waiting for its restart: counted as working there.
+    lock(&daemon.state)
+        .pending_restarts
+        .insert(session.id.clone());
+    let answer = daemon.handle(remove()).await;
+    assert!(
+        matches!(&answer, Response::Error { code: ErrorCode::Conflict, message, .. }
+            if message.contains("claude-s") && message.contains("about to be restarted")),
+        "{answer:?}"
+    );
+    assert!(target.exists());
+    lock(&daemon.state).pending_restarts.remove(&session.id);
+
+    let hold = Arc::new(tokio::sync::Barrier::new(2));
+    *lock(&daemon.removal_hold) = Some(hold.clone());
+    let removal = tokio::spawn({
+        let (daemon, request) = (daemon.clone(), remove());
+        async move { daemon.handle(request).await }
+    });
+    // Reserved; git has not been asked yet.
+    hold.wait().await;
+    let refused = |answer: Response, what: &str| {
+        assert!(
+            matches!(&answer, Response::Error { code: ErrorCode::Conflict, message, .. }
+                if message.contains("is being removed")),
+            "{what}: {answer:?}"
+        );
+    };
+    refused(
+        daemon.handle(attach()).await,
+        "a keyed conversation heard from again",
+    );
+    refused(
+        daemon
+            .handle(Request::Register {
+                spec: terminal,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await,
+        "a keyed conversation's proven terminal",
+    );
+    refused(daemon.handle(relaunch()).await, "a session relaunched");
+    assert!(
+        daemon.validate_native_launch(&session_was).is_err(),
+        "no supervised process is spawned there"
+    );
+    let committing = lock(&daemon.state).run_refusal(&session_was);
+    refused(
+        committing.expect("a supervised start is refused"),
+        "a supervised start committed as running",
+    );
+    assert_eq!(
+        as_it_is(&keyed.id),
+        keyed_was,
+        "the keyed record is as it was"
+    );
+    assert_eq!(
+        as_it_is(&session.id),
+        session_was,
+        "the session is as it was"
+    );
+    assert!(target.exists());
+
+    hold.wait().await;
+    let answer = removal.await.unwrap();
+    assert!(
+        matches!(&answer, Response::WorktreeRemoved { path, .. } if *path == target),
+        "{answer:?}"
+    );
+    assert!(!target.exists());
+}
+
 /// A commit made with git alone in a private checkout is still
 /// somebody's: the agent the daemon created the worktree for, or the
 /// agent holding the checkout under an exclusive `path:` lease. Only a
@@ -7362,7 +7808,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
     } = daemon
         .handle(Request::WorktreeCreate {
             agent: "writer".into(),
-            path: made.to_string_lossy().into_owned(),
+            path: Some(made.to_string_lossy().into_owned()),
             branch: "made-branch".into(),
             from: Some(root_sha.clone()),
             seed_build: Vec::new(),
@@ -7376,7 +7822,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
         daemon
             .handle(Request::WorktreeCreate {
                 agent: "writer".into(),
-                path: dir.path().join("bad").to_string_lossy().into_owned(),
+                path: Some(dir.path().join("bad").to_string_lossy().into_owned()),
                 branch: "bad-branch".into(),
                 from: Some("--output=/tmp/x".into()),
                 seed_build: Vec::new(),
@@ -7413,6 +7859,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
             priority: 0,
             automatic: false,
             actor: None,
+            fresh: false,
         })
         .await
     else {
@@ -7858,6 +8305,7 @@ async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
             priority: 0,
             automatic: false,
             actor: None,
+            fresh: false,
         })
         .await
 }
@@ -9046,6 +9494,7 @@ async fn claim_wait_acquires_when_the_holder_releases() {
                     priority: 0,
                     automatic: false,
                     actor: None,
+                    fresh: false,
                 })
                 .await
         })
@@ -9083,6 +9532,7 @@ async fn claim_wait_gives_up_at_the_deadline() {
             priority: 0,
             automatic: false,
             actor: None,
+            fresh: false,
         })
         .await;
     assert!(started.elapsed() >= std::time::Duration::from_secs(1));
@@ -10854,6 +11304,124 @@ async fn aliases_and_root_claims_conflict_for_outsiders_without_project_markers(
     assert_eq!(leases.len(), 1);
 }
 
+/// A lease is released by the resource it is on, and by that resource
+/// alone. The lease on a folder is not released by naming a file in it,
+/// nor a file's by naming its folder: either is `not_found` and what is
+/// held stays held. Another spelling of the resource (a `file:` alias, a
+/// path with `..` in it) releases it though other leases of the holder
+/// overlap it, and nobody releases a lease by a name they do not hold.
+#[tokio::test]
+async fn a_lease_is_released_by_the_exact_resource_it_is_on() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = dir.path().join("checkout");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::write(checkout.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let owner = register_in(&daemon, "owner", &checkout).await;
+    register(&daemon, "other", None).await;
+    let folder = format!("path:{}", checkout.join("src").display());
+    let file = format!("path:{}", checkout.join("src/main.rs").display());
+    let project = owner.project.as_ref().unwrap().id();
+    let d = &daemon;
+    let take = |resource: String| async move {
+        match claim(d, "owner", &resource).await {
+            Response::Lease { lease } => lease.id,
+            other => panic!("{resource}: {other:?}"),
+        }
+    };
+    let release = |agent: &str, resource: String| Request::ReleaseResource {
+        agent: agent.to_owned(),
+        resource,
+        summary: None,
+        summary_source: Default::default(),
+    };
+    let released = |response: Response| match response {
+        Response::Leases { leases } => leases.into_iter().map(|l| l.id).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    let held = || async {
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: Some("owner".into()),
+                resource: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        leases.into_iter().map(|l| l.id).collect::<Vec<_>>()
+    };
+    let not_found = |response: Response| {
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+    };
+
+    // The folder alone: naming a file in it releases nothing.
+    let on_folder = take(folder.clone()).await;
+    not_found(daemon.handle(release("owner", file.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // Folder and file: an alias of the file releases the file's lease and
+    // only that, though the folder's lease overlaps it.
+    let on_file = take(file.clone()).await;
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", format!("file:{project}/src/main.rs")))
+                .await
+        ),
+        [on_file]
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // The file alone: naming its folder releases nothing.
+    assert_eq!(
+        released(daemon.handle(release("owner", folder.clone())).await),
+        [on_folder]
+    );
+    let on_file = take(file.clone()).await;
+    not_found(daemon.handle(release("owner", folder.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_file));
+
+    // Another spelling of the same path is the same resource.
+    let roundabout = format!("path:{}", checkout.join("src/../src/main.rs").display());
+    assert_eq!(
+        released(daemon.handle(release("owner", roundabout)).await),
+        [on_file]
+    );
+    assert!(held().await.is_empty());
+
+    // A task by its name; and a name is no key to somebody else's lease.
+    let on_task = take("task:slot".to_owned()).await;
+    not_found(
+        daemon
+            .handle(release("other", "task:slot".to_owned()))
+            .await,
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_task));
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", "task:slot".to_owned()))
+                .await
+        ),
+        [on_task]
+    );
+    not_found(
+        daemon
+            .handle(release("owner", "task:slot".to_owned()))
+            .await,
+    );
+}
+
 #[tokio::test]
 async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
     let dir = TempDir::new().unwrap();
@@ -10880,6 +11448,7 @@ async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
                     priority: 0,
                     automatic: false,
                     actor: None,
+                    fresh: false,
                 })
                 .await
         })
@@ -11883,10 +12452,30 @@ async fn run_isolate_gives_the_agent_its_own_worktree_and_branch() {
         .workdir
         .clone()
         .expect("workdir moved to the worktree");
-    let worktrees = project::canonical(&paths::worktree_dir(&daemon.home));
+    // Inside the project, in its own worktrees folder, which the
+    // repository's exclude file keeps out of git: the main checkout does
+    // not see the new one as untracked files.
+    let worktrees = project::canonical(&repo).join(paths::PROJECT_WORKTREES);
     assert!(worktree.starts_with(&worktrees), "{}", worktree.display());
     assert!(worktree.ends_with("writer"), "{}", worktree.display());
     assert!(worktree.join(".git").exists(), "a linked worktree");
+    let excluded = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert!(
+        excluded
+            .lines()
+            .any(|line| line == "/.agentdocker/worktrees/"),
+        "{excluded}"
+    );
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "the main checkout stays clean: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
     assert!(agent.spec.isolate);
     let project = agent.project.clone().expect("in a project");
     assert_eq!(
@@ -12743,6 +13332,7 @@ async fn digest_for(
                 reader: reader.to_owned(),
                 max_entries: budget.max_entries,
                 max_chars: budget.max_chars,
+                max_bytes: None,
                 all_branches: false,
                 advance,
             }),
@@ -13104,6 +13694,7 @@ async fn reject_lease_transition(operation: &str) {
                 priority: 0,
                 automatic: false,
                 actor: None,
+                fresh: false,
             })
             .await
     };
@@ -14669,6 +15260,7 @@ async fn in_process_teammates_are_named_by_their_actor_and_teams_are_read_per_se
                     priority: 0,
                     automatic: true,
                     actor,
+                    fresh: false,
                 })
                 .await
         }
@@ -14989,6 +15581,7 @@ async fn a_team_of_one_name_under_two_directories_is_two_rosters() {
                     priority: 0,
                     automatic: true,
                     actor,
+                    fresh: false,
                 })
                 .await
             {

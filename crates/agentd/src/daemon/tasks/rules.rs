@@ -412,7 +412,6 @@ impl Daemon {
         Response::Rules { rules }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(in crate::daemon) async fn rule_create(
         self: &Arc<Self>,
         from: &str,
@@ -670,7 +669,7 @@ impl Daemon {
     }
 
     async fn start_on_card_inner(self: &Arc<Self>, start: &Start) -> Response {
-        let roots = agentdocker_host::runtimes::Roots::from_env();
+        let roots = self.runtime_roots();
         let inventory = tokio::task::spawn_blocking(move || {
             agentdocker_host::runtimes::inventory(&roots, "agentdocker")
         })

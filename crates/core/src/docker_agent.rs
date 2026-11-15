@@ -676,12 +676,12 @@ impl<'a> Document<'a> {
     fn item_pairs(&self, item: &Item) -> Vec<(String, String)> {
         let mut pairs: Vec<(String, String)> = Vec::new();
         let inner = item.indent + 2;
-        for index in item.start..item.end {
-            let line = &self.lines[index];
+        for (offset, line) in self.lines[item.start..item.end].iter().enumerate() {
             if line.skip || line.scalar {
                 continue;
             }
-            let text = if index == item.start {
+            // The first line is the `- ` line itself.
+            let text = if offset == 0 {
                 strip_comment(line.text[line.indent + 1..].trim_start()).trim_end()
             } else if line.indent == inner {
                 line.content()

@@ -571,6 +571,10 @@ pub trait Backend {
     ) -> impl Future<Output = ()> {
         async {}
     }
+    /// Messages a hook read from the queue but did not put in front of
+    /// the model: a transport that acknowledges what it read leaves these
+    /// queued. Others have nothing to leave.
+    fn withhold(&self, _messages: &[agentdocker_core::MessageId]) {}
 }
 
 impl Backend for Client {

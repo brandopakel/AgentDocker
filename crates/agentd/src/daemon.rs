@@ -47,6 +47,7 @@ mod access;
 mod acting;
 pub(crate) mod authorship;
 mod binding;
+pub(crate) mod brief;
 mod channels;
 mod checkouts;
 // Codex's shared server listens on a Unix socket; Windows has none.
@@ -204,7 +205,8 @@ enum Persisted {
 /// Dropping it takes the state lock, so it must never be dropped by a
 /// holder of a state guard. It holds: the place lives in the `ADMISSION`
 /// scope and goes with the handler's future, after every guard the
-/// handler took; `done_writing` takes it outside any hold; and
+/// handler took; `done_writing` and `answer_settled` take it outside any
+/// hold; and
 /// `readmit_locked` hands a place out of the hold that made it, never
 /// dropping one inside it.
 pub(crate) struct InFlight(Arc<Daemon>);
@@ -221,7 +223,16 @@ tokio::task_local! {
     /// up: a request that has written what it will write and now only
     /// waits (an `ask` for its answer, a `claim --wait` for its lease)
     /// must not hold an offer back for as long as it waits.
-    static ADMISSION: std::cell::RefCell<Option<InFlight>>;
+    static ADMISSION: std::cell::RefCell<Admission>;
+}
+
+/// What a request's handler can say about its admission while it runs.
+struct Admission {
+    /// Its place, while it holds one.
+    place: Option<InFlight>,
+    /// Its answer was settled by a write that landed ([`Daemon::answer_settled`]):
+    /// a write the fence skips after it is not its failure.
+    settled: bool,
 }
 
 /// A recovery write held back until this process is allowed to write.
@@ -302,6 +313,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::PlanGet { .. }
             | Request::MemorySearch { .. }
             | Request::MemoryProfile { .. }
+            | Request::Brief { .. }
             | Request::Files { .. }
             | Request::FileGet { .. }
             | Request::Usage { .. }
@@ -372,11 +384,22 @@ pub struct Daemon {
     /// lock that commits it, met twice. Never held across an await.
     #[cfg(test)]
     register_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test's pause in a worktree's removal, after the step that found
+    /// it idle and reserved it and before git is asked, met twice. Never
+    /// held across an await.
+    #[cfg(test)]
+    removal_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     /// A test's hold on one agent's claim at one point of its wait
     /// (`waiting::ClaimPoint`), so another claim can act in between. Taken
     /// once; never held across an await.
     #[cfg(test)]
     claim_hold: Mutex<Option<waiting::ClaimHold>>,
+    /// Where a test's runtime inventory looks: a bare machine beneath the
+    /// daemon's home unless the test lays out another, so no test reads
+    /// the home, `PATH` or browsers of the machine it runs on. Never held
+    /// across an await.
+    #[cfg(test)]
+    runtime_roots: Mutex<agentdocker_host::runtimes::Roots>,
     /// What was found of the processes that asked to act as the person.
     /// Never held with the state lock.
     peers: Mutex<person::Peers>,
@@ -549,11 +572,26 @@ struct State {
     /// directories with a team of one name never stand for each other. In
     /// memory only: read again on the next tick.
     team_rosters: HashMap<AgentId, agentdocker_core::Team>,
+    /// Where each checkout stood when git was last asked, by path, with
+    /// its project: read off the lock on the checkout tick and by a brief
+    /// that finds none read. In memory only: a restarted daemon reads them
+    /// again.
+    checkout_reads: HashMap<PathBuf, (ProjectId, agentdocker_core::brief::CheckoutRead)>,
+    /// The projects whose checkouts are being read right now, so a tick
+    /// and a brief never read the same project at once.
+    checkout_scans: HashSet<ProjectId>,
     /// Checkouts the daemon is committing in right now. The watcher polls
     /// on its own schedule and will see HEAD move part-way through, so
     /// without this it writes its own guessed-at entry for a commit the
     /// daemon is about to record properly.
     committing: std::collections::BTreeSet<PathBuf>,
+    /// Linked worktrees being removed right now, each with the branch
+    /// checked out in it. The step that found one idle put it here, and
+    /// until its removal has ended, whichever way, nobody new comes to
+    /// work in it and nothing in it, nor its branch, is claimed: git takes
+    /// several commands to remove a worktree, and an agent let in between
+    /// them would lose the checkout it was just told it had.
+    removing: BTreeMap<PathBuf, Option<String>>,
     /// A shared installation pin per binding that has a launch descriptor,
     /// held for the binding's life so the release its controller runs
     /// from is not pruned while the controller is dead and waiting to be
@@ -1053,6 +1091,19 @@ pub struct Observed {
     /// Relative to the checkout.
     pub path: PathBuf,
     pub kind: ChangeKind,
+}
+
+/// A send as the request spells it: who sends and to whom, the kind and
+/// payload, the message it answers, the links beside it, and the sender's
+/// key for this one send.
+struct SendArgs {
+    from: String,
+    to: String,
+    kind: String,
+    payload: Value,
+    reply_to: Option<MessageId>,
+    links: Vec<agentdocker_core::Link>,
+    idempotency_key: Option<String>,
 }
 
 impl Daemon {
@@ -1701,6 +1752,8 @@ impl Daemon {
 
         let (bus, _) = broadcast::channel(1024);
         let (events, _) = broadcast::channel(1024);
+        #[cfg(test)]
+        let runtime_roots = agentdocker_host::runtimes::Roots::bare(&home.join("machine"));
         Ok(Self {
             home,
             socket,
@@ -1750,7 +1803,10 @@ impl Daemon {
                 claude_config_dir: agentdocker_host::teams::claude_config_dir(),
                 team_processes: HashMap::new(),
                 team_rosters: HashMap::new(),
+                checkout_reads: HashMap::new(),
+                checkout_scans: HashSet::new(),
                 committing: std::collections::BTreeSet::new(),
+                removing: BTreeMap::new(),
                 controller_pins: HashMap::new(),
                 question_waiters: HashSet::new(),
                 held_answers: HashMap::new(),
@@ -1790,7 +1846,11 @@ impl Daemon {
             #[cfg(test)]
             register_hold: Mutex::new(None),
             #[cfg(test)]
+            removal_hold: Mutex::new(None),
+            #[cfg(test)]
             claim_hold: Mutex::new(None),
+            #[cfg(test)]
+            runtime_roots: Mutex::new(runtime_roots),
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
             agent_check: std::env::var_os("AGENTDOCKER_AGENT_CHECK").is_none_or(|v| v != "off"),
@@ -2028,14 +2088,22 @@ impl Daemon {
         // it again — which overflows a thread stack once the protocol is
         // big enough. On the heap it costs one allocation per request.
         let control = !admitted;
-        let response = ADMISSION
+        let (response, settled) = ADMISSION
             .scope(
-                std::cell::RefCell::new(in_flight),
-                Box::pin(self.handle_healthy(request, authorized)),
+                std::cell::RefCell::new(Admission {
+                    place: in_flight,
+                    settled: false,
+                }),
+                Box::pin(async {
+                    let response = self.handle_healthy(request, authorized).await;
+                    let settled = ADMISSION.with(|admission| admission.borrow().settled);
+                    (response, settled)
+                }),
             )
             .await;
-        if control {
-            // Reads and control requests answer for themselves: a write the
+        if control || settled {
+            // Reads and control requests answer for themselves, and so does
+            // a request whose answer a landed write settled: a write the
             // fence skipped meanwhile is not their failure.
             return response;
         }
@@ -2046,7 +2114,21 @@ impl Daemon {
     /// Give its in-flight place up, so an offer need not wait with it;
     /// anything it writes after this is fenced like a tick writer's.
     fn done_writing(&self) {
-        let _ = ADMISSION.try_with(|place| place.borrow_mut().take());
+        let _ = ADMISSION.try_with(|admission| admission.borrow_mut().place.take());
+    }
+
+    /// This request's answer is what it has written, which landed, and
+    /// what it does from here is advisory (a memory add asking the judge).
+    /// Give its place up as [`Self::done_writing`] does, and keep the
+    /// answer: a write of the advisory part that the fence skips, or a
+    /// failure latched after it, must not turn it into a refusal its
+    /// client would send again, making the write twice.
+    fn answer_settled(&self) {
+        let _ = ADMISSION.try_with(|admission| {
+            let mut admission = admission.borrow_mut();
+            admission.settled = true;
+            admission.place.take()
+        });
     }
 
     /// Keep background host work ahead of any transfer offer, just like an
@@ -2078,7 +2160,7 @@ impl Daemon {
     /// handler gives it up. Outside a request (a direct call in a test)
     /// the place goes straight back with the guard.
     fn resume_writing(place: InFlight) {
-        let _ = ADMISSION.try_with(|slot| *slot.borrow_mut() = Some(place));
+        let _ = ADMISSION.try_with(|admission| admission.borrow_mut().place = Some(place));
     }
 
     async fn handle_healthy(
@@ -2104,12 +2186,14 @@ impl Daemon {
             } => {
                 self.checkpoint(
                     &agent,
-                    key,
-                    task,
-                    assumptions,
-                    next_steps,
-                    links,
-                    release_leases,
+                    recovery::CheckpointArgs {
+                        key,
+                        task,
+                        assumptions,
+                        next_steps,
+                        links,
+                        release: release_leases,
+                    },
                 )
                 .await
             }
@@ -2130,12 +2214,14 @@ impl Daemon {
             } => {
                 self.handoff(
                     &agent,
-                    to.as_deref(),
-                    task,
-                    note,
-                    links,
-                    transfer_leases,
-                    key,
+                    handoff::HandoffArgs {
+                        to,
+                        task,
+                        note,
+                        links,
+                        transfer_leases,
+                        key,
+                    },
                 )
                 .await
             }
@@ -2159,6 +2245,11 @@ impl Daemon {
             }
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
             Request::WorktreeRemove { agent } => self.worktree_remove(&agent).await,
+            Request::WorktreeRemoveNamed {
+                agent,
+                path,
+                branch,
+            } => self.worktree_remove_named(&agent, path, branch).await,
             Request::ReviewBranch { agent } => self.review_branch(&agent).await,
             Request::MergeBranch { from, agent, head } => {
                 self.merge_branch(&from, &agent, &head).await
@@ -2222,6 +2313,10 @@ impl Daemon {
                 executable: agentdocker_host::procinfo::executable_path().ok(),
                 experimental: Some(crate::config::experimental(&self.home)),
                 judge: Some(self.judge_status()),
+                features: agentdocker_core::protocol::FEATURES
+                    .iter()
+                    .map(|name| (*name).to_owned())
+                    .collect(),
             },
             Request::DaemonProcess => {
                 let state = lock(&self.state);
@@ -2427,8 +2522,16 @@ impl Daemon {
                 links,
                 idempotency_key,
             } => {
-                self.send(from, &to, kind, payload, reply_to, links, idempotency_key)
-                    .await
+                self.send(SendArgs {
+                    from,
+                    to,
+                    kind,
+                    payload,
+                    reply_to,
+                    links,
+                    idempotency_key,
+                })
+                .await
             }
             Request::Me { workdir } => self.me(workdir).await,
             Request::OpenSecretReview {
@@ -2574,6 +2677,7 @@ impl Daemon {
                 take_over_from,
                 project,
                 board,
+                unblock,
             } => {
                 self.task_pull(
                     &agent,
@@ -2581,6 +2685,7 @@ impl Daemon {
                     take_over_from.as_deref(),
                     project.as_deref(),
                     board.as_deref(),
+                    unblock.as_deref(),
                 )
                 .await
             }
@@ -2595,11 +2700,13 @@ impl Daemon {
             } => self.task_move(
                 &agent,
                 &task,
-                column,
-                to.as_deref(),
-                after.as_deref(),
-                before.as_deref(),
-                comment.as_deref(),
+                tasks::TaskMoveArgs {
+                    column,
+                    to: to.as_deref(),
+                    after: after.as_deref(),
+                    before: before.as_deref(),
+                    comment: comment.as_deref(),
+                },
             ),
             Request::TaskUpdate {
                 agent,
@@ -2690,8 +2797,18 @@ impl Daemon {
                 description,
                 tools,
             } => {
-                self.role_save(&from, project, role, &name, color, description, tools)
-                    .await
+                self.role_save(
+                    &from,
+                    project,
+                    tasks::RoleSaveArgs {
+                        existing: role,
+                        name,
+                        color,
+                        description,
+                        tools,
+                    },
+                )
+                .await
             }
             Request::RoleDelete {
                 from,
@@ -2750,15 +2867,15 @@ impl Daemon {
                 include_superseded,
                 min_score,
             } => {
-                self.memory_search(
+                self.memory_search(tasks::MemorySearchArgs {
                     from,
                     project,
-                    &query,
+                    query,
                     limit,
                     as_of,
                     include_superseded,
                     min_score,
-                )
+                })
                 .await
             }
             Request::MemoryProfile {
@@ -2767,7 +2884,13 @@ impl Daemon {
                 max_chars,
                 as_of,
             } => self.memory_profile(from, project, max_chars, as_of).await,
+            Request::Brief { from, project } => self.work_brief(&from, project.as_deref()).await,
             Request::MemoryForget { from, memory } => self.memory_forget(&from, &memory),
+            Request::MemoryRetire {
+                from,
+                memory,
+                reason,
+            } => self.memory_retire(&from, &memory, &reason),
             Request::Files { project, task } => self.files(project, task).await,
             Request::FilePut {
                 from,
@@ -2778,8 +2901,18 @@ impl Daemon {
                 base64,
                 task,
             } => {
-                self.file_put(&from, project, &name, media_type, text, base64, task)
-                    .await
+                self.file_put(
+                    &from,
+                    project,
+                    tasks::FilePutArgs {
+                        name,
+                        media_type,
+                        text,
+                        base64,
+                        task,
+                    },
+                )
+                .await
             }
             Request::FileGet { file } => self.file_get(&file),
             Request::FileLink {
@@ -2836,10 +2969,12 @@ impl Daemon {
                     &from,
                     project.as_deref(),
                     &board,
-                    name,
-                    lanes,
-                    pull_source,
-                    pull_target,
+                    tasks::BoardChange {
+                        name,
+                        lanes,
+                        pull_source,
+                        pull_target,
+                    },
                 )
                 .await
             }
@@ -3028,11 +3163,23 @@ impl Daemon {
                 wait_secs,
                 priority,
                 automatic,
+                fresh,
                 actor,
             } => {
                 self.claim(
-                    &agent, resource, mode, amount, ttl_secs, note, wait_secs, priority, automatic,
-                    actor,
+                    &agent,
+                    leases::ClaimArgs {
+                        resource,
+                        mode,
+                        amount,
+                        ttl_secs,
+                        note,
+                        wait_secs,
+                        priority,
+                        automatic,
+                        fresh,
+                        actor,
+                    },
                 )
                 .await
             }
@@ -3049,6 +3196,28 @@ impl Daemon {
             } => {
                 self.flush_release_watcher(&agent, Some(&lease)).await;
                 lock(&self.state).release(&agent, &lease, summary, summary_source)
+            }
+            Request::ReleaseResource {
+                agent,
+                resource,
+                summary,
+                summary_source,
+            } => {
+                self.flush_release_watcher(&agent, None).await;
+                // The resource as a claim of it would be keyed: a path made
+                // physical, a `file:` alias resolved in the holder's project.
+                let holder = match self.resolve(&agent) {
+                    Ok(id) => id,
+                    Err(response) => return *response,
+                };
+                let key = match self
+                    .localise(ResourceKey::new(resource), Some(&holder), false)
+                    .await
+                {
+                    Ok(key) => key,
+                    Err(response) => return *response,
+                };
+                lock(&self.state).release_resource(&agent, &key, summary, summary_source)
             }
             Request::ReleaseAll {
                 agent,
@@ -3093,7 +3262,18 @@ impl Daemon {
                 digest,
             } => {
                 self.journal(
-                    &project, since_seq, until_seq, agent, branch, kind, path, grep, limit, digest,
+                    &project,
+                    journal::JournalArgs {
+                        since_seq,
+                        until_seq,
+                        agent,
+                        branch,
+                        kind,
+                        path,
+                        grep,
+                        limit,
+                        digest,
+                    },
                 )
                 .await
             }
@@ -3188,6 +3368,15 @@ impl Daemon {
                 role,
             } => {
                 self.review_gate(agent.as_deref(), project, &branch, &head, role)
+                    .await
+            }
+            Request::SupersedeVerdict {
+                agent,
+                project,
+                verdict,
+                reason,
+            } => {
+                self.supersede_verdict(&agent, project, &verdict, reason)
                     .await
             }
             Request::JournalPrune {
@@ -3396,9 +3585,18 @@ impl Daemon {
     /// A project as a client names it: an absolute path inside it, or an id
     /// (any unique prefix) of a project some agent works in.
     async fn resolve_project(&self, selector: &str) -> Result<ProjectId, Box<Response>> {
+        self.resolve_project_ref(selector).await.map(|(id, _)| id)
+    }
+
+    /// [`Self::resolve_project`], with the project as found from the path
+    /// when the selector is one.
+    pub(super) async fn resolve_project_ref(
+        &self,
+        selector: &str,
+    ) -> Result<(ProjectId, Option<ProjectRef>), Box<Response>> {
         if Path::new(selector).is_absolute() {
             return match self.project_for(Some(PathBuf::from(selector)), false).await {
-                Some(project) => Ok(project.id()),
+                Some(project) => Ok((project.id(), Some(project))),
                 None => Err(Box::new(Response::error(
                     ErrorCode::Internal,
                     "project lookup failed",
@@ -3408,6 +3606,7 @@ impl Daemon {
         lock(&self.state)
             .registry
             .resolve_project(selector)
+            .map(|id| (id, None))
             .map_err(|err| Box::new(registry_error(err)))
     }
 
@@ -3437,17 +3636,17 @@ impl Daemon {
         Response::Agents { agents, aliases }
     }
 
-    #[allow(clippy::too_many_arguments)] // one per field of `Request::Send`
-    async fn send(
-        &self,
-        from: String,
-        to: &str,
-        kind: String,
-        payload: Value,
-        reply_to: Option<MessageId>,
-        links: Vec<agentdocker_core::Link>,
-        idempotency_key: Option<String>,
-    ) -> Response {
+    async fn send(&self, args: SendArgs) -> Response {
+        let SendArgs {
+            from,
+            to,
+            kind,
+            payload,
+            reply_to,
+            links,
+            idempotency_key,
+        } = args;
+        let to = to.as_str();
         if let Err(reason) = agentdocker_core::link::check(&links) {
             return Response::error(ErrorCode::Invalid, reason);
         }
@@ -4059,6 +4258,36 @@ impl State {
         );
     }
 
+    /// `dirs` are the project's checkouts, as git listed them just now: a
+    /// checkout no longer among them is no longer read.
+    pub(crate) fn list_checkouts(&mut self, project: &ProjectId, dirs: Vec<PathBuf>) {
+        self.checkout_reads
+            .retain(|dir, (owner, _)| owner != project || dirs.contains(dir));
+        self.project_checkouts.insert(project.clone(), dirs);
+    }
+
+    /// A project's checkouts: those git lists for it, and the checkout of
+    /// each of its live agents, once each.
+    pub(crate) fn project_checkout_dirs(&self, project: &ProjectId) -> Vec<PathBuf> {
+        let mut dirs = self
+            .project_checkouts
+            .get(project)
+            .cloned()
+            .unwrap_or_default();
+        for dir in self
+            .registry
+            .live()
+            .filter_map(|a| a.project.as_ref())
+            .filter(|p| &p.id() == project)
+            .map(|p| p.dir().to_path_buf())
+        {
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+        dirs
+    }
+
     pub fn resolve(&mut self, reference: &str) -> Result<AgentId, Box<Response>> {
         if let Some(error) = self.storage_failure() {
             return Err(Box::new(error));
@@ -4606,6 +4835,11 @@ impl State {
                         "the conversation's ended record still has its process; let it finish first",
                     ));
                 }
+                // Not back into a worktree on its way out: refused before
+                // anything of the record or its name is touched.
+                if let Some(refusal) = self.removal_refuses_record(&record) {
+                    return Some(refusal);
+                }
                 // Its process is gone: kept by contact from here on.
                 record.pid = None;
                 record.process_started_at = None;
@@ -4739,6 +4973,11 @@ impl State {
         }
         if let Some(error) = self.write_failure() {
             return Some(error);
+        }
+        // A proven terminal does not bring its conversation's record back
+        // into a worktree on its way out either.
+        if let Some(refusal) = self.removal_refuses_record(&record) {
+            return Some(refusal);
         }
         if !record.status.is_live() {
             self.free_name(&mut record);
@@ -5162,6 +5401,7 @@ impl State {
         let budget = DigestBudget {
             max_entries: request.max_entries,
             max_chars: request.max_chars,
+            max_bytes: request.max_bytes,
         };
         let digest = render_digest(&entries, cursor, &reader, budget, now);
         if request.advance && !digest.text.is_empty() {
@@ -5634,30 +5874,28 @@ impl State {
         // answers and the card it rode on. The store deletes every one it
         // is given, so memory and disk agree after a restart.
         let closing: Vec<MessageId> = closed.iter().chain(settled.iter()).cloned().collect();
+        let released_ids: Vec<_> = released.iter().map(|lease| lease.id.clone()).collect();
         let mut post = None;
         let _ = self.commit(
             "message",
             events,
             |store, events| {
-                store.publish_message_with_channel(
-                    &envelope,
-                    &recipients,
-                    INBOX_CAPACITY,
-                    sender.as_ref(),
-                    question.as_ref(),
-                    &closing,
+                store.publish_message_with_channel(crate::store::Publication {
+                    message: &envelope,
+                    recipients: &recipients,
+                    capacity: INBOX_CAPACITY,
+                    sender: sender.as_ref(),
+                    question: question.as_ref(),
+                    closed: &closing,
                     events,
-                    channel.as_ref(),
-                    journal.as_ref(),
-                    &released
-                        .iter()
-                        .map(|lease| lease.id.clone())
-                        .collect::<Vec<_>>(),
-                    document
+                    channel: channel.as_ref(),
+                    journal: journal.as_ref(),
+                    released: &released_ids,
+                    document: document
                         .as_ref()
                         .map(|d| (d.kind, d.id.as_str(), d.value.as_ref())),
                     tracked,
-                )
+                })
             },
             |state, _, kept| {
                 post = kept;
@@ -5751,6 +5989,60 @@ impl State {
         }
     }
 
+    /// The refusal for a record that would come to work in a worktree
+    /// being removed ([`State::removing`]).
+    ///
+    /// There is no single door a record comes back to life through, so
+    /// each one asks this under the lock that commits it: a record that
+    /// is made or registered ([`State::insert_record_announcing`]); a
+    /// supervised process, before it is spawned and when it is committed
+    /// as running ([`State::run_refusal`]: a launch, a restart, a
+    /// restore, a pane, a container); a session relaunched under its
+    /// ended record (`Daemon::resume_session`); a keyed conversation
+    /// heard from again or joined by its proven terminal
+    /// ([`State::keyed_session`], [`State::prove_keyed`]); and a restore
+    /// that plans a record's return with its leases. The other side of
+    /// the same care is in the removal's own look, which counts a record
+    /// waiting for its restart as working there. A new way back to life
+    /// has to ask this too.
+    fn removal_refuses_record(&self, record: &AgentRecord) -> Option<Response> {
+        if self.removing.is_empty() {
+            return None;
+        }
+        let dir = record
+            .project
+            .as_ref()
+            .map(|project| project.dir().to_path_buf())
+            .or_else(|| record.spec.workdir.clone())?;
+        let dir = project::canonical(&dir);
+        let path = self.removing.keys().find(|path| dir.starts_with(path))?;
+        Some(Response::error(
+            ErrorCode::Conflict,
+            format!(
+                "{} is being removed: nobody new comes to work there",
+                path.display()
+            ),
+        ))
+    }
+
+    /// The refusal for a claim on a path in or over a worktree being
+    /// removed, or on its branch ([`State::removing`]).
+    fn removal_refuses_claim(&self, resource: &ResourceKey) -> Option<Response> {
+        let (path, _) = self.removing.iter().find(|(path, branch)| {
+            resource.overlaps(&ResourceKey::new(format!("path:{}", path.display())))
+                || branch
+                    .as_ref()
+                    .is_some_and(|branch| *resource == ResourceKey::new(format!("branch:{branch}")))
+        })?;
+        Some(Response::error(
+            ErrorCode::Conflict,
+            format!(
+                "{} is being removed: nothing in it, nor its branch, is claimed until that has ended",
+                path.display()
+            ),
+        ))
+    }
+
     fn insert_record(&mut self, record: AgentRecord) -> Response {
         self.insert_record_announcing(record, true, None)
     }
@@ -5779,6 +6071,9 @@ impl State {
     ) -> Response {
         if let Some(error) = self.write_failure() {
             return error;
+        }
+        if let Some(refusal) = self.removal_refuses_record(&record) {
+            return refusal;
         }
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);

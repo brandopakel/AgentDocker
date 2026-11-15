@@ -343,7 +343,7 @@ Where the ledger records every file change, the journal records what happened an
 
 ### Worktrees and overlap
 
-`agentdocker run --isolate --name writer -- codex …` launches an agent in a linked worktree of its own (branch `agent/writer`, under the daemon home), or `agentdocker worktree-create --as writer ../agent-work --branch agent/work` creates an independent checkout by hand. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Commit the source's changes and run `validate`; `integrate --as writer ../agent-work --validation <id>` previews integration and `--apply` prepares an uncommitted merge to review with Git.
+`agentdocker run --isolate --name writer -- codex …` launches an agent in a linked worktree of its own (branch `agent/writer`, in the project's worktrees folder, `.agentdocker/worktrees/`, which is kept out of git), or `agentdocker worktree-create --as writer --branch agent/work` creates an independent checkout by hand in the same folder and prints its path. `agentdocker overlap` lists the paths that more than one checkout has changed — merge conflicts before they happen — and `--as writer` narrows it to one agent's checkout. Commit the source's changes and run `validate`; `integrate --as writer <that path> --validation <id>` previews integration and `--apply` prepares an uncommitted merge to review with Git.
 
 ### Sessions: run an interactive agent, and attach to it
 
@@ -463,7 +463,7 @@ bash scripts/verify.sh package   # for a packaging or release change: crate pack
 cargo test --workspace           # the plain test run, apart from the gates
 ```
 
-Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons; a home whose path is too long for a Unix socket name gets its sockets in a short private directory automatically — `agentdocker daemon status` shows where). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. Pull requests are reviewed by CI and [CodeRabbit](.coderabbit.yaml); see the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md).
+Set `RUST_LOG=debug` for verbose daemon logging and `AGENTDOCKER_HOME` to point the daemon and CLI at an alternate directory (handy for running several isolated daemons; a home whose path is too long for a Unix socket name gets its sockets in a short private directory automatically — `agentdocker daemon status` shows where). Clients start `agentd` on demand; `AGENTDOCKER_NO_AUTOSTART=1` makes them fail instead, and `agentd` run by hand in the foreground still works. A pull request is reviewed by the project's reviewer agent and merges on that approval and the local gate; CI checks main afterwards. See the [testing and benchmarking standard](docs/TESTING-AND-BENCHMARKS.md).
 
 ## License
 

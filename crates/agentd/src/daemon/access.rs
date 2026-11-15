@@ -634,6 +634,7 @@ mod tests {
                 reader: reader.into(),
                 max_entries: 20,
                 max_chars: 2000,
+                max_bytes: None,
                 all_branches: false,
                 advance: true,
             }),
@@ -689,6 +690,7 @@ mod tests {
             priority: 0,
             automatic: false,
             actor: None,
+            fresh: false,
         };
         assert!(daemon.restricted_request("wrong", Request::Ping).is_err());
         let original = lock(&daemon.state)
