@@ -95,6 +95,11 @@ impl Mode {
     /// Why a call of `tool` is refused in this mode: who delivers in its
     /// place, and what the agent does instead. `None` for a tool the mode
     /// lists: what is listed is what is served.
+    ///
+    /// For a mode the server starts in, this is said before the tool
+    /// runs, as a protocol error: the tool was never offered. For
+    /// `PullHeld` it is what the tool itself found, and is the text of
+    /// the tool's own error result (`render_own_queue`).
     pub(super) fn refusal(&self, tool: &str) -> Option<String> {
         if self.lists(tool) {
             return None;

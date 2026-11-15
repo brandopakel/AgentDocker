@@ -2118,7 +2118,7 @@ impl<B: Backend> McpServer<B> {
     /// inbox tool `tool`.
     async fn read_own_queue(&self, tool: &str, request: Request) -> Result<Value, (i64, String)> {
         let response = self.backend.call(request).await.map_err(transport)?;
-        Ok(render(unless_held(tool, response)?, false))
+        Ok(render_own_queue(tool, response))
     }
 
     /// Poll without consuming so failed tool-result delivery remains recoverable.
@@ -2136,7 +2136,7 @@ impl<B: Backend> McpServer<B> {
             match response {
                 Response::Messages { messages } if messages.is_empty() => {}
                 other => {
-                    return Ok(render(unless_held("wait_for_messages", other)?, false));
+                    return Ok(render_own_queue("wait_for_messages", other));
                 }
             }
             if started.elapsed() >= timeout {
@@ -2580,18 +2580,20 @@ fn brief_contest(contest: &agentdocker_core::Contest) -> Value {
     }))
 }
 
-/// Turn a daemon response into a tool result, unwrapping the payload so the
-/// model sees the data rather than the protocol envelope. Records come back
-/// as a projection unless `verbose`, because everything here is an input
-/// token the agent pays for.
-/// The daemon's answer to an inbox tool, unless it says a receiver holds
-/// the agent's queue. That answer is not an error of the daemon's and not
-/// a result for the model either: an agent that reads its own queue has
-/// just learnt that it does not, which is a mode of its own
-/// (`Mode::PullHeld`), and the tool is refused as that mode refuses it,
-/// with who delivers and what to do. It used to be handed over as the
-/// daemon wrote it, a record marked as a success.
-fn unless_held(tool: &str, response: Response) -> Result<Response, (i64, String)> {
+/// What an inbox tool answers. A queue the agent reads itself is rendered
+/// as any other answer of the daemon's. A queue the daemon says a
+/// receiver holds is the one mode known only at a call (`Mode::PullHeld`),
+/// and the tool answers it as its own error: a result marked `isError`
+/// whose text says who delivers and what the agent does instead.
+///
+/// It is a result and not a protocol error because the call was a valid
+/// call of a listed tool: what went wrong is what the tool found, which
+/// the model has to read in order to act on it, and a host shows the
+/// model a tool's result where it may keep a protocol error to itself. A
+/// tool the mode does not list is the other case, refused before it runs.
+/// The answer used to be the daemon's record as it came, marked as a
+/// success.
+fn render_own_queue(tool: &str, response: Response) -> Value {
     match response {
         Response::InputOwned {
             owner,
@@ -2599,22 +2601,28 @@ fn unless_held(tool: &str, response: Response) -> Result<Response, (i64, String)
             since,
             ..
         } => {
+            let delivered_by = owner.clone();
             let held = Mode::PullHeld(mode::Holder {
                 owner,
                 controller,
                 since,
             });
-            Err((
-                INVALID_PARAMS,
-                held.refusal(tool).unwrap_or_else(|| {
-                    format!("`{tool}` is not served: a receiver holds this queue")
-                }),
-            ))
+            let said = held.refusal(tool).unwrap_or_else(|| {
+                format!("`{tool}` has nothing to give: a receiver holds this queue")
+            });
+            text_result(
+                &json!({ "error": said, "delivered_by": delivered_by }),
+                true,
+            )
         }
-        other => Ok(other),
+        other => render(other, false),
     }
 }
 
+/// Turn a daemon response into a tool result, unwrapping the payload so the
+/// model sees the data rather than the protocol envelope. Records come back
+/// as a projection unless `verbose`, because everything here is an input
+/// token the agent pays for.
 fn render(response: Response, verbose: bool) -> Value {
     if verbose {
         return render_whole(response);
@@ -6019,11 +6027,13 @@ mod tests {
     /// The mode that is known only at a call. An agent reads its own
     /// queue, as far as its server knows; a receiver has taken the queue
     /// over, and the daemon answers each inbox tool with `input_owned`.
-    /// The tool is refused, with who delivers and what to do. It used to
-    /// answer the daemon's record as a result marked as a success, which
-    /// told the model neither.
+    /// The tool answers its own error: a result marked `isError`, whose
+    /// text says who delivers and what to do, which is where a model
+    /// reads it. It is not a protocol error, since the call was a valid
+    /// call of a listed tool. It used to be the daemon's record, as a
+    /// result marked as a success, which told the model neither.
     #[tokio::test]
-    async fn an_inbox_tool_on_a_queue_a_receiver_holds_is_refused_with_who_delivers() {
+    async fn an_inbox_tool_on_a_queue_a_receiver_holds_answers_who_delivers_as_its_error() {
         let since = chrono::Utc::now();
         let owned = |owner: &str, pid: Option<u32>| Response::InputOwned {
             agent: "abc123".into(),
@@ -6040,6 +6050,22 @@ mod tests {
             ("wait_for_messages", json!({ "timeout_secs": 1 })),
             ("acknowledge_messages", json!({ "messages": ["m1"] })),
         ];
+        // The tools are listed: a server that pulls knows no better at
+        // its start.
+        let listed = server(vec![])
+            .handle(rpc(0, "tools/list", json!({})))
+            .await
+            .unwrap();
+        for (tool, _) in &calls {
+            assert!(
+                listed["result"]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|listed| listed["name"] == *tool),
+                "{tool} is listed in pull mode"
+            );
+        }
         for (tool, arguments) in calls {
             let s = server(vec![owned("controller", Some(41))]);
             let reply = s
@@ -6051,11 +6077,12 @@ mod tests {
                 .await
                 .unwrap();
             assert!(
-                reply.get("result").is_none(),
-                "{tool}: not a result: {reply}"
+                reply.get("error").is_none(),
+                "{tool}: not a protocol error: {reply}"
             );
-            assert_eq!(reply["error"]["code"], INVALID_PARAMS, "{tool}");
-            let said = reply["error"]["message"].as_str().unwrap();
+            assert_eq!(reply["result"]["isError"], true, "{tool}: {reply}");
+            let answer = tool_text(&reply);
+            let said = answer["error"].as_str().unwrap();
             assert!(
                 said.contains("its input receiver (process 41, bound to its queue since"),
                 "{tool}: {said}"
@@ -6065,15 +6092,25 @@ mod tests {
                 "{said}"
             );
             assert!(said.contains("send_message and reply_to"), "{said}");
+            assert_eq!(answer["delivered_by"], "controller", "{tool}");
             assert!(
-                !said.contains("input_owned"),
-                "words, not the record: {said}"
+                answer.get("type").is_none() && !said.contains("input_owned"),
+                "words, not the daemon's record: {answer}"
             );
-            assert_eq!(
-                s.backend.requests.lock().unwrap().len(),
-                1,
-                "{tool}: asked once"
-            );
+            // The daemon is asked once: the answer is final for this call.
+            let asked = s.backend.requests.lock().unwrap();
+            let own_queue = asked
+                .iter()
+                .filter(|request| {
+                    matches!(
+                        request,
+                        Request::DeliveryQueue { .. }
+                            | Request::Inbox { .. }
+                            | Request::AckInbox { .. }
+                    )
+                })
+                .count();
+            assert_eq!(own_queue, 1, "{tool}: asked once");
         }
         // The Codex input bridge, when that is who holds it.
         let s = server(vec![owned("bridge", None)]);
@@ -6081,20 +6118,32 @@ mod tests {
             .handle(rpc(2, "tools/call", json!({ "name": "read_inbox" })))
             .await
             .unwrap();
+        assert_eq!(reply["result"]["isError"], true, "{reply}");
+        let answer = tool_text(&reply);
         assert!(
-            reply["error"]["message"]
+            answer["error"]
                 .as_str()
                 .unwrap()
                 .contains("the Codex input bridge that started this session"),
-            "{reply}"
+            "{answer}"
         );
-        // A queue nobody holds is read as it was.
+        assert_eq!(answer["delivered_by"], "bridge");
+        // A queue nobody holds is read as it was, and a tool the mode does
+        // not list is still refused before it runs, as a protocol error.
         let s = server(vec![Response::Messages { messages: vec![] }]);
         let reply = s
             .handle(rpc(3, "tools/call", json!({ "name": "read_inbox" })))
             .await
             .unwrap();
         assert_eq!(reply["result"]["isError"], false, "{reply}");
+        let mut bridged = server(vec![]);
+        bridged.mode = crate::mcp::Mode::CodexBridge;
+        let reply = bridged
+            .handle(rpc(4, "tools/call", json!({ "name": "read_inbox" })))
+            .await
+            .unwrap();
+        assert_eq!(reply["error"]["code"], INVALID_PARAMS, "{reply}");
+        assert!(bridged.backend.requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
