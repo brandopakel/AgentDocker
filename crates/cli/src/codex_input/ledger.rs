@@ -1225,6 +1225,11 @@ impl Record {
         self.attempt.is_some() || !self.completed.is_empty()
     }
 
+    #[cfg(test)]
+    pub fn retired_questions(&self) -> &[MessageId] {
+        &self.retired_questions
+    }
+
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
             self.version >= 15 || self.secret_review.is_none(),

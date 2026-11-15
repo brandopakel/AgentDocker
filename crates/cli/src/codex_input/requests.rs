@@ -135,20 +135,24 @@ pub(super) fn observe(ledger: &mut Ledger, event: &agentdocker_core::EventKind) 
 
 async fn acknowledge_closed(client: &Client, ledger: &mut Ledger) -> Result<()> {
     for index in 0..ledger.record().closed_reviews.len() {
-        let closed = &ledger.record().closed_reviews[index];
-        if closed.acknowledged {
-            continue;
-        }
-        let ids = closed.request.answers().map(|a| a.id.clone()).collect();
-        // The durable closed record is proof of provider resolution or asker
-        // cancellation, not a claim that every retained answer was applied.
-        queue(client, ledger, ids).await?;
-        ledger.update_reviews(|_, closed| {
-            closed[index].acknowledged = true;
-            Ok(true)
-        })?;
+        acknowledge_entry(client, ledger, index).await?;
     }
     Ok(())
+}
+
+async fn acknowledge_entry(client: &Client, ledger: &mut Ledger, index: usize) -> Result<()> {
+    let closed = &ledger.record().closed_reviews[index];
+    if closed.acknowledged {
+        return Ok(());
+    }
+    let ids = closed.request.answers().map(|a| a.id.clone()).collect();
+    // The durable closed record is proof of provider resolution or asker
+    // cancellation, not a claim that every retained answer was applied.
+    queue(client, ledger, ids).await?;
+    ledger.update_reviews(|_, closed| {
+        closed[index].acknowledged = true;
+        Ok(true)
+    })
 }
 
 /// At a controller's start, settle what the last one left asked. A question
@@ -200,61 +204,26 @@ fn refusal(request: &Pending, agent: &str) -> String {
 }
 
 /// Close `id` as `outcome` for a controller that is not the one that asked
-/// it: its routes are cancelled, the queue is read once, and in one save it
-/// moves to the closed questions with every reply it owns kept as archived,
-/// whatever closure the old controller last saw; only then are those
-/// replies acknowledged, by their exact IDs.
+/// it: as [`close`] does, and in the one save that moves it to the closed
+/// questions, every reply it owns is kept as archived, whatever closure the
+/// old controller last saw. Only then are those replies acknowledged, by
+/// their exact IDs.
 pub(super) async fn close_archived(
     client: &Client,
     ledger: &mut Ledger,
     id: &Value,
     outcome: Outcome,
 ) -> Result<()> {
-    let request = ledger
-        .record()
-        .reviews
-        .iter()
-        .find(|r| &r.id == id)
-        .context("provider request disappeared")?
-        .clone();
-    cancel_routes(client, ledger, &request).await?;
-    let messages = queue(client, ledger, Vec::new()).await?;
-    acknowledge_closed(client, ledger).await?;
-    let agent = ledger.record().binding.agent.clone();
-    ledger.update_reviews(|reviews, closed| {
-        for other in reviews.iter_mut().filter(|r| &r.id != id) {
-            other.capture(&messages, &agent, false)?;
-        }
-        for completed in closed.iter_mut() {
-            if completed.request.capture(&messages, &agent, true)? {
-                completed.acknowledged = false;
-            }
-        }
-        if closed.len() == review::RETAINED {
-            ensure!(
-                closed.front().is_some_and(|r| r.acknowledged),
-                "earlier provider question receipts are still unacknowledged"
-            );
-            closed.pop_front();
-        }
-        let position = reviews
-            .iter()
-            .position(|r| &r.id == id)
-            .context("provider request disappeared")?;
-        let mut request = reviews.remove(position);
-        request.capture(&messages, &agent, true)?;
-        closed.push_back(Closed {
-            request,
-            outcome,
-            acknowledged: false,
-        });
-        Ok(true)
-    })?;
-    acknowledge_closed(client, ledger).await
+    settle(client, ledger, id, outcome, true).await
 }
 
-pub(super) async fn acknowledge_archived(client: &Client, ledger: &mut Ledger) -> Result<()> {
-    acknowledge_closed(client, ledger).await
+/// Acknowledge the replies of the closed question at `index` alone.
+pub(super) async fn acknowledge_archived(
+    client: &Client,
+    ledger: &mut Ledger,
+    index: usize,
+) -> Result<()> {
+    acknowledge_entry(client, ledger, index).await
 }
 
 // Closing a route and sending an answer serialize under the daemon's state
@@ -283,6 +252,22 @@ async fn cancel_routes(client: &Client, ledger: &Ledger, request: &Pending) -> R
 }
 
 async fn close(client: &Client, ledger: &mut Ledger, id: &Value, outcome: Outcome) -> Result<()> {
+    settle(client, ledger, id, outcome, false).await
+}
+
+/// Cancel the request's routes, read the queue once, and keep and
+/// acknowledge what the closed history took from it before moving the
+/// request there: retiring the oldest closed entry to make room never drops
+/// a reply it has just taken. With `archive`, every reply the request owns is
+/// kept with it in the save that closes it; its replies are acknowledged
+/// only after that save.
+async fn settle(
+    client: &Client,
+    ledger: &mut Ledger,
+    id: &Value,
+    outcome: Outcome,
+    archive: bool,
+) -> Result<()> {
     let request = ledger
         .record()
         .reviews
@@ -294,6 +279,7 @@ async fn close(client: &Client, ledger: &mut Ledger, id: &Value, outcome: Outcom
     let messages = queue(client, ledger, Vec::new()).await?;
     capture(ledger, &messages)?;
     acknowledge_closed(client, ledger).await?;
+    let agent = ledger.record().binding.agent.clone();
     ledger.update_reviews(|reviews, closed| {
         if closed.len() == review::RETAINED {
             ensure!(
@@ -306,7 +292,10 @@ async fn close(client: &Client, ledger: &mut Ledger, id: &Value, outcome: Outcom
             .iter()
             .position(|r| &r.id == id)
             .context("provider request disappeared")?;
-        let request = reviews.remove(position);
+        let mut request = reviews.remove(position);
+        if archive {
+            request.capture(&messages, &agent, true)?;
+        }
         closed.push_back(Closed {
             request,
             outcome,
@@ -735,6 +724,134 @@ pub(super) mod tests {
         assert_eq!(asked(serving).await.len(), 2);
         assert_eq!(std::fs::read(ledger.file_path()).unwrap(), before);
         assert_eq!(ledger.record().reviews.len(), 1);
+    }
+
+    /// Eight closed questions, `old-0` the oldest, each acknowledged: the
+    /// detailed history is full.
+    fn full_history(ledger: &mut Ledger) {
+        for n in 0..review::RETAINED {
+            never_answered(ledger, 100 + n as u64, &format!("old-{n}"));
+        }
+        ledger
+            .update_reviews(|reviews, closed| {
+                for request in reviews.drain(..) {
+                    closed.push_back(Closed {
+                        request,
+                        outcome: Outcome::Cancelled,
+                        acknowledged: true,
+                    });
+                }
+                Ok(true)
+            })
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_full_history_keeps_a_late_reply_to_its_oldest_before_retiring_it() {
+        // Straight through: the oldest's late reply is kept and acknowledged,
+        // then the oldest retires to its route and the question closes.
+        let (_home, mut ledger) = bound();
+        full_history(&mut ledger);
+        never_answered(&mut ledger, 18, "open-question");
+        let late_old = reply("human", "old-0", "late");
+        let late_new = reply("human", "open-question", "Allow");
+        let both = vec![late_old.clone(), late_new.clone()];
+        let serving = script(
+            &ledger.record().binding.socket,
+            vec![
+                Response::Ok,
+                Response::Messages {
+                    messages: both.clone(),
+                },
+                Response::Messages {
+                    messages: vec![late_new.clone()],
+                },
+                Response::Messages {
+                    messages: Vec::new(),
+                },
+            ],
+        );
+        recover(&client(&ledger), &mut ledger).await.unwrap();
+        let questions = asked(serving).await;
+        assert!(cancelled(&questions[0], "open-question"));
+        assert!(read(&questions[1], &[]));
+        assert!(read(&questions[2], &[&late_old.id]));
+        assert!(read(&questions[3], &[&late_new.id]));
+        let record = ledger.record();
+        assert!(record.reviews.is_empty());
+        assert_eq!(record.closed_reviews.len(), review::RETAINED);
+        assert_eq!(record.closed_reviews[0].request.id, json!(101));
+        let newest = record.closed_reviews.back().unwrap();
+        assert_eq!(newest.request.id, json!(18));
+        assert!(newest.acknowledged);
+        assert_eq!(
+            record
+                .retired_questions()
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>(),
+            ["old-0"]
+        );
+
+        // The oldest's acknowledgement refused: its reply is already kept,
+        // the question waits, and the next start finishes both.
+        let (home, mut ledger) = bound();
+        full_history(&mut ledger);
+        never_answered(&mut ledger, 18, "open-question");
+        let serving = script(
+            &ledger.record().binding.socket,
+            vec![
+                Response::Ok,
+                Response::Messages { messages: both },
+                refused("acknowledge"),
+            ],
+        );
+        assert!(recover(&client(&ledger), &mut ledger).await.is_err());
+        assert!(read(&asked(serving).await[2], &[&late_old.id]));
+        let binding = ledger.record().binding.clone();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding).unwrap();
+        let record = ledger.record();
+        assert_eq!(record.reviews.len(), 1);
+        assert!(!record.closed_reviews[0].acknowledged);
+        assert_eq!(
+            record.closed_reviews[0]
+                .request
+                .answers()
+                .map(|a| &a.id)
+                .collect::<Vec<_>>(),
+            [&late_old.id]
+        );
+        let serving = script(
+            &ledger.record().binding.socket,
+            vec![
+                Response::Messages {
+                    messages: vec![late_new.clone()],
+                },
+                Response::Ok,
+                Response::Messages {
+                    messages: vec![late_new.clone()],
+                },
+                Response::Messages {
+                    messages: Vec::new(),
+                },
+            ],
+        );
+        recover(&client(&ledger), &mut ledger).await.unwrap();
+        let questions = asked(serving).await;
+        assert!(read(&questions[0], &[&late_old.id]));
+        assert!(cancelled(&questions[1], "open-question"));
+        assert!(read(&questions[2], &[]));
+        assert!(read(&questions[3], &[&late_new.id]));
+        assert!(ledger.record().reviews.is_empty());
+        assert_eq!(ledger.record().closed_reviews[0].request.id, json!(101));
+        assert!(
+            ledger
+                .record()
+                .closed_reviews
+                .iter()
+                .all(|c| c.acknowledged)
+        );
     }
 
     #[tokio::test]

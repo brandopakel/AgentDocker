@@ -94,8 +94,8 @@ fn preview(ledger: &Ledger) -> String {
             AtRestart::ResponseUncertain => (
                 "response may have reached Codex",
                 format!(
-                    "close it with --request '{}' --confirm {} --note \"…\" (nothing is resent)",
-                    request.id,
+                    "close it with --request {} --confirm {} --note \"…\" (nothing is resent)",
+                    shell_word(&request.id.to_string()),
                     request.confirmation(binding)
                 ),
             ),
@@ -128,6 +128,12 @@ fn preview(ledger: &Ledger) -> String {
     out
 }
 
+/// `text` as one POSIX shell word: single-quoted whole, each single quote
+/// closed, escaped and reopened, so nothing in it is ever shell syntax.
+fn shell_word(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
 /// Close one request whose response may have reached Codex: its
 /// confirmation checked before anything else, the person's intent written
 /// to the journal, then the archival close as cancelled, then its replies
@@ -144,15 +150,13 @@ async fn close(
         "the request ID is JSON, as the preview prints it: a number, or a quoted string",
     )?;
     let binding = ledger.record().binding.clone();
-    if let Some(closed) = ledger
+    if let Some(index) = ledger
         .record()
         .closed_reviews
         .iter()
-        .find(|c| c.request.id == id && c.request.confirmation(&binding) == confirm)
+        .position(|c| c.request.id == id && c.request.confirmation(&binding) == confirm)
     {
-        if !closed.acknowledged {
-            requests::acknowledge_archived(client, ledger).await?;
-        }
+        requests::acknowledge_archived(client, ledger, index).await?;
         return Ok(format!(
             "Request {id} is already closed; nothing was resent, and its retained replies are acknowledged."
         ));
@@ -209,7 +213,7 @@ mod tests {
     use crate::codex_input::requests::tests::{
         asked, cancelled, client, fixture, never_answered, read, refused, reply, script,
     };
-    use crate::codex_input::review::Pending;
+    use crate::codex_input::review::{Closed, Pending};
     use agentdocker_core::{AgentSpec, MessageId};
     use serde_json::json;
 
@@ -269,6 +273,71 @@ mod tests {
         assert_eq!(bound.cwd, home.path().canonicalize().unwrap());
         agent.spec.workdir = None;
         assert!(binding(&agent, "/sock".into(), "/profile".into()).is_err());
+    }
+
+    /// What `sh` makes of `words`: each argument, exactly.
+    fn argv(words: &str) -> Vec<String> {
+        let output = std::process::Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("printf '%s\\0' {words}"))
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{words}");
+        let mut args: Vec<String> = String::from_utf8(output.stdout)
+            .unwrap()
+            .split('\0')
+            .map(str::to_owned)
+            .collect();
+        assert_eq!(args.pop().as_deref(), Some(""));
+        args
+    }
+
+    #[test]
+    fn the_offered_request_id_is_one_shell_word_whatever_it_holds() {
+        for id in [
+            json!(17),
+            json!("17"),
+            json!("x'; printf SHELL_EXPANSION_EXECUTED; #"),
+            json!("$(printf SUBSTITUTED)"),
+            json!("`printf BACKTICK`"),
+            json!("a\"b\\c $HOME '' *"),
+        ] {
+            let serialized = id.to_string();
+            assert_eq!(
+                argv(&shell_word(&serialized)),
+                std::slice::from_ref(&serialized)
+            );
+            assert_eq!(serde_json::from_str::<Value>(&serialized).unwrap(), id);
+        }
+
+        // The preview's own command line, for an ID that would break out of
+        // a plain quote.
+        let (_home, mut ledger, _) = fixture();
+        let hostile = json!("x'; printf SHELL_EXPANSION_EXECUTED; #");
+        ledger
+            .update_reviews(|reviews, _| {
+                reviews[0].id = hostile.clone();
+                reviews[0].response.as_mut().unwrap()["id"] = hostile.clone();
+                Ok(true)
+            })
+            .unwrap();
+        let shown = preview(&ledger);
+        let offered = shown
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("close it with "))
+            .and_then(|line| line.strip_suffix(" (nothing is resent)"))
+            .unwrap();
+        assert_eq!(
+            argv(offered),
+            [
+                "--request".to_owned(),
+                hostile.to_string(),
+                "--confirm".to_owned(),
+                confirmation(&ledger, &hostile),
+                "--note".to_owned(),
+                "…".to_owned(),
+            ]
+        );
     }
 
     #[test]
@@ -378,6 +447,44 @@ mod tests {
         requests::recover(&client(&ledger), &mut ledger)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_retry_acknowledges_only_the_closed_question_it_names() {
+        let (_home, mut ledger, answer) = fixture();
+        never_answered(&mut ledger, 18, "open-question");
+        let other = reply("human", "open-question", "Deny");
+        let digest = confirmation(&ledger, &json!(17));
+        ledger
+            .update_reviews(|reviews, closed| {
+                for mut request in reviews.drain(..) {
+                    request.capture(std::slice::from_ref(&other), "owner", true)?;
+                    closed.push_back(Closed {
+                        request,
+                        outcome: Outcome::Cancelled,
+                        acknowledged: false,
+                    });
+                }
+                Ok(true)
+            })
+            .unwrap();
+        let serving = script(
+            &ledger.record().binding.socket,
+            vec![Response::Messages {
+                messages: Vec::new(),
+            }],
+        );
+        let said = close(&client(&ledger), &mut ledger, "17", &digest, "again")
+            .await
+            .unwrap();
+        assert!(said.starts_with("Request 17 is already closed"), "{said}");
+        let asked = asked(serving).await;
+        assert_eq!(asked.len(), 1);
+        assert!(read(&asked[0], &[&answer.id]));
+        let closed = &ledger.record().closed_reviews;
+        assert!(closed[0].acknowledged);
+        assert_eq!(closed[1].request.id, json!(18));
+        assert!(!closed[1].acknowledged);
     }
 
     #[tokio::test]

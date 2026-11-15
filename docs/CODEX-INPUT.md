@@ -876,8 +876,8 @@ agentdocker codex-input-resolve --agent <id> --request '<request-id>' \
   --confirm <confirmation> --note "<why>"
 ```
 
-The request ID is JSON, as the preview prints it, so `17` and `'"17"'` name
-different requests. A confirmation that no longer matches is refused before
+The request ID is JSON, which the preview prints quoted as one shell word
+whatever it holds, so `'17'` and `'"17"'` name different requests. A confirmation that no longer matches is refused before
 anything is asked of the daemon; review again. The command then writes the
 intent to the agent's journal (the confirmation, the request, the operator
 process and the note) and goes on only once the daemon confirms the entry. It
