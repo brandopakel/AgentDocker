@@ -713,6 +713,20 @@ command.
   states explicit. Disconnection retains the last snapshot, said once by the
   rail foot's *Reconnecting…*; the session panel's readiness dot says
   *Readiness unavailable*.
+- Something read from the service is a `remote::Remote` (or `remote::About`
+  for a read about one card or session at a time), not an `Option`: never
+  asked, being read, read, and failed with the value as last read are four
+  cases, and a view draws each (`Remote::seen`). Every ask has a number
+  (`remote::Ask`) that goes out in the command and comes back in the answer;
+  only the latest ask's answer is taken, so a late answer cannot put back an
+  older value or land on the card or session that was open before. A command
+  the queue refuses is a failed read, said in the read's own place. Each case
+  has a node the workflow driver can wait on: *Reading…* is `todo-reading`,
+  `card-reading`, `changes-reading` and `session-log-reading`; a failure is
+  `todo-error-mark`, `card-error-mark`, `changes-error-mark` and
+  `session-log-error-mark`; a read that came back empty is `todo-empty` and
+  `session-log-empty` (named for a reader, with no sentence drawn), and for a
+  session's changes the words *Up to date*.
 - The link to the background service is one value (`link::Link`): connecting,
   until a service first answers; up; or down, keeping what the last service
   said. What a service says of itself (its version and place, whether it

@@ -2076,7 +2076,7 @@ impl App {
                     self.send(Cmd::Workspace(project));
                 }
                 if screen == Screen::Todo {
-                    self.send(Cmd::Todo);
+                    self.request_todo();
                 }
                 if screen == Screen::Usage {
                     self.request_usage();
@@ -2524,7 +2524,7 @@ impl App {
                 self.shell.link_target = target.chars().take(2048).collect();
             }
             Message::LinkAdd => {
-                if let Some(detail) = &self.card
+                if let Some(detail) = self.card.value()
                     && let Some(kind) = self.shell.link_kind
                     && !self.shell.link_target.trim().is_empty()
                 {
@@ -2541,7 +2541,7 @@ impl App {
                 }
             }
             Message::LinkRemove(index) => {
-                if let Some(detail) = &self.card
+                if let Some(detail) = self.card.value()
                     && index < detail.task.links.len()
                 {
                     let mut links = detail.task.links.clone();
@@ -2550,7 +2550,7 @@ impl App {
                 }
             }
             Message::LinkOpen(index) => {
-                if let Some(link) = self.card.as_ref().and_then(|d| d.task.links.get(index)) {
+                if let Some(link) = self.card.value().and_then(|d| d.task.links.get(index)) {
                     match link_destination(link, self.selected_project_root().as_deref()) {
                         LinkDestination::Open(target) => {
                             if let Err(error) = super::open_target(&target) {
@@ -2561,8 +2561,8 @@ impl App {
                             if self.task_open.as_ref() == Some(&task) {
                                 // The card the link is on: read again,
                                 // what is typed on it left as it is.
-                                self.card = None;
-                                self.send(Cmd::TaskDetail(task));
+                                self.card.forget();
+                                self.request_card(task);
                             } else {
                                 self.open_card(task);
                             }
@@ -2575,13 +2575,13 @@ impl App {
                 }
             }
             Message::LinkCopy(index) => {
-                if let Some(link) = self.card.as_ref().and_then(|d| d.task.links.get(index)) {
+                if let Some(link) = self.card.value().and_then(|d| d.task.links.get(index)) {
                     return iced::clipboard::write(link.target.clone());
                 }
             }
             Message::CardPlan(plan) => {
                 self.shell.card_menu = None;
-                if let Some(detail) = &self.card {
+                if let Some(detail) = self.card.value() {
                     let task = detail.task.id.to_string();
                     self.board_act(Request::TaskUpdate {
                         agent: agentdocker_core::HUMAN.into(),
@@ -3404,8 +3404,7 @@ impl App {
                 {
                     self.shell.review_delivery = !self.shell.review_delivery;
                     if self.shell.review_delivery {
-                        self.session_log = None;
-                        self.send(Cmd::SessionLog(id));
+                        self.request_session_log(id);
                     }
                 }
             }
@@ -5204,7 +5203,7 @@ impl App {
     }
 
     fn link_file(&mut self, file: String, unlink: bool) {
-        if let Some(detail) = &self.card {
+        if let Some(detail) = self.card.value() {
             let task = detail.task.id.to_string();
             self.board_act(Request::FileLink {
                 from: agentdocker_core::HUMAN.into(),
@@ -5440,7 +5439,10 @@ impl App {
         }
         self.shell.route.resolve(target.message.clone());
         self.shell.message_detail = Some(target.message.clone());
-        self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
+        let chosen = self.canonical_agent(target.agent.as_str()).to_owned();
+        self.shell.selected = Some(chosen.clone());
+        // Its changes, as for a session chosen by hand.
+        self.request_review(&chosen);
         self.shell.more = false;
         self.confirm_stop = None;
         self.screen = Screen::Questions;
@@ -6590,12 +6592,15 @@ mod tests {
         // chosen session's, shown where its changes would be.
         for before in [None, Some("agent-2")] {
             app.shell.selected = before.map(str::to_owned);
-            app.branch_review = None;
+            app.branch_review = Default::default();
             fill_queue(&mut app);
             let _ = app.update(Message::SelectSession("agent-1".into()));
             assert_eq!(app.shell.selected.as_deref(), Some("agent-1"));
             assert!(
-                matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why.contains(full)),
+                app.branch_review
+                    .of("agent-1")
+                    .error()
+                    .is_some_and(|why| why.contains(full)),
                 "from {before:?}: {:?}",
                 app.branch_review
             );
@@ -6605,16 +6610,17 @@ mod tests {
         let _ = app.update(Message::SelectSession("agent-1".into()));
         assert!(matches!(
             commands.try_iter().collect::<Vec<_>>().as_slice(),
-            [Cmd::ReviewBranch(agent)] if agent == "agent-1"
+            [Cmd::ReviewBranch(agent, _)] if agent == "agent-1"
         ));
         // A review already on view is not taken away by a refresh of it
-        // that could not be asked.
-        app.branch_review = Some(("agent-1".into(), Err("what was on view".into())));
+        // that could not be asked: the reason stands above it.
+        let on_view = agentdocker_core::review::Review::default();
+        app.branch_review = crate::app::remote::About::ready("agent-1".into(), on_view.clone());
         fill_queue(&mut app);
         let _ = app.update(Message::ReviewChanges("agent-1".into()));
-        assert!(
-            matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why == "what was on view")
-        );
+        let read = app.branch_review.of("agent-1");
+        assert_eq!(read.value(), Some(&on_view));
+        assert!(read.error().is_some_and(|why| why.contains(full)));
         let _ = commands.try_iter().count();
 
         // Opening a thread: its pane stops waiting and says why; opened
@@ -6685,22 +6691,29 @@ mod tests {
         app.shell.selected = Some("agent-1".into());
 
         // The session's log, and its changes when none are on view.
-        app.rejected(Cmd::SessionLog("agent-1".into()), "refused");
+        let ask = app.session_log.ask("agent-1".into());
+        app.rejected(Cmd::SessionLog("agent-1".into(), ask), "refused");
+        assert_eq!(app.session_log.of("agent-1").error(), Some("refused"));
+        let ask = app.branch_review.ask("agent-1".into());
+        app.rejected(Cmd::ReviewBranch("agent-1".into(), ask), "refused");
+        assert_eq!(app.branch_review.of("agent-1").error(), Some("refused"));
+        // A review already on view stays, with the reason beside it; one
+        // of a session not on view is not put there.
+        let on_view = agentdocker_core::review::Review::default();
+        app.branch_review = crate::app::remote::About::ready("agent-1".into(), on_view.clone());
+        let ask = app.branch_review.ask("agent-1".into());
+        app.rejected(Cmd::ReviewBranch("agent-1".into(), ask), "refused");
+        app.rejected(Cmd::ReviewBranch("agent-2".into(), ask), "refused");
         assert_eq!(
-            app.session_log,
-            Some(("agent-1".into(), Err("refused".into())))
+            app.branch_review.of("agent-1"),
+            crate::app::remote::Seen::Failed {
+                error: "refused",
+                last: Some(&on_view)
+            }
         );
-        app.rejected(Cmd::ReviewBranch("agent-1".into()), "refused");
-        assert!(
-            matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why == "refused")
-        );
-        // A review already on view stays; one of a session not on view
-        // is not put there.
-        app.branch_review = Some(("agent-1".into(), Err("what was on view".into())));
-        app.rejected(Cmd::ReviewBranch("agent-1".into()), "refused");
-        app.rejected(Cmd::ReviewBranch("agent-2".into()), "refused");
-        assert!(
-            matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why == "what was on view")
+        assert_eq!(
+            app.branch_review.of("agent-2"),
+            crate::app::remote::Seen::Unasked
         );
         assert!(
             app.status.is_empty(),
@@ -6751,12 +6764,24 @@ mod tests {
             app.rejected(command, "refused");
             assert_eq!(app.status, "refused", "{named}");
         };
-        // The To-do list: only while its page is open with nothing read.
-        quiet(&mut app, Cmd::Todo);
+        // The To-do list: never at the window's foot. The reason stands
+        // on its page, beside the list as last read.
         app.screen = Screen::Todo;
-        said(&mut app, Cmd::Todo);
-        app.todo = Some(Vec::new());
-        quiet(&mut app, Cmd::Todo);
+        let ask = app.todo.ask();
+        quiet(&mut app, Cmd::Todo(ask));
+        assert_eq!(app.todo.seen().error(), Some("refused"));
+        let first = app.todo.ask();
+        app.todo.answer(first, Ok(Vec::new()));
+        let ask = app.todo.ask();
+        quiet(&mut app, Cmd::Todo(ask));
+        assert_eq!(
+            app.todo.seen(),
+            crate::app::remote::Seen::Failed {
+                error: "refused",
+                last: Some(&Vec::new())
+            },
+            "the list as last read stays beside it"
+        );
         // A project's plans, files and memory: the project on view, with
         // nothing of them read.
         quiet(&mut app, Cmd::Workspace("/work/b".into()));
@@ -10269,7 +10294,7 @@ mod tests {
         assert!(
             commands
                 .try_iter()
-                .all(|cmd| matches!(cmd, Cmd::ReviewBranch(ref id) if id == "other"))
+                .all(|cmd| matches!(cmd, Cmd::ReviewBranch(ref id, _) if id == "other"))
         );
         messages
             .send(Msg::SessionSent(
@@ -10490,7 +10515,8 @@ mod tests {
             "a live question is not an archive lookup"
         );
         assert!(app.status.is_empty(), "no false missing-archive warning");
-        assert!(commands.try_iter().all(|cmd| !matches!(
+        let sent: Vec<Cmd> = commands.try_iter().collect();
+        assert!(sent.iter().all(|cmd| !matches!(
             cmd,
             Cmd::Answer(..)
                 | Cmd::ConversationSend { .. }
@@ -10499,6 +10525,239 @@ mod tests {
                 | Cmd::Stop(..)
                 | Cmd::HistoryBefore(..)
         )));
+        // The session the notification named is the one on view: its
+        // changes are asked for, as for a session chosen by hand.
+        assert_eq!(app.shell.selected.as_deref(), Some("sender-1"));
+        assert!(
+            sent.iter()
+                .any(|cmd| matches!(cmd, Cmd::ReviewBranch(agent, _) if agent == "sender-1"))
+        );
+    }
+
+    /// A session comes on view by being chosen, launched, reconnected or
+    /// named by a notification, and the service can come back under one
+    /// that is on view. Only choosing it asked for its changes: the
+    /// others left the section empty until **Refresh** or its next
+    /// commit.
+    #[test]
+    fn a_sessions_changes_are_asked_for_by_every_route_to_it() {
+        use crate::app::link::Report;
+        let (mut app, commands, messages) = app();
+        app.link.open();
+        let asked = |commands: &CommandReceiver| {
+            commands
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::ReviewBranch(agent, _) => Some(agent),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let _ = asked(&commands);
+
+        messages
+            .send(Msg::Launched(Ok("launched-1".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.selected.as_deref(), Some("launched-1"));
+        assert_eq!(asked(&commands), ["launched-1"], "a session just launched");
+
+        messages
+            .send(Msg::Reconnected(Ok(("resumed-1".into(), None))))
+            .unwrap();
+        app.drain();
+        assert_eq!(asked(&commands), ["resumed-1"], "a session reconnected");
+
+        // Read, then the service goes and comes back: read from the new
+        // connection, with what was read kept on view meanwhile.
+        let ask = app.branch_review.latest();
+        let review = agentdocker_core::review::Review::default();
+        messages
+            .send(Msg::BranchReview(
+                "resumed-1".into(),
+                ask,
+                Ok(review.clone()),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Disconnected(Report::Stream, "gone".into()))
+            .unwrap();
+        app.drain();
+        assert_eq!(asked(&commands), [] as [&str; 0], "nothing answers");
+        assert_eq!(app.branch_review.of("resumed-1").value(), Some(&review));
+        messages.send(Msg::Connected(Report::Stream)).unwrap();
+        app.drain();
+        assert_eq!(asked(&commands), ["resumed-1"], "the service came back");
+        assert_eq!(
+            app.branch_review.of("resumed-1"),
+            crate::app::remote::Seen::Reading {
+                last: Some(&review)
+            }
+        );
+    }
+
+    /// To-do drew one blank for four things: never asked for, being
+    /// read, read and found empty, and could not be read, which was only
+    /// a passing line at the window's foot. Each is now said on the page,
+    /// and each has a node to wait on.
+    #[test]
+    fn to_do_says_reading_could_not_be_read_and_nothing_to_do_apart() {
+        use super::super::view::testing::seen;
+        use crate::app::link::Report;
+        let (mut app, alpha, _beta, kept) = travel();
+        app.link.open();
+        let c = crate::app::style::Colors::new(false);
+        let asked = |kept: &Kept| {
+            kept._commands
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::Todo(ask) => Some(ask),
+                    _ => None,
+                })
+                .last()
+        };
+        let shows = |app: &App, id: &str| seen(app.todo_view(c)).control(id).is_some();
+        let cases = ["todo-reading", "todo-error-mark", "todo-empty"];
+
+        // Never asked for: the quiet tile, and none of the three.
+        for id in cases {
+            assert!(!shows(&app, id), "never asked: {id}");
+        }
+
+        let _ = app.update(Message::Navigate(Screen::Todo));
+        let first = asked(&kept).expect("opening To-do asks for it");
+        assert!(shows(&app, "todo-reading"), "being read");
+        assert!(!shows(&app, "todo-empty"), "which is not nothing to do");
+
+        // It could not be read: said on the page, and not at its foot.
+        app.status.clear();
+        kept.messages
+            .send(Msg::Todo(first, Err("storage unavailable".into())))
+            .unwrap();
+        app.drain();
+        let page = seen(app.todo_view(c));
+        assert_eq!(
+            page.control("todo-error-mark").map(|said| said.1.as_str()),
+            Some("To-do could not be read: storage unavailable")
+        );
+        assert!(page.control("todo-reading").is_none() && page.control("todo-empty").is_none());
+        assert!(app.status.is_empty(), "not a toast: {}", app.status);
+
+        // Asked again. An answer to the earlier ask is not taken.
+        app.request_todo();
+        let second = asked(&kept).unwrap();
+        let card = card_in("aaaaaaaaaaaa", &alpha, "Port the parser");
+        kept.messages
+            .send(Msg::Todo(first, Ok(vec![card.clone()])))
+            .unwrap();
+        app.drain();
+        assert!(shows(&app, "todo-reading"), "the older answer is let go");
+        // Read, and nothing to do.
+        kept.messages
+            .send(Msg::Todo(second, Ok(Vec::new())))
+            .unwrap();
+        app.drain();
+        let page = seen(app.todo_view(c));
+        assert_eq!(
+            page.control("todo-empty").map(|said| said.1.as_str()),
+            Some("Nothing to do")
+        );
+        assert!(
+            page.control("todo-reading").is_none() && page.control("todo-error-mark").is_none()
+        );
+
+        // A card to do. A read behind the list says nothing, and one that
+        // fails leaves the list as last read under the failure.
+        let row = format!("todo-{}", card.id);
+        app.request_todo();
+        let third = asked(&kept).unwrap();
+        kept.messages
+            .send(Msg::Todo(third, Ok(vec![card])))
+            .unwrap();
+        app.drain();
+        assert!(shows(&app, &row) && !shows(&app, "todo-empty"));
+        app.request_todo();
+        let fourth = asked(&kept).unwrap();
+        assert!(shows(&app, &row) && !shows(&app, "todo-reading"));
+        kept.messages
+            .send(Msg::Todo(
+                fourth,
+                Err("the service stopped answering".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(shows(&app, "todo-error-mark"));
+        assert!(shows(&app, &row), "the list as last read stays");
+
+        // The service comes back: To-do, on view, is read from it.
+        for report in [
+            Msg::Disconnected(Report::Stream, "gone".into()),
+            Msg::Connected(Report::Stream),
+        ] {
+            kept.messages.send(report).unwrap();
+        }
+        app.drain();
+        assert!(asked(&kept).is_some(), "asked again on the new connection");
+    }
+
+    /// An open card's details came or did not, and the card looked the
+    /// same either way: nothing while they were read, and a failure only
+    /// as a passing line at the window's foot.
+    #[test]
+    fn an_open_card_says_its_details_are_being_read_or_could_not_be() {
+        use super::super::view::testing::seen;
+        let (mut app, _beta, kept, [first, _second]) = linked_cards();
+        let c = crate::app::style::Colors::new(false);
+        let shows = |app: &App, id: &str| seen(app.board_view(c)).control(id).is_some();
+
+        let _ = app.update(Message::TaskOpen(first.id.clone()));
+        assert!(shows(&app, "card-reading"), "being read");
+        assert!(!shows(&app, "card-error-mark"));
+
+        app.status.clear();
+        kept.messages
+            .send(Msg::TaskDetail(
+                first.id.clone(),
+                app.card.latest(),
+                Err("no such card".into()),
+            ))
+            .unwrap();
+        app.drain();
+        let board = seen(app.board_view(c));
+        assert_eq!(
+            board.control("card-error-mark").map(|said| said.1.as_str()),
+            Some("The card's details could not be read: no such card")
+        );
+        assert!(board.control("card-reading").is_none());
+        assert!(app.status.is_empty(), "not a toast: {}", app.status);
+
+        // Read: neither. Then a refresh that fails keeps what was read.
+        app.request_card(first.id.clone());
+        bring_detail(&mut app, &kept, &first);
+        app.drain();
+        assert!(!shows(&app, "card-reading") && !shows(&app, "card-error-mark"));
+        assert!(app.card.value().is_some());
+        app.request_card(first.id.clone());
+        assert!(
+            !shows(&app, "card-reading"),
+            "a read behind them says nothing"
+        );
+        kept.messages
+            .send(Msg::TaskDetail(
+                first.id.clone(),
+                app.card.latest(),
+                Err("storage unavailable".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(shows(&app, "card-error-mark"));
+        assert!(app.card.value().is_some(), "the details as last read stay");
+
+        // Closed (opening the open card closes it): nothing of it is
+        // carried over to the next.
+        let _ = app.update(Message::TaskOpen(first.id.clone()));
+        assert_eq!(app.task_open, None);
+        assert_eq!(app.card.seen(), crate::app::remote::Seen::Unasked);
     }
 
     /// An archived message's notification opens its conversation even when
@@ -10953,7 +11212,7 @@ mod tests {
         assert!(
             commands
                 .try_iter()
-                .any(|cmd| matches!(cmd, Cmd::SessionLog(ref id) if id == "paused-claude")),
+                .any(|cmd| matches!(cmd, Cmd::SessionLog(ref id, _) if id == "paused-claude")),
             "the session log is asked for"
         );
         // Pressed again it toggles like the inspector's own control would
@@ -12893,7 +13152,11 @@ mod tests {
             times: None,
         };
         kept.messages
-            .send(Msg::TaskDetail(card.id.clone(), Ok(Box::new(detail))))
+            .send(Msg::TaskDetail(
+                card.id.clone(),
+                app.card.latest(),
+                Ok(Box::new(detail)),
+            ))
             .unwrap();
         app.drain();
     }
@@ -12925,7 +13188,7 @@ mod tests {
         assert!(
             kept._commands
                 .try_iter()
-                .any(|c| matches!(c, Cmd::TaskDetail(ref task) if *task == second.id)),
+                .any(|c| matches!(c, Cmd::TaskDetail(ref task, _) if *task == second.id)),
             "the linked card is asked for in full"
         );
 
@@ -13008,7 +13271,7 @@ mod tests {
             }
             if closes {
                 assert_eq!(app.task_open, None, "{route}: the card is closed");
-                assert_eq!(app.card, None, "{route}: its detail goes with it");
+                assert_eq!(app.card.value(), None, "{route}: its detail goes with it");
                 let _ = app.update(Message::TaskOpen(second.id.clone()));
             }
             assert_eq!(app.task_open.as_ref(), Some(&second.id), "{route}");

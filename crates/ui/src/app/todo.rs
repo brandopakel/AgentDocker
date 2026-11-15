@@ -36,11 +36,46 @@ impl App {
         }
     }
 
+    /// The To-do page. Its list is a [`Remote`](super::remote::Remote),
+    /// and each thing that can be true of one is said differently: being
+    /// read for the first time is a *Reading…* chip (`todo-reading`); a
+    /// read that failed is a line saying why (`todo-error`) above the
+    /// list as last read; nothing to do is the quiet tile, named
+    /// `todo-empty` for a reader and the workflow driver.
     pub(super) fn todo_view(&self, c: Colors) -> Element<'_, Message> {
-        let Some(cards) = &self.todo else {
-            return super::view::empty(None, c);
-        };
+        let seen = self.todo.seen();
         let mut page = column![].spacing(18).width(Fill);
+        if let Some(error) = seen.error() {
+            page = page.push(super::view::error_line(
+                "todo-error",
+                &format!("To-do could not be read: {error}"),
+                c,
+            ));
+        }
+        if seen.first_read() {
+            return page
+                .push(super::chip::chip(
+                    "todo-reading",
+                    None,
+                    "Reading…",
+                    super::chip::Tone::Info,
+                    c,
+                ))
+                .into();
+        }
+        let cards: &[Task] = seen.value().map_or(&[], Vec::as_slice);
+        // Nothing to do, or nothing read to say so of: the quiet tile.
+        // Named only when the list was read and is empty.
+        if !cards.iter().any(|t| self.todo_section(t).is_some()) {
+            let tile = super::view::empty(None, c);
+            return page
+                .push(if seen.value().is_some() {
+                    said("todo-empty", "Nothing to do", tile)
+                } else {
+                    tile
+                })
+                .into();
+        }
         for (section, glyph, words) in [
             (Section::Mine, Icon::Todo, "Yours"),
             (Section::Agents, Icon::Sessions, "Your agents'"),

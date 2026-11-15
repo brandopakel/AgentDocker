@@ -18,6 +18,15 @@ sentence, the amber mark with its first line beside it. What just
 happened shows as a toast at the window's foot for eight seconds, and only
 when the screen does not already show it.
 
+What the app reads from the service is shown as what it is. A place being
+read for the first time says *Reading…*. A read that failed says so where
+the thing would be, as the amber mark and a line (*To-do could not be read*
+and why), above what was last read, which stays on view; it is not a toast.
+A read behind something already on view says nothing until it has an answer.
+And a place that was read and has nothing in it is the quiet mark or the one
+thing to do there, which is none of these. To-do, an open card's details, a
+session's changes and its log are shown this way.
+
 After a send, **Queued · N sessions need attention** appears when recipients
 have missing or stale input receivers, paused delivery, ended sessions or provider
 limits. **Details** beside it (read aloud as *Delivery details*) lists them, one
@@ -456,7 +465,11 @@ merge-commit hook can leave a pending merge to finish or abort. The app never
 automatically aborts or resets, since a concurrent operation may belong to you.
 An unreadable final operation check refuses execution. A branch that moved
 since it was read is never merged unseen. Nothing is pushed. Changes are read
-again when the session commits or its branch moves, and with **Refresh**. Once
+when a session comes on view by any route (chosen, launched, reconnected, or
+opened from a notification), again when the session commits or its branch
+moves, when the service comes back, and with **Refresh**. A read that fails
+says *Changes could not be read* and why above the changes as last read,
+which a failed refresh does not take away. Once
 nothing is left to merge the section says **Up to date**; once GitHub reports
 a merged pull request whose head matches both the reviewed and the current
 branch head it says **Merged #&lt;n&gt;** and offers no Merge, since a squash leaves
@@ -582,7 +595,9 @@ word) that moves the card to its board's Done, its key, title, its *High
 priority* and due chips, and its holder; pressed, it selects the card's
 project as a click on that project does and opens the card on its board,
 where it stays open; a project no longer on the list opens nothing and the
-status line says so.
+status line says so. The list is read when To-do is opened, again when a
+board changes while it is open, and again when the service comes back; with
+nothing to do it is the quiet mark.
 
 **More → Plans** is the project's plans, files and memory. The list is each plan's
 name with a chip for where it stands (*Draft*, *Active*, *Done*, *Archived*) and a

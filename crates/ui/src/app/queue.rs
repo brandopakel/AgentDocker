@@ -81,7 +81,7 @@ fn key(command: &Cmd) -> Option<Key> {
         Cmd::Pauses => Key::Pauses,
         Cmd::Me => Key::Me,
         Cmd::Questions => Key::Questions,
-        Cmd::ReviewBranch(agent) => Key::ReviewBranch(agent.clone()),
+        Cmd::ReviewBranch(agent, _) => Key::ReviewBranch(agent.clone()),
         Cmd::SecretReviews => Key::SecretReviews,
         Cmd::Delivery(message) => Key::Delivery(message.clone()),
         _ => return None,
@@ -99,6 +99,16 @@ pub(super) struct Sender {
 pub(super) struct Receiver {
     inner: mpsc::Receiver<Cmd>,
     pending: Pending,
+}
+
+/// What became of a command the queue took.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Sent {
+    /// It waits for the worker.
+    Queued,
+    /// One like it was already waiting and stands for both: this one
+    /// will not be run, and no answer to it will come.
+    Merged,
 }
 
 #[derive(Debug)]
@@ -121,7 +131,7 @@ pub(super) fn channel() -> (Sender, Receiver) {
 
 impl Sender {
     /// UI submission never waits for the daemon or for room in its queue.
-    pub(super) fn send(&self, command: Cmd) -> Result<(), Rejected> {
+    pub(super) fn send(&self, command: Cmd) -> Result<Sent, Rejected> {
         if bytes(&command) > COMMAND_BYTES {
             return Err(Rejected {
                 command: Box::new(command),
@@ -136,10 +146,10 @@ impl Sender {
         if let Some(key) = &refresh
             && !pending.insert(key.clone())
         {
-            return Ok(());
+            return Ok(Sent::Merged);
         }
         let error = match self.inner.try_send(command) {
-            Ok(()) => return Ok(()),
+            Ok(()) => return Ok(Sent::Queued),
             Err(mpsc::TrySendError::Full(command)) => Rejected {
                 command: Box::new(command),
                 reason: "The daemon request queue is full; try again when it catches up.",
