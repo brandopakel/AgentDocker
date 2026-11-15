@@ -169,9 +169,10 @@ outside AgentDocker. `daemon install --dry-run` previews the task without
 registering it.
 `daemon status` prints the daemon's `authority`: `serving`; `offering` while a
 handover it offered is open; `candidate` when it started while another daemon's
-handover offer was open; `transferred` once it has handed coordination off and
-stays fenced. In the last three, writes answer `transferring` until the offer is
-settled. A daemon whose storage failed refuses every request until it restarts;
+handover offer was open; `transferred` once it has handed coordination off. While
+offering or a candidate, its writes answer `transferring` until that offer is
+settled. A transferred daemon's offer is already settled, and it stays fenced:
+its writes keep answering `transferring`. A daemon whose storage failed refuses every request until it restarts;
 `daemon status` then says it answers, with its pid and version, and prints the
 failure as its authority, where it would otherwise print `not running`.
 
@@ -606,7 +607,7 @@ each one by pid.
 | `validation <id>` | The retained log of one validation; `--compress` for an rtk view |
 | `events` | The daemon's event stream; `[[webhooks]]` in `agentd.toml` posts a signed copy of chosen kinds to an address you name (see [webhooks](ARCHITECTURE.md#events)) |
 | `webhook deliveries <name>` | A webhook sink's latest attempts to post, oldest first: the event, which attempt, whether it was delivered, will be retried (and when) or was given up, the receiver's status code or a word for why there was none, and how long it took; `--limit` (up to 200), `--json` |
-| `ping` | Check the daemon is reachable. A daemon that is not serving says so after its uptime: offering coordination to a successor, a candidate opened while another daemon's handover offer was open, or handed off; its writes answer `transferring` until that settles. A daemon whose storage failed refuses it, and the refusal prints the failure with the daemon's pid and version |
+| `ping` | Check the daemon is reachable. A daemon that is not serving says so after its uptime: offering coordination to a successor or a candidate opened while another daemon's handover offer was open, whose writes answer `transferring` until that offer settles; or handed off, its offer settled, staying fenced with its writes still answering `transferring`. A daemon whose storage failed refuses it, and the refusal prints the failure with the daemon's pid and version |
 
 An agent that has ended shows the exit code that was recorded for it: `exited (0)`, `exited (1)`. `exited (code unknown)` means no code was recorded, and says nothing of why the process ended: the daemon found a process it only watches (a registered or adopted session) gone without seeing it end, or the process ended without a code, as one ended by a signal does. `up` says the same of an entry as `exited with unknown code`; an entry waiting for that one to exit 0 is not started, since an unknown code is not a 0.
 
