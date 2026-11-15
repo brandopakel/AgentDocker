@@ -157,13 +157,9 @@ pub(super) async fn add_worktree(
     }
 }
 
-/// The file a project keeps its worktree includes in: one git pathspec per
-/// line of files git ignores that a worktree still needs (`.env`, local
-/// settings). The name is the one other session managers read.
-pub const INCLUDE_FILE: &str = ".worktreeinclude";
-/// At most this much is copied into one worktree.
-const INCLUDE_BYTES: u64 = 256 * 1024 * 1024;
-
+/// The file a project keeps its worktree includes in
+/// ([`agentdocker_host::vcs::WORKTREE_INCLUDE`]).
+pub const INCLUDE_FILE: &str = agentdocker_host::vcs::WORKTREE_INCLUDE;
 /// Copy the files `.worktreeinclude` names from `root` into `path`: only
 /// files git ignores or does not track there (tracked files are in the
 /// worktree already), each under the same relative path. Says how many
@@ -184,82 +180,71 @@ pub(super) async fn copy_includes(root: PathBuf, path: PathBuf) -> (usize, Optio
             )),
         );
     }
-    let specs: Vec<String> = text
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with('-'))
-        .map(str::to_owned)
-        .collect();
-    if specs.is_empty() {
+    let Some(args) = agentdocker_host::vcs::worktree_include_listing(&text) else {
         return (0, None);
-    }
-    let mut args = vec![
-        "ls-files".to_owned(),
-        "-z".to_owned(),
-        "--others".to_owned(),
-        "--ignored".to_owned(),
-        "--exclude-standard".to_owned(),
-        "--".to_owned(),
-    ];
-    args.extend(specs);
+    };
     let listed = match git(root.clone(), args).await {
         Ok(output) if output.success => output.stdout,
         Ok(output) => return (0, Some(output.text)),
         Err(e) => return (0, Some(e.to_string())),
     };
-    let (mut copied, mut bytes, mut trouble) = (0usize, 0u64, None);
-    for relative in listed.split('\0').filter(|r| !r.is_empty()) {
-        let from = root.join(relative);
-        let to = path.join(relative);
-        // A symlink is left out: it could point anywhere.
-        let Ok(meta) = std::fs::symlink_metadata(&from) else {
-            continue;
-        };
-        if !meta.is_file() {
-            continue;
-        }
-        bytes += meta.len();
-        if bytes > INCLUDE_BYTES {
-            trouble.get_or_insert_with(|| {
-                format!("{INCLUDE_FILE} names more than 256 MiB; the rest was not copied")
-            });
-            break;
-        }
+    // Regular files only, in order, within the size budget: the rule a
+    // client predicting this worktree's contents applies too.
+    let (sources, stopped) = agentdocker_host::vcs::worktree_include_sources(&root, &listed);
+    let (mut copied, mut trouble) = (0usize, None);
+    for (relative, meta) in sources {
+        let from = root.join(&relative);
+        let to = path.join(&relative);
         // The worktree is a checkout, and a checkout can carry a symlink
         // where this file or a folder on its way goes: written through, the
         // copy would land wherever it points. Nothing is written through
-        // one, and nothing already there is replaced.
-        if !stays_inside(&path, relative) {
-            trouble.get_or_insert_with(|| {
-                format!("{relative}: the worktree has a symlink on its way; not copied")
-            });
+        // one, into a file, or over anything already there.
+        if let Some(obstruction) = obstruction(&path, &relative) {
+            trouble.get_or_insert_with(|| format!("{relative}: {obstruction}; not copied"));
             continue;
         }
-        match copy_new(&from, &path, relative, &to, &meta) {
+        match copy_new(&from, &path, &relative, &to, &meta) {
             Ok(()) => copied += 1,
             Err(e) => {
                 trouble.get_or_insert_with(|| format!("{relative}: {e}"));
             }
         }
     }
-    (copied, trouble)
+    // Every file that came before the budget ran out was tried first.
+    (copied, trouble.or(stopped))
 }
 
-/// Whether writing `relative` under `base` stays under it: an ordinary
-/// path, and no part of the way there, the file itself included, a
-/// symlink.
-fn stays_inside(base: &Path, relative: &str) -> bool {
-    let mut at = base.to_path_buf();
-    for part in Path::new(relative).components() {
-        let std::path::Component::Normal(name) = part else {
+/// What keeps a copy of `relative` out of `base`, worded for the person,
+/// or `None` when nothing does. Blocked: a path that is not an ordinary
+/// relative one; a symlink anywhere on the way, the file itself included;
+/// a file where a folder is needed; or a file where this one goes, since
+/// the copy makes the file new, never over one
+/// ([`agentdocker_host::vcs::worktree_include_writable`]).
+fn obstruction(base: &Path, relative: &str) -> Option<String> {
+    let mut found = None;
+    let writable = agentdocker_host::vcs::worktree_include_writable(relative, |at| {
+        let Ok(meta) = std::fs::symlink_metadata(base.join(at)) else {
             return false;
         };
-        at.push(name);
-        if std::fs::symlink_metadata(&at).is_ok_and(|m| m.file_type().is_symlink()) {
-            return false;
-        }
+        found = if meta.file_type().is_symlink() {
+            Some(format!("the worktree has a symlink at {}", at.display()))
+        } else if meta.is_dir() {
+            None
+        } else if at == Path::new(relative) {
+            Some("the worktree already has a file there".to_owned())
+        } else {
+            Some(format!(
+                "the worktree has a file at {} where a folder is needed",
+                at.display()
+            ))
+        };
+        found.is_some()
+    });
+    match (writable, found) {
+        (true, _) => None,
+        (false, Some(found)) => Some(found),
+        (false, None) => Some("not an ordinary relative path".to_owned()),
     }
-    true
 }
 
 /// Copy `from` to a file made new at `relative` beneath `base`. On Unix
@@ -1995,9 +1980,6 @@ mod lifecycle_tests {
         }
     }
 
-    /// A new worktree gets the ignored files `.worktreeinclude` names and
-    /// nothing else; once its branch is merged and it is clean it can be
-    /// removed with its branch, and a dirty one is refused.
     /// A checkout can carry a symlink where an include goes, or on its
     /// way: nothing is written through it, and what it points at is left
     /// as it was.
@@ -2030,12 +2012,69 @@ mod lifecycle_tests {
         std::os::unix::fs::symlink(&outside, wt.join("local")).unwrap();
         let (copied, trouble) = copy_includes(root.clone(), wt.clone()).await;
         assert_eq!(copied, 0);
-        assert!(trouble.unwrap().contains("symlink"));
+        assert_eq!(
+            trouble.as_deref(),
+            Some(".env: the worktree has a symlink at .env; not copied")
+        );
         assert_eq!(
             std::fs::read_to_string(outside.join("victim")).unwrap(),
             "untouched"
         );
         assert!(!outside.join("settings.json").exists());
+    }
+
+    /// A file in the worktree where an include goes, or where a folder on
+    /// its way goes, keeps that include out, and the trouble says which;
+    /// the file is left as it was, and the other includes are copied.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_include_a_file_is_in_the_way_of_says_which_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        run(&root, &["init", "-q", "-b", "main"]).await;
+        run(&root, &["config", "user.email", "t@example.com"]).await;
+        run(&root, &["config", "user.name", "T"]).await;
+        std::fs::write(root.join(".gitignore"), ".env\nlocal/\n").unwrap();
+        std::fs::write(root.join(INCLUDE_FILE), ".env\nlocal/\n").unwrap();
+        run(&root, &["add", "."]).await;
+        run(&root, &["commit", "-qm", "initial"]).await;
+        std::fs::write(root.join(".env"), "KEY=secret\n").unwrap();
+        std::fs::create_dir(root.join("local")).unwrap();
+        std::fs::write(root.join("local/settings.json"), "{}").unwrap();
+
+        let wt = tmp.path().join("wt");
+        add_worktree(root.clone(), &wt, "agent/two", None, None)
+            .await
+            .unwrap();
+        // What a checkout could have put there: files, not folders.
+        std::fs::write(wt.join(".env"), "KEY=theirs\n").unwrap();
+        std::fs::write(wt.join("local"), "a file\n").unwrap();
+        let (copied, trouble) = copy_includes(root.clone(), wt.clone()).await;
+        assert_eq!(copied, 0);
+        assert_eq!(
+            trouble.as_deref(),
+            Some(".env: the worktree already has a file there; not copied")
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join(".env")).unwrap(),
+            "KEY=theirs\n"
+        );
+
+        std::fs::remove_file(wt.join(".env")).unwrap();
+        let (copied, trouble) = copy_includes(root.clone(), wt.clone()).await;
+        assert_eq!(copied, 1, "{trouble:?}");
+        assert_eq!(
+            trouble.as_deref(),
+            Some(
+                "local/settings.json: the worktree has a file at local where a folder is \
+                 needed; not copied"
+            )
+        );
+        assert_eq!(
+            std::fs::read_to_string(wt.join("local")).unwrap(),
+            "a file\n"
+        );
     }
 
     /// A repository with one commit, and a daemon with one agent working
@@ -2886,6 +2925,9 @@ mod lifecycle_tests {
         );
     }
 
+    /// A new worktree gets the ignored files `.worktreeinclude` names and
+    /// nothing else; once its branch is merged and it is clean it can be
+    /// removed with its branch, and a dirty one is refused.
     #[tokio::test]
     async fn includes_are_copied_in_and_a_finished_worktree_is_removed() {
         let tmp = tempfile::tempdir().unwrap();

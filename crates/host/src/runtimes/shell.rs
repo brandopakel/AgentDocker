@@ -22,7 +22,12 @@ pub const CLAUDE_CHANNEL_FLAG: &str = "--dangerously-load-development-channels s
 /// passwd entry, which is what a daemon or an app started by launchd or
 /// systemd — with no shell in its environment — has to go by.
 pub fn login_shell() -> Option<String> {
-    if let Some(shell) = std::env::var_os("SHELL")
+    login_shell_of(std::env::var_os("SHELL"))
+}
+
+/// The login shell of a process whose `$SHELL` is `shell`.
+pub(super) fn login_shell_of(shell: Option<std::ffi::OsString>) -> Option<String> {
+    if let Some(shell) = shell
         && !shell.is_empty()
     {
         return Some(shell.to_string_lossy().into_owned());
