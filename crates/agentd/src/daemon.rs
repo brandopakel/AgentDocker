@@ -246,9 +246,13 @@ type DeferredWrite = Box<dyn FnOnce(&Store, u64) -> anyhow::Result<u64> + Send>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Coordination {
     Serving,
-    /// Offered to a successor; every write here is refused until settled.
+    /// An offer is open; every write here is refused until it is settled.
     Quiescing {
         transfer: String,
+        /// This process made the offer; otherwise it opened while another
+        /// daemon's offer was open. Said in `ping`, and nothing else
+        /// depends on it.
+        offered: bool,
     },
     /// The successor accepted; this process is leaving without writing.
     Transferred {
@@ -1812,6 +1816,7 @@ impl Daemon {
                     coordination: match pending_transfer {
                         Some(transfer) => Coordination::Quiescing {
                             transfer: transfer.id,
+                            offered: false,
                         },
                         None => Coordination::Serving,
                     },
@@ -2109,7 +2114,7 @@ impl Daemon {
             self.shutdown.notify_one();
             return Response::Ok;
         }
-        if let Some(error) = lock(&self.state).storage_failure() {
+        if let Some(error) = lock(&self.state).storage_refusal(matches!(request, Request::Ping)) {
             return error;
         }
         // Admission and the in-flight count move together under the lock:
@@ -2351,22 +2356,7 @@ impl Daemon {
                 })
                 .await
             }
-            Request::Ping => Response::Pong {
-                version: env!("CARGO_PKG_VERSION").to_owned(),
-                uptime_secs: self.started.elapsed().as_secs(),
-                restricted: match self.restricted() {
-                    RestrictedEndpoint::On(socket) => Some(socket),
-                    _ => None,
-                },
-                pid: Some(std::process::id()),
-                executable: agentdocker_host::procinfo::executable_path().ok(),
-                experimental: Some(crate::config::experimental(&self.home)),
-                judge: Some(self.judge_status()),
-                features: agentdocker_core::protocol::FEATURES
-                    .iter()
-                    .map(|name| (*name).to_owned())
-                    .collect(),
-            },
+            Request::Ping => self.ping(),
             Request::DaemonProcess => {
                 let state = lock(&self.state);
                 let successor = match &state.coordination {
@@ -3569,6 +3559,38 @@ impl Daemon {
         lock(&self.restricted).clone()
     }
 
+    /// The answer to `ping`. Whether storage has failed and the authority
+    /// said are one observation under one hold of the state, so a `pong`
+    /// never says `storage_failed`: a failure latched since `handle` looked
+    /// is answered here with the same refusal. The hold ends before the
+    /// helpers below, which take their own locks.
+    fn ping(&self) -> Response {
+        let authority = {
+            let state = lock(&self.state);
+            if let Some(refusal) = state.storage_refusal(true) {
+                return refusal;
+            }
+            state.authority()
+        };
+        Response::Pong {
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            uptime_secs: self.started.elapsed().as_secs(),
+            restricted: match self.restricted() {
+                RestrictedEndpoint::On(socket) => Some(socket),
+                _ => None,
+            },
+            pid: Some(std::process::id()),
+            executable: agentdocker_host::procinfo::executable_path().ok(),
+            experimental: Some(crate::config::experimental(&self.home)),
+            judge: Some(self.judge_status()),
+            features: agentdocker_core::protocol::FEATURES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
+            authority: Some(authority),
+        }
+    }
+
     /// The project containing `workdir`, fingerprinted from the cache or by
     /// `git`. With `record`, a repository seen for the first time is cached,
     /// persisted, and announced; without it (resolving a `ps --project
@@ -4062,6 +4084,7 @@ impl State {
                 let _ = self.events.send(event);
                 self.coordination = Coordination::Quiescing {
                     transfer: transfer.id.clone(),
+                    offered: true,
                 };
                 info!(transfer = %transfer.id, successor_pid, "coordination offered; writes fenced");
                 Ok(transfer)
@@ -4081,7 +4104,10 @@ impl State {
     /// successor's, still `Offered`, so only that process can accept.
     #[cfg_attr(windows, allow(dead_code))] // only a Unix handover names a successor
     fn readdress_offer(&mut self, transfer: &str, successor_pid: u32) -> bool {
-        let Coordination::Quiescing { transfer: current } = &self.coordination else {
+        let Coordination::Quiescing {
+            transfer: current, ..
+        } = &self.coordination
+        else {
             return false;
         };
         if current != transfer {
@@ -4121,7 +4147,7 @@ impl State {
         // The successor reaches no owner from here on, whether or not the
         // abort below is recorded.
         self.owner_successor = None;
-        let Coordination::Quiescing { transfer } = self.coordination.clone() else {
+        let Coordination::Quiescing { transfer, .. } = self.coordination.clone() else {
             return !self.fenced();
         };
         // Written past the fence on purpose: settling is the one write a
@@ -4174,6 +4200,39 @@ impl State {
                 format!("storage failed ({error}); coordination disabled until daemon restart"),
             )
         })
+    }
+
+    /// [`State::storage_failure`] as `request` gets it: a `ping`'s
+    /// refusal alone carries details naming the failure as this daemon's
+    /// authority, with its process and version, so a reader can tell a
+    /// daemon that answers with failed storage from none at all. The
+    /// refusal itself, its code and message, is every request's.
+    fn storage_refusal(&self, ping: bool) -> Option<Response> {
+        let mut refusal = self.storage_failure()?;
+        if ping && let Response::Error { details, .. } = &mut refusal {
+            *details = Some(json!({
+                "authority": agentdocker_core::protocol::DaemonAuthority::StorageFailed,
+                "pid": std::process::id(),
+                "version": env!("CARGO_PKG_VERSION"),
+            }));
+        }
+        Some(refusal)
+    }
+
+    /// Whether this process may write coordination state, read from its
+    /// memory alone. A latched storage failure comes first, as it does for
+    /// every request.
+    fn authority(&self) -> agentdocker_core::protocol::DaemonAuthority {
+        use agentdocker_core::protocol::DaemonAuthority;
+        if self.storage_error.is_some() {
+            return DaemonAuthority::StorageFailed;
+        }
+        match self.coordination {
+            Coordination::Serving => DaemonAuthority::Serving,
+            Coordination::Quiescing { offered: true, .. } => DaemonAuthority::Offering,
+            Coordination::Quiescing { offered: false, .. } => DaemonAuthority::Candidate,
+            Coordination::Transferred { .. } => DaemonAuthority::Transferred,
+        }
     }
 
     /// Did the last write land? A storage failure, or a write the fence

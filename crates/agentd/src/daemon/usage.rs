@@ -1415,6 +1415,7 @@ mod tests {
         assert!(super::super::mutates(&disabled));
         lock(&daemon.state).coordination = Coordination::Quiescing {
             transfer: "fixture".into(),
+            offered: true,
         };
         assert!(matches!(
             daemon.handle(disabled).await,

@@ -448,6 +448,7 @@ mod tests {
                         }),
                         judge: None,
                         features: Vec::new(),
+                        authority: None,
                     },
                     other => panic!("unexpected request {other:?}"),
                 };

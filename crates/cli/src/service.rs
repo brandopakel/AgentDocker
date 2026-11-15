@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use agentdocker_core::protocol::DaemonAuthority;
 use agentdocker_core::{Request, Response, paths};
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
@@ -833,7 +834,7 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
             }
             let socket =
                 socket.unwrap_or_else(|| agentdocker_host::dirs::socket_path(&layout.home));
-            match client.call(&Request::Ping).await {
+            match client.call_raw(&Request::Ping).await {
                 Ok(Response::Pong {
                     version,
                     uptime_secs,
@@ -842,6 +843,7 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     executable,
                     experimental,
                     judge,
+                    authority,
                     ..
                 }) => {
                     println!(
@@ -852,6 +854,9 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                     );
                     if let Some(executable) = executable {
                         println!("serving   {}", executable.display());
+                    }
+                    if let Some(authority) = authority {
+                        println!("authority {}", authority_text(authority));
                     }
                     if let Some(switches) = experimental {
                         println!(
@@ -873,6 +878,15 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
                         ),
                     }
                 }
+                Ok(Response::Error {
+                    code: agentdocker_core::ErrorCode::StorageUnavailable,
+                    message,
+                    details,
+                }) => {
+                    for line in storage_failed_lines(&socket, &message, details.as_ref()) {
+                        println!("{line}");
+                    }
+                }
                 _ => {
                     println!(
                         "daemon    not running (clients start it on demand at {})",
@@ -888,6 +902,49 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// What a daemon's authority means for whoever reads `daemon status` or
+/// `ping`.
+pub(crate) fn authority_text(authority: DaemonAuthority) -> &'static str {
+    match authority {
+        DaemonAuthority::Serving => "serving",
+        DaemonAuthority::Offering => {
+            "offering: handing coordination to its successor; writes answer `transferring` until the offer is settled"
+        }
+        DaemonAuthority::Candidate => {
+            "candidate: started while another daemon's handover offer was open; writes answer `transferring` until that offer is settled (see the daemon log)"
+        }
+        DaemonAuthority::Transferred => {
+            "transferred: coordination was handed off; this process stays fenced"
+        }
+        DaemonAuthority::StorageFailed => {
+            "storage failed: nothing is served until the daemon restarts"
+        }
+        DaemonAuthority::Unknown => "a word this client does not know (a newer daemon)",
+    }
+}
+
+/// What `daemon status` says of a daemon that refused `ping` because its
+/// storage failed: it answers, so it is not "not running". Its version and
+/// pid come from the refusal's details, and a daemon older than those says
+/// neither.
+fn storage_failed_lines(
+    socket: &Path,
+    message: &str,
+    details: Option<&serde_json::Value>,
+) -> [String; 2] {
+    let version = details.and_then(|d| d["version"].as_str());
+    let pid = details.and_then(|d| d["pid"].as_u64());
+    [
+        format!(
+            "daemon    {}answering at {}{}",
+            version.map(|v| format!("agentd {v} ")).unwrap_or_default(),
+            socket.display(),
+            pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
+        ),
+        format!("authority storage failed: {message}"),
+    ]
 }
 
 /// The effective user id a launchd or systemd unit is filed under. Windows
@@ -911,6 +968,42 @@ fn current_uid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_authority_is_said_in_words_and_a_storage_failure_is_not_not_running() {
+        for (authority, said) in [
+            (DaemonAuthority::Serving, "serving"),
+            (DaemonAuthority::Offering, "offering: "),
+            (DaemonAuthority::Candidate, "candidate: "),
+            (
+                DaemonAuthority::Transferred,
+                "transferred: coordination was handed off; this process stays fenced",
+            ),
+            (DaemonAuthority::StorageFailed, "storage failed: "),
+            (DaemonAuthority::Unknown, "a word this client does not know"),
+        ] {
+            assert!(authority_text(authority).starts_with(said), "{authority:?}");
+        }
+        assert!(authority_text(DaemonAuthority::Offering).contains("`transferring`"));
+        assert!(authority_text(DaemonAuthority::Candidate).contains("`transferring`"));
+
+        let socket = Path::new("/run/agentd.sock");
+        let message =
+            "storage failed (agent write: disk full); coordination disabled until daemon restart";
+        let details = serde_json::json!({"authority":"storage_failed","pid":42,"version":"9.9.9"});
+        assert_eq!(
+            storage_failed_lines(socket, message, Some(&details)),
+            [
+                "daemon    agentd 9.9.9 answering at /run/agentd.sock (pid 42)".to_owned(),
+                format!("authority storage failed: {message}"),
+            ]
+        );
+        // An older daemon's refusal has no details: nothing is invented.
+        assert_eq!(
+            storage_failed_lines(socket, message, None)[0],
+            "daemon    answering at /run/agentd.sock"
+        );
+    }
 
     #[cfg(unix)]
     fn manager_output(code: i32) -> std::process::Output {

@@ -1825,6 +1825,44 @@ mod fence_tests {
     /// startup recovery corrects memory but writes nothing, a stranger
     /// never writes, and the named successor's accept runs the held-back
     /// recovery as its first act.
+    async fn said(daemon: &Arc<Daemon>) -> Option<agentdocker_core::protocol::DaemonAuthority> {
+        match daemon.handle(Request::Ping).await {
+            Response::Pong { authority, .. } => authority,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// `ping` says each coordination state this process passes through,
+    /// and saying it changes none of them: a fenced state's writes are
+    /// still refused.
+    #[tokio::test]
+    async fn ping_says_the_authority_of_each_coordination_state() {
+        use agentdocker_core::protocol::DaemonAuthority;
+        let dir = TempDir::new().unwrap();
+        let predecessor = open(&dir);
+        let a = register(&predecessor, "holder").await;
+        assert_eq!(said(&predecessor).await, Some(DaemonAuthority::Serving));
+        let transfer = predecessor.offer_transfer(std::process::id()).unwrap();
+        assert_eq!(said(&predecessor).await, Some(DaemonAuthority::Offering));
+        let successor =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock2")).unwrap());
+        assert_eq!(said(&successor).await, Some(DaemonAuthority::Candidate));
+        for fenced in [&predecessor, &successor] {
+            assert!(matches!(
+                fenced.handle(claim(&a, "task:blocked")).await,
+                Response::Error {
+                    code: ErrorCode::Transferring,
+                    ..
+                }
+            ));
+        }
+        successor.accept_transfer(&transfer.id).unwrap();
+        assert_eq!(said(&successor).await, Some(DaemonAuthority::Serving));
+        // The predecessor's abort finds the offer accepted: handed off.
+        assert!(!lock(&predecessor.state).abort_transfer("test"));
+        assert_eq!(said(&predecessor).await, Some(DaemonAuthority::Transferred));
+    }
+
     #[tokio::test]
     async fn a_fenced_open_defers_recovery_until_the_successor_accepts() {
         let dir = TempDir::new().unwrap();
