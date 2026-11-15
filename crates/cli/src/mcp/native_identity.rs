@@ -754,7 +754,7 @@ mod tests {
         use crate::{client::mock::Mock, mcp::McpServer};
         let (context, _, _) = fixture();
         let mut server = McpServer::new(Mock::with(vec![]), context.unbound_identity());
-        server.native_context = Some(context);
+        server.mode = crate::mcp::Mode::NativeHost(context);
         let listed = server
             .handle(json!({"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}))
             .await
@@ -1339,7 +1339,7 @@ mod tests {
                 },
                 context.unbound_identity(),
             );
-            server.native_context = Some(context);
+            server.mode = crate::mcp::Mode::NativeHost(context);
             let mut attribution = None;
             let (code, message) = server
                 .call_tool(
@@ -1436,7 +1436,7 @@ mod tests {
             },
             context.unbound_identity(),
         );
-        server.native_context = Some(context);
+        server.mode = crate::mcp::Mode::NativeHost(context);
         let call = |id: u64, name: &str, meta: Value| {
             json!({
                 "jsonrpc":"2.0", "id":id, "method":"tools/call",
@@ -1525,7 +1525,7 @@ mod tests {
             },
         ]);
         let mut server = McpServer::new(backend, context.unbound_identity());
-        server.native_context = Some(context);
+        server.mode = crate::mcp::Mode::NativeHost(context);
         let mut attribution = None;
         let result = server
             .call_tool(
@@ -1565,7 +1565,7 @@ mod tests {
                 host_started_at: Some(birth),
             },
         );
-        bound.native_input = true;
+        bound.mode = crate::mcp::Mode::NativeBound;
         for tool in ["read_inbox", "wait_for_messages", "acknowledge_messages"] {
             assert!(bound.tool(tool, json!({})).await.is_err());
         }
@@ -1614,7 +1614,7 @@ mod tests {
             Response::Ok,
         ]);
         let mut server = McpServer::new(backend, context.unbound_identity()).limit_by_roles();
-        server.native_context = Some(context);
+        server.mode = crate::mcp::Mode::NativeHost(context);
         for _ in 0..2 {
             let refused = server
                 .call_tool(
