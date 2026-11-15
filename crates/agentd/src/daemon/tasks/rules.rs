@@ -5,6 +5,7 @@
 //! done off the state lock: the lock hands back a [`Start`], and the
 //! daemon launches, then hands the card to the new agent.
 use super::*;
+use crate::daemon::markers::StartingCard;
 use agentdocker_core::rule::{self, Rule, RuleAction, Trigger};
 use std::path::PathBuf;
 
@@ -601,10 +602,12 @@ impl Daemon {
     /// Start the agents a rule asked for, each in its own task.
     pub(in crate::daemon) fn spawn_starts(self: &Arc<Self>, starts: Vec<Start>) {
         for start in starts {
+            let starting = StartingCard::held(self, start.task.clone());
             let daemon = self.clone();
             tokio::spawn(async move {
                 let task = start.task.clone();
-                if let Response::Error { message, .. } = daemon.start_on_card(start).await {
+                if let Response::Error { message, .. } = daemon.start_on_card(start, starting).await
+                {
                     warn!(%task, %message, "could not start an agent on a card");
                 }
             });
@@ -648,27 +651,37 @@ impl Daemon {
             state.starting_cards.insert(task.id.clone(), None);
             task.id
         };
-        self.start_on_card(Start {
-            rule: None,
-            task: id,
-            runtime,
-            args,
-            from: from.to_owned(),
-            workdir,
-        })
+        let starting = StartingCard::held(self, id.clone());
+        self.start_on_card(
+            Start {
+                rule: None,
+                task: id,
+                runtime,
+                args,
+                from: from.to_owned(),
+                workdir,
+            },
+            starting,
+        )
         .await
     }
 
     /// Launch the agent, then hand it the card — moved into the board's
     /// pull target and held by its lease, as a pull would — and tell it
-    /// what to do. The card stays marked as being started on until then.
-    pub(in crate::daemon) async fn start_on_card(self: &Arc<Self>, start: Start) -> Response {
+    /// what to do. The card stays marked as being started on until then,
+    /// and `starting` clears the mark however this ends.
+    pub(in crate::daemon) async fn start_on_card(
+        self: &Arc<Self>,
+        start: Start,
+        starting: StartingCard,
+    ) -> Response {
         let response = self.start_on_card_inner(&start).await;
-        lock(&self.state).starting_cards.remove(&start.task);
+        drop(starting);
         response
     }
 
     async fn start_on_card_inner(self: &Arc<Self>, start: &Start) -> Response {
+        self.fail_point("starting card");
         let roots = self.runtime_roots();
         let inventory = tokio::task::spawn_blocking(move || {
             agentdocker_host::runtimes::inventory(&roots, "agentdocker")

@@ -26,9 +26,9 @@
 //! `supporting_context` goes with every addition too. Neither is sent
 //! unless written.
 use std::collections::BTreeSet;
-use std::sync::atomic::Ordering;
 
 use super::*;
+use crate::daemon::markers::{Flag, Running};
 use agentdocker_core::config::SupermemoryConfig;
 use agentdocker_core::memory::{self, Memory};
 use serde::{Deserialize, Serialize};
@@ -331,13 +331,14 @@ fn failure(error: &ureq::Error) -> &'static str {
 impl Daemon {
     /// Start a mirror run unless one is under way.
     pub fn mirror_memories(self: &Arc<Self>) {
-        if self.mirroring.swap(true, Ordering::SeqCst) {
+        let Some(running) = Running::take(self, Flag::Mirroring) else {
             return;
-        }
+        };
         let daemon = self.clone();
         tokio::spawn(async move {
+            let _running = running;
+            daemon.fail_point("mirroring");
             daemon.mirror_once().await;
-            daemon.mirroring.store(false, Ordering::SeqCst);
         });
     }
 

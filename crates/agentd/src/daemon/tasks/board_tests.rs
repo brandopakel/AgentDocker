@@ -1,4 +1,5 @@
 //! Tags, search, plans, files and rules on a real daemon.
+use super::rules::Start;
 use super::*;
 use agentdocker_core::rule::{RuleAction, Trigger};
 use agentdocker_core::{PlanStatus, TagColor};
@@ -777,6 +778,61 @@ async fn rules_act_on_entry_and_on_idle_cards_once() {
         .await,
         Response::Ok
     ));
+}
+
+/// A start that panics, whether the person's or a rule's, leaves the card
+/// free to start on again.
+#[tokio::test]
+async fn a_start_that_panics_leaves_the_card_free_to_start_on_again() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let filed = card(
+        d.handle(create(HUMAN, &f.work, "Port it", Some("ready"), &[]))
+            .await,
+    );
+    lock(&d.fail_points).insert("starting card");
+    let started = tokio::spawn({
+        let d = d.clone();
+        let task = filed.id.to_string();
+        async move {
+            d.handle(Request::TaskStart {
+                from: HUMAN.to_owned(),
+                task,
+                runtime: "no-such-runtime".into(),
+                args: Vec::new(),
+                workdir: None,
+            })
+            .await
+        }
+    });
+    assert!(started.await.unwrap_err().is_panic());
+    assert!(
+        lock(&d.state).starting_cards.is_empty(),
+        "free to start on again"
+    );
+
+    // A rule's start, marked as the sweep marks it, in its own task.
+    lock(&d.state)
+        .starting_cards
+        .insert(filed.id.clone(), Some("rule".into()));
+    d.spawn_starts(vec![Start {
+        rule: None,
+        task: filed.id.clone(),
+        runtime: "no-such-runtime".into(),
+        args: Vec::new(),
+        from: HUMAN.to_owned(),
+        workdir: None,
+    }]);
+    for _ in 0..300 {
+        if lock(&d.state).starting_cards.is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(
+        lock(&d.state).starting_cards.is_empty(),
+        "free to start on again"
+    );
 }
 
 /// Starting an agent on a card is the person's; an unknown runtime says
