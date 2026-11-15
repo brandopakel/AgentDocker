@@ -277,6 +277,9 @@ enum Cmd {
     Me,
     Questions,
     Answer(MessageId, String),
+    /// The options picked on a question, by label, and the person's own
+    /// words for its Other, sent as written.
+    AnswerChoices(MessageId, Vec<String>, Option<String>),
     SecretReviews,
     SecretAnswer(String, agentdocker_core::secret::SecretAnswers),
     SecretCancel(String),
@@ -967,11 +970,13 @@ impl App {
                     self.say("Temporary input action was not queued. Edits were cleared; cancel this request rather than submitting it again.");
                     return;
                 }
-                Cmd::Answer(id, _) => {
+                Cmd::Answer(id, _) | Cmd::AnswerChoices(id, ..) => {
                     self.sending.remove(&id);
                     if self.shell.pending_answer_reveal.as_ref() == Some(&id) {
                         self.shell.pending_answer_reveal = None;
                     }
+                    // The card says why, after the toast has gone.
+                    self.shell.answer_errors.insert(id, reason.to_owned());
                 }
                 Cmd::DismissMessages(ids) => {
                     self.dismissing.retain(|id| !ids.contains(id));
@@ -1668,6 +1673,7 @@ impl App {
                                     Some(Cmd::DenyNote(id.clone(), question.from.clone(), text));
                             }
                             self.shell.forms.remove(&id);
+                            self.shell.picked.remove(&id);
                             if self.shell.answers.remove(&id).is_some() {
                                 self.shell.drafts.changed();
                             }
@@ -2060,6 +2066,7 @@ impl App {
             | EventKind::AgentReconciled { .. }
             | EventKind::HumanLocationChanged { .. }
             | EventKind::AgentVcsChanged { .. }
+            | EventKind::AgentTeamChanged { .. }
             | EventKind::AdapterContactReported { .. } => self.send(Cmd::Agents),
             EventKind::InputDeliveryReported { .. }
             | EventKind::InputHeldForTyping { .. }
@@ -2084,6 +2091,7 @@ impl App {
             | EventKind::TaskArchived { task, .. }
             | EventKind::TaskUnarchived { task, .. }
             | EventKind::TaskCommented { task, .. }
+            | EventKind::TaskUnblocked { task, .. }
             | EventKind::TaskCommentChanged { task, .. } => {
                 // The card that changed flashes once; an open one is read
                 // again in full.
@@ -2125,12 +2133,15 @@ impl App {
             | EventKind::PlanChanged { .. }
             | EventKind::ProjectFileChanged { .. }
             | EventKind::MemoryAdded { .. }
-            | EventKind::MemoryForgotten { .. } => {
+            | EventKind::MemoryForgotten { .. }
+            | EventKind::MemoryRetired { .. } => {
                 // Every saved search may now answer differently: each is asked
                 // again when its project is on view, this one at once.
                 if matches!(
                     event.kind,
-                    EventKind::MemoryAdded { .. } | EventKind::MemoryForgotten { .. }
+                    EventKind::MemoryAdded { .. }
+                        | EventKind::MemoryForgotten { .. }
+                        | EventKind::MemoryRetired { .. }
                 ) {
                     for form in self.shell.memory.values_mut() {
                         if !form.query.trim().is_empty() {
@@ -2159,6 +2170,7 @@ impl App {
             // while it is on view.
             EventKind::UsageRecorded { .. }
             | EventKind::UsageReconciled { .. }
+            | EventKind::UsageJoined { .. }
             | EventKind::UsageEmissionRecorded { .. } => {
                 if self.screen == Screen::Usage {
                     self.request_usage();
@@ -2233,9 +2245,9 @@ impl App {
                 self.on_conversation_activity();
             }
             EventKind::SecretReviewChanged { .. } => self.send(Cmd::SecretReviews),
-            EventKind::QuestionClosed { .. } | EventKind::QuestionCancelled { .. } => {
-                self.send(Cmd::Questions)
-            }
+            EventKind::QuestionClosed { .. }
+            | EventKind::QuestionCancelled { .. }
+            | EventKind::QuestionStale { .. } => self.send(Cmd::Questions),
             EventKind::JournalAppended { entry }
                 if self.journal_project.as_deref() == Some(entry.project.as_str())
                     && self.journal.last().is_none_or(|last| last.seq < entry.seq) =>
@@ -3198,7 +3210,7 @@ fn spawn_worker(
                 }
                 daemon => {
                     let answer = match &daemon {
-                        Cmd::Answer(id, _) => Some(id.clone()),
+                        Cmd::Answer(id, _) | Cmd::AnswerChoices(id, ..) => Some(id.clone()),
                         _ => None,
                     };
                     let launch = matches!(&daemon, Cmd::Launch(_) | Cmd::Resume(..));
@@ -3708,7 +3720,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 // or a failure, leaves the rest of the workspace to show.
                 // Read as the person, who reads every memory.
                 workspace.memory = match client.call(&memory_search(&project, "")) {
-                    Ok(Response::Memories { memories }) => {
+                    Ok(Response::Memories { memories, .. }) => {
                         workspace.memories = memories;
                         MemoryRead::Loaded
                     }
@@ -3786,7 +3798,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
         }
         Cmd::MemorySearch { project, query } => {
             let result = match client.call(&memory_search(&project, &query)) {
-                Ok(Response::Memories { memories }) => Ok(memories),
+                Ok(Response::Memories { memories, .. }) => Ok(memories),
                 Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
@@ -4094,6 +4106,20 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 from: None,
                 message: message.clone(),
                 text,
+                choices: Vec::new(),
+                other: None,
+                note: None,
+            })?;
+            Some(Msg::Answered(message, Ok(())))
+        }
+        Cmd::AnswerChoices(message, choices, other) => {
+            client.call(&Request::Answer {
+                from: None,
+                message: message.clone(),
+                text: String::new(),
+                choices,
+                other,
+                note: None,
             })?;
             Some(Msg::Answered(message, Ok(())))
         }
@@ -4274,6 +4300,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::json!({ "text": text }),
                 reply_to,
                 links: Vec::new(),
+                idempotency_key: None,
             })?;
             let result = match response {
                 Response::Sent {
@@ -4296,6 +4323,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::Value::String(text),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             }) {
                 Ok(Response::Sent { .. }) => Ok(()),
                 Ok(other) => Err(shell::NoteFailure {
@@ -4325,6 +4353,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::Value::String(text),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })?;
             let result = match response {
                 Response::Sent {
@@ -4347,6 +4376,7 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
                 payload: serde_json::Value::String(text),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })?;
             let result = match response {
                 Response::Sent {
@@ -5877,6 +5907,8 @@ pub(crate) mod tests {
             text: "Keep this question".into(),
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(1),
+            form: Default::default(),
+            stale_since: None,
         });
         app.shell
             .answers
@@ -8085,6 +8117,8 @@ pub(crate) mod tests {
             presentation: None,
             asked_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
         };
         let first = agentdocker_host::notify::question_tag("first");
         let second = agentdocker_host::notify::question_tag("second");

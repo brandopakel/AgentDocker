@@ -12,8 +12,11 @@ of an existing session or guess its identity from a display name.
 Before reading or searching shared files, record their paths with `observe_paths`.
 Before editing, `claim` the absolute file or directory (`path:/absolute/path`),
 then `check_stale` and reread any changed content. A conflicting lease means
-coordinate with its holder or work elsewhere. Use `release` with a short
-change summary when done. Use `commit` for attributed commits in your registered
+coordinate with its holder or work elsewhere: `request_release` asks the holder
+to let go (they answer with `respond_release`; the answer reaches your inbox as a
+`release_response`), and a `release_request` put to you is answered the same
+way, accepting with a summary of what you changed or declining with a reason.
+Use `release` with a short change summary when done. Use `commit` for attributed commits in your registered
 checkout so the journal attributes the change to you rather than `external`;
 use `journal_note` for decisions that have no commit.
 
@@ -43,7 +46,10 @@ none; it becomes yours, in progress, and nobody else can take it. A card you
 name may sit in any open lane (one the person asked you to work on, or one an
 agent that has ended left behind) and is yours when nobody holds it; if it is
 refused, the answer says why: somebody holds it (pull another), it waits on
-another card or on something off the board, or its holder's hold has lapsed. The pull holds the
+another card or on something off the board, or its holder's hold has lapsed. When a card nobody
+holds waits on something off the board and you know it has happened, name the card and say what
+happened in `unblock`: it is freed and taken in one change and your words stay on it; do not say
+so on a guess. The pull holds the
 card as a `task:<id>` lease for four hours: `renew` it during longer work
 (pulling your own held card renews it too); your exit releases it. A card
 whose holder's lease has lapsed is refused with `hold: lapsed`: take it over
@@ -53,8 +59,11 @@ be on. Read the card's acceptance text before starting, and say what you find
 on it with `comment_task`. Move it with `move_task`, with a `comment` saying
 why, to review when it is ready for eyes and to done when the acceptance text
 is met; file follow-up work with `create_task`, or a plan of several cards at
-once with `create_tasks`. Do not move cards you do not hold: pull one nobody
-holds by name first.
+once with `create_tasks`. You may move any card in your project, not only one
+you hold. When you move somebody else's card, its holder is told; it stays
+theirs unless you send it back to Backlog or Ready, which frees it for the next
+taker. Moving your own card back keeps it assigned to you. Moving a card is not
+taking it: to work on a card, pull one nobody holds by name first.
 
 Message kinds `pause` and `resume` are reserved for committed project lifecycle
 changes; ordinary sends cannot use them. Check the current project state before
@@ -114,6 +123,8 @@ agentdocker send --from SESSION_ID --to role:reviewer 'Message'   # the one agen
 agentdocker inbox --as SESSION_ID
 agentdocker inbox --as SESSION_ID --ack RECEIVED_MESSAGE_ID
 agentdocker release --as SESSION_ID LEASE_ID --summary 'What changed and why'
+agentdocker request-release --as SESSION_ID path:/absolute/path --reason 'Why'
+agentdocker respond-release --as SESSION_ID REQUEST_MESSAGE_ID --accept --summary 'What changed'
 ```
 
 The inbox commands apply only to manual delivery. Use `agentdocker setup --preview`

@@ -14,6 +14,8 @@ pub const TITLE_CHARS: usize = 200;
 pub const ACCEPTANCE_CHARS: usize = 4000;
 pub const DESCRIPTION_CHARS: usize = 16_000;
 pub const BLOCKER_CHARS: usize = 500;
+/// What whoever takes a waiting card says happened, at most.
+pub const UNBLOCK_REASON_CHARS: usize = 500;
 pub const COMMENT_CHARS: usize = 4000;
 /// At most this many tags on a card, each at most this long.
 pub const TAGS_MAX: usize = 8;
@@ -338,7 +340,9 @@ pub enum TaskError {
         assignee: Option<AgentId>,
         column: Column,
     },
-    /// A move by somebody who is neither its assignee nor the person.
+    /// A change to what the card says, or to its place on or off the
+    /// board's record, by somebody who is neither its assignee nor the
+    /// person. Never a move: anybody moves a card.
     NotYours,
     /// A card that is archived.
     Archived,
@@ -358,7 +362,7 @@ impl std::fmt::Display for TaskError {
                 write!(f, "the card is not ready to pull; it is in {column}")
             }
             TaskError::NotYours => f.write_str(
-                "only the card's assignee or the person moves it; an agent takes a card nobody holds by pulling it by name",
+                "only the card's assignee or the person changes what it says; an agent takes a card nobody holds by pulling it by name",
             ),
             TaskError::Archived => f.write_str("the card is archived"),
             TaskError::Cycle => f.write_str("that would make the card wait on itself"),
@@ -567,6 +571,46 @@ impl Task {
         Ok(())
     }
 
+    /// Whoever takes a card nobody holds says that what it waited on off
+    /// the board has happened. The wait is cleared, and what it was is
+    /// returned, to be kept on the card with the reason: a card that was
+    /// waiting does not start moving without a word of why. It names no
+    /// particular agent, the one that filed the card least of all: that
+    /// agent is a session's record, which ends, and a card only it could
+    /// free would wait for the person for good. A card that names a
+    /// holder is not freed this way; what it says is its holder's to
+    /// change, or the person's.
+    pub fn unblock(&mut self, reason: &str) -> Result<String, TaskError> {
+        if self.archived_at.is_some() {
+            return Err(TaskError::Archived);
+        }
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return Err(TaskError::Invalid(
+                "say what happened: why a waiting card starts is kept on it",
+            ));
+        }
+        if reason.chars().count() > UNBLOCK_REASON_CHARS {
+            return Err(TaskError::Invalid(
+                "what happened is said in at most 500 characters",
+            ));
+        }
+        if self.assignee.is_some() {
+            return Err(TaskError::Taken {
+                assignee: self.assignee.clone(),
+                column: self.column,
+            });
+        }
+        let was = self.external_blocker.trim().to_owned();
+        if was.is_empty() {
+            return Err(TaskError::Invalid(
+                "the card waits on nothing off the board",
+            ));
+        }
+        self.external_blocker.clear();
+        Ok(was)
+    }
+
     /// Explicit recovery of a card whose holder's lease lapsed: the taker
     /// names whom it expects to take the card from — its holder, or
     /// itself, re-taking its own lapsed hold — and the card passes where
@@ -594,11 +638,15 @@ impl Task {
         Ok(())
     }
 
-    /// Move the card to a lane: its assignee may, and the person always
-    /// may. A card moved back to Backlog or Ready by the person is
-    /// released for the next taker; one moved to Done by its assignee
-    /// stays theirs, for the record. Answers whether anything changed: a
-    /// move to where it already is changes nothing.
+    /// Move the card to a lane: anybody in its project may, the person
+    /// included (whether `by` is in the project is the caller's to
+    /// check). A move never hands the card to its mover: who holds it
+    /// stays who held it, so one moved to Review or Done is still its
+    /// assignee's, for the record. A card moved back to Backlog or Ready
+    /// by anybody but its assignee is released for the next taker; moved
+    /// there by its assignee it stays theirs, to pull again. Answers
+    /// whether anything changed: a move to where it already is changes
+    /// nothing.
     pub fn move_to(
         &mut self,
         by: &str,
@@ -609,9 +657,6 @@ impl Task {
         if self.archived_at.is_some() {
             return Err(TaskError::Archived);
         }
-        if !by_is_human && self.assignee.as_ref().is_none_or(|a| a.as_str() != by) {
-            return Err(TaskError::NotYours);
-        }
         if lane.category == self.column && self.lane.as_deref().is_none_or(|l| l == lane.slug) {
             if self.lane.is_none() {
                 // Its lane is said from now on; nothing moved.
@@ -619,8 +664,9 @@ impl Task {
             }
             return Ok(false);
         }
+        let theirs = !by_is_human && self.assignee.as_ref().is_some_and(|a| a.as_str() == by);
         self.place(lane, now);
-        if by_is_human && lane.category.waiting() {
+        if lane.category.waiting() && !theirs {
             self.assignee = None;
         }
         self.updated_at = now;
@@ -1183,6 +1229,43 @@ mod tests {
         let mut waiting = ready_card();
         waiting.external_blocker = "vendor".into();
         assert!(waiting.pull(&a, &board, false, Utc::now()).is_err());
+        // Whoever takes it may say the wait is over, and only with a
+        // reason: the wait is cleared, what it was comes back to be kept,
+        // and the card is then pulled like any other.
+        for no_reason in ["", "   "] {
+            assert!(matches!(
+                waiting.unblock(no_reason),
+                Err(TaskError::Invalid(_))
+            ));
+        }
+        assert!(matches!(
+            waiting.unblock(&"x".repeat(UNBLOCK_REASON_CHARS + 1)),
+            Err(TaskError::Invalid(_))
+        ));
+        assert_eq!(
+            waiting.external_blocker, "vendor",
+            "refusals change nothing"
+        );
+        assert_eq!(waiting.unblock(" the vendor shipped ").unwrap(), "vendor");
+        assert!(waiting.external_blocker.is_empty());
+        waiting.pull(&a, &board, false, Utc::now()).unwrap();
+        assert_eq!(waiting.assignee.as_ref(), Some(&a));
+        // Nothing to clear; and a card that names a holder is its holder's.
+        assert!(matches!(
+            ready_card().unblock("nothing was in the way"),
+            Err(TaskError::Invalid(_))
+        ));
+        let mut held = ready_card();
+        held.external_blocker = "vendor".into();
+        held.assignee = Some(b.clone());
+        assert_eq!(
+            held.unblock("the vendor shipped").unwrap_err(),
+            TaskError::Taken {
+                assignee: Some(b.clone()),
+                column: Column::Ready
+            }
+        );
+        assert_eq!(held.external_blocker, "vendor");
         // A take-over names whom the card is taken from: the wrong name,
         // or a card outside In progress/Review, takes nothing. The right
         // name passes the card where it sits — including to its own
@@ -1240,23 +1323,45 @@ mod tests {
         );
     }
 
-    /// The assignee moves its own card and nobody else's; the person
-    /// moves any, and moving one back to Ready or Backlog releases it.
+    /// Anybody moves a card, and a move never hands it over: it stays its
+    /// assignee's through Review and Done whoever moved it. Moved back to
+    /// Ready or Backlog it is released, unless its own assignee put it
+    /// there.
     #[test]
-    fn moves_are_the_assignees_or_the_persons() {
+    fn anybody_moves_a_card_and_it_stays_its_assignees() {
         let board = board();
         let mut card = ready_card();
         let a = AgentId::from("a".to_owned());
         card.pull(&a, &board, false, Utc::now()).unwrap();
-        assert_eq!(
+        assert!(
             card.move_to("b", false, &lane("review"), Utc::now())
-                .unwrap_err(),
-            TaskError::NotYours
+                .unwrap(),
+            "another agent moves it"
         );
-        card.move_to("a", false, &lane("review"), Utc::now())
+        assert_eq!(
+            (card.assignee.as_ref(), card.column),
+            (Some(&a), Column::Review),
+            "and it is still its assignee's"
+        );
+        card.move_to("a", false, &lane("in_progress"), Utc::now())
             .unwrap();
-        assert_eq!(card.column, Column::Review);
-        card.move_to("a", false, &lane("done"), Utc::now()).unwrap();
+        card.move_to("a", false, &lane("ready"), Utc::now())
+            .unwrap();
+        assert_eq!(
+            (card.assignee.as_ref(), card.column),
+            (Some(&a), Column::Ready),
+            "put back by its assignee, it stays theirs"
+        );
+        card.pull(&a, &board, false, Utc::now()).unwrap();
+        card.move_to("b", false, &lane("ready"), Utc::now())
+            .unwrap();
+        assert_eq!(
+            (card.assignee.as_ref(), card.column),
+            (None, Column::Ready),
+            "put back by another agent, it is released"
+        );
+        card.pull(&a, &board, false, Utc::now()).unwrap();
+        card.move_to("b", false, &lane("done"), Utc::now()).unwrap();
         assert_eq!(
             card.assignee.as_ref(),
             Some(&a),

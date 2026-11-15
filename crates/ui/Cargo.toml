@@ -40,8 +40,23 @@ tempfile.workspace = true
 accesskit_macos = "0.26.3"
 block2 = "0.6"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSDockTile", "NSResponder", "NSRunningApplication"] }
-objc2-foundation = { version = "0.3", features = ["NSArray", "NSBundle", "NSSet", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+  "std",
+  "objc2-core-foundation",
+  "NSApplication",
+  "NSButton",
+  "NSCell",
+  "NSControl",
+  "NSDockTile",
+  "NSImage",
+  "NSResponder",
+  "NSRunningApplication",
+  "NSStatusBar",
+  "NSStatusBarButton",
+  "NSStatusItem",
+  "NSView",
+] }
+objc2-foundation = { version = "0.3", features = ["NSArray", "NSBundle", "NSData", "NSGeometry", "NSSet", "NSString"] }
 objc2-user-notifications = { version = "0.3", features = [
   "UNNotification",
   "UNNotificationAction",

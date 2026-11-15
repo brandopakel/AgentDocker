@@ -69,7 +69,7 @@ where to check the permission if the action times out.
 | --- | --- |
 | Projects | All projects home; selecting a project opens its shared Chat with a compact list of current agents. Agents is the second tab and Board the third; History, Files in use, Usage and AgentDocker commands are under More. Open project terminal is visible in the project header. |
 | Inbox | Questions, retained answer drafts and messages addressed to the user; Messages (conversations, threads, read cursors) against a daemon that keeps them |
-| Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo** |
+| Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo**, as does a plan whose undo was interrupted |
 | Settings | Appearance, terminal, update checks, installation and retained versions |
 
 Light and dark appearances share the same hierarchy and the same visual
@@ -456,7 +456,9 @@ control does, its id or its accessible label:
   right, padded 8 by 14, with rules inset 14 (the same rows serve
   Installation), and no row or group has a line of why: the theme as a
   segmented control, text sizes as `− 14 pt +` steppers, switches for
-  notifications, roomier rows, update checks and preview builds, terminal
+  notifications, roomier rows, the menu bar item (macOS only; a switch read
+  aloud as what pressing it does, *Remove the menu bar item* or *Show the
+  menu bar item*), update checks and preview builds, terminal
   colours as preview swatches with an accent ring. The terminal
   pane has a header (agent over its folder in mono, a *Live*, *Scrolled back*
   or *Ended* chip and a small Detach) above the grid on its palette's ground,

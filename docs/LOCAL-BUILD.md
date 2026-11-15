@@ -120,7 +120,9 @@ it for the next launch. See [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).
 | `make build` | Debug build of the workspace |
 | `make test` | Tests (nextest when installed) |
 | `make clippy`, `make fmt` | Strict lint, formatting |
-| `make check` | The standard gate, `scripts/verify.sh check` |
+| `make check` | The full local gate, `scripts/verify.sh check` |
+| `make quick` | The short gate, `scripts/verify.sh quick`: the packages a change touches |
+| `make package` | Crate packaging and the release build, `scripts/verify.sh package` |
 | `make app` | Build and package without installing |
 | `make install-preview` | Build, package and print what install would change |
 | `make run` | Run the desktop app from the checkout against your real daemon |
@@ -134,7 +136,8 @@ never chooses a Cargo target directory itself: Cargo's own configuration and
 `CARGO_TARGET_DIR` decide, so no extra build cache appears, and packaging
 reads the artifact directory the build reports.
 
-Requirements: Rust (see `rust-version` in `crates/ui/Cargo.toml`), Python 3.11+,
+Requirements: Rust through rustup (the checkout's `rust-toolchain.toml` names
+the version, which rustup installs on the first build), Python 3.11+,
 and on macOS the Xcode command-line tools. End users of a packaged app need
 none of these. Public, signed builds are described in
 [DISTRIBUTION-SETUP.md](DISTRIBUTION-SETUP.md).

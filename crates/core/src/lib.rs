@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod agentfile;
 pub mod board;
+pub mod brief;
 pub mod change;
 pub mod config;
 pub mod conversation;
@@ -16,6 +17,7 @@ pub use conversation::{
 pub mod elicitation;
 pub mod event;
 pub use elicitation::{FormField, FormKind, McpForm};
+pub mod idempotency;
 pub mod identity;
 pub mod input;
 pub use input::{
@@ -38,17 +40,21 @@ pub mod project;
 pub mod protocol;
 pub mod provider;
 pub mod task;
+pub mod team;
 pub use provider::{
     ProviderAvailability, ProviderIssue, ProviderIssueKind, ProviderReport, provider_block,
 };
+pub use team::{Team, TeamMembership, TeamRole, Teammate};
 pub mod registry;
 pub mod secret;
 pub mod seed;
+pub mod setup;
 
 pub use agent::{
-    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, RestartPolicy, SessionContact,
-    SessionKey, VcsState,
+    AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, ProviderThread, RestartPolicy,
+    SessionContact, SessionKey, ThreadRef, ThreadSource, VcsState, short,
 };
+pub mod codex_thread;
 pub use board::{Board, Lane};
 pub mod plan;
 pub use plan::{Plan, PlanStatus, ProjectFile};
@@ -60,12 +66,16 @@ pub mod tag;
 pub use change::{Attribution, Change, ChangeKind, Overlap, OverlapParty, overlaps};
 pub use event::{Event, EventCursor, EventKind, WaitOutcome};
 pub use journal::{Digest, DigestBudget, JournalEntry, JournalFilter, JournalKind, SummarySource};
-pub use lease::{Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ResourceKey};
+pub use lease::{
+    ClaimRequest, Claimed, Lease, LeaseError, LeaseId, LeaseMode, LeaseTable, ReleaseAnswer,
+    ReleaseRequest, ResourceKey,
+};
 pub use link::{Link, LinkKind};
 pub use message::{
     ALLOW_FOR_SESSION, AnswerRoute, Destination, Envelope, HUMAN, HUMAN_RUNTIME, HeldDecision,
-    HeldMessage, MessageId, Question, QuestionFileChange, QuestionFileChangeKind, QuestionOption,
-    QuestionPresentation, mcp_url_authority, topic_matches,
+    HeldMessage, MessageId, Question, QuestionAnswer, QuestionFileChange, QuestionFileChangeKind,
+    QuestionForm, QuestionKind, QuestionOption, QuestionPresentation, RELEASE_REQUEST_KIND,
+    RELEASE_RESPONSE_KIND, StaleAction, mcp_url_authority, topic_matches,
 };
 pub use notification::NotificationTarget;
 pub use permissions::{
@@ -106,6 +116,7 @@ pub mod working_set;
 pub use working_set::{ReadMark, StalePath};
 
 pub mod delivery;
+pub mod docker_agent;
 pub mod gate;
 pub mod readiness;
 pub mod recovery;

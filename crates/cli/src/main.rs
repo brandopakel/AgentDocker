@@ -16,6 +16,9 @@ mod desktop;
 mod emission;
 mod format;
 mod gate;
+mod git_hook;
+#[cfg(test)]
+mod guide_lists;
 mod hooks;
 mod input_status;
 mod mcp;
@@ -31,7 +34,7 @@ mod teams;
 mod top;
 
 use std::collections::{BTreeMap, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use agentdocker_core::contest::Direction;
 use agentdocker_core::multiplexer::Session;
@@ -105,13 +108,18 @@ enum Command {
     },
     /// List retained image build records, including finished sessions.
     Images,
-    /// Create a new linked checkout and branch without changing existing files.
+    /// Create a new linked checkout and branch without changing existing
+    /// files. With no path it goes in the project's own worktrees folder,
+    /// in a folder named for the branch.
     WorktreeCreate {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
-        /// New checkout path, which becomes its physical identifier.
-        path: String,
+        /// Where the new checkout goes, when not in the project's
+        /// worktrees folder (`.agentdocker/worktrees/<branch>` inside the
+        /// project, unless the daemon's `[worktrees] dir` says otherwise).
+        /// Outside the checkout, or inside that folder.
+        path: Option<String>,
         #[arg(long)]
         /// Name of the new branch.
         branch: String,
@@ -155,12 +163,29 @@ enum Command {
         /// Agent id, name or unique prefix (defaults to this session).
         agent: String,
     },
-    /// Remove an ended session's own worktree once its branch is merged or
-    /// no longer wanted: the worktree must be clean, and its branch is
-    /// deleted only when git considers it merged.
+    /// Remove a worktree that is done with: an ended session's own
+    /// (`worktree-remove <agent>`), or, asked by a running agent of the
+    /// project, one nobody works in, named with `--path` or `--branch`.
+    /// The worktree must be clean, and its branch is deleted only when
+    /// git considers it merged.
     WorktreeRemove {
-        /// Agent id, name or unique prefix.
-        agent: String,
+        /// The ended session whose worktree goes: agent id, name or
+        /// unique prefix.
+        #[arg(
+            required_unless_present_any = ["path", "branch"],
+            conflicts_with_all = ["path", "branch"]
+        )]
+        agent: Option<String>,
+        /// The worktree at this path.
+        #[arg(long, conflicts_with = "branch")]
+        path: Option<String>,
+        /// The worktree that has this branch checked out.
+        #[arg(long)]
+        branch: Option<String>,
+        /// Who asks, with `--path` or `--branch`: agent id, name or unique
+        /// prefix (defaults to this session).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
     },
     /// What an agent's branch would bring to the branch in the project's
     /// main checkout: its commits and files, and what stops a merge now.
@@ -233,6 +258,10 @@ enum Command {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         #[arg(help = "Agent id, name or unique prefix (defaults to this session).")]
         agent: Option<String>,
+        /// Every checkpoint, whoever wrote it, whatever --as or the session
+        /// says: the way to read one whose author's record is forgotten.
+        #[arg(long)]
+        all: bool,
         #[command(subcommand)]
         action: Option<CheckpointAction>,
     },
@@ -455,6 +484,25 @@ enum Command {
     /// A project's memory: facts its agents and the person keep for each
     /// other, said to every new session in the project.
     Memory(MemoryArgs),
+    /// Where the work stands in a project, from AgentDocker's own records:
+    /// the cards left open, the newest checkpoints, the questions waiting on
+    /// the person and the leases held. A session is told it at its start;
+    /// an agent reads its own project's, the person any project's.
+    Brief {
+        /// All of it, not the first 16 KiB, with up to 2,000 open pull
+        /// requests asked of GitHub rather than 100.
+        #[arg(long)]
+        all: bool,
+        /// The brief as JSON, exactly what the text is made from.
+        #[arg(long)]
+        json: bool,
+        /// For the person: the project, by id or a path in it (this
+        /// directory's by default).
+        #[arg(long, value_name = "ID|PATH")]
+        project: Option<String>,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
     /// A project's files, kept beside the work and linked to cards.
     File(FileArgs),
     /// The webhook sinks in agentd.toml: what each attempt to post came to.
@@ -539,9 +587,15 @@ enum Command {
         /// Make every `claude` typed in a terminal carry the channel flag that lets AgentDocker wake it: a marked block in your shell's startup file, previewed like every other change.
         #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show"])]
         shell: bool,
-        /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
+        /// Plan a marked block in this repository's git `pre-commit` hook that refuses a commit over a path another live agent holds; `--apply <id>` installs it, `--undo <id>` takes it back. A daemon that cannot be reached lets the commit through. With `--remove`, takes the block out at once.
+        #[arg(long, conflicts_with_all = ["dry_run", "runtimes", "health", "list", "show", "shell"])]
+        git_hook: bool,
+        /// Take AgentDocker's wiring out of the tools (all, or those named): MCP entries, hooks, skills, the OpenCode plugin and the shell block; with `--git-hook`, this repository's pre-commit block. Only entries that run AgentDocker go; `--preview` saves the plan first, `--undo` puts it back.
         #[arg(long, conflicts_with_all = ["dry_run", "apply", "undo", "health", "list", "show", "shell"])]
         remove: bool,
+        /// Docker Agent only: the agent YAML file to add AgentDocker's MCP toolset to (its default agent, the one `docker agent run` runs: `root`, else the first), or to take it out of with `--remove`. Docker Agent reads MCP servers from each agent's file, so `setup docker-agent` needs one.
+        #[arg(long, value_name = "FILE", conflicts_with_all = ["apply", "undo", "health", "list", "show", "shell"])]
+        agent: Option<PathBuf>,
     },
     /// Launch a command as a supervised agent and print its id.
     Run(RunArgs),
@@ -694,6 +748,27 @@ enum Command {
         /// Return the question ID immediately; its answer queues in your inbox.
         #[arg(long)]
         no_wait: bool,
+        /// What kind of decision this is: `question` (the default), `permission`
+        /// (one operation, once) or `access` (standing access to something).
+        #[arg(long, value_name = "KIND", default_value = "question")]
+        kind: String,
+        /// An option to choose from, as `Label` or `Label: what choosing it means`;
+        /// repeat for each. Without any, the answer is free text.
+        #[arg(long = "option", value_name = "LABEL[: DESCRIPTION]")]
+        options: Vec<String>,
+        /// Several options may be chosen at once.
+        #[arg(long, requires = "options")]
+        multi: bool,
+        /// Take only the options offered, not an answer in the recipient's own words.
+        #[arg(long = "no-other", requires = "options")]
+        no_other: bool,
+        /// Seconds after which the question goes stale (shorter than the timeout).
+        #[arg(long, value_name = "SECS")]
+        stale_after: Option<u64>,
+        /// What a stale question does: `keep_waiting` (the default), `withdraw`,
+        /// or `answer:<label>` to take that option as the default.
+        #[arg(long, value_name = "ACTION", requires = "stale_after")]
+        stale_action: Option<String>,
         /// The question.
         question: String,
     },
@@ -711,8 +786,23 @@ enum Command {
         agent: Option<String>,
         /// The question's message id, as `ask` and `questions` print it.
         message: String,
-        /// The answer.
-        text: String,
+        /// The answer in words, or one option by its label or number;
+        /// give `--choice` or `--other` instead to say which it is.
+        #[arg(
+            required_unless_present_any = ["choices", "other"],
+            conflicts_with_all = ["choices", "other"]
+        )]
+        text: Option<String>,
+        /// An option taken, by label or number; repeat for a multi-select question.
+        #[arg(long = "choice", value_name = "LABEL|N")]
+        choices: Vec<String>,
+        /// Your own answer for the question's Other, taken as written: never
+        /// read as an option's label or number.
+        #[arg(long, value_name = "WORDS")]
+        other: Option<String>,
+        /// Your own words beside a choice.
+        #[arg(long)]
+        note: Option<String>,
     },
     /// Inspect, cancel or submit a temporary secret review through local IPC.
     #[command(hide = true)]
@@ -801,7 +891,11 @@ enum Command {
         /// Agent id, name or unique prefix (defaults to this session).
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         agent: Option<String>,
-        #[arg(required_unless_present = "all")]
+        /// The lease's id, as `claim` printed it, or the resource it is
+        /// on, as `claim` took it (`task:local-cargo-campaign`, a path).
+        /// A word of hex digits alone is read as a lease id: write a file
+        /// of such a name as `./abc` or `path:abc`.
+        #[arg(required_unless_present = "all", value_name = "LEASE|RESOURCE")]
         lease: Option<String>,
         /// Release every lease this agent holds.
         #[arg(long, conflicts_with = "lease")]
@@ -809,6 +903,41 @@ enum Command {
         /// What changed and why; becomes the project's journal entry.
         #[arg(long)]
         summary: Option<String>,
+        /// With `--all`: only the leases this teammate owns inside the
+        /// session (a Claude Code in-process teammate's id).
+        #[arg(long, requires = "all")]
+        actor: Option<String>,
+    },
+    /// Ask whoever holds a resource to let go of it: each holder gets a `release_request` message and answers with `respond-release`; the answer comes back to you as a `release_response` message.
+    RequestRelease {
+        /// Agent id, name or unique prefix (defaults to this session).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// `path:`, `branch:`, `task:`... as `claim` takes it; a bare path is a `path:`.
+        resource: String,
+        /// Why you need it, for the holder to read (at most 400 characters).
+        #[arg(long)]
+        reason: Option<String>,
+    },
+    /// Answer a release request put to you, by its message id: `--accept` has the daemon release those leases for you, journaled with `--summary`; `--decline` sends `--reason` back.
+    RespondRelease {
+        /// Agent id, name or unique prefix (defaults to this session).
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        agent: Option<String>,
+        /// The `release_request` message's id.
+        request: String,
+        /// Let go: the daemon releases the request's leases you still hold.
+        #[arg(long, required_unless_present = "decline", conflicts_with = "decline")]
+        accept: bool,
+        /// Keep them, and say why with --reason.
+        #[arg(long)]
+        decline: bool,
+        /// What changed under the leases and why; becomes the journal entry (with --accept).
+        #[arg(long, conflicts_with = "reason")]
+        summary: Option<String>,
+        /// Why you keep them (with --decline).
+        #[arg(long)]
+        reason: Option<String>,
     },
     /// The project's journal: what changed and why, one line per release, note, or commit.
     Journal(JournalArgs),
@@ -875,6 +1004,9 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// Check, upgrade or describe an Agentfile.toml without starting anything.
+    #[command(subcommand)]
+    Agentfile(AgentfileCommand),
     /// Stream daemon events.
     Events {
         /// Show this many stored events before streaming new ones.
@@ -887,6 +1019,38 @@ enum Command {
         #[arg(long, requires = "resumable")]
         after_cursor: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum AgentfileCommand {
+    /// Read the file the way `up` will — any version upgraded, `${VAR}`
+    /// expanded from this environment, commands built — and show what would
+    /// start, or why the file cannot be read; nothing is started and no
+    /// daemon is asked.
+    Check {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// Only these agents.
+        names: Vec<String>,
+        /// The resolved agents as JSON (environment variable names only,
+        /// never values).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rewrite a version 1 file as the latest version, in place, keeping
+    /// its comments: `version = 2` at the top, and every `$` doubled so it
+    /// still means itself.
+    Upgrade {
+        /// Agentfile to read (default: ./Agentfile.toml).
+        #[arg(short = 'f', long)]
+        file: Option<PathBuf>,
+        /// Print the upgraded file instead of writing it.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Print the JSON Schema of the latest version, for editors.
+    Schema,
 }
 
 #[derive(Args)]
@@ -1100,8 +1264,14 @@ enum MemoryAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
     },
-    /// What the project's agents are told first.
+    /// What the project's agents should know first: the standing
+    /// memories, then the newest, as many as fit a profile.
     Profile {
+        /// Exactly what a new session is told in full at its start, which
+        /// is less than the profile: the standing memories it tells by
+        /// their first words only are listed on stderr.
+        #[arg(long)]
+        session: bool,
         /// As they stood then: an RFC 3339 time, a date, or a span ago.
         #[arg(long, value_name = "WHEN", value_parser = parse_past)]
         as_of: Option<chrono::DateTime<chrono::Utc>>,
@@ -1110,9 +1280,21 @@ enum MemoryAction {
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
     },
-    /// Forget a memory for good: your own, or any as the person.
+    /// Forget a memory for good: your own, or any as the person. Forgetting
+    /// a retirement brings back the memory it retired.
     Forget {
         memory: String,
+        #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+        from: Option<String>,
+    },
+    /// Retire a memory that is no longer true: it stops being said and
+    /// stays in the history with your reason. Any agent of the project
+    /// may, and the person; it is undone by forgetting the retirement.
+    Retire {
+        memory: String,
+        /// Why it no longer holds; the history keeps it.
+        #[arg(long)]
+        reason: String,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
         from: Option<String>,
     },
@@ -1256,7 +1438,8 @@ enum TaskAction {
         /// Who files it (defaults to you, or the session this runs in).
         from: Option<String>,
         /// A typed reference, `kind:target` (repeatable, at most 16):
-        /// path, commit, pr, url, task, message or memory.
+        /// path, commit, pr, url, task (a card's key or id), message or
+        /// memory.
         #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
         links: Vec<agentdocker_core::Link>,
         #[command(flatten)]
@@ -1297,8 +1480,19 @@ enum TaskAction {
         project: Option<String>,
         #[arg(long)]
         board: Option<String>,
+        /// The named card waits on something off the board, nobody holds
+        /// it, and what it waited on has happened: say what, and the card
+        /// is freed and taken in one change. Your words and what it
+        /// waited on are kept on the card and in the journal.
+        #[arg(
+            long,
+            value_name = "WHAT HAPPENED",
+            requires = "task",
+            conflicts_with = "take_over_from"
+        )]
+        unblock: Option<String>,
     },
-    /// Move a card to a lane: its holder may, the person always may.
+    /// Move a card to a lane: anybody in its project may. It stays its holder's, unless somebody else sends it back to a waiting lane, which frees it.
     Move {
         task: String,
         /// A lane by slug, name or category (review, done…).
@@ -1805,9 +1999,15 @@ struct SendArgs {
     #[arg(long, conflicts_with = "text")]
     json: Option<String>,
     /// A typed reference beside the text, `kind:target` (repeatable, at
-    /// most 16): path, commit, pr, url, task, message or memory.
+    /// most 16): path, commit, pr, url, task (a card's key or id), message
+    /// or memory.
     #[arg(long = "link", value_name = "KIND:TARGET", value_parser = parse_link)]
     links: Vec<agentdocker_core::Link>,
+    /// Your own token for this one send (a UUID, say): repeating the
+    /// command with the same key after a lost answer queues nothing and
+    /// prints the first message id again.
+    #[arg(long, value_name = "KEY")]
+    idempotency_key: Option<String>,
 }
 
 /// Its own struct, like `SendArgs`: the top-level command enum is parsed
@@ -1890,8 +2090,65 @@ fn role_tools(tools: Option<Vec<String>>, all_tools: bool) -> Result<Option<Vec<
     Ok(Some(tools))
 }
 
+/// A link as the command line writes it. A task link may name its card
+/// by the key a person reads on the board (`task:AD-12`); it is stored by
+/// the card's id, which [`card_links`] looks up before the link is sent.
 fn parse_link(text: &str) -> Result<agentdocker_core::Link, String> {
+    if let Some(key) = text.strip_prefix("task:")
+        && card_key(key)
+    {
+        return Ok(agentdocker_core::Link::new(
+            agentdocker_core::LinkKind::Task,
+            key,
+        ));
+    }
     agentdocker_core::Link::parse(text).map_err(str::to_owned)
+}
+
+/// Whether `release` was given a resource rather than a lease's id: an id
+/// is a run of hex digits, and a resource has a kind (`task:…`) or is a
+/// path. A lease id must stay unambiguous, so a bare word of hex digits
+/// is always an id, even where `claim` would take it for a file of that
+/// name: `./abc` or `path:abc` says the file.
+fn names_a_resource(text: &str) -> bool {
+    text.contains([':', '/', '.']) || !text.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Whether a task link's target reads as a card's key, `<board>-<number>`,
+/// rather than as its id (hex digits, which have no dash).
+fn card_key(target: &str) -> bool {
+    target.rsplit_once('-').is_some_and(|(board, number)| {
+        !board.is_empty()
+            && board
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+            && !number.is_empty()
+            && number.bytes().all(|b| b.is_ascii_digit())
+    })
+}
+
+/// The links as they are sent: each task link that named its card by key
+/// names it by id instead. A key no card has is the daemon's `not_found`,
+/// before anything is sent.
+async fn card_links(
+    client: &Client,
+    mut links: Vec<agentdocker_core::Link>,
+) -> Result<Vec<agentdocker_core::Link>> {
+    for link in &mut links {
+        if link.kind != agentdocker_core::LinkKind::Task || !card_key(&link.target) {
+            continue;
+        }
+        let found = client
+            .call(&Request::TaskGet {
+                task: link.target.clone(),
+            })
+            .await
+            .with_context(|| format!("the link task:{} names no card", link.target))?;
+        if let Response::TaskDetail { task, .. } = found {
+            link.target = task.id.to_string();
+        }
+    }
+    Ok(links)
 }
 
 /// A moment from the command line: an RFC 3339 time, or a span from now
@@ -1978,8 +2235,8 @@ struct UsageArgs {
     /// Until when, RFC 3339; now when not given.
     #[arg(long)]
     until: Option<chrono::DateTime<chrono::Utc>>,
-    /// One row per agent, model, provider, project or hour.
-    #[arg(long, default_value = "agent", value_parser = ["agent", "model", "provider", "project", "hour"])]
+    /// One row per agent, model, provider, project, hour, card (the board card held) or role.
+    #[arg(long, default_value = "agent", value_parser = ["agent", "model", "provider", "project", "hour", "card", "role"])]
     by: String,
     /// The report as JSON, as the daemon answered it.
     #[arg(long)]
@@ -2122,7 +2379,37 @@ struct ClaimArgs {
     /// decides is whether the sum fits its capacity.
     #[arg(long)]
     amount: Option<u64>,
+    /// Who inside this session takes it, where the session runs several
+    /// agents in one process (a Claude Code in-process teammate's id):
+    /// kept on the lease and named in a refusal.
+    #[arg(long)]
+    actor: Option<String>,
+    /// Only a new lease will do: one you already hold is in the way like
+    /// anybody else's, and is not renewed. For a slot one process at a
+    /// time may use (the machine's build slot): a second worker claiming
+    /// as the same agent then waits, with `--wait`, or is refused,
+    /// instead of being told it holds what the first one holds.
+    #[arg(long)]
+    fresh: bool,
 }
+
+/// The seconds a claim asks the daemon to wait. The first ask carries the
+/// whole wait, however long building the request took: taking the time
+/// already spent off it and rounding down would turn `--wait 1` into no
+/// wait at all. A later ask, after a fresh claim met the agent's own
+/// lease, carries what is left in whole seconds, rounded down, so the
+/// daemon is never asked to wait past the deadline.
+fn claim_wait_secs(wait: std::time::Duration, elapsed: std::time::Duration, first: bool) -> u64 {
+    if first {
+        wait.as_secs()
+    } else {
+        wait.saturating_sub(elapsed).as_secs()
+    }
+}
+
+/// How long a fresh claim waits before asking again while another worker
+/// of the same agent holds the lease.
+const FRESH_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Stack for the thread that does the work. Clap's derived parser for
 /// this many commands and the one future behind every command want more
@@ -2130,6 +2417,47 @@ struct ClaimArgs {
 /// build overflowed it on `ping` on the first Windows runner (#206).
 /// Reserving this costs nothing until it is touched.
 const MAIN_STACK: usize = 32 << 20;
+
+/// What the adder of a standing memory is told when a new session will
+/// meet it by its first words only: that it is too long by itself, when
+/// nothing else is in its way, or else how full what a session is told is.
+fn no_room_said(full: &agentdocker_core::memory::NoRoom) -> String {
+    use agentdocker_core::memory::SESSION_BLOCK_BYTES;
+    let limits = format!(
+        "{} characters of memories, as lines within {} bytes",
+        full.budget, SESSION_BLOCK_BYTES
+    );
+    if full.alone {
+        return format!(
+            "kept, but a new session is told it by its first words only: it is too long to be told in full at a session's start, whatever else is kept (a session is told {limits}). Supersede it with a shorter one to have it told in full"
+        );
+    }
+    format!(
+        "kept, but a new session is told it by its first words only: what a session is told in full ({limits}) has no room for it beside the {} standing {} it tells in full ({} characters); {} standing {} now told by first words only. Supersede a longer one with a shorter to make room (`agentdocker memory profile --session` shows what a session is told)",
+        full.told,
+        if full.told == 1 { "memory" } else { "memories" },
+        full.used,
+        full.left_out,
+        if full.left_out == 1 {
+            "memory is"
+        } else {
+            "memories are"
+        },
+    )
+}
+
+/// The standing memories told by their first words only, as `memory
+/// profile` lists them on stderr under `said`.
+fn left_out_said(said: &str, left_out: &[agentdocker_core::memory::LeftOut]) -> String {
+    let mut text = said.to_owned();
+    for memory in left_out {
+        text.push_str(&format!(
+            "\n  {}  {} ({} characters)",
+            memory.id, memory.headline, memory.chars
+        ));
+    }
+    text
+}
 
 /// A command ends with a status a script can branch on: the daemon's
 /// answer by its class (see [`client::exit_code`]), anything else as
@@ -2258,6 +2586,7 @@ async fn run() -> Result<()> {
             links,
             release_leases,
         }) => {
+            let links = card_links(&client, links).await?;
             let response = client
                 .call(&Request::Checkpoint {
                     agent,
@@ -2289,8 +2618,11 @@ async fn run() -> Result<()> {
                 })
                 .await?,
         )?,
-        Command::Checkpoints { agent, action } => match action {
-            None => print_json(&client.call(&Request::Checkpoints { agent }).await?)?,
+        Command::Checkpoints { agent, all, action } => match action {
+            None => {
+                let agent = if all { None } else { agent };
+                print_json(&client.call(&Request::Checkpoints { agent }).await?)?;
+            }
             Some(CheckpointAction::Prune { older_than, agent }) => {
                 let age = agentdocker_core::config::parse_duration(&older_than)
                     .map_err(|error| anyhow!(error))?;
@@ -2312,6 +2644,7 @@ async fn run() -> Result<()> {
             transfer_leases,
             key,
         }) => {
+            let links = card_links(&client, links).await?;
             let request = Request::Handoff {
                 agent,
                 to: Some(to),
@@ -2435,7 +2768,8 @@ async fn run() -> Result<()> {
             match client
                 .call(&Request::WorktreeCreate {
                     agent,
-                    path,
+                    // A relative path is the caller's, not the daemon's.
+                    path: path.as_deref().map(absolute_path),
                     branch,
                     from,
                     seed_build,
@@ -2465,8 +2799,24 @@ async fn run() -> Result<()> {
         Command::WorktreeDiff { agent } => {
             print_json(&client.call(&Request::WorktreeDiff { agent }).await?)?
         }
-        Command::WorktreeRemove { agent } => {
-            match client.call(&Request::WorktreeRemove { agent }).await? {
+        Command::WorktreeRemove {
+            agent,
+            path,
+            branch,
+            from,
+        } => {
+            let request = match agent {
+                Some(agent) => Request::WorktreeRemove { agent },
+                None => Request::WorktreeRemoveNamed {
+                    agent: from.context(
+                        "say who asks: --as <agent> (a session started through AgentDocker has it set)",
+                    )?,
+                    // A relative path is the caller's, not the daemon's.
+                    path: path.as_deref().map(absolute_path),
+                    branch,
+                },
+            };
+            match client.call(&request).await? {
                 Response::WorktreeRemoved {
                     path,
                     branch_removed,
@@ -2578,6 +2928,13 @@ async fn run() -> Result<()> {
             }
         }
         Command::Skill => print!("{}", skill::installed_document()),
+        Command::Agentfile(command) => match command {
+            AgentfileCommand::Check { file, names, json } => {
+                teams::check(file.as_deref(), &names, json)?
+            }
+            AgentfileCommand::Upgrade { file, print } => teams::upgrade(file.as_deref(), print)?,
+            AgentfileCommand::Schema => print!("{}", agentfile::SCHEMA),
+        },
         Command::Ping => {
             if let Response::Pong {
                 version,
@@ -2915,6 +3272,67 @@ async fn run() -> Result<()> {
                 }
             }
         },
+        Command::Brief {
+            all,
+            json,
+            project,
+            from,
+        } => {
+            let reader = sender::resolve(&client, from)
+                .await?
+                .unwrap_or_else(|| HUMAN.into());
+            // An agent's brief is of its own project; the person names one,
+            // this directory's unless told otherwise.
+            let project = match project {
+                Some(project) => Some(project),
+                None if reader == HUMAN => Some(std::env::current_dir()?.display().to_string()),
+                None => None,
+            };
+            let Response::Brief { mut brief } = client
+                .call(&Request::Brief {
+                    from: reader.clone(),
+                    project: project.clone(),
+                })
+                .await?
+            else {
+                bail!("the daemon gave no brief");
+            };
+            // GitHub's open pull requests, each with the gate's word at its
+            // head: asked here, never by the daemon or a session's hook, in
+            // a checkout of the project the brief is of.
+            let pulls = match brief.repository.clone() {
+                Some(repository) => {
+                    crate::gate::open_pulls(&client, Some(reader), project, &repository, all).await
+                }
+                None => Err(anyhow::anyhow!(
+                    "the daemon did not say where the project's repository is"
+                )),
+            };
+            if pulls.is_ok() {
+                brief.pull_requests_supplied();
+            }
+            if json {
+                let pulls = match &pulls {
+                    Ok(pulls) => serde_json::json!({
+                        "lines": pulls.lines,
+                        "asked": pulls.asked,
+                        "more": pulls.more,
+                    }),
+                    Err(error) => serde_json::json!({ "error": format!("{error:#}") }),
+                };
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &serde_json::json!({ "brief": brief, "pull_requests": pulls })
+                    )?
+                );
+            } else {
+                println!(
+                    "{}",
+                    crate::gate::brief_text(&brief, &pulls, chrono::Utc::now(), all)
+                );
+            }
+        }
         Command::Memory(args) => {
             let here = || -> Result<String> { Ok(std::env::current_dir()?.display().to_string()) };
             let list = |memories: &[agentdocker_core::memory::Memory],
@@ -2931,7 +3349,18 @@ async fn run() -> Result<()> {
                         .unwrap_or_default();
                     let gone = replaced
                         .get(&memory.id)
-                        .map(|r| format!("  superseded by {} on {}", r.by, r.at.format("%Y-%m-%d")))
+                        .map(|r| match &r.retired {
+                            Some(retired) => format!(
+                                "  retired by {} on {} ({}): {}",
+                                retired.by,
+                                r.at.format("%Y-%m-%d"),
+                                r.by,
+                                retired.reason.replace('\n', " ")
+                            ),
+                            None => {
+                                format!("  superseded by {} on {}", r.by, r.at.format("%Y-%m-%d"))
+                            }
+                        })
                         .unwrap_or_default();
                     println!(
                         "{}  {}  {}{since}{gone}",
@@ -2966,8 +3395,25 @@ async fn run() -> Result<()> {
                         roles,
                         valid_from,
                     };
-                    if let Response::Memory { memory } = client.call(&request).await? {
+                    if let Response::Memory {
+                        memory,
+                        may_supersede,
+                        left_out,
+                        ..
+                    } = client.call(&request).await?
+                    {
                         println!("{}", memory.id);
+                        // The id alone goes to stdout, for a script to read.
+                        for likely in may_supersede {
+                            eprintln!(
+                                "may replace {} ({:.0}%)",
+                                likely.memory,
+                                likely.probability * 100.0
+                            );
+                        }
+                        if let Some(full) = left_out {
+                            eprintln!("{}", no_room_said(&full));
+                        }
                     }
                 }
                 MemoryAction::Search {
@@ -2994,7 +3440,7 @@ async fn run() -> Result<()> {
                         min_score: None,
                     };
                     match client.call(&request).await? {
-                        Response::Memories { memories } => list(&memories, &none),
+                        Response::Memories { memories, .. } => list(&memories, &none),
                         Response::MemoryHistory { memories, replaced } => {
                             list(&memories, &replaced)
                         }
@@ -3002,22 +3448,89 @@ async fn run() -> Result<()> {
                     }
                 }
                 MemoryAction::Profile {
+                    session,
                     as_of,
                     project,
                     from,
                 } => {
-                    let request = Request::MemoryProfile {
-                        from: Some(
-                            sender::resolve(&client, from)
-                                .await?
-                                .unwrap_or_else(|| HUMAN.into()),
-                        ),
-                        project: Some(project.map_or_else(here, Ok)?),
-                        max_chars: None,
+                    use agentdocker_core::memory::{SESSION_PROFILE_CHARS, at_session_start};
+                    let reader = sender::resolve(&client, from)
+                        .await?
+                        .unwrap_or_else(|| HUMAN.into());
+                    let project = project.map_or_else(here, Ok)?;
+                    let ask = |max_chars| Request::MemoryProfile {
+                        from: Some(reader.clone()),
+                        project: Some(project.clone()),
+                        max_chars,
                         as_of,
                     };
-                    if let Response::Memories { memories } = client.call(&request).await? {
+                    let count = |n: usize| {
+                        format!(
+                            "{n} standing {}",
+                            if n == 1 { "memory" } else { "memories" }
+                        )
+                    };
+                    // What a session start asks for, and what it makes of
+                    // the answer: the same request and the same admission.
+                    let start = match client.call(&ask(Some(SESSION_PROFILE_CHARS))).await? {
+                        Response::Memories { memories, left_out } => Some((memories, left_out)),
+                        _ => None,
+                    };
+                    if session {
+                        if let Some((memories, left_out)) = start {
+                            let (full, named) = at_session_start(&memories, &left_out);
+                            let full: Vec<_> = full.into_iter().cloned().collect();
+                            list(&full, &none);
+                            // What is not told in full goes to stderr:
+                            // stdout stays a list of memories, one a line.
+                            if !named.is_empty() {
+                                eprintln!(
+                                    "{}",
+                                    left_out_said(
+                                        &format!(
+                                            "{} had no room and a new session is told of {} by first words only; `agentdocker memory search <words>` gives the text, and superseding a longer one with a shorter makes room:",
+                                            count(named.len()),
+                                            if named.len() == 1 { "it" } else { "them" },
+                                        ),
+                                        &named,
+                                    )
+                                );
+                            }
+                        }
+                    } else if let Response::Memories { memories, left_out } =
+                        client.call(&ask(None)).await?
+                    {
                         list(&memories, &none);
+                        if !left_out.is_empty() {
+                            eprintln!(
+                                "{}",
+                                left_out_said(
+                                    &format!(
+                                        "{} had no room in this profile:",
+                                        count(left_out.len()),
+                                    ),
+                                    &left_out,
+                                )
+                            );
+                        }
+                        // This list is wider than what a session is told:
+                        // say so whenever a session's start leaves out a
+                        // standing memory, in this list or not.
+                        let untold = start
+                            .map(|(memories, left_out)| {
+                                at_session_start(&memories, &left_out).1.len()
+                            })
+                            .unwrap_or(0);
+                        if untold > 0 {
+                            eprintln!(
+                                "a new session is told less than this profile: {} told there by first words only; `agentdocker memory profile --session` shows what a session is told",
+                                if untold == 1 {
+                                    "1 standing memory is".to_owned()
+                                } else {
+                                    format!("{} are", count(untold))
+                                },
+                            );
+                        }
                     }
                 }
                 MemoryAction::Forget { memory, from } => {
@@ -3028,6 +3541,32 @@ async fn run() -> Result<()> {
                         memory,
                     };
                     client.call(&request).await?;
+                }
+                MemoryAction::Retire {
+                    memory,
+                    reason,
+                    from,
+                } => {
+                    let request = Request::MemoryRetire {
+                        from: sender::resolve(&client, from)
+                            .await?
+                            .unwrap_or_else(|| HUMAN.into()),
+                        memory,
+                        reason,
+                    };
+                    if let Response::Memory {
+                        memory: retirement, ..
+                    } = client.call(&request).await?
+                    {
+                        // The retirement's id on stdout, as `add` prints
+                        // the id of what it kept; how to undo it beside.
+                        println!("{}", retirement.id);
+                        eprintln!(
+                            "retired {}; `agentdocker memory forget {}` brings it back",
+                            retirement.supersedes.as_deref().unwrap_or("it"),
+                            retirement.id
+                        );
+                    }
                 }
             }
         }
@@ -3292,8 +3831,12 @@ async fn run() -> Result<()> {
                     lease,
                     plan,
                     files,
+                    usage,
                 } => {
                     println!("{}", card_line(&task));
+                    if let Some(usage) = &usage {
+                        println!("  {}", format::card_usage(usage));
+                    }
                     if let Some(plan) = &plan {
                         println!("  plan {}  {}", plan.id, plan.title);
                     }
@@ -3362,6 +3905,7 @@ async fn run() -> Result<()> {
                     links,
                     fields,
                 } => {
+                    let links = card_links(&client, links).await?;
                     let request = Request::TaskCreate {
                         from: sender::resolve(&client, from)
                             .await?
@@ -3445,6 +3989,7 @@ async fn run() -> Result<()> {
                     take_over_from,
                     project,
                     board,
+                    unblock,
                 } => {
                     let agent = sender::resolve(&client, agent)
                         .await?
@@ -3461,6 +4006,7 @@ async fn run() -> Result<()> {
                                 take_over_from,
                                 project,
                                 board,
+                                unblock,
                             })
                             .await?,
                     );
@@ -3517,6 +4063,7 @@ async fn run() -> Result<()> {
                             Some(given)
                         }
                     };
+                    let links = card_links(&client, links).await?;
                     let request = Request::TaskUpdate {
                         agent: sender::resolve(&client, agent)
                             .await?
@@ -4104,12 +4651,15 @@ async fn run() -> Result<()> {
             show,
             json,
             shell,
+            git_hook,
             remove,
+            agent,
         } => {
             if remove
                 || preview
                 || !dry_run
                 || shell
+                || git_hook
                 || apply.is_some()
                 || undo.is_some()
                 || health
@@ -4131,14 +4681,23 @@ async fn run() -> Result<()> {
                     Action::RemovePreview
                 } else if remove {
                     Action::Remove
-                } else if preview || shell {
+                } else if preview || shell || git_hook {
                     Action::Preview
                 } else {
                     Action::Install
                 };
-                setup::guided::run(socket, &runtimes, action, json, shell).await?;
+                setup::guided::run(
+                    socket,
+                    &runtimes,
+                    action,
+                    json,
+                    shell,
+                    agent.as_deref(),
+                    git_hook,
+                )
+                .await?;
             } else {
-                setup::run(&client, &runtimes, dry_run).await?;
+                setup::run(&client, &runtimes, dry_run, agent.as_deref()).await?;
             }
         }
         Command::Run(args) => {
@@ -4593,7 +5152,8 @@ async fn run() -> Result<()> {
                 kind: args.kind,
                 payload,
                 reply_to: args.reply_to.map(MessageId::from),
-                links: args.links,
+                links: card_links(&client, args.links).await?,
+                idempotency_key: args.idempotency_key,
             };
             match client.call(&request).await? {
                 Response::Sent {
@@ -4633,11 +5193,25 @@ async fn run() -> Result<()> {
             from,
             timeout,
             no_wait,
+            kind,
+            options,
+            multi,
+            no_other,
+            stale_after,
+            stale_action,
             question,
         } => {
             let from = sender::resolve(&client, from)
                 .await?
                 .unwrap_or_else(|| HUMAN.into());
+            let form = format::question_form(
+                &kind,
+                &options,
+                multi,
+                !no_other,
+                stale_after,
+                stale_action.as_deref(),
+            )?;
             let request = if no_wait {
                 Request::PostQuestion {
                     from,
@@ -4645,6 +5219,7 @@ async fn run() -> Result<()> {
                     question,
                     presentation: None,
                     timeout_secs: timeout,
+                    form,
                 }
             } else {
                 Request::Ask {
@@ -4652,10 +5227,25 @@ async fn run() -> Result<()> {
                     to,
                     question,
                     timeout_secs: timeout,
+                    form,
                 }
             };
             match client.call(&request).await? {
-                Response::Answer { from, text, .. } => println!("{}: {text}", format::short(&from)),
+                Response::Answer {
+                    from,
+                    text,
+                    default,
+                    ..
+                } => {
+                    if default {
+                        println!(
+                            "{}: {text} (the default: nobody answered in time)",
+                            format::short(&from)
+                        );
+                    } else {
+                        println!("{}: {text}", format::short(&from));
+                    }
+                }
                 Response::Sent { message, .. } => println!("{message}"),
                 Response::Held { message, question } => {
                     println!("{message}");
@@ -4680,11 +5270,17 @@ async fn run() -> Result<()> {
             agent,
             message,
             text,
+            choices,
+            other,
+            note,
         } => {
             let request = Request::Answer {
                 from: sender::resolve(&client, agent).await?,
                 message: MessageId::from(message),
-                text,
+                text: text.unwrap_or_default(),
+                choices,
+                other,
+                note,
             };
             if let Response::Sent { message, .. } = client.call(&request).await? {
                 println!("{message}");
@@ -4739,13 +5335,7 @@ async fn run() -> Result<()> {
         }
         Command::Usage(args) => {
             use agentdocker_core::usage::report::Group;
-            let by = match args.by.as_str() {
-                "model" => Group::Model,
-                "provider" => Group::Provider,
-                "project" => Group::Project,
-                "hour" => Group::Hour,
-                _ => Group::Agent,
-            };
+            let by = Group::parse(&args.by).unwrap_or_default();
             let request = Request::Usage {
                 project: args.project.as_deref().map(project_selector),
                 agent: args.agent,
@@ -4983,22 +5573,67 @@ async fn run() -> Result<()> {
             let agent = sender::resolve(&client, args.agent)
                 .await?
                 .context("claim as an agent: give --as, or run from an agent's session")?;
-            let request = Request::Claim {
-                agent,
-                resource: resource_key(&args.resource),
-                amount: args.amount,
-                mode: if args.shared {
-                    LeaseMode::Shared
-                } else {
-                    LeaseMode::Exclusive
-                },
-                ttl_secs: args.ttl,
-                note: args.note,
-                wait_secs: args.wait,
-                priority: args.priority,
-                automatic: false,
+            let resource = resource_key(&args.resource);
+            if args.fresh {
+                // A daemon that does not know the word ignores it and
+                // renews the lease another worker holds, and its answer
+                // reads as a grant. Asked first, where nothing is changed
+                // by asking.
+                let knows = matches!(
+                    client.call(&Request::Ping).await?,
+                    Response::Pong { features, .. }
+                        if features.iter().any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM)
+                );
+                if !knows {
+                    bail!(
+                        "the running daemon does not know a fresh claim: it is older than this command and would renew a lease you already hold instead. Nothing was claimed. `agentdocker daemon restart` switches to the installed build once no agent work is running"
+                    );
+                }
+            }
+            let started = std::time::Instant::now();
+            let wait = std::time::Duration::from_secs(args.wait);
+            let mut first = true;
+            let answer = loop {
+                let request = Request::Claim {
+                    agent: agent.clone(),
+                    resource: resource.clone(),
+                    amount: args.amount,
+                    mode: if args.shared {
+                        LeaseMode::Shared
+                    } else {
+                        LeaseMode::Exclusive
+                    },
+                    ttl_secs: args.ttl,
+                    note: args.note.clone(),
+                    wait_secs: claim_wait_secs(wait, started.elapsed(), first),
+                    priority: args.priority,
+                    automatic: false,
+                    fresh: args.fresh,
+                    actor: args.actor.clone(),
+                };
+                first = false;
+                let response = client.call_raw(&request).await?;
+                // Another worker of this same agent holds it. The daemon
+                // queues no agent behind itself, so the wait is kept here:
+                // ask again until it is spent.
+                let own = matches!(
+                    &response,
+                    Response::Error { code: agentdocker_core::ErrorCode::Conflict, details: Some(details), .. }
+                        if details["own"] == true
+                );
+                // Asked again only while some of the wait is left, after
+                // a pause no longer than what is left of it: the last
+                // answer inside the wait is the one that stands.
+                let left = wait.saturating_sub(started.elapsed());
+                if own && !left.is_zero() {
+                    tokio::time::sleep(FRESH_RETRY.min(left)).await;
+                    if !wait.saturating_sub(started.elapsed()).is_zero() {
+                        continue;
+                    }
+                }
+                break client::into_result(response)?;
             };
-            if let Response::Lease { lease } = client.call(&request).await? {
+            if let Response::Lease { lease } = answer {
                 println!("{}", lease.id);
             }
         }
@@ -5020,6 +5655,7 @@ async fn run() -> Result<()> {
             lease,
             all,
             summary,
+            actor,
         } => {
             let agent = sender::resolve(&client, agent)
                 .await?
@@ -5030,6 +5666,7 @@ async fn run() -> Result<()> {
                     summary,
                     summary_source: agentdocker_core::SummarySource::Explicit,
                     only_automatic: false,
+                    actor,
                 };
                 if let Response::Leases { leases } = client.call(&request).await? {
                     for lease in leases {
@@ -5037,13 +5674,102 @@ async fn run() -> Result<()> {
                     }
                 }
             } else if let Some(lease) = lease {
-                let request = Request::Release {
-                    agent,
-                    lease: LeaseId::from(lease.as_str()),
-                    summary,
-                    summary_source: agentdocker_core::SummarySource::Explicit,
-                };
-                client.call(&request).await?;
+                // A lease by its id, or by what it is on: the name `claim`
+                // took, which is the one a person has to hand. Which lease
+                // that name stands for is the daemon's to say: it alone
+                // knows a resource's own spelling, and a lease over or
+                // under the resource is not it.
+                if names_a_resource(&lease) {
+                    let request = Request::ReleaseResource {
+                        agent,
+                        resource: resource_key(&lease),
+                        summary,
+                        summary_source: agentdocker_core::SummarySource::Explicit,
+                    };
+                    if let Response::Leases { leases } = client.call(&request).await? {
+                        for lease in leases {
+                            // Which lease the name stood for.
+                            println!("{}", lease.id);
+                        }
+                    }
+                } else {
+                    let request = Request::Release {
+                        agent,
+                        lease: LeaseId::from(lease.as_str()),
+                        summary,
+                        summary_source: agentdocker_core::SummarySource::Explicit,
+                    };
+                    client.call(&request).await?;
+                }
+            }
+        }
+        Command::RequestRelease {
+            agent,
+            resource,
+            reason,
+        } => {
+            let from = sender::resolve(&client, agent)
+                .await?
+                .context("ask as an agent: give --as, or run from an agent's session")?;
+            let request = Request::RequestRelease {
+                from,
+                resource: resource_key(&resource),
+                reason,
+            };
+            if let Response::ReleaseRequests { requests } = client.call(&request).await? {
+                for request in requests {
+                    eprintln!(
+                        "asked {} to release {} ({} lease{}); its answer arrives as a release_response message",
+                        request.holder.short(),
+                        format::resource(&request.resource),
+                        request.leases.len(),
+                        if request.leases.len() == 1 { "" } else { "s" }
+                    );
+                    println!("{}", request.message);
+                }
+            }
+        }
+        Command::RespondRelease {
+            agent,
+            request,
+            accept,
+            decline,
+            summary,
+            reason,
+        } => {
+            let from = sender::resolve(&client, agent)
+                .await?
+                .context("answer as an agent: give --as, or run from an agent's session")?;
+            let request = Request::RespondRelease {
+                from,
+                request: MessageId::from(request),
+                accept: accept && !decline,
+                text: if decline { reason } else { summary },
+            };
+            if let Response::ReleaseRequest { request } = client.call(&request).await? {
+                let answer = request.answer.as_ref();
+                let released = answer.map_or(0, |a| a.released.len());
+                if answer.is_some_and(|a| a.accepted) && released == 0 {
+                    eprintln!(
+                        "nothing to release on {} for {}: the leases were already gone",
+                        format::resource(&request.resource),
+                        request.requester.short()
+                    );
+                } else if answer.is_some_and(|a| a.accepted) {
+                    eprintln!(
+                        "released {} ({} lease{}) for {}",
+                        format::resource(&request.resource),
+                        released,
+                        if released == 1 { "" } else { "s" },
+                        request.requester.short()
+                    );
+                } else {
+                    eprintln!(
+                        "declined to release {} for {}",
+                        format::resource(&request.resource),
+                        request.requester.short()
+                    );
+                }
             }
         }
         Command::Journal(args) => journal_command(&client, args).await?,
@@ -5213,6 +5939,7 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
                         .unwrap_or_else(|| "user".to_owned()),
                     max_entries: args.limit,
                     max_chars: 100_000,
+                    max_bytes: None,
                     all_branches: args.all_branches,
                     advance: args.ack,
                 }),
@@ -5316,21 +6043,6 @@ async fn journal_command(client: &Client, args: JournalArgs) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Absolute, with as much of it canonical as exists.
-fn absolute_path(raw: &str) -> String {
-    let path = PathBuf::from(raw);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    };
-    agentdocker_host::project::canonical(&absolute)
-        .to_string_lossy()
-        .into_owned()
 }
 
 /// Ledger rows, with agent ids turned into names.
@@ -5602,6 +6314,19 @@ async fn usage_names(
     report: &agentdocker_core::usage::report::Report,
 ) -> std::collections::HashMap<String, String> {
     use agentdocker_core::usage::report::Group;
+    if report.by == Group::Card {
+        // A card by its key, while the board still has it.
+        let mut names = std::collections::HashMap::new();
+        for id in report.rows.iter().filter_map(|row| row.key.clone()) {
+            if let Ok(Response::TaskDetail { task, .. }) =
+                client.call(&Request::TaskGet { task: id.clone() }).await
+                && !task.key.is_empty()
+            {
+                names.insert(id, task.key);
+            }
+        }
+        return names;
+    }
     if !matches!(report.by, Group::Agent | Group::Project) {
         return Default::default();
     }
@@ -5740,11 +6465,26 @@ fn print_agents(
     };
     let in_session =
         agents.iter().any(|a| a.session.is_some()) || unadopted.iter().any(|p| p.session.is_some());
+    // Said only where a Claude Code team is: the column is noise otherwise.
+    let in_team =
+        agents.iter().any(|a| a.team.is_some()) || unadopted.iter().any(|p| p.team.is_some());
+    let team_cell = |team: Option<&agentdocker_core::TeamMembership>| {
+        team.map(agentdocker_core::TeamMembership::describe)
+            .unwrap_or_else(|| "-".to_owned())
+    };
     let session_cell = |session: Option<&Session>| {
         session
             .map(Session::describe)
             .unwrap_or_else(|| "-".to_owned())
     };
+    // What the provider says of an agent's own thread, where any says
+    // anything: the role it was spawned with and whose thread spawned it.
+    let with_threads = agents.iter().any(|a| {
+        a.thread
+            .as_ref()
+            .is_some_and(|t| t.role.is_some() || t.parent.is_some())
+    });
+    let thread_cell = |a: &AgentRecord| thread_cell(a, agents);
     let mut rows: Vec<Vec<String>> = agents
         .iter()
         .map(|a| {
@@ -5793,8 +6533,14 @@ fn print_agents(
                         .unwrap_or_else(|| "-".to_owned()),
                 );
             }
+            if with_threads {
+                row.push(thread_cell(a));
+            }
             if in_session {
                 row.push(session_cell(a.session.as_ref()));
+            }
+            if in_team {
+                row.push(team_cell(a.team.as_ref()));
             }
             row.push(
                 a.pid
@@ -5825,8 +6571,14 @@ fn print_agents(
         if with_tokens {
             row.push("-".to_owned());
         }
+        if with_threads {
+            row.push("-".to_owned());
+        }
         if in_session {
             row.push(session_cell(p.session.as_ref()));
+        }
+        if in_team {
+            row.push(team_cell(p.team.as_ref()));
         }
         row.push(p.pid.to_string());
         row.push(
@@ -5843,11 +6595,43 @@ fn print_agents(
     if with_tokens {
         headers.push("TOKENS 24H");
     }
+    if with_threads {
+        headers.push("THREAD");
+    }
     if in_session {
         headers.push("LIVES IN");
     }
+    if in_team {
+        headers.push("TEAM");
+    }
     headers.extend(["PID", "CREATED"]);
     format::table_dimming(&headers, &rows, |i| i >= first_unadopted);
+}
+
+/// The `ps` THREAD cell: what the provider says of the agent's own thread.
+/// A spawned thread reads `<role> of <parent>` (or `child of <parent>`
+/// without a role), the parent by its agent's name where one is listed, by
+/// its short id, or by the thread's own first characters where no agent is
+/// bound to it; a root thread, or one not read yet, is `-`.
+fn thread_cell(agent: &AgentRecord, agents: &[AgentRecord]) -> String {
+    let Some(thread) = &agent.thread else {
+        return "-".to_owned();
+    };
+    let role = thread.role.as_deref().map(format::single_line);
+    let parent = thread.parent.as_ref().map(|parent| match &parent.agent {
+        Some(id) => agents
+            .iter()
+            .find(|a| a.id == *id)
+            .map(|a| a.spec.name.clone())
+            .unwrap_or_else(|| id.short().to_owned()),
+        None => format!("thread {}", format::short(&parent.thread)),
+    });
+    match (role, parent) {
+        (Some(role), Some(parent)) => format!("{role} of {parent}"),
+        (Some(role), None) => role,
+        (None, Some(parent)) => format!("child of {parent}"),
+        (None, None) => "-".to_owned(),
+    }
 }
 
 /// One row per channel, with how many reviews it carries.
@@ -6194,15 +6978,15 @@ pub(crate) fn resource_key(raw: &str) -> String {
         Some(_) => return raw.to_owned(),
         None => raw,
     };
-    let path = PathBuf::from(value);
-    let absolute = if path.is_absolute() {
-        path
-    } else {
-        std::env::current_dir()
-            .map(|cwd| cwd.join(&path))
-            .unwrap_or(path)
-    };
-    format!("path:{}", hooks::normalize(&absolute).display())
+    format!("path:{}", absolute_path(value))
+}
+
+/// Absolute, with as much of it canonical as exists: the host resolves a
+/// relative path against the working directory itself.
+fn absolute_path(raw: &str) -> String {
+    agentdocker_host::project::canonical(Path::new(raw))
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn parse_pairs(pairs: &[String]) -> Result<BTreeMap<String, String>> {
@@ -6297,6 +7081,125 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A claim's first ask carries the whole wait it was given, whatever
+    /// time has already passed; only a later ask carries what is left,
+    /// and never more than that.
+    #[test]
+    fn a_claims_first_ask_carries_its_whole_wait() {
+        use std::time::Duration;
+        let spent = Duration::from_micros(1);
+        for wait in [1, 2, 600] {
+            assert_eq!(
+                claim_wait_secs(Duration::from_secs(wait), spent, true),
+                wait
+            );
+        }
+        assert_eq!(claim_wait_secs(Duration::from_secs(0), spent, true), 0);
+        // Later asks: what is left, rounded down, and nothing once spent.
+        let wait = Duration::from_secs(10);
+        assert_eq!(
+            claim_wait_secs(wait, Duration::from_millis(2_100), false),
+            7
+        );
+        assert_eq!(
+            claim_wait_secs(wait, Duration::from_millis(9_600), false),
+            0
+        );
+        assert_eq!(claim_wait_secs(wait, Duration::from_secs(11), false), 0);
+    }
+
+    /// A task link names its card by id or by the key a person reads on
+    /// the board; a key is told from an id by its dash, and is kept as
+    /// written until the card's id is looked up.
+    #[test]
+    fn a_task_link_may_name_its_card_by_key() {
+        let key = parse_link("task:AD-12").unwrap();
+        assert_eq!(
+            (key.kind, key.target.as_str()),
+            (agentdocker_core::LinkKind::Task, "AD-12")
+        );
+        assert!(card_key("AD-12") && card_key("WEB-APP-7"));
+        // An id, or its prefix, is checked as before and is no key.
+        let id = parse_link("task:5fd54785dd77").unwrap();
+        assert_eq!(id.target, "5fd54785dd77");
+        for not_a_key in ["5fd54785dd77", "AD-", "-12", "AD-1x", "AD 12"] {
+            assert!(!card_key(not_a_key), "{not_a_key}");
+        }
+        assert!(parse_link("task:zz").is_err(), "neither an id nor a key");
+        assert!(parse_link("task:AD-1x").is_err());
+        // Other kinds are untouched.
+        assert!(parse_link("pr:#12").is_ok() && parse_link("pr:AD-12").is_err());
+    }
+
+    /// `release` takes the resource `claim` took as well as a lease's id.
+    #[test]
+    fn release_tells_a_resource_from_a_lease_id() {
+        for resource in [
+            "task:local-cargo-campaign",
+            "path:/work/src",
+            "src/main.rs",
+            "branch:main",
+            "notes",
+        ] {
+            assert!(names_a_resource(resource), "{resource}");
+        }
+        // A word of hex digits alone is a lease id, also where it could
+        // name a file; the file is said with a path's own marks.
+        for id in ["7106a6106c95", "557b785683e8", "abc", "deadbeef"] {
+            assert!(!names_a_resource(id), "{id}");
+        }
+        for file in ["./abc", "path:abc", "deadbeef.rs"] {
+            assert!(names_a_resource(file), "{file}");
+        }
+    }
+
+    /// The remedy fits the cause: a memory too long by itself is to be
+    /// shortened, and no older memory is blamed for it; one that is
+    /// crowded out is told how full a session's start is.
+    #[test]
+    fn the_no_room_notice_tells_too_long_from_crowded() {
+        use agentdocker_core::memory::NoRoom;
+        let alone = no_room_said(&NoRoom {
+            budget: 2000,
+            told: 0,
+            used: 0,
+            left_out: 1,
+            alone: true,
+        });
+        assert!(alone.contains("too long to be told in full"), "{alone}");
+        assert!(alone.contains("Supersede it with a shorter one"), "{alone}");
+        assert!(!alone.contains("longer one"), "{alone}");
+        let crowded = no_room_said(&NoRoom {
+            budget: 2000,
+            told: 2,
+            used: 1900,
+            left_out: 1,
+            alone: false,
+        });
+        assert!(
+            crowded.contains("beside the 2 standing memories it tells in full (1900 characters)"),
+            "{crowded}"
+        );
+        assert!(
+            crowded.contains("1 standing memory is now told by first words only"),
+            "{crowded}"
+        );
+        assert!(crowded.contains("memory profile --session"), "{crowded}");
+        // Nothing told in full and nothing too long: naming one took the
+        // room of another, and the words still read.
+        let both = no_room_said(&NoRoom {
+            budget: 2000,
+            told: 0,
+            used: 0,
+            left_out: 2,
+            alone: false,
+        });
+        assert!(
+            both.contains("beside the 0 standing memories it tells in full (0 characters); 2 standing memories are now told"),
+            "{both}"
+        );
+    }
+
     /// The runtimes table calls an earlier version's hook set outdated and
     /// names what it lacks; hooks never set up stay `no`.
     #[test]
@@ -6345,6 +7248,37 @@ mod tests {
             .expect("a parsing thread")
             .join()
             .expect("parsing does not panic")
+    }
+
+    /// `worktree-create` needs a branch and no path: the daemon then puts
+    /// the checkout in the project's worktrees folder. A path is still
+    /// taken when given.
+    #[test]
+    fn a_worktree_is_created_with_or_without_a_path() {
+        let path_of = |parsed: super::Cli| match parsed.command {
+            super::Command::WorktreeCreate { path, branch, .. } => {
+                assert_eq!(branch, "agent/fix");
+                path
+            }
+            _ => panic!("not worktree-create"),
+        };
+        let line = ["agentdocker", "worktree-create", "--as", "agent-1"];
+        let parsed = parse_cli([line[0], line[1], line[2], line[3], "--branch", "agent/fix"]);
+        assert_eq!(path_of(parsed.unwrap()), None);
+        let parsed = parse_cli([
+            line[0],
+            line[1],
+            line[2],
+            line[3],
+            "--branch",
+            "agent/fix",
+            "../fix",
+        ]);
+        assert_eq!(path_of(parsed.unwrap()), Some("../fix".to_owned()));
+        assert!(
+            parse_cli([line[0], line[1], line[2], line[3]]).is_err(),
+            "a branch is always named"
+        );
     }
 
     /// `roles set --tools a,b` names a role's tools, each one the MCP

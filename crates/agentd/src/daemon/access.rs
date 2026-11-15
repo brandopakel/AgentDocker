@@ -634,6 +634,7 @@ mod tests {
                 reader: reader.into(),
                 max_entries: 20,
                 max_chars: 2000,
+                max_bytes: None,
                 all_branches: false,
                 advance: true,
             }),
@@ -688,6 +689,8 @@ mod tests {
             wait_secs: 20,
             priority: 0,
             automatic: false,
+            actor: None,
+            fresh: false,
         };
         assert!(daemon.restricted_request("wrong", Request::Ping).is_err());
         let original = lock(&daemon.state)
@@ -731,6 +734,7 @@ mod tests {
             payload: json!({"text":"hello"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         };
         for kind in ["pause", "resume"] {
             let mut request = send("peer");

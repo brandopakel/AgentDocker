@@ -80,7 +80,7 @@ fn verdict(agent: &str, project: Option<&str>, branch: &str, head: &str) -> Requ
         branch: branch.into(),
         head: head.into(),
         from: None,
-        verdict: "approve".into(),
+        verdict: "pass".into(),
         findings: Findings::default(),
         note: None,
     }
@@ -139,7 +139,7 @@ async fn create_worktree(
     match daemon
         .handle(Request::WorktreeCreate {
             agent: agent.to_string(),
-            path: path.to_string_lossy().into_owned(),
+            path: Some(path.to_string_lossy().into_owned()),
             branch: branch.into(),
             from: None,
             seed_build: Vec::new(),

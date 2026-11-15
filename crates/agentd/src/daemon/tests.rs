@@ -350,6 +350,7 @@ async fn one_identity_survives_both_halves_and_keeps_what_it_was_given() {
             payload: json!({"text": "still here?"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(matches!(delivered, Response::Sent { .. }), "{delivered:?}");
@@ -699,6 +700,7 @@ async fn a_session_that_comes_back_takes_up_its_ended_record() {
             question: "still there?".to_owned(),
             presentation: None,
             timeout_secs: 600,
+            form: Default::default(),
         })
         .await
     else {
@@ -2417,6 +2419,9 @@ async fn ask_returns_the_answer_that_names_it() {
                     from: None,
                     message: id,
                     text: "yes".to_owned(),
+                    choices: Vec::new(),
+                    note: None,
+                    other: None,
                 })
                 .await
         })
@@ -2428,6 +2433,7 @@ async fn ask_returns_the_answer_that_names_it() {
             to: "user".to_owned(),
             question: "ship it?".to_owned(),
             timeout_secs: 10,
+            form: Default::default(),
         })
         .await;
     let Response::Answer { from, text, .. } = response else {
@@ -2464,6 +2470,7 @@ async fn ask_times_out_rather_than_waiting_forever() {
             to: "user".to_owned(),
             question: "anyone there?".to_owned(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -2501,6 +2508,7 @@ async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
             to: "user".to_owned(),
             question: "   ".to_owned(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -2519,6 +2527,9 @@ async fn an_empty_question_is_refused_and_an_unknown_one_is_not_found() {
             from: None,
             message: MessageId::from("nosuchquestion".to_owned()),
             text: "hello?".to_owned(),
+            choices: Vec::new(),
+            note: None,
+            other: None,
         })
         .await;
     assert!(
@@ -2553,6 +2564,7 @@ async fn questions_are_listed_only_for_whoever_was_asked() {
                     to: "user".to_owned(),
                     question: "for the human".to_owned(),
                     timeout_secs: 30,
+                    form: Default::default(),
                 })
                 .await
         })
@@ -2568,6 +2580,7 @@ async fn questions_are_listed_only_for_whoever_was_asked() {
                     to: beta,
                     question: "for beta".to_owned(),
                     timeout_secs: 30,
+                    form: Default::default(),
                 })
                 .await
         })
@@ -2619,6 +2632,7 @@ async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does
             payload: json!({ "text": "look at this" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     let notice = notices.try_recv().expect("a person is worth interrupting");
@@ -2646,12 +2660,158 @@ async fn a_message_to_a_person_asks_for_a_notification_and_one_to_a_program_does
             payload: json!({ "text": "carry on" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(
         notices.try_recv().is_err(),
         "a program has no desktop to interrupt"
     );
+}
+
+/// A sender whose answer was lost sends again with the same key: the
+/// daemon answers as it first did, with the same message id, and the
+/// recipient has the message once. Another sender's same key is its own
+/// send, and a refused key is refused before anything is queued.
+#[tokio::test]
+async fn a_repeated_idempotency_key_replays_the_first_answer_and_queues_nothing() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sender = register(&daemon, "sender", distinct_pid()).await;
+    let other = register(&daemon, "other", distinct_pid()).await;
+    let reader = register(&daemon, "reader", distinct_pid()).await;
+    let send = |from: &AgentRecord, key: &str| Request::Send {
+        from: from.id.to_string(),
+        to: reader.id.to_string(),
+        kind: "chat".to_owned(),
+        payload: json!({ "text": "once" }),
+        reply_to: None,
+        links: Vec::new(),
+        idempotency_key: Some(key.to_owned()),
+    };
+
+    // The first answer is dropped on the way back; the retry carries the
+    // same key.
+    let first = daemon.handle(send(&sender, "send-1")).await;
+    let Response::Sent { message, .. } = &first else {
+        panic!("{first:?}");
+    };
+    let again = daemon.handle(send(&sender, "send-1")).await;
+    assert_eq!(again, first, "the first answer, unchanged");
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(
+        messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        vec![message],
+        "queued once"
+    );
+
+    // The same key from another sender is another send.
+    let theirs = daemon.handle(send(&other, "send-1")).await;
+    assert!(matches!(&theirs, Response::Sent { message: id, .. } if id != message));
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(messages.len(), 2);
+
+    // A refusal is not remembered: the retry is judged afresh.
+    let mut refused = send(&sender, "send-2");
+    if let Request::Send { to, .. } = &mut refused {
+        *to = "nobody-here".to_owned();
+    }
+    assert!(matches!(
+        daemon.handle(refused).await,
+        Response::Error { .. }
+    ));
+    assert!(
+        lock(&daemon.state)
+            .keyed_sends
+            .lookup(&sender.id.to_string(), "send-2", Utc::now())
+            .is_none()
+    );
+
+    // A key that is not one bounded line is refused before routing.
+    assert!(matches!(
+        daemon.handle(send(&sender, " padded")).await,
+        Response::Error {
+            code: ErrorCode::Invalid,
+            ..
+        }
+    ));
+}
+
+/// A keyed retry is answered before its destination is resolved again:
+/// after a lost answer the recipient may have been renamed, or removed,
+/// and the message the retry repeats is queued all the same.
+#[tokio::test]
+async fn a_keyed_retry_is_answered_after_its_recipient_is_renamed_or_removed() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let sender = register(&daemon, "sender", distinct_pid()).await;
+    let reader = register(&daemon, "reader", distinct_pid()).await;
+    let send = |key: &str| Request::Send {
+        from: sender.id.to_string(),
+        to: "reader".to_owned(),
+        kind: "chat".to_owned(),
+        payload: json!({ "text": "once" }),
+        reply_to: None,
+        links: Vec::new(),
+        idempotency_key: Some(key.to_owned()),
+    };
+
+    // The answer is lost on the way back, and the recipient is renamed
+    // before the retry: its old name no longer reaches it.
+    let first = daemon.handle(send("send-1")).await;
+    let Response::Sent { message, .. } = &first else {
+        panic!("{first:?}");
+    };
+    let renamed = daemon
+        .handle(Request::Rename {
+            agent: reader.id.to_string(),
+            name: "renamed-reader".to_owned(),
+        })
+        .await;
+    assert!(matches!(renamed, Response::Agent { .. }), "{renamed:?}");
+    let fresh = daemon.handle(send("send-2")).await;
+    assert!(
+        matches!(fresh, Response::Error { .. }),
+        "a new send by the old name is refused: {fresh:?}"
+    );
+
+    let again = daemon.handle(send("send-1")).await;
+    assert_eq!(again, first, "the first answer, unchanged");
+    let Response::Messages { messages } = daemon
+        .handle(Request::Inbox {
+            agent: reader.id.to_string(),
+            drain: false,
+        })
+        .await
+    else {
+        panic!("inbox")
+    };
+    assert_eq!(
+        messages.iter().map(|m| &m.id).collect::<Vec<_>>(),
+        vec![message],
+        "queued once"
+    );
+
+    // And once the recipient is gone altogether.
+    let ended = lock(&daemon.state).deregister(&reader.id.to_string());
+    assert!(matches!(ended, Response::Agent { .. }), "{ended:?}");
+    assert_eq!(daemon.handle(send("send-1")).await, first);
 }
 
 // ----- snapshot restore ----------------------------------------------
@@ -2712,6 +2872,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             question: "still there?".to_owned(),
             presentation: None,
             timeout_secs: 600,
+            form: Default::default(),
         })
         .await
     else {
@@ -2748,6 +2909,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             take_over_from: None,
             project: None,
             board: None,
+            unblock: None,
         })
         .await
     else {
@@ -2763,6 +2925,7 @@ async fn an_ended_session_is_relaunched_under_its_own_record_with_its_queue() {
             payload: json!({"text": "still for you"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
     else {
@@ -3196,6 +3359,7 @@ async fn a_relaunch_that_cannot_start_answers_and_leaves_the_record_ended() {
             payload: json!({"text": "waiting"}),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
     else {
@@ -3734,6 +3898,8 @@ async fn a_refused_claim_names_the_holder() {
         wait_secs: 0,
         priority: 0,
         automatic: false,
+        actor: None,
+        fresh: false,
     };
     assert!(matches!(
         daemon.handle(claim(&writer, "path:/work/src")).await,
@@ -3753,6 +3919,118 @@ async fn a_refused_claim_names_the_holder() {
             writer.id.short()
         )
     );
+}
+
+/// Two workers that claim the build slot as one agent are kept apart: the
+/// second fresh claim is refused, at once even when it would wait, with
+/// the first one's lease named as the asker's own; the first hold is
+/// neither renewed nor ended by it. A plain claim still renews. Once the
+/// slot is released the second worker's fresh claim takes it.
+#[tokio::test]
+async fn a_fresh_claim_keeps_two_workers_of_one_agent_apart() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let builder = register(&daemon, "builder", None).await;
+    let claim = |fresh: bool, wait_secs: u64| Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Exclusive,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs,
+        priority: 0,
+        automatic: false,
+        fresh,
+        actor: None,
+    };
+    // A client asks before it relies on a fresh claim: a daemon that did
+    // not know the word would renew instead, and say nothing.
+    let Response::Pong { features, .. } = daemon.handle(Request::Ping).await else {
+        panic!("ping")
+    };
+    assert!(
+        features
+            .iter()
+            .any(|f| f == agentdocker_core::protocol::FEATURE_FRESH_CLAIM),
+        "{features:?}"
+    );
+    let Response::Lease { lease: first } = daemon.handle(claim(true, 0)).await else {
+        panic!("the first worker takes the slot")
+    };
+    // The other mode on the same slot is this agent's own conflict too.
+    let shared = Request::Claim {
+        agent: builder.id.to_string(),
+        resource: "task:local-cargo-campaign".to_owned(),
+        mode: LeaseMode::Shared,
+        amount: None,
+        ttl_secs: 300,
+        note: None,
+        wait_secs: 0,
+        priority: 0,
+        automatic: false,
+        fresh: true,
+        actor: None,
+    };
+    assert!(matches!(
+        daemon.handle(shared).await,
+        Response::Error { code: ErrorCode::Conflict, details: Some(details), .. } if details["own"] == true
+    ));
+    for wait_secs in [0, 30] {
+        let asked = std::time::Instant::now();
+        let Response::Error {
+            code,
+            message,
+            details,
+        } = daemon.handle(claim(true, wait_secs)).await
+        else {
+            panic!("the second worker is not told it holds the slot")
+        };
+        assert_eq!(code, ErrorCode::Conflict);
+        assert!(
+            message.contains("already held by this agent")
+                && message.contains(&first.id.to_string()),
+            "{message}"
+        );
+        let details = details.expect("which lease is in the way");
+        assert_eq!(details["own"], true);
+        assert_eq!(details["held_by"][0]["id"], first.id.to_string());
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(5),
+            "an agent is not queued behind itself"
+        );
+    }
+    let Response::Leases { leases } = daemon
+        .handle(Request::Leases {
+            agent: None,
+            resource: Some("task:local-cargo-campaign".into()),
+        })
+        .await
+    else {
+        panic!("leases")
+    };
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].expires_at, first.expires_at, "not renewed");
+    // A plain claim is the holder extending its own hold, as before.
+    let Response::Lease { lease: renewed } = daemon.handle(claim(false, 0)).await else {
+        panic!("a plain claim renews")
+    };
+    assert_eq!(renewed.id, first.id);
+    assert!(matches!(
+        daemon
+            .handle(Request::Release {
+                agent: builder.id.to_string(),
+                lease: first.id.clone(),
+                summary: None,
+                summary_source: Default::default(),
+            })
+            .await,
+        Response::Ok | Response::Lease { .. } | Response::Leases { .. }
+    ));
+    let Response::Lease { lease: second } = daemon.handle(claim(true, 0)).await else {
+        panic!("the slot is free for the second worker")
+    };
+    assert_ne!(second.id, first.id);
 }
 
 #[tokio::test]
@@ -3777,6 +4055,8 @@ async fn a_clean_shutdown_hands_the_leases_back_and_says_it_did() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
+            fresh: false,
         })
         .await
     else {
@@ -3835,6 +4115,7 @@ async fn a_question_has_to_reach_somebody_who_can_answer_it() {
             to: "topic:reviews".into(),
             question: "anyone?".into(),
             timeout_secs: 1,
+            form: Default::default(),
         })
         .await;
     assert!(
@@ -3881,6 +4162,9 @@ async fn an_answer_that_races_the_question_still_lands() {
                                 from: Some(human.id.to_string()),
                                 message: envelope.id,
                                 text: "at once".to_owned(),
+                                choices: Vec::new(),
+                                note: None,
+                                other: None,
                             })
                             .await,
                     );
@@ -3895,6 +4179,7 @@ async fn an_answer_that_races_the_question_still_lands() {
             to: "user".into(),
             question: "now?".into(),
             timeout_secs: 10,
+            form: Default::default(),
         })
         .await;
     let answered = racing.await.unwrap().expect("the question was published");
@@ -3951,6 +4236,8 @@ async fn claim_waiting_at(
             wait_secs,
             priority,
             automatic: false,
+            actor: None,
+            fresh: false,
         })
         .await
 }
@@ -4467,6 +4754,8 @@ async fn a_granted_wait_is_not_picked_to_break_a_later_ring() {
         wait_secs,
         priority,
         automatic: false,
+        actor: None,
+        fresh: false,
     };
     let mut events = daemon.subscribe_events();
     let hold = hold_claim(&daemon, super::waiting::ClaimPoint::Answered, &alpha.id);
@@ -6937,6 +7226,7 @@ deny = ["send:all"]
             payload: json!({ "text": "everyone!" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     assert!(matches!(
@@ -6960,6 +7250,7 @@ deny = ["send:all"]
                 payload: json!({ "text": "just you" }),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -6988,6 +7279,8 @@ async fn a_quota_is_spent_by_several_agents_until_it_runs_out() {
                     wait_secs: 0,
                     priority: 0,
                     automatic: false,
+                    actor: None,
+                    fresh: false,
                 })
                 .await
         }
@@ -7043,6 +7336,8 @@ async fn a_quota_nobody_set_a_capacity_for_is_unlimited() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
+            fresh: false,
         })
         .await;
     assert!(matches!(response, Response::Lease { .. }), "{response:?}");
@@ -7151,6 +7446,333 @@ async fn a_commit_in_a_worktree_nobody_registered_still_reaches_the_journal() {
     );
 }
 
+/// The same promise for a worktree in the project's own folder. The main
+/// checkout's watch reaches it, and the line that keeps the folder out of
+/// git hides it from the main checkout's changes, so it has to be watched
+/// as a checkout of its own: from the moment the sweep finds it, with
+/// nobody registered in it, and still once an agent that worked there has
+/// ended while the main checkout stays live.
+#[tokio::test]
+async fn a_worktree_inside_the_project_is_watched_whoever_is_in_it() {
+    if !have_git() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("kept.txt"), "one\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "t"],
+        vec!["config", "user.email", "t@example.com"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["add", "."],
+        vec!["commit", "-q", "-m", "root"],
+    ] {
+        assert!(git(dir.path(), &repo, &args), "{args:?}");
+    }
+    let daemon = open(&dir);
+    daemon.expect_watcher();
+    tokio::spawn(crate::watcher::run(
+        daemon.clone(),
+        std::time::Duration::from_millis(100),
+        std::time::Duration::from_millis(50),
+    ));
+    register_in(&daemon, "home", &repo).await;
+    let Response::Worktree { path: nested, .. } = daemon
+        .handle(Request::WorktreeCreate {
+            agent: "home".into(),
+            path: None,
+            branch: "side".into(),
+            from: None,
+            seed_build: Vec::new(),
+        })
+        .await
+    else {
+        panic!("no worktree")
+    };
+    assert_eq!(
+        nested,
+        project::canonical(&repo)
+            .join(paths::PROJECT_WORKTREES)
+            .join("side")
+    );
+
+    // Watched, and its ledger kept, with nobody registered in it.
+    let covered = async || {
+        daemon.refresh_project_checkouts().await;
+        let targets: Vec<_> = daemon.watch_targets().into_iter().map(|c| c.dir).collect();
+        assert!(
+            targets.contains(&nested),
+            "the nested checkout is a target of its own: {targets:?}"
+        );
+        eventually(async || {
+            lock(&daemon.state)
+                .ledger_since
+                .contains_key(&nested)
+                .then_some(())
+        })
+        .await;
+    };
+    // An edit there is that checkout's own change, under its own path;
+    // a commit there is its own commit.
+    let seen = async |text: &str, message: &str| {
+        // Only what is recorded from here on counts for this round.
+        let before = ledger(&daemon, &repo, None)
+            .await
+            .iter()
+            .map(|change| change.seq)
+            .max()
+            .unwrap_or(0);
+        let mut attempt = 0;
+        let change = eventually(async || {
+            attempt += 1;
+            std::fs::write(nested.join("kept.txt"), format!("{text} {attempt}\n")).unwrap();
+            ledger(&daemon, &repo, None)
+                .await
+                .into_iter()
+                .find(|change| {
+                    change.seq > before && change.checkout.as_deref() == Some(nested.as_path())
+                })
+        })
+        .await;
+        assert_eq!(change.path, Path::new("kept.txt"), "{change:?}");
+        assert!(git(dir.path(), &nested, &["add", "."]));
+        assert!(git(dir.path(), &nested, &["commit", "-q", "-m", message]));
+        let entry = eventually(async || {
+            let Response::Journal { entries, .. } = daemon
+                .handle(Request::Journal {
+                    project: repo.display().to_string(),
+                    agent: None,
+                    since_seq: None,
+                    until_seq: None,
+                    branch: None,
+                    kind: Some("commit".into()),
+                    path: None,
+                    grep: None,
+                    limit: 10,
+                    digest: None,
+                })
+                .await
+            else {
+                panic!("journal failed")
+            };
+            entries
+                .into_iter()
+                .find(|entry| entry.summary.contains(message))
+        })
+        .await;
+        assert_eq!(
+            entry.checkout.as_deref(),
+            Some(nested.as_path()),
+            "{message}: attributed to the checkout it happened in"
+        );
+    };
+    covered().await;
+    seen("changed with nobody in it", "work nobody registered").await;
+
+    // An agent comes to work there and ends; the main checkout stays live.
+    let side = register_in(&daemon, "side", &nested).await;
+    assert!(matches!(
+        daemon
+            .handle(Request::Deregister {
+                agent: side.id.to_string()
+            })
+            .await,
+        Response::Agent { .. }
+    ));
+    covered().await;
+    seen(
+        "changed after its agent ended",
+        "work after its agent ended",
+    )
+    .await;
+
+    // None of it was ever the main checkout's, under the folder's path.
+    let main = project::canonical(&repo);
+    assert!(
+        ledger(&daemon, &repo, None).await.iter().all(|change| {
+            change.checkout.as_deref() != Some(main.as_path())
+                || !change.path.starts_with(".agentdocker")
+        }),
+        "the main checkout never records the folder's files"
+    );
+}
+
+/// A worktree being removed takes back nobody who ended there. A record
+/// waiting for its restart counts as working in it, so it is not removed
+/// under one. And with the removal stopped between the step that reserved
+/// the worktree and git, an ended record in it comes back by none of the
+/// ways one does: its keyed conversation heard from again, that
+/// conversation's proven terminal, its session relaunched under
+/// supervision, or a supervised start (the check a launch, a restart and
+/// a restore each make before a process is spawned and when it is
+/// committed as running). Each is refused with the record as it was;
+/// released, the removal completes.
+#[tokio::test]
+async fn a_worktree_being_removed_takes_back_nobody_who_ended_there() {
+    use agentdocker_core::AdapterKind;
+    if !have_git() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("kept.txt"), "one\n").unwrap();
+    for args in [
+        vec!["init", "-q"],
+        vec!["config", "user.name", "t"],
+        vec!["config", "user.email", "t@example.com"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["add", "."],
+        vec!["commit", "-q", "-m", "root"],
+    ] {
+        assert!(git(dir.path(), &repo, &args), "{args:?}");
+    }
+    let daemon = open(&dir);
+    register_in(&daemon, "home", &repo).await;
+    let Response::Worktree { path: target, .. } = daemon
+        .handle(Request::WorktreeCreate {
+            agent: "home".into(),
+            path: None,
+            branch: "going".into(),
+            from: None,
+            seed_build: Vec::new(),
+        })
+        .await
+    else {
+        panic!("no worktree")
+    };
+    let remove = || Request::WorktreeRemoveNamed {
+        agent: "home".into(),
+        path: Some(target.to_string_lossy().into_owned()),
+        branch: None,
+    };
+
+    // A keyed conversation that ended there.
+    let thread = "f00dcafe-0000-7000-8000-00000000000a";
+    let attach = || Request::SessionAttach {
+        runtime: "codex".into(),
+        profile: "/p/.codex".into(),
+        session: thread.into(),
+        workdir: target.clone(),
+        adapter: AdapterKind::Hooks,
+    };
+    let Response::Agent { agent: keyed } = daemon.handle(attach()).await else {
+        panic!("attached")
+    };
+    assert!(matches!(
+        daemon
+            .handle(Request::Deregister {
+                agent: keyed.id.to_string()
+            })
+            .await,
+        Response::Agent { .. }
+    ));
+    let mut terminal = spec_in("codex-terminal", &target);
+    terminal.runtime = "codex".into();
+    terminal.labels.insert("session_id".into(), thread.into());
+    terminal.labels.insert(
+        agentdocker_core::agent::PROFILE_LABEL.into(),
+        "/p/.codex".into(),
+    );
+    // A session that ended there, to relaunch under supervision.
+    let mut claude = spec_in("claude-s", &target);
+    claude.runtime = "claude-code".into();
+    claude
+        .labels
+        .insert("session_id".into(), "session-s".into());
+    let session = register_spec(&daemon, claude).await;
+    daemon.mark_exited(&session.id, AgentStatus::Exited { code: Some(0) });
+    let relaunch = || Request::ResumeSession {
+        agent: session.id.to_string(),
+        spec: AgentSpec {
+            runtime: "claude-code".into(),
+            command: ["sh", "-c", "sleep 30", "--resume", "session-s"]
+                .map(str::to_owned)
+                .into(),
+            workdir: Some(target.clone()),
+            tty: true,
+            ..Default::default()
+        },
+    };
+    let as_it_is = |id: &AgentId| lock(&daemon.state).registry.get(id).cloned().unwrap();
+    let (keyed_was, session_was) = (as_it_is(&keyed.id), as_it_is(&session.id));
+    assert!(!keyed_was.status.is_live() && !session_was.status.is_live());
+
+    // Waiting for its restart: counted as working there.
+    lock(&daemon.state)
+        .pending_restarts
+        .insert(session.id.clone());
+    let answer = daemon.handle(remove()).await;
+    assert!(
+        matches!(&answer, Response::Error { code: ErrorCode::Conflict, message, .. }
+            if message.contains("claude-s") && message.contains("about to be restarted")),
+        "{answer:?}"
+    );
+    assert!(target.exists());
+    lock(&daemon.state).pending_restarts.remove(&session.id);
+
+    let hold = Arc::new(tokio::sync::Barrier::new(2));
+    *lock(&daemon.removal_hold) = Some(hold.clone());
+    let removal = tokio::spawn({
+        let (daemon, request) = (daemon.clone(), remove());
+        async move { daemon.handle(request).await }
+    });
+    // Reserved; git has not been asked yet.
+    hold.wait().await;
+    let refused = |answer: Response, what: &str| {
+        assert!(
+            matches!(&answer, Response::Error { code: ErrorCode::Conflict, message, .. }
+                if message.contains("is being removed")),
+            "{what}: {answer:?}"
+        );
+    };
+    refused(
+        daemon.handle(attach()).await,
+        "a keyed conversation heard from again",
+    );
+    refused(
+        daemon
+            .handle(Request::Register {
+                spec: terminal,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await,
+        "a keyed conversation's proven terminal",
+    );
+    refused(daemon.handle(relaunch()).await, "a session relaunched");
+    assert!(
+        daemon.validate_native_launch(&session_was).is_err(),
+        "no supervised process is spawned there"
+    );
+    let committing = lock(&daemon.state).run_refusal(&session_was);
+    refused(
+        committing.expect("a supervised start is refused"),
+        "a supervised start committed as running",
+    );
+    assert_eq!(
+        as_it_is(&keyed.id),
+        keyed_was,
+        "the keyed record is as it was"
+    );
+    assert_eq!(
+        as_it_is(&session.id),
+        session_was,
+        "the session is as it was"
+    );
+    assert!(target.exists());
+
+    hold.wait().await;
+    let answer = removal.await.unwrap();
+    assert!(
+        matches!(&answer, Response::WorktreeRemoved { path, .. } if *path == target),
+        "{answer:?}"
+    );
+    assert!(!target.exists());
+}
+
 /// A commit made with git alone in a private checkout is still
 /// somebody's: the agent the daemon created the worktree for, or the
 /// agent holding the checkout under an exclusive `path:` lease. Only a
@@ -7186,7 +7808,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
     } = daemon
         .handle(Request::WorktreeCreate {
             agent: "writer".into(),
-            path: made.to_string_lossy().into_owned(),
+            path: Some(made.to_string_lossy().into_owned()),
             branch: "made-branch".into(),
             from: Some(root_sha.clone()),
             seed_build: Vec::new(),
@@ -7200,7 +7822,7 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
         daemon
             .handle(Request::WorktreeCreate {
                 agent: "writer".into(),
-                path: dir.path().join("bad").to_string_lossy().into_owned(),
+                path: Some(dir.path().join("bad").to_string_lossy().into_owned()),
                 branch: "bad-branch".into(),
                 from: Some("--output=/tmp/x".into()),
                 seed_build: Vec::new(),
@@ -7236,6 +7858,8 @@ async fn a_commit_in_a_held_or_daemon_made_worktree_is_that_agents() {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
+            fresh: false,
         })
         .await
     else {
@@ -7680,6 +8304,8 @@ async fn claim(daemon: &Arc<Daemon>, agent: &str, resource: &str) -> Response {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
+            fresh: false,
         })
         .await
 }
@@ -7724,6 +8350,7 @@ async fn failed_removal_retains_memory_and_never_reports_success() {
                 payload: json!({"text":"retain if removal fails"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7785,6 +8412,7 @@ async fn destructive_inbox_failure_retains_queue_events_and_subscription_routing
                     payload: json!({"text":"retain after failed drain"}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None
                 })
                 .await,
             Response::Sent { .. }
@@ -7848,6 +8476,7 @@ async fn failed_inbox_touch_does_not_acknowledge_messages() {
                 payload: json!({"text":"retain after failed touch"}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -7893,6 +8522,7 @@ async fn destructive_inbox_success_commits_one_acknowledgement_before_delivery()
                     payload: json!({"text":text}),
                     reply_to: None,
                     links: Vec::new(),
+                    idempotency_key: None
                 })
                 .await,
             Response::Sent { .. }
@@ -8065,6 +8695,7 @@ async fn inbox_byte_pressure_survives_restart_and_acknowledgement_releases_capac
         payload,
         reply_to: None,
         links: Vec::new(),
+        idempotency_key: None,
     };
     for _ in 0..7 {
         assert!(matches!(
@@ -8317,6 +8948,7 @@ async fn inbox_ack_is_idempotent_and_preserves_new_arrivals() {
                 payload: json!({"text": text}),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
     }
@@ -8376,6 +9008,7 @@ async fn state_survives_restart() {
             payload: json!({ "text": "hello" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     drop(daemon);
@@ -8452,6 +9085,7 @@ async fn remove_forgets_agent_and_inbox() {
             payload: json!({ "text": "late" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await;
     daemon
@@ -8666,11 +9300,13 @@ async fn restore_retires_half_spawned_agents_and_orphaned_leases() {
             holder,
             mode: LeaseMode::Exclusive,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + Duration::hours(1),
             note: None,
             amount: 0,
             automatic: false,
+            actor: None,
         };
         store
             .upsert_lease(&lease("kept", first.id.clone(), "task:kept"))
@@ -8757,11 +9393,13 @@ fn ambiguous_live_names_refuse_before_recovery_changes_any_record_or_lease() {
         holder: second.id.clone(),
         mode: LeaseMode::Exclusive,
         acquired_at: now,
+        held_since: None,
         change_seq: None,
         expires_at: now + Duration::hours(1),
         note: None,
         amount: 0,
         automatic: false,
+        actor: None,
     };
     store.upsert_lease(&protection).unwrap();
     let before = store.load_agents().unwrap();
@@ -8827,9 +9465,9 @@ async fn recycled_pid_is_not_mistaken_for_the_agent() {
 
 #[test]
 fn invalid_pids_are_never_alive() {
-    assert!(!process_exists(0));
-    assert!(!process_exists(u32::MAX));
-    assert!(process_exists(std::process::id()));
+    assert!(!procinfo::alive(0));
+    assert!(!procinfo::alive(u32::MAX));
+    assert!(procinfo::alive(std::process::id()));
 }
 
 #[tokio::test]
@@ -8855,6 +9493,8 @@ async fn claim_wait_acquires_when_the_holder_releases() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    actor: None,
+                    fresh: false,
                 })
                 .await
         })
@@ -8891,6 +9531,8 @@ async fn claim_wait_gives_up_at_the_deadline() {
             wait_secs: 1,
             priority: 0,
             automatic: false,
+            actor: None,
+            fresh: false,
         })
         .await;
     assert!(started.elapsed() >= std::time::Duration::from_secs(1));
@@ -9111,6 +9753,7 @@ async fn send(daemon: &Arc<Daemon>, from: &str, to: &str) -> Response {
             payload: json!({ "text": "hi" }),
             reply_to: None,
             links: Vec::new(),
+            idempotency_key: None,
         })
         .await
 }
@@ -9670,6 +10313,7 @@ async fn the_person_sees_where_their_message_stands_with_each_agent() {
                 payload: json!({"text": "on it"}),
                 reply_to: Some(message.clone()),
                 links: Vec::new(),
+                idempotency_key: None
             })
             .await,
         Response::Sent { .. }
@@ -9902,6 +10546,7 @@ async fn an_agent_reaches_only_its_own_project_and_the_person() {
                 to: "far".into(),
                 question: "?".into(),
                 timeout_secs: 1,
+                form: Default::default(),
             })
             .await,
     );
@@ -10014,6 +10659,7 @@ fn discovery_row(pid: u32, started_at: chrono::DateTime<Utc>) -> DiscoveredProce
         project: None,
         started_at: Some(started_at),
         session: None,
+        team: None,
     }
 }
 
@@ -10407,7 +11053,7 @@ async fn discover_finds_known_runtimes_and_adopt_registers_them() {
         adopted.project.as_ref().map(|p| p.root.clone()),
         Some(project.canonicalize().unwrap())
     );
-    assert!(process_exists(pid));
+    assert!(procinfo::alive(pid));
 
     // Registered pids disappear from discovery, and cannot be adopted twice.
     let found = match daemon.handle(Request::Discover).await {
@@ -10536,7 +11182,7 @@ async fn a_runtime_helper_is_not_discovered_and_cannot_be_adopted() {
     };
     assert!(agents.iter().all(|a| a.pid != Some(pid)));
     drop(child);
-    assert!(!process_exists(pid), "the guard reaps the fake");
+    assert!(!procinfo::alive(pid), "the guard reaps the fake");
 }
 
 fn drain_vcs(events: &mut broadcast::Receiver<Event>) -> Vec<Option<String>> {
@@ -10658,6 +11304,124 @@ async fn aliases_and_root_claims_conflict_for_outsiders_without_project_markers(
     assert_eq!(leases.len(), 1);
 }
 
+/// A lease is released by the resource it is on, and by that resource
+/// alone. The lease on a folder is not released by naming a file in it,
+/// nor a file's by naming its folder: either is `not_found` and what is
+/// held stays held. Another spelling of the resource (a `file:` alias, a
+/// path with `..` in it) releases it though other leases of the holder
+/// overlap it, and nobody releases a lease by a name they do not hold.
+#[tokio::test]
+async fn a_lease_is_released_by_the_exact_resource_it_is_on() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = dir.path().join("checkout");
+    std::fs::create_dir_all(checkout.join("src")).unwrap();
+    std::fs::write(checkout.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let owner = register_in(&daemon, "owner", &checkout).await;
+    register(&daemon, "other", None).await;
+    let folder = format!("path:{}", checkout.join("src").display());
+    let file = format!("path:{}", checkout.join("src/main.rs").display());
+    let project = owner.project.as_ref().unwrap().id();
+    let d = &daemon;
+    let take = |resource: String| async move {
+        match claim(d, "owner", &resource).await {
+            Response::Lease { lease } => lease.id,
+            other => panic!("{resource}: {other:?}"),
+        }
+    };
+    let release = |agent: &str, resource: String| Request::ReleaseResource {
+        agent: agent.to_owned(),
+        resource,
+        summary: None,
+        summary_source: Default::default(),
+    };
+    let released = |response: Response| match response {
+        Response::Leases { leases } => leases.into_iter().map(|l| l.id).collect::<Vec<_>>(),
+        other => panic!("{other:?}"),
+    };
+    let held = || async {
+        let Response::Leases { leases } = daemon
+            .handle(Request::Leases {
+                agent: Some("owner".into()),
+                resource: None,
+            })
+            .await
+        else {
+            panic!()
+        };
+        leases.into_iter().map(|l| l.id).collect::<Vec<_>>()
+    };
+    let not_found = |response: Response| {
+        assert!(
+            matches!(
+                response,
+                Response::Error {
+                    code: ErrorCode::NotFound,
+                    ..
+                }
+            ),
+            "{response:?}"
+        );
+    };
+
+    // The folder alone: naming a file in it releases nothing.
+    let on_folder = take(folder.clone()).await;
+    not_found(daemon.handle(release("owner", file.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // Folder and file: an alias of the file releases the file's lease and
+    // only that, though the folder's lease overlaps it.
+    let on_file = take(file.clone()).await;
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", format!("file:{project}/src/main.rs")))
+                .await
+        ),
+        [on_file]
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_folder));
+
+    // The file alone: naming its folder releases nothing.
+    assert_eq!(
+        released(daemon.handle(release("owner", folder.clone())).await),
+        [on_folder]
+    );
+    let on_file = take(file.clone()).await;
+    not_found(daemon.handle(release("owner", folder.clone())).await);
+    assert_eq!(held().await, std::slice::from_ref(&on_file));
+
+    // Another spelling of the same path is the same resource.
+    let roundabout = format!("path:{}", checkout.join("src/../src/main.rs").display());
+    assert_eq!(
+        released(daemon.handle(release("owner", roundabout)).await),
+        [on_file]
+    );
+    assert!(held().await.is_empty());
+
+    // A task by its name; and a name is no key to somebody else's lease.
+    let on_task = take("task:slot".to_owned()).await;
+    not_found(
+        daemon
+            .handle(release("other", "task:slot".to_owned()))
+            .await,
+    );
+    assert_eq!(held().await, std::slice::from_ref(&on_task));
+    assert_eq!(
+        released(
+            daemon
+                .handle(release("owner", "task:slot".to_owned()))
+                .await
+        ),
+        [on_task]
+    );
+    not_found(
+        daemon
+            .handle(release("owner", "task:slot".to_owned()))
+            .await,
+    );
+}
+
 #[tokio::test]
 async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
     let dir = TempDir::new().unwrap();
@@ -10683,6 +11447,8 @@ async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
                     wait_secs: 5,
                     priority: 0,
                     automatic: false,
+                    actor: None,
+                    fresh: false,
                 })
                 .await
         })
@@ -10702,6 +11468,7 @@ async fn exited_agents_cannot_claim_or_win_a_pending_wait() {
             summary: None,
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await;
     assert!(matches!(
@@ -10939,11 +11706,13 @@ async fn claim_expiration_removes_storage_and_emits_once() {
         holder: owner.id,
         mode: LeaseMode::Exclusive,
         acquired_at: now - Duration::seconds(5),
+        held_since: None,
         change_seq: None,
         expires_at: now - Duration::seconds(1),
         note: None,
         amount: 0,
         automatic: false,
+        actor: None,
     };
     {
         let mut state = lock(&daemon.state);
@@ -11683,10 +12452,30 @@ async fn run_isolate_gives_the_agent_its_own_worktree_and_branch() {
         .workdir
         .clone()
         .expect("workdir moved to the worktree");
-    let worktrees = project::canonical(&paths::worktree_dir(&daemon.home));
+    // Inside the project, in its own worktrees folder, which the
+    // repository's exclude file keeps out of git: the main checkout does
+    // not see the new one as untracked files.
+    let worktrees = project::canonical(&repo).join(paths::PROJECT_WORKTREES);
     assert!(worktree.starts_with(&worktrees), "{}", worktree.display());
     assert!(worktree.ends_with("writer"), "{}", worktree.display());
     assert!(worktree.join(".git").exists(), "a linked worktree");
+    let excluded = std::fs::read_to_string(repo.join(".git/info/exclude")).unwrap();
+    assert!(
+        excluded
+            .lines()
+            .any(|line| line == "/.agentdocker/worktrees/"),
+        "{excluded}"
+    );
+    let status = std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&status.stdout).trim().is_empty(),
+        "the main checkout stays clean: {}",
+        String::from_utf8_lossy(&status.stdout)
+    );
     assert!(agent.spec.isolate);
     let project = agent.project.clone().expect("in a project");
     assert_eq!(
@@ -12220,6 +13009,7 @@ async fn releases_notes_joins_and_leaves_are_journaled() {
             summary: None,
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await
     else {
@@ -12257,6 +13047,7 @@ async fn releases_notes_joins_and_leaves_are_journaled() {
             summary: Some("rewrote the parser".to_owned()),
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await
     else {
@@ -12285,6 +13076,7 @@ async fn releases_notes_joins_and_leaves_are_journaled() {
             summary: None,
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await;
     assert_eq!(
@@ -12301,6 +13093,7 @@ async fn releases_notes_joins_and_leaves_are_journaled() {
             summary: Some("  reviewed the plan, no edits  ".to_owned()),
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         })
         .await;
     let entries = journal_of(&daemon, &repo, Some("release"), None, None).await;
@@ -12539,6 +13332,7 @@ async fn digest_for(
                 reader: reader.to_owned(),
                 max_entries: budget.max_entries,
                 max_chars: budget.max_chars,
+                max_bytes: None,
                 all_branches: false,
                 advance,
             }),
@@ -12736,6 +13530,7 @@ async fn digests_follow_cursors_that_are_seeded_by_name() {
             summary: Some("I finished the parser.".to_owned()),
             summary_source: SummarySource::Transcript,
             only_automatic: false,
+            actor: None,
         })
         .await;
     assert_eq!(
@@ -12755,6 +13550,7 @@ async fn digests_follow_cursors_that_are_seeded_by_name() {
             summary: Some("I finished the parser.".to_owned()),
             summary_source: SummarySource::Transcript,
             only_automatic: false,
+            actor: None,
         })
         .await;
     let releases = journal_of(&daemon, &repo, Some("release"), None, None).await;
@@ -12897,6 +13693,8 @@ async fn reject_lease_transition(operation: &str) {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
+                fresh: false,
             })
             .await
     };
@@ -13088,6 +13886,7 @@ async fn journal_release_event_failures_roll_back_leases_entries_and_publication
                     summary: Some("release with durable summary".into()),
                     summary_source: SummarySource::Explicit,
                     only_automatic: false,
+                    actor: None,
                 })
                 .await,
             Response::Error {
@@ -13283,6 +14082,7 @@ async fn release_summary_uses_lease_sequence_when_wall_clock_moves_backwards() {
                 summary: None,
                 summary_source: SummarySource::Explicit,
                 only_automatic: false,
+                actor: None,
             })
             .await,
         Response::Leases { .. }
@@ -13308,6 +14108,7 @@ async fn task_release_skips_watcher_and_path_release_waits_for_pending_changes()
         summary: None,
         summary_source: SummarySource::Explicit,
         only_automatic: false,
+        actor: None,
     };
     assert!(matches!(
         tokio::time::timeout(
@@ -14052,11 +14853,797 @@ async fn a_full_watcher_flush_queue_cannot_block_release_indefinitely() {
             summary: None,
             summary_source: SummarySource::Explicit,
             only_automatic: false,
+            actor: None,
         }),
     )
     .await
     .expect("queue admission must share the flush timeout");
     assert!(matches!(response, Response::Leases { .. }));
+}
+
+/// A Claude Code agent team is read onto its sessions' records: the lead
+/// by the session id its hooks report, which Claude's team file names as
+/// `leadSessionId`; a teammate by the options Claude starts it with, with
+/// the colour and id the team file gives it. Reading the same team again
+/// says nothing; the lead loses the team when its file goes, while a
+/// teammate's command line still says what it is. A refused claim names
+/// the teammate as its lead named it, so a Codex agent in the checkout is
+/// told whose edit it would overwrite. Nothing is written into Claude's
+/// directories.
+#[tokio::test]
+async fn a_claude_code_team_is_read_onto_its_records_and_names_the_teammate_in_a_refusal() {
+    use agentdocker_core::team::{INBOXES_DIR, TEAM_FILE, TEAMS_DIR, TeamRole};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = TempDir::new().unwrap();
+    let checkout_path = std::fs::canonicalize(checkout.path()).unwrap();
+    let config = TempDir::new().unwrap();
+    lock(&daemon.state).claude_config_dir = Some(config.path().to_path_buf());
+    let orchard = config.path().join(TEAMS_DIR).join("orchard");
+    std::fs::create_dir_all(orchard.join(INBOXES_DIR)).unwrap();
+    std::fs::write(orchard.join(INBOXES_DIR).join("pruner.json"), "[]").unwrap();
+    std::fs::write(
+        orchard.join(TEAM_FILE),
+        format!(
+            r#"{{"name":"orchard","createdAt":1,"leadAgentId":"team-lead@orchard","leadSessionId":"lead-session-0001",
+                "members":[{{"agentId":"team-lead@orchard","name":"team-lead","agentType":"team-lead","joinedAt":1,
+                "tmuxPaneId":"leader","cwd":{cwd},"subscriptions":[],"backendType":"in-process"}},
+                {{"agentId":"pruner@orchard","name":"pruner","color":"blue","joinedAt":2,"tmuxPaneId":"%3",
+                "cwd":{cwd},"subscriptions":[],"backendType":"tmux"}}]}}"#,
+            cwd = serde_json::to_string(&checkout_path.to_string_lossy()).unwrap()
+        ),
+    )
+    .unwrap();
+    let entries = |dir: &Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    let before = (entries(&orchard), entries(&orchard.join(INBOXES_DIR)));
+    let mut events = daemon.subscribe_events();
+    let team_events = |events: &mut broadcast::Receiver<Event>| {
+        let mut seen = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentTeamChanged { agent, team } = event.kind {
+                seen.push((agent, team));
+            }
+        }
+        seen
+    };
+    let agent = |response: Response| match response {
+        Response::Agent { agent } => agent,
+        other => panic!("{other:?}"),
+    };
+    let inspect = |id: &AgentId| {
+        lock(&daemon.state)
+            .registry
+            .get(id)
+            .cloned()
+            .expect("registered")
+    };
+
+    // A teammate's process, as Claude starts one: by its options.
+    let mut teammate_process = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "read -r held",
+            "sh",
+            "--agent-name",
+            "pruner",
+            "--team-name",
+            "orchard",
+            "--parent-session-id",
+            "lead-session-0001",
+        ])
+        // Under the team's directory, as its lead would start it: where the
+        // daemon reads a process's environment, that is where it looks.
+        .env("CLAUDE_CONFIG_DIR", config.path())
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    // The lead, by the session id its hooks report. The registration
+    // itself reads the team, so the record carries it at once.
+    let lead = agent(
+        register_session(
+            &daemon,
+            "claude-lead0001",
+            &checkout_path,
+            Some("lead-session-0001"),
+        )
+        .await,
+    );
+    let lead_now = inspect(&lead.id);
+    let membership = lead_now
+        .team
+        .clone()
+        .expect("the lead is placed on registration");
+    assert_eq!(membership.role, TeamRole::Lead);
+    assert_eq!(membership.team, "orchard");
+    assert_eq!(membership.name, "team-lead");
+    assert_eq!(membership.describe(), "lead of orchard");
+
+    let mut mate_spec = spec("claude-mate0002");
+    mate_spec.runtime = "claude-code".to_owned();
+    mate_spec.workdir = Some(checkout_path.clone());
+    mate_spec
+        .labels
+        .insert("session_id".to_owned(), "mate-session-0002".to_owned());
+    let teammate = agent(
+        daemon
+            .handle(Request::Register {
+                spec: mate_spec,
+                pid: Some(teammate_process.id()),
+                session: None,
+            })
+            .await,
+    );
+    let mate_now = inspect(&teammate.id);
+    let membership = mate_now
+        .team
+        .clone()
+        .expect("the teammate is placed by its command line");
+    assert_eq!(membership.role, TeamRole::Teammate);
+    assert_eq!(membership.name, "pruner");
+    assert_eq!(membership.lead_name, "team-lead");
+    assert_eq!(
+        membership.colour.as_deref(),
+        Some("blue"),
+        "the colour comes from the team file when the command line has none"
+    );
+    assert_eq!(membership.agent_id.as_deref(), Some("pruner@orchard"));
+    let announced = team_events(&mut events);
+    assert_eq!(
+        announced
+            .iter()
+            .map(|(id, team)| (id.clone(), team.as_ref().map(|t| t.name.clone())))
+            .collect::<Vec<_>>(),
+        [
+            (lead.id.clone(), Some("team-lead".to_owned())),
+            (teammate.id.clone(), Some("pruner".to_owned())),
+        ]
+    );
+    // The same team read again is not news, and is served by `list`.
+    daemon.refresh_teams().await;
+    assert!(team_events(&mut events).is_empty());
+    let Response::Agents { agents, .. } = daemon
+        .handle(Request::List {
+            all: false,
+            project: None,
+            labels: Default::default(),
+        })
+        .await
+    else {
+        panic!("list");
+    };
+    assert_eq!(
+        agents.iter().filter(|a| a.team.is_some()).count(),
+        2,
+        "both records say their place"
+    );
+
+    // The teammate's lease refuses a Codex agent by the teammate's name.
+    let mut codex_spec = spec("codex-reviewer");
+    codex_spec.runtime = "codex".to_owned();
+    codex_spec.workdir = Some(checkout_path.clone());
+    let codex = agent(
+        daemon
+            .handle(Request::Register {
+                spec: codex_spec,
+                pid: None,
+                session: None,
+            })
+            .await,
+    );
+    let file = format!(
+        "path:{}",
+        checkout_path.join("src").join("lib.rs").display()
+    );
+    assert!(matches!(
+        claim(&daemon, teammate.id.as_str(), &file).await,
+        Response::Lease { .. }
+    ));
+    let Response::Error {
+        code: ErrorCode::Conflict,
+        message,
+        ..
+    } = claim(&daemon, codex.id.as_str(), &file).await
+    else {
+        panic!("a conflicting claim is refused");
+    };
+    assert!(
+        message.contains("claude-mate0002, pruner, teammate of team-lead in orchard"),
+        "{message}"
+    );
+
+    // Nothing of AgentDocker's was written under Claude's directories: the
+    // team's directory and its inboxes hold exactly what the test wrote,
+    // and the checkout has no `.claude/`.
+    assert_eq!(
+        (entries(&orchard), entries(&orchard.join(INBOXES_DIR))),
+        before
+    );
+    assert!(before.0.contains(&TEAM_FILE.to_owned()));
+    assert!(!checkout_path.join(".claude").exists());
+
+    // The team ends: the lead's file is gone, so the lead is in no team;
+    // the teammate's command line still says what it is.
+    std::fs::remove_dir_all(&orchard).unwrap();
+    daemon.refresh_teams().await;
+    assert!(inspect(&lead.id).team.is_none());
+    let still = inspect(&teammate.id)
+        .team
+        .expect("a teammate by its options stays one");
+    assert_eq!(still.name, "pruner");
+    assert_eq!(
+        still.colour, None,
+        "with no file the colour is unknown, never kept from before"
+    );
+    let announced = team_events(&mut events);
+    assert_eq!(announced.len(), 2, "{announced:?}");
+    assert!(
+        announced
+            .iter()
+            .any(|(id, team)| id == &lead.id && team.is_none())
+    );
+    assert!(
+        announced
+            .iter()
+            .any(|(id, team)| id == &teammate.id
+                && team.as_ref().is_some_and(|t| t.colour.is_none()))
+    );
+    let _ = teammate_process.kill();
+    let _ = teammate_process.wait();
+}
+
+/// Claude's default teammates run inside the lead's process: their hooks
+/// fire under the lead's session with the teammate's `agent_id`, and the
+/// edit is claimed under the lead's record naming that agent. The
+/// refusal of a Codex agent's claim then names the teammate as the team
+/// file knows it by that id; an id the team does not know is said as the
+/// lead's agent by id; a renewal naming nobody keeps the actor. And a
+/// session that runs under its own `CLAUDE_CONFIG_DIR` is read from
+/// there, as its record says, while one saying nothing is read from the
+/// daemon's own: two sessions in one checkout under two directories are
+/// each placed in the team of theirs.
+#[tokio::test]
+async fn in_process_teammates_are_named_by_their_actor_and_teams_are_read_per_session() {
+    use agentdocker_core::team::{CONFIG_DIR_LABEL, TeamRole};
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = TempDir::new().unwrap();
+    let checkout_path = std::fs::canonicalize(checkout.path()).unwrap();
+    let daemons_dir = TempDir::new().unwrap();
+    let sessions_dir = TempDir::new().unwrap();
+    lock(&daemon.state).claude_config_dir = Some(daemons_dir.path().to_path_buf());
+    let write_team = |config: &Path, team: &str, lead_session: &str, members: &[&str]| {
+        write_team_file(config, team, lead_session, &checkout_path, members);
+    };
+    write_team(
+        daemons_dir.path(),
+        "orchard",
+        "lead-session-0001",
+        &["pruner"],
+    );
+    write_team(
+        sessions_dir.path(),
+        "vineyard",
+        "lead-session-0002",
+        &["picker", "packer"],
+    );
+    write_team(
+        sessions_dir.path(),
+        "terrace",
+        "lead-session-0003",
+        &["hand"],
+    );
+    let agent = |response: Response| match response {
+        Response::Agent { agent } => agent,
+        other => panic!("{other:?}"),
+    };
+    let inspect = |id: &AgentId| {
+        lock(&daemon.state)
+            .registry
+            .get(id)
+            .cloned()
+            .expect("registered")
+    };
+
+    // The lead under the daemon's directory says no directory of its own.
+    let orchard_lead = agent(
+        register_session(
+            &daemon,
+            "claude-lead0001",
+            &checkout_path,
+            Some("lead-session-0001"),
+        )
+        .await,
+    );
+    // The lead under its own directory says so, as its hooks would.
+    let mut own = spec("claude-lead0002");
+    own.runtime = "claude-code".to_owned();
+    own.workdir = Some(checkout_path.clone());
+    own.labels
+        .insert("session_id".to_owned(), "lead-session-0002".to_owned());
+    own.labels.insert(
+        CONFIG_DIR_LABEL.to_owned(),
+        sessions_dir.path().display().to_string(),
+    );
+    let vineyard_lead = agent(
+        daemon
+            .handle(Request::Register {
+                spec: own,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await,
+    );
+    // A lead in a process of its own whose environment names the directory
+    // its team is under while its record reports another: where the
+    // daemon can read the process's environment (Linux) the environment
+    // decides; where it cannot, the record's word is all there is, and
+    // the daemon's directory has no such team.
+    let mut terrace_process = std::process::Command::new("sleep")
+        .arg("30")
+        .env("CLAUDE_CONFIG_DIR", sessions_dir.path())
+        .spawn()
+        .unwrap();
+    let mut third = spec("claude-lead0003");
+    third.runtime = "claude-code".to_owned();
+    third.workdir = Some(checkout_path.clone());
+    third
+        .labels
+        .insert("session_id".to_owned(), "lead-session-0003".to_owned());
+    third.labels.insert(
+        CONFIG_DIR_LABEL.to_owned(),
+        daemons_dir.path().display().to_string(),
+    );
+    let terrace_lead = agent(
+        daemon
+            .handle(Request::Register {
+                spec: third,
+                pid: Some(terrace_process.id()),
+                session: None,
+            })
+            .await,
+    );
+    let terrace = inspect(&terrace_lead.id).team.map(|t| t.team);
+    #[cfg(target_os = "linux")]
+    assert_eq!(terrace.as_deref(), Some("terrace"), "its own environment");
+    #[cfg(not(target_os = "linux"))]
+    assert_eq!(terrace, None, "its record's word");
+    let _ = terrace_process.kill();
+    let _ = terrace_process.wait();
+
+    let placed = |id: &AgentId| inspect(id).team.expect("placed");
+    assert_eq!(placed(&orchard_lead.id).team, "orchard");
+    assert_eq!(placed(&orchard_lead.id).role, TeamRole::Lead);
+    assert_eq!(placed(&vineyard_lead.id).team, "vineyard");
+    assert_eq!(placed(&vineyard_lead.id).role, TeamRole::Lead);
+    // Each record keeps the roster it was placed by, from its own
+    // session's directory.
+    {
+        let state = lock(&daemon.state);
+        let roster = |id: &AgentId| state.team_rosters.get(id).map(|t| t.name.clone());
+        assert_eq!(roster(&orchard_lead.id).as_deref(), Some("orchard"));
+        assert_eq!(roster(&vineyard_lead.id).as_deref(), Some("vineyard"));
+        let vineyard = state.team_rosters.get(&vineyard_lead.id).unwrap();
+        assert!(vineyard.member("picker").is_some() && vineyard.member("packer").is_some());
+        assert!(
+            vineyard.member("pruner").is_none(),
+            "the other directory's teammate"
+        );
+    }
+
+    // Two in-process teammates of the vineyard lead, its own edits and a
+    // subagent's: every claim goes in under the lead's record, naming who
+    // inside the session takes it.
+    let path_of = |relative: &str| format!("path:{}", checkout_path.join(relative).display());
+    let file = path_of("src/lib.rs");
+    let take = |actor: Option<&str>, resource: String| {
+        let actor = actor.map(str::to_owned);
+        let daemon = daemon.clone();
+        let agent = vineyard_lead.id.to_string();
+        async move {
+            daemon
+                .handle(Request::Claim {
+                    agent,
+                    resource,
+                    mode: LeaseMode::Exclusive,
+                    amount: None,
+                    ttl_secs: 60,
+                    note: Some("editing in Claude Code session claude-lead0002".into()),
+                    wait_secs: 0,
+                    priority: 0,
+                    automatic: true,
+                    actor,
+                    fresh: false,
+                })
+                .await
+        }
+    };
+    let picker = Some("picker@vineyard");
+    let packer = Some("packer@vineyard");
+    let subagent = Some("a1b2c3d4e5");
+    let Response::Lease { lease } = take(picker, file.clone()).await else {
+        panic!("the teammate's edit is claimed");
+    };
+    assert_eq!(lease.actor.as_deref(), picker);
+
+    let mut codex_spec = spec("codex-reviewer");
+    codex_spec.runtime = "codex".to_owned();
+    codex_spec.workdir = Some(checkout_path.clone());
+    let codex = agent(
+        daemon
+            .handle(Request::Register {
+                spec: codex_spec,
+                pid: None,
+                session: None,
+            })
+            .await,
+    );
+    let refusal = |message: Response| match message {
+        Response::Error {
+            code: ErrorCode::Conflict,
+            message,
+            ..
+        } => message,
+        other => panic!("{other:?}"),
+    };
+    let message = refusal(claim(&daemon, codex.id.as_str(), &file).await);
+    assert!(
+        message.contains("claude-lead0002, picker, teammate of team-lead in vineyard"),
+        "{message}"
+    );
+    // Another teammate of the same session is refused as another agent
+    // would be: on the same file, and on a directory holding it.
+    for resource in [file.clone(), path_of("src")] {
+        let message = refusal(take(packer, resource).await);
+        assert!(
+            message.contains("picker, teammate of team-lead in vineyard"),
+            "{message}"
+        );
+    }
+    // So are the lead itself and its subagent, which is the session's own
+    // work: an actor that names no teammate is the session.
+    for actor in [None, subagent] {
+        let message = refusal(take(actor, file.clone()).await);
+        assert!(
+            message.contains("picker, teammate of team-lead in vineyard"),
+            "{actor:?}: {message}"
+        );
+    }
+    // The same teammate renews its own.
+    let Response::Lease { lease: renewed } = take(picker, file.clone()).await else {
+        panic!("renewed");
+    };
+    assert_eq!(renewed.id, lease.id);
+    assert_eq!(renewed.actor.as_deref(), picker);
+    // The lead's own file: its subagent renews it as the session, and a
+    // teammate is refused naming the lead.
+    let own = path_of("src/main.rs");
+    let Response::Lease { lease: leads } = take(None, own.clone()).await else {
+        panic!("the lead's edit");
+    };
+    assert_eq!(leads.actor, None);
+    let Response::Lease { lease: by_subagent } = take(subagent, own.clone()).await else {
+        panic!("a subagent edits as its session");
+    };
+    assert_eq!(by_subagent.id, leads.id);
+    assert_eq!(by_subagent.actor, None);
+    let message = refusal(take(packer, own.clone()).await);
+    assert!(
+        message.contains("claude-lead0002, lead of vineyard ("),
+        "{message}"
+    );
+    let notes = path_of("docs/notes.md");
+    let Response::Lease { lease: packers } = take(packer, notes).await else {
+        panic!("the other teammate's edit");
+    };
+    assert_eq!(packers.actor.as_deref(), packer);
+
+    // A turn's end that names a teammate gives back only what it owns; the
+    // session's own turn end gives back every automatic lease of the
+    // session, its teammates' included.
+    let release = |actor: Option<&str>| {
+        let actor = actor.map(str::to_owned);
+        let daemon = daemon.clone();
+        let agent = vineyard_lead.id.to_string();
+        async move {
+            match daemon
+                .handle(Request::ReleaseAll {
+                    agent,
+                    summary: None,
+                    summary_source: SummarySource::Explicit,
+                    only_automatic: true,
+                    actor,
+                })
+                .await
+            {
+                Response::Leases { leases } => {
+                    let mut gone: Vec<String> =
+                        leases.into_iter().map(|l| l.id.to_string()).collect();
+                    gone.sort();
+                    gone
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    assert_eq!(release(picker).await, vec![lease.id.to_string()]);
+    let mut rest = vec![leads.id.to_string(), packers.id.to_string()];
+    rest.sort();
+    assert_eq!(release(None).await, rest);
+    assert!(
+        matches!(
+            claim(&daemon, codex.id.as_str(), &file).await,
+            Response::Lease { .. }
+        ),
+        "the teammate's file is free once its turn is over"
+    );
+    let third = format!("path:{}", checkout_path.join("README.md").display());
+    assert!(matches!(
+        claim(&daemon, orchard_lead.id.as_str(), &third).await,
+        Response::Lease { .. }
+    ));
+    let message = refusal(claim(&daemon, codex.id.as_str(), &third).await);
+    assert!(
+        message.contains("claude-lead0001, lead of orchard ("),
+        "{message}"
+    );
+
+    // A hooks registration carrying the directory teaches a record its
+    // MCP server made first without one.
+    let mut first = spec("claude-code-7777");
+    first.runtime = "claude-code".to_owned();
+    first.workdir = Some(checkout_path.clone());
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .env("CLAUDE_CONFIG_DIR", sessions_dir.path())
+        .spawn()
+        .unwrap();
+    let made = agent(
+        daemon
+            .handle(Request::Register {
+                spec: first,
+                pid: Some(child.id()),
+                session: None,
+            })
+            .await,
+    );
+    assert!(!made.spec.labels.contains_key(CONFIG_DIR_LABEL));
+    let mut second = spec("claude-7777abcd");
+    second.runtime = "claude-code".to_owned();
+    second.workdir = Some(checkout_path.clone());
+    second
+        .labels
+        .insert("session_id".to_owned(), "hook-session-7777".to_owned());
+    second.labels.insert(
+        CONFIG_DIR_LABEL.to_owned(),
+        sessions_dir.path().display().to_string(),
+    );
+    let joined = agent(
+        daemon
+            .handle(Request::Register {
+                spec: second,
+                pid: Some(child.id()),
+                session: None,
+            })
+            .await,
+    );
+    assert_eq!(joined.id, made.id, "the hook joined its session's record");
+    assert_eq!(
+        inspect(&made.id)
+            .spec
+            .labels
+            .get(CONFIG_DIR_LABEL)
+            .map(String::as_str),
+        Some(sessions_dir.path().display().to_string().as_str())
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// A Claude Code team file under `config`, led from `checkout`, with
+/// in-process `members` named `<name>@<team>`.
+fn write_team_file(
+    config: &Path,
+    team: &str,
+    lead_session: &str,
+    checkout: &Path,
+    members: &[&str],
+) {
+    use agentdocker_core::team::{INBOXES_DIR, TEAM_FILE, TEAMS_DIR};
+    let cwd = serde_json::to_string(&checkout.to_string_lossy()).unwrap();
+    let mut entries = vec![format!(
+        r#"{{"agentId":"team-lead@{team}","name":"team-lead","agentType":"team-lead","joinedAt":1,
+            "tmuxPaneId":"leader","cwd":{cwd},"subscriptions":[],"backendType":"in-process"}}"#
+    )];
+    for member in members {
+        entries.push(format!(
+            r#"{{"agentId":"{member}@{team}","name":"{member}","color":"green","joinedAt":2,
+                "tmuxPaneId":"in-process","cwd":{cwd},"subscriptions":[],"backendType":"in-process"}}"#
+        ));
+    }
+    let team_dir = config.join(TEAMS_DIR).join(team);
+    std::fs::create_dir_all(team_dir.join(INBOXES_DIR)).unwrap();
+    std::fs::write(
+        team_dir.join(TEAM_FILE),
+        format!(
+            r#"{{"name":"{team}","createdAt":1,"leadAgentId":"team-lead@{team}","leadSessionId":"{lead_session}","members":[{}]}}"#,
+            entries.join(",")
+        ),
+    )
+    .unwrap();
+}
+
+/// Two configuration directories can each hold a team of one name with
+/// other members. Each record keeps the roster it was placed by, from its
+/// own directory: a teammate of one is nobody in the other, owns nothing
+/// apart from that session there, and is never named for it.
+#[tokio::test]
+async fn a_team_of_one_name_under_two_directories_is_two_rosters() {
+    use agentdocker_core::team::CONFIG_DIR_LABEL;
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let checkout = TempDir::new().unwrap();
+    let checkout_path = std::fs::canonicalize(checkout.path()).unwrap();
+    let first_root = TempDir::new().unwrap();
+    let second_root = TempDir::new().unwrap();
+    lock(&daemon.state).claude_config_dir = Some(first_root.path().to_path_buf());
+    write_team_file(
+        first_root.path(),
+        "orchard",
+        "lead-session-0101",
+        &checkout_path,
+        &["pruner"],
+    );
+    write_team_file(
+        second_root.path(),
+        "orchard",
+        "lead-session-0202",
+        &checkout_path,
+        &["grower"],
+    );
+    let agent = |response: Response| match response {
+        Response::Agent { agent } => agent,
+        other => panic!("{other:?}"),
+    };
+    // One lead under the daemon's directory, one under its own.
+    let first = agent(
+        register_session(
+            &daemon,
+            "claude-lead0101",
+            &checkout_path,
+            Some("lead-session-0101"),
+        )
+        .await,
+    );
+    let mut own = spec("claude-lead0202");
+    own.runtime = "claude-code".to_owned();
+    own.workdir = Some(checkout_path.clone());
+    own.labels
+        .insert("session_id".to_owned(), "lead-session-0202".to_owned());
+    own.labels.insert(
+        CONFIG_DIR_LABEL.to_owned(),
+        second_root.path().display().to_string(),
+    );
+    let second = agent(
+        daemon
+            .handle(Request::Register {
+                spec: own,
+                pid: Some(std::process::id()),
+                session: None,
+            })
+            .await,
+    );
+    {
+        let state = lock(&daemon.state);
+        for (id, member, stranger) in [
+            (&first.id, "pruner", "grower"),
+            (&second.id, "grower", "pruner"),
+        ] {
+            let record = state.registry.get(id).unwrap();
+            assert_eq!(
+                record.team.as_ref().map(|t| t.team.as_str()),
+                Some("orchard")
+            );
+            let roster = state
+                .team_rosters
+                .get(id)
+                .expect("the roster it was placed by");
+            assert!(roster.member(member).is_some(), "{member}");
+            assert!(
+                roster.member(stranger).is_none(),
+                "{stranger} is the other directory's"
+            );
+        }
+    }
+    // Each lead's teammate owns its lease; the other directory's teammate
+    // of the same name of team is the session itself there.
+    let take = |holder: AgentId, actor: &str, relative: &str| {
+        let resource = format!("path:{}", checkout_path.join(relative).display());
+        let actor = Some(actor.to_owned());
+        let daemon = daemon.clone();
+        async move {
+            match daemon
+                .handle(Request::Claim {
+                    agent: holder.to_string(),
+                    resource,
+                    mode: LeaseMode::Exclusive,
+                    amount: None,
+                    ttl_secs: 60,
+                    note: None,
+                    wait_secs: 0,
+                    priority: 0,
+                    automatic: true,
+                    actor,
+                    fresh: false,
+                })
+                .await
+            {
+                Response::Lease { lease } => lease,
+                other => panic!("{other:?}"),
+            }
+        }
+    };
+    let cases = [
+        (
+            second.id.clone(),
+            "grower@orchard",
+            "a.rs",
+            Some("grower@orchard"),
+        ),
+        (second.id.clone(), "pruner@orchard", "b.rs", None),
+        (
+            first.id.clone(),
+            "pruner@orchard",
+            "c.rs",
+            Some("pruner@orchard"),
+        ),
+        (first.id.clone(), "grower@orchard", "d.rs", None),
+    ];
+    for (holder, actor, relative, owner) in &cases {
+        let lease = take(holder.clone(), actor, relative).await;
+        assert_eq!(lease.actor.as_deref(), *owner, "{actor} on {relative}");
+    }
+    let mut codex_spec = spec("codex-reviewer");
+    codex_spec.runtime = "codex".to_owned();
+    codex_spec.workdir = Some(checkout_path.clone());
+    let codex = agent(
+        daemon
+            .handle(Request::Register {
+                spec: codex_spec,
+                pid: None,
+                session: None,
+            })
+            .await,
+    );
+    for (relative, named) in [
+        (
+            "a.rs",
+            "claude-lead0202, grower, teammate of team-lead in orchard",
+        ),
+        ("b.rs", "claude-lead0202, lead of orchard ("),
+        (
+            "c.rs",
+            "claude-lead0101, pruner, teammate of team-lead in orchard",
+        ),
+        ("d.rs", "claude-lead0101, lead of orchard ("),
+    ] {
+        let resource = format!("path:{}", checkout_path.join(relative).display());
+        match claim(&daemon, codex.id.as_str(), &resource).await {
+            Response::Error {
+                code: ErrorCode::Conflict,
+                message,
+                ..
+            } => assert!(message.contains(named), "{relative}: {message}"),
+            other => panic!("{relative}: {other:?}"),
+        }
+    }
 }
 
 #[test]

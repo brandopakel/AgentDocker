@@ -1,0 +1,7 @@
+# The version each development tool is installed at, one per line: the
+# tool's crate name, then its version. scripts/verify.sh names these when a
+# tool is missing; the workflows and docs/TESTING-AND-BENCHMARKS.md state
+# the same versions, and tests/test_tool_pins.py fails when one differs.
+cargo-nextest 0.9.143
+cargo-llvm-cov 0.9.0
+cargo-fuzz 0.13.2
