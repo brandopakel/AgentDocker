@@ -216,7 +216,7 @@ impl App {
             return None;
         }
         if self.reconnects_here(agent) {
-            let reconnecting = self.shell.reconnecting.as_deref() == Some(agent.id.as_str());
+            let reconnecting = self.shell.reconnecting(agent.id.as_str());
             return Some(action(
                 format!("reconnect-{}", agent.id),
                 if reconnecting {
@@ -224,7 +224,7 @@ impl App {
                 } else {
                     "Reconnect here"
                 },
-                (!reconnecting && !self.shell.launching && self.connected.is_ok())
+                (!self.shell.starting() && self.connected.is_ok())
                     .then(|| Message::Reconnect(agent.id.to_string())),
                 false,
             ));

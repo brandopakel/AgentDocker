@@ -411,7 +411,10 @@ none did); the row's spoken name adds what it is doing. Sessions needing
 input appear first within each project. An ended Claude Code session that can
 come back carries **Reconnect here** on its row itself (the same action as in
 Details, which says why a session cannot be reconnected yet); while its
-resume is on its way the row says **Reconnecting…**. Select a row for terminal access, reply, or stop. On a narrow
+resume is on its way the row says **Reconnecting…**. One session is started at
+a time: while a reconnect or a launch is on its way the other **Reconnect
+here** buttons and the Launch form wait for it, and only the Launch form's own
+launch makes its button read **Launching…**. Select a row for terminal access, reply, or stop. On a narrow
 window, the session replaces the list; **Back to sessions** returns to it. On a
 wide window, it opens beside the list. A session working on its own branch (in a
 worktree) shows its changes above Details, with no label: its branch, the branch it would be
@@ -434,7 +437,7 @@ middle of a rebase; finish or abort it there first*); nothing is merged, and
 your operation is left in place. Merging makes a merge commit in the main folder
 and shows a green tick whose tooltip and spoken name say so (*Merged into main
 as &lt;commit&gt;.*); a refusal is one line beside the alert mark. A refusal before execution changes
-nothing. If Git fails during execution, inspect the main folder: a rejected
+nothing. One merge is under way at a time, and one removal of a worktree. If Git fails during execution, inspect the main folder: a rejected
 merge-commit hook can leave a pending merge to finish or abort. The app never
 automatically aborts or resets, since a concurrent operation may belong to you.
 An unreadable final operation check refuses execution. A branch that moved

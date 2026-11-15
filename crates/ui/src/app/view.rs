@@ -3112,7 +3112,7 @@ impl App {
             // blocker (no conversation id or folder, no tool) keeps the row
             // quiet, and Details shows the fix there is.
             if self.reconnects_here(agent) {
-                let reconnecting = self.shell.reconnecting.as_deref() == Some(id.as_str());
+                let reconnecting = self.shell.reconnecting(id.as_str());
                 content = content.push(custom(
                     format!("row-reconnect-{id}"),
                     format!("Reconnect {name} here"),
@@ -3123,7 +3123,7 @@ impl App {
                     })
                     .size(12.5)
                     .font(weight(iced::font::Weight::Medium)),
-                    (!reconnecting && !self.shell.launching && self.connected.is_ok())
+                    (!self.shell.starting() && self.connected.is_ok())
                         .then_some(Message::Reconnect(id.clone())),
                     false,
                     Kind::Secondary,
@@ -3764,14 +3764,14 @@ impl App {
         // everything else behind More options. No title: the button names
         // the dialog.
         let ready =
-            !self.shell.launching && self.shell.launch_runtime.is_some() && self.connected.is_ok();
+            !self.shell.starting() && self.shell.launch_runtime.is_some() && self.connected.is_ok();
         let prompt = crate::controls::composer(
             super::shell::LAUNCH_PROMPT,
             "launch",
             "Task",
             &self.shell.launch_prompt,
             Message::LaunchPrompt,
-            !self.shell.launching,
+            !self.shell.starting(),
             ready.then_some(Message::Launch),
         );
         let mut chips = row![].spacing(6);
@@ -3807,7 +3807,8 @@ impl App {
                     format!("launch-tool-{}", runtime.name),
                     runtime.label.clone(),
                     content,
-                    (!self.shell.launching).then_some(Message::LaunchRuntime(runtime.name.clone())),
+                    (!self.shell.starting())
+                        .then_some(Message::LaunchRuntime(runtime.name.clone())),
                     false,
                     Kind::Inline,
                     [5, 10],
@@ -3849,7 +3850,7 @@ impl App {
                     } else {
                         "Idle messages: Off"
                     },
-                    (!self.shell.launching)
+                    (!self.shell.starting())
                         .then_some(Message::LaunchChannel(!self.shell.launch_channel)),
                     self.shell.launch_channel,
                 ),
@@ -3876,7 +3877,7 @@ impl App {
                     } else {
                         "Own worktree: Off"
                     },
-                    (!self.shell.launching)
+                    (!self.shell.starting())
                         .then_some(Message::LaunchWorktree(!self.shell.launch_worktree)),
                     self.shell.launch_worktree,
                 ),
@@ -3955,11 +3956,11 @@ impl App {
             ghost(
                 "cancel-launch",
                 "Cancel",
-                (!self.shell.launching).then_some(Message::ShowLaunch),
+                (!self.shell.starting()).then_some(Message::ShowLaunch),
             ),
             primary(
                 "confirm-launch",
-                if self.shell.launching {
+                if self.shell.launching() {
                     "Launching…"
                 } else {
                     "Launch agent"
@@ -4033,7 +4034,7 @@ impl App {
         let trigger = action(
             format!("launch-{key}"),
             format!("{word}: {shown}"),
-            (!self.shell.launching && given.is_none())
+            (!self.shell.starting() && given.is_none())
                 .then_some(Message::LaunchChoiceMenu((!open).then_some(which))),
             chosen.is_some() || given.is_some(),
         );
