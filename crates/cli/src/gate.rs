@@ -447,6 +447,271 @@ pub async fn gate(client: &Client, args: GateArgs) -> Result<bool> {
     Ok(gate.approved())
 }
 
+/// How long `agentdocker brief` waits for GitHub's list of open pull
+/// requests, and with `--all`, which pages through many more.
+const PULLS_TIMEOUT: Duration = Duration::from_secs(10);
+const PULLS_TIMEOUT_ALL: Duration = Duration::from_secs(120);
+/// How many open pull requests `agentdocker brief` asks GitHub for, and
+/// with `--all`. One more is asked for, to know when there are more.
+const PULLS_ASKED: usize = 100;
+const PULLS_ASKED_ALL: usize = 2000;
+/// The least of the command's text the pull requests may have when the
+/// brief and they do not both fit: a quarter of it.
+const PULLS_SHARE: usize = agentdocker_core::brief::COMMAND_BYTES / 4;
+
+/// An open pull request, as `gh pr list --json` gives it.
+#[derive(Debug, PartialEq, serde::Deserialize)]
+struct Pull {
+    number: u64,
+    #[serde(default)]
+    title: String,
+    #[serde(rename = "headRefName")]
+    branch: String,
+    #[serde(rename = "headRefOid")]
+    head: String,
+}
+
+fn parse_pulls(json: &str) -> Result<Vec<Pull>> {
+    serde_json::from_str(json).context("GitHub's list of pull requests does not parse")
+}
+
+/// The first `asked` of the pull requests GitHub listed, having been
+/// asked for one more, and whether it had more than `asked`.
+fn first_pulls(json: &str, asked: usize) -> Result<(Vec<Pull>, bool)> {
+    let mut pulls = parse_pulls(json)?;
+    let more = pulls.len() > asked;
+    pulls.truncate(asked);
+    Ok((pulls, more))
+}
+
+/// GitHub's open pull requests, as `agentdocker brief` tells them.
+#[derive(Debug)]
+pub struct Pulls {
+    /// One line each, with what the gate says at its head.
+    pub lines: Vec<String>,
+    /// How many GitHub was asked for.
+    pub asked: usize,
+    /// GitHub had more open than were asked for: they are not here.
+    pub more: bool,
+    /// The checkout GitHub was asked from.
+    pub repository: PathBuf,
+}
+
+/// The open pull requests of the repository checked out at `repository`
+/// as GitHub lists them now (`gh`, run there), each with what the gate
+/// says at its head, as `agentdocker gate` says it, asked of the daemon
+/// for the same `project` as the brief. The first [`PULLS_ASKED`], or with
+/// `all` the first [`PULLS_ASKED_ALL`], and whether GitHub has more.
+/// `Err` says why GitHub could not be asked. A title is quoted, as every
+/// record's text in a brief is.
+pub async fn open_pulls(
+    client: &Client,
+    agent: Option<String>,
+    project: Option<String>,
+    repository: &Path,
+    all: bool,
+) -> Result<Pulls> {
+    let (asked, timeout) = if all {
+        (PULLS_ASKED_ALL, PULLS_TIMEOUT_ALL)
+    } else {
+        (PULLS_ASKED, PULLS_TIMEOUT)
+    };
+    let limit = (asked + 1).to_string();
+    let argv: Vec<String> = [
+        "gh",
+        "pr",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        &limit,
+        "--json",
+        "number,title,headRefName,headRefOid",
+    ]
+    .iter()
+    .map(|&a| a.to_owned())
+    .collect();
+    let output = agentdocker_host::command::run(repository, &argv, timeout)
+        .with_context(|| format!("cannot run gh in {}", repository.display()))?;
+    ensure!(output.success, "gh failed: {}", output.text.trim());
+    let (pulls, more) = first_pulls(&output.stdout, asked)?;
+    let mut lines = Vec::new();
+    for pull in pulls {
+        let request = Request::ReviewGate {
+            agent: agent.clone(),
+            project: project.clone(),
+            branch: pull.branch.clone(),
+            head: pull.head.clone(),
+            role: None,
+        };
+        let word = match client.call(&request).await {
+            Ok(Response::ReviewGate { gate, .. }) => said(&gate, &pull.branch, &pull.head),
+            Ok(other) => format!("the gate could not be read ({other:?})"),
+            Err(error) => format!("the gate could not be read ({error:#})"),
+        };
+        let title = agentdocker_core::memory::headline(&pull.title);
+        lines.push(format!(
+            "- #{} {}: {}",
+            pull.number,
+            serde_json::to_string(&title).unwrap_or_default(),
+            agentdocker_core::memory::headline(&word)
+        ));
+    }
+    Ok(Pulls {
+        lines,
+        asked,
+        more,
+        repository: repository.to_owned(),
+    })
+}
+
+/// `text` as one POSIX shell word meaning exactly it, whole: as it is when
+/// it needs no quoting, else in single quotes, inside which the shell
+/// expands nothing (`$(…)`, backticks, `$VAR` stay text), a quote in it
+/// closed, escaped and reopened. None when it holds a control character
+/// or any space but a plain one (a line break among them), which a command
+/// told on one line cannot carry as itself.
+fn shell_word(text: &str) -> Option<String> {
+    if text.is_empty()
+        || text
+            .chars()
+            .any(|c| c.is_control() || (c.is_whitespace() && c != ' '))
+    {
+        return None;
+    }
+    if text
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-_./:@+=,".contains(c))
+    {
+        return Some(text.to_owned());
+    }
+    Some(format!("'{}'", text.replace('\'', "'\\''")))
+}
+
+/// The line that says which open pull requests are not told, when any are
+/// not: `left` for room, and those GitHub was not asked for. The way to
+/// the rest names the project (`whole`, [`agentdocker_core::brief::all_command`])
+/// or the checkout GitHub was asked from, so it means the same wherever it
+/// is run.
+fn pulls_left_out(left: usize, pulls: &Pulls, whole: &str, all: bool) -> Option<String> {
+    let mut parts = Vec::new();
+    if left > 0 {
+        parts.push(format!("{left} not shown for room"));
+    }
+    if pulls.more {
+        parts.push(format!(
+            "GitHub has more than the {} asked for",
+            pulls.asked
+        ));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let how = if all {
+        let gh = "gh pr list --state open --limit <n>";
+        // An absolute path only: `cd` would take a leading `-` for an option.
+        let dir = Some(&pulls.repository).filter(|dir| dir.is_absolute());
+        match dir.and_then(|dir| dir.to_str()).and_then(shell_word) {
+            Some(dir) => format!("`cd {dir} && {gh}` lists the rest, without the gate's word"),
+            // No command that would mean another place: the path, as data.
+            None => format!(
+                "`{gh}`, run in the checkout at {} (a path no shell word here holds exactly), \
+                 lists the rest, without the gate's word",
+                serde_json::to_string(&pulls.repository.to_string_lossy()).unwrap_or_default()
+            ),
+        }
+    } else {
+        format!("`{whole}` lists up to {PULLS_ASKED_ALL}")
+    };
+    Some(format!(
+        "Open pull requests left out: {}; {how}.",
+        parts.join("; ")
+    ))
+}
+
+/// The pull requests' part of `agentdocker brief`'s text, within
+/// `max_bytes`: its heading, its lines while they fit, in GitHub's order,
+/// and a closing line counting the rest, room for which is kept at its
+/// longest, offering `whole` for them. Why GitHub was not asked, when it
+/// was not. Nothing when even the heading and closing line do not fit.
+pub fn pulls_text(pulls: &Result<Pulls>, whole: &str, all: bool, max_bytes: usize) -> String {
+    let pulls = match pulls {
+        Err(error) => {
+            let text = format!(
+                "GitHub was not asked for pull requests: {}",
+                serde_json::to_string(&agentdocker_core::memory::headline(&format!("{error:#}")))
+                    .unwrap_or_default()
+            );
+            return if text.len() <= max_bytes {
+                text
+            } else {
+                String::new()
+            };
+        }
+        Ok(pulls) => pulls,
+    };
+    if pulls.lines.is_empty() && !pulls.more {
+        let text = "No open pull requests on GitHub.";
+        return if text.len() <= max_bytes {
+            text.to_owned()
+        } else {
+            String::new()
+        };
+    }
+    let reserve = pulls_left_out(pulls.lines.len(), pulls, whole, all).map_or(0, |l| l.len() + 1);
+    let mut text = "Open pull requests on GitHub, asked now (titles quoted as written):".to_owned();
+    if text.len() + reserve > max_bytes {
+        return String::new();
+    }
+    let room = max_bytes - reserve;
+    let mut told = 0;
+    for line in &pulls.lines {
+        if text.len() + 1 + line.len() > room {
+            break;
+        }
+        text.push('\n');
+        text.push_str(line);
+        told += 1;
+    }
+    if let Some(line) = pulls_left_out(pulls.lines.len() - told, pulls, whole, all) {
+        text.push('\n');
+        text.push_str(&line);
+    }
+    text
+}
+
+/// `agentdocker brief`'s text: the brief, then GitHub's open pull requests,
+/// within [`agentdocker_core::brief::COMMAND_BYTES`] in all unless `all`.
+/// When both do not fit, the pull requests have the room the brief leaves,
+/// and never less than a quarter of it; each part counts what it leaves.
+pub fn brief_text(
+    brief: &agentdocker_core::brief::Brief,
+    pulls: &Result<Pulls>,
+    now: chrono::DateTime<chrono::Utc>,
+    all: bool,
+) -> String {
+    use agentdocker_core::brief::{COMMAND_BYTES, all_command, render};
+    let command = all_command(brief);
+    if all {
+        return format!(
+            "{}\n{}",
+            render(brief, now, usize::MAX),
+            pulls_text(pulls, &command, true, usize::MAX)
+        );
+    }
+    let unbounded = render(brief, now, usize::MAX);
+    let pulls_room = COMMAND_BYTES
+        .saturating_sub(unbounded.len() + 1)
+        .max(PULLS_SHARE);
+    let pulls = pulls_text(pulls, &command, false, pulls_room);
+    let brief = render(brief, now, COMMAND_BYTES.saturating_sub(pulls.len() + 1));
+    match (brief.is_empty(), pulls.is_empty()) {
+        (_, true) => brief,
+        (true, false) => pulls,
+        (false, false) => format!("{brief}\n{pulls}"),
+    }
+}
+
 /// How long a hook's report may take: a commit waits for it.
 const REPORT_TIMEOUT: Duration = Duration::from_secs(5);
 /// A witness file is a few hundred bytes; past this it is not one.
@@ -635,6 +900,221 @@ mod tests {
         for bad in ["", "1,2", "1,2,3,4", "a,b,c", "-1,0,0"] {
             assert!(parse_findings(bad).is_err(), "{bad:?}");
         }
+    }
+
+    /// GitHub's list is read as `gh pr list --json` writes it; anything
+    /// else is said not to parse.
+    #[test]
+    fn open_pull_requests_are_read_from_ghs_json() {
+        let pulls = parse_pulls(
+            r#"[{"number":540,"title":"A brief","headRefName":"claude/ad-87-brief","headRefOid":"f14b62b60a0b52af93c490f12a99eaa85578a7f5"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            pulls,
+            [Pull {
+                number: 540,
+                title: "A brief".into(),
+                branch: "claude/ad-87-brief".into(),
+                head: "f14b62b60a0b52af93c490f12a99eaa85578a7f5".into(),
+            }]
+        );
+        assert!(parse_pulls("[]").unwrap().is_empty());
+        assert!(parse_pulls("not json").is_err());
+    }
+
+    fn pulls_json(n: usize) -> String {
+        let pulls: Vec<serde_json::Value> = (0..n)
+            .map(|i| {
+                serde_json::json!({
+                    "number": i + 1,
+                    "title": format!("change {i}"),
+                    "headRefName": format!("b{i}"),
+                    "headRefOid": "f".repeat(40),
+                })
+            })
+            .collect();
+        serde_json::to_string(&pulls).unwrap()
+    }
+
+    /// GitHub is asked for one more than is told: when it has more, the
+    /// text says so and how to have the rest, never dropping them silently:
+    /// the brief of the project it is of, and, past that, `gh` in the
+    /// checkout it was asked from, quoted as a shell word.
+    #[test]
+    fn more_open_pull_requests_than_were_asked_for_are_said() {
+        let (pulls, more) = first_pulls(&pulls_json(PULLS_ASKED + 1), PULLS_ASKED).unwrap();
+        assert_eq!((pulls.len(), more), (PULLS_ASKED, true));
+        let (pulls, more) = first_pulls(&pulls_json(60), PULLS_ASKED).unwrap();
+        assert_eq!((pulls.len(), more), (60, false));
+
+        let listed = |more: bool| -> Result<Pulls> {
+            Ok(Pulls {
+                lines: (0..3).map(|i| format!("- #{i} \"t\": approved")).collect(),
+                asked: 3,
+                more,
+                repository: PathBuf::from("/work/the other's repo"),
+            })
+        };
+        let whole = "agentdocker brief --all --project b0";
+        let text = pulls_text(&listed(true), whole, false, usize::MAX);
+        assert!(
+            text.ends_with(
+                "Open pull requests left out: GitHub has more than the 3 asked for; \
+                 `agentdocker brief --all --project b0` lists up to 2000."
+            ),
+            "{text}"
+        );
+        let text = pulls_text(&listed(true), whole, true, usize::MAX);
+        assert!(
+            text.ends_with(
+                "`cd '/work/the other'\\''s repo' && gh pr list --state open --limit <n>` \
+                 lists the rest, without the gate's word."
+            ),
+            "{text}"
+        );
+        let text = pulls_text(&listed(false), whole, false, usize::MAX);
+        assert_eq!(text.lines().count(), 4, "{text}");
+        assert!(!text.contains("left out"), "{text}");
+        let unasked: Result<Pulls> = Err(anyhow::anyhow!("gh failed:\nnot logged in"));
+        assert_eq!(
+            pulls_text(&unasked, whole, false, usize::MAX),
+            "GitHub was not asked for pull requests: \"gh failed: not logged in\""
+        );
+    }
+
+    /// The way past `--all` names the checkout as one exact shell word,
+    /// however long and whatever shell syntax its name holds: run, it
+    /// selects that very directory and expands nothing. A path no word can
+    /// hold on one line (a line break) or a relative one gets no command,
+    /// only the path, as data.
+    #[cfg(unix)]
+    #[test]
+    fn the_way_past_all_is_an_exact_shell_word_or_no_command() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().canonicalize().unwrap();
+        let odd = root.join("it's $(touch ran) `touch ran` $HOME");
+        let long = odd.join("d".repeat(120)).join("e".repeat(120));
+        std::fs::create_dir_all(&long).unwrap();
+        assert!(long.as_os_str().len() > 200);
+        for dir in [&odd, &long] {
+            let word = shell_word(dir.to_str().unwrap()).unwrap();
+            let out = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!("cd {word} && pwd -P"))
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{word}: {out:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&out.stdout).trim_end_matches('\n'),
+                dir.to_str().unwrap()
+            );
+        }
+        assert!(!root.join("ran").exists(), "nothing was substituted");
+        let line = |repository: &str| {
+            let pulls = Pulls {
+                lines: vec!["- #1 \"t\": approved".into()],
+                asked: 1,
+                more: true,
+                repository: PathBuf::from(repository),
+            };
+            pulls_left_out(0, &pulls, "agentdocker brief --all", true).unwrap()
+        };
+        let long = long.to_str().unwrap();
+        let told = line(long);
+        assert!(
+            told.contains(&format!("`cd {} && gh pr list", shell_word(long).unwrap())),
+            "{told}"
+        );
+        let broken = line("/work/a\n$(touch ran)");
+        assert!(!broken.contains("cd "), "{broken}");
+        assert!(
+            broken.contains(r#"run in the checkout at "/work/a\n$(touch ran)""#),
+            "{broken}"
+        );
+        assert!(!line("work/relative").contains("cd "));
+        assert_eq!(shell_word("/work/a\u{2028}b"), None);
+    }
+
+    /// The command's text, the brief and the pull requests together, stays
+    /// within its bound however long the titles are in bytes, and each part
+    /// counts what it leaves; `--all` tells every one.
+    #[test]
+    fn the_command_text_stays_within_its_bound() {
+        use agentdocker_core::brief::{
+            Brief, COMMAND_BYTES, CheckoutLine, PULL_REQUESTS, Reader, Standing,
+        };
+        let now = chrono::Utc::now();
+        let checkouts = (0..200)
+            .map(|i| CheckoutLine {
+                path: PathBuf::from(format!("/work/checkout-{i}")),
+                at: now,
+                standing: Some(Standing {
+                    branch: Some(format!("topic-{i}")),
+                    head: Some("a".repeat(40)),
+                    dirty: vec!["a.rs".into(), "b.rs".into()],
+                    ..Standing::default()
+                }),
+                error: None,
+                gate: None,
+                yours: false,
+            })
+            .collect();
+        let brief = Brief {
+            project: "orchard".into(),
+            reader: Reader::Person,
+            groups: Vec::new(),
+            held_live: Vec::new(),
+            checkpoints: Vec::new(),
+            questions: Vec::new(),
+            leases: Vec::new(),
+            checkouts,
+            checkouts_clean: 0,
+            checkouts_unread: 0,
+            not_covered: vec![PULL_REQUESTS.into()],
+            repository: None,
+            project_id: Some("b0".into()),
+        };
+        let title: String = "\u{1F680}".repeat(80);
+        let lines: Vec<String> = (0..50)
+            .map(|i| {
+                format!(
+                    "- #{i} {}: unreviewed: nobody who counts has passed b{i}",
+                    serde_json::to_string(&agentdocker_core::memory::headline(&title)).unwrap()
+                )
+            })
+            .collect();
+        let pulls = || -> Result<Pulls> {
+            Ok(Pulls {
+                lines: lines.clone(),
+                asked: PULLS_ASKED,
+                more: false,
+                repository: PathBuf::from("/work/b"),
+            })
+        };
+        assert!(pulls_text(&pulls(), "", false, usize::MAX).len() > COMMAND_BYTES);
+        let text = brief_text(&brief, &pulls(), now, false);
+        assert!(text.len() <= COMMAND_BYTES, "{}", text.len());
+        assert!(
+            text.contains("; `agentdocker brief --all --project b0` shows them."),
+            "the brief counts, and names the project for the person"
+        );
+        let pulls_part = &text[text.find("Open pull requests on GitHub").unwrap()..];
+        assert!(pulls_part.len() >= PULLS_SHARE / 2, "{}", pulls_part.len());
+        let told = pulls_part.lines().filter(|l| l.starts_with("- #")).count();
+        assert!(told > 0 && told < 50, "{told}");
+        assert!(
+            pulls_part.ends_with(&format!(
+                "Open pull requests left out: {} not shown for room; \
+                 `agentdocker brief --all --project b0` lists up to 2000.",
+                50 - told
+            )),
+            "{pulls_part}"
+        );
+        let all = brief_text(&brief, &pulls(), now, true);
+        assert_eq!(all.lines().filter(|l| l.starts_with("- #")).count(), 50);
+        assert!(!all.contains("left out"), "{:?}", all.lines().last());
     }
 
     #[test]
