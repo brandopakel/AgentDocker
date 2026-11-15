@@ -52,19 +52,36 @@ pub fn due(record: &AgentRecord) -> Option<Due> {
     }
 }
 
-/// Where the daemon's scheduler entry for one restart stands. Only the
-/// daemon holds it, in memory.
+/// Where the daemon's scheduler entry for one restart stands, and which
+/// attempt it was installed for. Only the daemon holds it, in memory. An
+/// entry speaks only of its own attempt: once the record has moved on (a
+/// failed spawn counted, a restarted child ended again) and the entry is
+/// not yet removed, it says nothing of the attempt that follows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Phase {
     /// Installed, waiting out the policy's delay until `due` (unknown
     /// when the record does not say when it ended).
-    Delay { due: Option<DateTime<Utc>> },
+    Delay {
+        attempt: u32,
+        due: Option<DateTime<Utc>>,
+    },
     /// An attempt was refused admission by a transfer at `at`; the task
     /// backs off before it tries again.
-    Refused { at: DateTime<Utc> },
+    Refused { attempt: u32, at: DateTime<Utc> },
     /// An attempt was admitted and is under way. Evidence of admission,
     /// not that the child runs or that its record will commit.
-    Starting,
+    Starting { attempt: u32 },
+}
+
+impl Phase {
+    /// The attempt this entry was installed for.
+    pub fn attempt(&self) -> u32 {
+        match self {
+            Self::Delay { attempt, .. }
+            | Self::Refused { attempt, .. }
+            | Self::Starting { attempt } => *attempt,
+        }
+    }
 }
 
 /// What a reader is told of whether an ended run comes back, tagged by
@@ -133,6 +150,9 @@ pub fn view(record: &AgentRecord, phase: Option<Phase>, fenced: bool) -> Option<
         }
         Due::Restart { attempt, at } => (attempt, at),
     };
+    // An entry for another attempt (the one before, not yet removed) says
+    // nothing of this one.
+    let phase = phase.filter(|phase| phase.attempt() == attempt);
     let of = match record.spec.restart {
         RestartPolicy::OnFailure { max } => Some(max),
         RestartPolicy::No | RestartPolicy::Always => None,
@@ -143,13 +163,13 @@ pub fn view(record: &AgentRecord, phase: Option<Phase>, fenced: bool) -> Option<
             why: Waiting::NotScheduled,
             at,
         },
-        Some(Phase::Starting) => RestartView::Starting { attempt },
-        Some(Phase::Delay { due }) if fenced => RestartView::Waiting {
+        Some(Phase::Starting { .. }) => RestartView::Starting { attempt },
+        Some(Phase::Delay { due, .. }) if fenced => RestartView::Waiting {
             attempt,
             why: Waiting::HandingOver,
             at: due,
         },
-        Some(Phase::Delay { due }) => RestartView::Scheduled {
+        Some(Phase::Delay { due, .. }) => RestartView::Scheduled {
             attempt,
             of,
             at: due,
@@ -361,7 +381,10 @@ mod tests {
             Due::Restart { at, .. } => at,
             Due::GivenUp { .. } => None,
         });
-        let refused = Phase::Refused { at: Utc::now() };
+        let refused = Phase::Refused {
+            attempt: 2,
+            at: Utc::now(),
+        };
         let rows = [
             (
                 None,
@@ -382,7 +405,10 @@ mod tests {
                 },
             ),
             (
-                Some(Phase::Delay { due: at }),
+                Some(Phase::Delay {
+                    attempt: 2,
+                    due: at,
+                }),
                 false,
                 RestartView::Scheduled {
                     attempt: 2,
@@ -391,7 +417,10 @@ mod tests {
                 },
             ),
             (
-                Some(Phase::Delay { due: at }),
+                Some(Phase::Delay {
+                    attempt: 2,
+                    due: at,
+                }),
                 true,
                 RestartView::Waiting {
                     attempt: 2,
@@ -418,12 +447,12 @@ mod tests {
                 },
             ),
             (
-                Some(Phase::Starting),
+                Some(Phase::Starting { attempt: 2 }),
                 false,
                 RestartView::Starting { attempt: 2 },
             ),
             (
-                Some(Phase::Starting),
+                Some(Phase::Starting { attempt: 2 }),
                 true,
                 RestartView::Starting { attempt: 2 },
             ),
@@ -435,20 +464,57 @@ mod tests {
                 "{phase:?} fenced={fenced}"
             );
         }
+        // An entry left from the attempt before (a failed spawn counted,
+        // the entry not yet removed) says nothing of this attempt: not
+        // starting, not scheduled, until its own install and admission.
+        for stale in [
+            Phase::Starting { attempt: 1 },
+            Phase::Delay {
+                attempt: 1,
+                due: at,
+            },
+            Phase::Refused {
+                attempt: 1,
+                at: Utc::now(),
+            },
+        ] {
+            assert_eq!(
+                view(&record, Some(stale), false),
+                Some(RestartView::Waiting {
+                    attempt: 2,
+                    why: Waiting::NotScheduled,
+                    at
+                }),
+                "{stale:?}"
+            );
+        }
         // Nothing applies: a live record, a policy a stop cleared.
         let mut live = record.clone();
         live.status = AgentStatus::Running;
-        assert_eq!(view(&live, Some(Phase::Starting), false), None);
+        assert_eq!(
+            view(&live, Some(Phase::Starting { attempt: 2 }), false),
+            None
+        );
         let mut cleared = record.clone();
         cleared.spec.restart = RestartPolicy::No;
-        assert_eq!(view(&cleared, Some(Phase::Delay { due: at }), false), None);
+        assert_eq!(
+            view(
+                &cleared,
+                Some(Phase::Delay {
+                    attempt: 2,
+                    due: at
+                }),
+                false
+            ),
+            None
+        );
         // Given up is the record's own, whatever the scheduler holds.
         let spent = ended(
             RestartPolicy::OnFailure { max: 3 },
             AgentStatus::Exited { code: Some(1) },
             3,
         );
-        for phase in [None, Some(Phase::Starting)] {
+        for phase in [None, Some(Phase::Starting { attempt: 2 })] {
             assert_eq!(
                 view(&spent, phase, false),
                 Some(RestartView::GivenUp {

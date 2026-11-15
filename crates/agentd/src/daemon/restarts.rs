@@ -63,13 +63,15 @@ impl Daemon {
             // nothing the task does can be said first. While fenced it is
             // installed all the same, for an aborted handover to resume,
             // and the view says it waits on the fence.
-            let due = match agentdocker_core::restart::due(&record) {
-                Some(agentdocker_core::restart::Due::Restart { at, .. }) => at,
-                _ => None,
+            // Installed for this attempt: it speaks of no other.
+            let (attempt, due) = match agentdocker_core::restart::due(&record) {
+                Some(agentdocker_core::restart::Due::Restart { attempt, at }) => (attempt, at),
+                _ => (record.restarts.saturating_add(1), None),
             };
-            state
-                .pending_restarts
-                .insert(id.clone(), agentdocker_core::restart::Phase::Delay { due });
+            state.pending_restarts.insert(
+                id.clone(),
+                agentdocker_core::restart::Phase::Delay { attempt, due },
+            );
             state.publish_restart(id);
             record
         };
@@ -723,8 +725,23 @@ mod tests {
         let mut events = daemon.subscribe_events();
         daemon.offer_transfer(4242).unwrap();
         daemon.consider_restart(&fenced.id, &fenced.status);
-        // Overdue, so it tries at once and the fence refuses it.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // Overdue, so it tries at once and the fence refuses it: waited
+        // for, not slept for. The retry backs off a quarter of a second
+        // from that refusal, so the abort below comes before it.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let refused = matches!(
+                    lock(&daemon.state).pending_restarts.get(&fenced.id),
+                    Some(agentdocker_core::restart::Phase::Refused { .. })
+                );
+                if refused {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("the fence refused the attempt");
         let handing_over = Some(RestartView::Waiting {
             attempt: 1,
             why: Waiting::HandingOver,
@@ -791,6 +808,74 @@ mod tests {
                 None,
             ]
         );
+    }
+
+    /// An entry speaks only of its own attempt. Attempt 1 is admitted, its
+    /// spawn fails and is counted, and its entry is not yet removed (the
+    /// task removes it in a later hold): read through the daemon, attempt 2
+    /// is not scheduled, never starting. Only its own install says it is
+    /// scheduled.
+    #[tokio::test]
+    async fn an_old_attempts_entry_never_speaks_for_the_next() {
+        use agentdocker_core::restart::{Known, Outlook, Phase, RestartView, Waiting};
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+        let policy = agentdocker_core::RestartPolicy::OnFailure { max: 3 };
+        let record = ended_record("next-attempt", policy);
+        assert!(matches!(
+            lock(&daemon.state).insert_record(record.clone()),
+            Response::Agent { .. }
+        ));
+        // Attempt 1 admitted, as its task holds it.
+        lock(&daemon.state)
+            .pending_restarts
+            .insert(record.id.clone(), Phase::Starting { attempt: 1 });
+        // Its spawn is refused by a new rule: a failed attempt, counted.
+        std::fs::write(
+            daemon.home.join("policy.toml"),
+            "[[rule]]\ndeny = [\"run:**\"]\n",
+        )
+        .unwrap();
+        daemon
+            .restart_now(&record.id, std::time::Duration::ZERO)
+            .await;
+        let (current, answer) = {
+            let mut state = lock(&daemon.state);
+            let current = state.registry.get(&record.id).unwrap().clone();
+            (current, state.restarts(Some(record.id.as_str())))
+        };
+        assert_eq!(current.restarts, 1);
+        assert!(matches!(current.status, AgentStatus::Failed { .. }));
+        assert!(
+            lock(&daemon.state)
+                .pending_restarts
+                .contains_key(&record.id),
+            "between the commit and the removal"
+        );
+        let Response::Restarts { outlooks } = answer else {
+            panic!("{answer:?}")
+        };
+        assert!(
+            matches!(
+                Outlook::known_for(outlooks.get(&record.id), &current),
+                Known::Known(Some(RestartView::Waiting {
+                    attempt: 2,
+                    why: Waiting::NotScheduled,
+                    ..
+                }))
+            ),
+            "{outlooks:?}"
+        );
+        // Its own install: the old entry let go, attempt 2 installed.
+        lock(&daemon.state).pending_restarts.remove(&record.id);
+        daemon.consider_restart(&record.id, &current.status);
+        assert!(matches!(
+            lock(&daemon.state).restart_view(&record.id),
+            Some(RestartView::Scheduled { attempt: 2, .. })
+        ));
+        daemon.clear_restart(&record.id);
+        daemon.stop_all().await;
     }
 
     /// The ending that spends an `on-failure` policy commits its give-up

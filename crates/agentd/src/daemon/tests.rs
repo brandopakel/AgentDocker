@@ -8228,7 +8228,10 @@ async fn a_worktree_being_removed_takes_back_nobody_who_ended_there() {
     // Waiting for its restart: counted as working there.
     lock(&daemon.state).pending_restarts.insert(
         session.id.clone(),
-        agentdocker_core::restart::Phase::Delay { due: None },
+        agentdocker_core::restart::Phase::Delay {
+            attempt: 1,
+            due: None,
+        },
     );
     let answer = daemon.handle(remove()).await;
     assert!(

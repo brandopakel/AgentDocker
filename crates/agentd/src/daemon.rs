@@ -2281,14 +2281,19 @@ impl Daemon {
         }
         if let Some(error) = state.transferring() {
             if let Some(phase) = state.pending_restarts.get_mut(id) {
-                *phase = Phase::Refused { at: Utc::now() };
+                *phase = Phase::Refused {
+                    attempt: phase.attempt(),
+                    at: Utc::now(),
+                };
                 state.publish_restart(id);
             }
             return Err(Box::new(error));
         }
         state.in_flight += 1;
         if let Some(phase) = state.pending_restarts.get_mut(id) {
-            *phase = Phase::Starting;
+            *phase = Phase::Starting {
+                attempt: phase.attempt(),
+            };
             state.publish_restart(id);
         }
         Ok(InFlight(self.clone()))

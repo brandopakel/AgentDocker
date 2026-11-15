@@ -2043,7 +2043,9 @@ impl App {
                         // when it answers.
                         self.send(Cmd::Conversations(self.conversation_scope()));
                         // Another daemon, perhaps: whatever the last one said
-                        // is dropped and asked again.
+                        // is dropped and asked again, and a read still in
+                        // flight on the old connection is not waited for.
+                        self.restarts_in_flight = None;
                         self.invalidate_restarts(None);
                         if let Some(project) = &self.journal_project {
                             self.request_journal(project.clone());
@@ -4452,8 +4454,15 @@ fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Opt
         },
         Cmd::Restarts(generation) => match client.call(&Request::Restarts { agent: None }) {
             Ok(Response::Restarts { outlooks }) => Some(Msg::Restarts(generation, Some(outlooks))),
-            // A daemon that cannot say: nothing is shown, never "none".
-            Ok(_) | Err(_) => Some(Msg::Restarts(generation, None)),
+            // A daemon that answered and cannot say (an older one refuses
+            // the request): unknown, nothing shown, never "none".
+            Ok(_) => Some(Msg::Restarts(generation, None)),
+            Err(error) if error.downcast_ref::<RemoteError>().is_some() => {
+                Some(Msg::Restarts(generation, None))
+            }
+            // No daemon answered: that is the link's to say, through the
+            // worker's Disconnected; the read in flight ends with it.
+            Err(error) => return Err(error),
         },
         Cmd::SecretReviews => {
             match client.call(&Request::SecretReviews {
@@ -6705,6 +6714,69 @@ pub(crate) mod tests {
             "worker sent an unexpected extra request after the planned replies"
         );
         results.try_iter().collect()
+    }
+
+    /// A restart read through the real worker: an answer; an older
+    /// daemon's refusal, which is unknown and leaves the connection up; and
+    /// a socket that closes without an answer, which brings no Connected,
+    /// a Disconnected, and no restart answer, so the app has no read left
+    /// in flight once it is told of the loss.
+    #[cfg(unix)]
+    #[test]
+    fn a_restart_read_tells_a_refusal_from_a_lost_connection() {
+        use serde_json::json;
+        let request = json!({"op": "restarts"});
+        let answered = command_with_replies(
+            Cmd::Restarts(3),
+            vec![(
+                request.clone(),
+                Some(json!({"type": "restarts", "outlooks": {}})),
+            )],
+        );
+        assert!(
+            answered
+                .iter()
+                .any(|m| matches!(m, Msg::Restarts(3, Some(o)) if o.is_empty()))
+        );
+        let refused = command_with_replies(
+            Cmd::Restarts(4),
+            vec![(
+                request.clone(),
+                Some(json!({"type": "error", "code": "invalid",
+                    "message": "malformed request: unknown variant `restarts`"})),
+            )],
+        );
+        assert!(refused.iter().any(|m| matches!(m, Msg::Restarts(4, None))));
+        assert!(
+            !refused.iter().any(|m| matches!(m, Msg::Disconnected(..))),
+            "a refusal is an answer, not a lost connection"
+        );
+        let lost = command_with_replies(Cmd::Restarts(5), vec![(request, None)]);
+        assert!(
+            !lost.iter().any(|m| matches!(m, Msg::Connected(_))),
+            "no daemon answered"
+        );
+        assert!(!lost.iter().any(|m| matches!(m, Msg::Restarts(..))));
+        let disconnected = lost
+            .into_iter()
+            .find(|m| matches!(m, Msg::Disconnected(..)))
+            .expect("the loss is said");
+        // The app, told of it, waits on no restart read.
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.link.open();
+        app.invalidate_restarts(None);
+        assert!(app.restarts_in_flight.is_some());
+        let Msg::Disconnected(_, reason) = disconnected else {
+            unreachable!()
+        };
+        messages
+            .send(Msg::Disconnected(link::Report::Stream, reason))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.restarts_in_flight, None);
+        assert!(!app.restarts_owed);
     }
 
     /// A palette read through the real client: roles, an older daemon
