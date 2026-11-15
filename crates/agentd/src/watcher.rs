@@ -294,7 +294,7 @@ async fn finish_with_attachments(
 /// Record everything pending, and report a gap if the OS or the queue
 /// dropped events since the last flush.
 async fn drain(
-    daemon: &Daemon,
+    daemon: &Arc<Daemon>,
     pending: &mut Vec<notify::Event>,
     watched: &BTreeMap<PathBuf, Watched>,
     gap: &AtomicBool,

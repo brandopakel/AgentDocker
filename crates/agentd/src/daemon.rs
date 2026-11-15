@@ -628,6 +628,12 @@ struct State {
     /// Which checkouts have changed each path, so the second one is a
     /// collision the daemon can act on without scanning the ledger.
     contested: HashMap<(ProjectId, PathBuf), HashSet<PathBuf>>,
+    /// File changes waiting to be counted toward a contested room, by the
+    /// checkout they were seen in: each differed from its checkout's HEAD
+    /// when it was recorded, and counts only if it still does once git
+    /// has finished with the checkout (`journal::settle_contest`). At most
+    /// [`journal::CONTEST_WAITING`] per checkout.
+    contest_waiting: HashMap<PathBuf, Vec<Change>>,
     /// Questions somebody is blocked on, by message id: an answer names
     /// one and only the question knows who is waiting for it.
     questions: HashMap<MessageId, agentdocker_core::Question>,
@@ -1854,6 +1860,7 @@ impl Daemon {
                     journal_cursors: HashMap::new(),
                     channels,
                     contested: HashMap::new(),
+                    contest_waiting: HashMap::new(),
                     questions,
                     blocked_defaults: HashSet::new(),
                     held_messages,
