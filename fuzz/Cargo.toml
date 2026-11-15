@@ -39,3 +39,11 @@ path = "fuzz_targets/token_filter.rs"
 test = false
 doc = false
 bench = false
+
+# A workspace of its own, though it has no other member. Cargo looks
+# upward for the workspace a package belongs to. In a checkout nested in
+# another checkout of this repository (a worktree in the project's
+# `.agentdocker/worktrees/`), it would pass the nested root, which
+# excludes this package, and reach the outer checkout's, which does not
+# know it: "current package believes it's in a workspace when it's not".
+[workspace]
