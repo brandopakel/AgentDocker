@@ -1067,6 +1067,143 @@ impl Pending {
     }
 }
 
+/// What a retained provider question is when its controller starts again,
+/// read from the record alone: nothing is stored for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum AtRestart {
+    /// No response was ever written for it, and every question it posted
+    /// has its route. Its Codex request ended with the old provider
+    /// process, so it closes as cancelled, its replies archived.
+    NeverAnswered,
+    /// A response was written, before its send, so it may have reached
+    /// Codex. It is never sent again; the person closes it.
+    ResponseUncertain,
+    /// No response was written, and a question has no route: its
+    /// PostQuestion may have been accepted with the reply lost, so a reply
+    /// to it could not be told from new input. It stays, and keeps the
+    /// session stopped.
+    PublicationUncertain,
+}
+
+impl Pending {
+    pub fn at_restart(&self) -> AtRestart {
+        if self.response.is_some() {
+            // A stored response needs every route (`validate`).
+            AtRestart::ResponseUncertain
+        } else if self.questions.iter().any(|q| q.message.is_none()) {
+            AtRestart::PublicationUncertain
+        } else {
+            AtRestart::NeverAnswered
+        }
+    }
+
+    /// What a person confirms when closing this request: SHA-256 over what
+    /// never changes once its questions are published (the ledger binding,
+    /// the typed request ID, its thread and turn, the human, its kind and
+    /// denial, its expiry, the prepared response, and each question's
+    /// field, text, presentation and route), and over nothing that
+    /// accumulates (answers, closures, later replies) or keeps the books (a
+    /// closed entry's outcome and acknowledgement). So a confirmation made
+    /// before an archival close still names the same request after it.
+    pub fn confirmation(&self, binding: &impl Serialize) -> String {
+        use sha2::{Digest, Sha256};
+        let questions: Vec<_> = self
+            .questions
+            .iter()
+            .map(|q| (&q.field, &q.text, &q.presentation, &q.message))
+            .collect();
+        let identity = (
+            binding,
+            &self.id,
+            &self.thread,
+            &self.turn,
+            &self.human,
+            &self.kind,
+            &self.command_denial,
+            &self.expires_at,
+            &self.response,
+            questions,
+        );
+        format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&identity).expect("a stored request serializes"))
+        )
+    }
+
+    /// The evidence this request keeps, for a person to read before closing
+    /// it: long text is cut for reading with the cut said, never for the
+    /// confirmation.
+    pub fn evidence(&self) -> Vec<String> {
+        fn cut(text: &str, max: usize) -> String {
+            if text.len() <= max {
+                return text.to_owned();
+            }
+            let mut end = max;
+            while !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{}[… {} more bytes]", &text[..end], text.len() - end)
+        }
+        let kind = serde_json::to_string(&self.kind).unwrap_or_default();
+        let mut lines = vec![
+            format!("request {}  kind {}", self.id, kind.trim_matches('"')),
+            format!(
+                "thread {}  turn {}",
+                self.thread,
+                self.turn.as_deref().unwrap_or("(none)")
+            ),
+            format!(
+                "asked of {}; its review window ends {}",
+                self.human, self.expires_at
+            ),
+        ];
+        for question in &self.questions {
+            lines.push(format!(
+                "question {} ({}): {}",
+                question.field,
+                question
+                    .message
+                    .as_ref()
+                    .map_or("no route".to_owned(), |m| format!("route {m}")),
+                cut(&question.text, 600)
+            ));
+            if let Some(presentation) = &question.presentation {
+                lines.push(format!(
+                    "  shown as: {}",
+                    cut(
+                        &serde_json::to_string(presentation).unwrap_or_default(),
+                        600
+                    )
+                ));
+            }
+            if let Some(answer) = &question.answer {
+                lines.push(format!(
+                    "  answered by {} in message {}: {}",
+                    answer.from,
+                    answer.id,
+                    cut(&answer.payload.to_string(), 600)
+                ));
+            }
+        }
+        for reply in &self.extra_answers {
+            lines.push(format!(
+                "later reply from {} in message {}, never applied: {}",
+                reply.from,
+                reply.id,
+                cut(&reply.payload.to_string(), 600)
+            ));
+        }
+        match &self.response {
+            Some(response) => lines.push(format!(
+                "response written (when is not retained): {}",
+                cut(&response.to_string(), 1200)
+            )),
+            None => lines.push("no response was written".to_owned()),
+        }
+        lines
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2254,5 +2391,151 @@ mod tests {
         assert_eq!(response["id"], 7);
         assert!(response.get("result").is_none());
         assert!(response.get("error").is_some());
+    }
+
+    /// A command approval routed to `question`, answered by the human and
+    /// closed by the daemon, with its response written.
+    fn answered_command() -> Pending {
+        let event = json!({"id":17,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned"}});
+        let mut request =
+            Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+        request.questions[0].message = Some("question".to_owned().into());
+        let response = answer("human", "Allow");
+        request
+            .observe(
+                &EventKind::QuestionClosed {
+                    question: "question".to_owned().into(),
+                    answer: Some(response.id.clone()),
+                },
+                "owner",
+            )
+            .unwrap();
+        request
+            .capture(std::slice::from_ref(&response), "owner", false)
+            .unwrap();
+        request.response = request.reply(Utc::now()).unwrap();
+        assert!(request.response.is_some());
+        request
+    }
+
+    #[test]
+    fn a_restart_reads_each_retained_question_from_the_record_alone() {
+        let event = json!({"id":17,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned"}});
+        let unrouted = Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+        assert_eq!(unrouted.at_restart(), AtRestart::PublicationUncertain);
+        let mut routed = unrouted.clone();
+        routed.questions[0].message = Some("question".to_owned().into());
+        assert_eq!(routed.at_restart(), AtRestart::NeverAnswered);
+        // An answer captured, and even its closure seen, writes nothing to
+        // Codex until a response is prepared.
+        let response = answer("human", "Allow");
+        routed
+            .capture(std::slice::from_ref(&response), "owner", false)
+            .unwrap();
+        routed
+            .observe(
+                &EventKind::QuestionClosed {
+                    question: "question".to_owned().into(),
+                    answer: Some(response.id.clone()),
+                },
+                "owner",
+            )
+            .unwrap();
+        assert_eq!(routed.at_restart(), AtRestart::NeverAnswered);
+        assert_eq!(
+            answered_command().at_restart(),
+            AtRestart::ResponseUncertain
+        );
+
+        // A request of several questions is uncertain as a whole while one
+        // of them has no route.
+        let event = json!({"id":"ask","method":"item/tool/requestUserInput","params":{"threadId":"thread","turnId":"turn","questions":[{"id":"first","question":"Choose?"},{"id":"second","question":"Provide a value?"}]}});
+        let mut partial =
+            Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+        partial.questions[0].message = Some("first-route".to_owned().into());
+        assert_eq!(partial.at_restart(), AtRestart::PublicationUncertain);
+        partial.questions[1].message = Some("second-route".to_owned().into());
+        assert_eq!(partial.at_restart(), AtRestart::NeverAnswered);
+    }
+
+    #[test]
+    fn a_confirmation_names_what_was_reviewed_and_nothing_that_accumulates() {
+        let binding = json!({"agent":"owner","cwd":"/owned"});
+        let request = answered_command();
+        let confirmation = request.confirmation(&binding);
+        assert_eq!(confirmation.len(), 64);
+
+        // A later reply, a closure seen later, and the answer itself are
+        // what an archival close and its retries change: none of them moves
+        // the confirmation.
+        let mut later = request.clone();
+        let late = Envelope::new(
+            "human",
+            Destination::Agent("owner".into()),
+            "chat",
+            json!({"text":"also this"}),
+            Some("question".to_owned().into()),
+            Utc::now(),
+        );
+        assert!(
+            later
+                .capture(std::slice::from_ref(&late), "owner", true)
+                .unwrap()
+        );
+        assert_eq!(later.extra_answers.len(), 1);
+        later.questions[0].closure = Closure::Cancelled;
+        later.questions[0].answer = None;
+        assert_eq!(later.confirmation(&binding), confirmation);
+
+        // What the person read does.
+        let mut other = request.clone();
+        other.questions[0].message = Some("another-question".to_owned().into());
+        assert_ne!(other.confirmation(&binding), confirmation);
+        let mut other = request.clone();
+        other.response = Some(json!({"id":17,"result":{"decision":"decline"}}));
+        assert_ne!(other.confirmation(&binding), confirmation);
+        let mut other = request.clone();
+        other.id = json!("17");
+        assert_ne!(other.confirmation(&binding), confirmation);
+        let mut other = request.clone();
+        other.questions[0].text.push_str(" again");
+        assert_ne!(other.confirmation(&binding), confirmation);
+        assert_ne!(
+            request.confirmation(&json!({"agent":"owner","cwd":"/elsewhere"})),
+            confirmation
+        );
+    }
+
+    #[test]
+    fn evidence_says_what_was_written_and_marks_every_cut() {
+        let mut request = answered_command();
+        request.questions[0].text = "é".repeat(400);
+        let evidence = request.evidence();
+        assert_eq!(evidence[0], "request 17  kind command");
+        assert_eq!(evidence[1], "thread thread  turn turn");
+        let question = evidence
+            .iter()
+            .find(|line| line.starts_with("question "))
+            .unwrap();
+        assert!(question.contains("(route question)"), "{question}");
+        assert!(question.ends_with("[… 200 more bytes]"), "{question}");
+        assert!(
+            evidence
+                .iter()
+                .any(|line| line.starts_with("  answered by human in message ")),
+            "{evidence:?}"
+        );
+        assert!(
+            evidence
+                .last()
+                .unwrap()
+                .starts_with("response written (when is not retained): "),
+            "{evidence:?}"
+        );
+        request.response = None;
+        request.questions[0].message = None;
+        let evidence = request.evidence();
+        assert!(evidence.iter().any(|line| line.contains("(no route)")));
+        assert_eq!(evidence.last().unwrap(), "no response was written");
     }
 }

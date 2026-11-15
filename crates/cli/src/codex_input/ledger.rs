@@ -300,6 +300,163 @@ mod tests {
         assert_eq!(ledger.record().thread.as_deref(), Some("thread"));
     }
 
+    /// An idle MCP question on `idle-thread`, closed before any input.
+    fn idle_question(ledger: &mut Ledger, route: &str, acknowledged: bool) {
+        use crate::codex_input::review::{Closed, Outcome, Pending};
+        let event = serde_json::json!({"id":"form-callback","method":"mcpServer/elicitation/request","params":{
+            "threadId":"idle-thread","serverName":"fixture","mode":"form","message":"Choose a count.",
+            "requestedSchema":{"type":"object","required":["count"],"properties":{"count":{"type":"integer","minimum":1,"maximum":3}}}
+        }});
+        let mut request =
+            Pending::plan(&event, "idle-thread", None, "human", chrono::Utc::now()).unwrap();
+        request.questions[0].message = Some(route.to_owned().into());
+        ledger
+            .update_reviews(|_, closed| {
+                closed.push_back(Closed {
+                    request,
+                    outcome: Outcome::Cancelled,
+                    acknowledged,
+                });
+                Ok(true)
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn an_unused_conversation_lets_go_of_its_closed_questions_and_keeps_their_routes() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("idle-thread".into()).unwrap();
+        idle_question(&mut ledger, "idle-question", true);
+        assert!(!ledger.record().conversation_used());
+        ledger.discard_unused_thread().unwrap();
+        assert!(ledger.record().thread.is_none());
+        assert!(ledger.record().closed_reviews.is_empty());
+        assert_eq!(
+            ledger
+                .record()
+                .retired_questions
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>(),
+            ["idle-question"]
+        );
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("new-thread".into()).unwrap();
+        drop(ledger);
+        let mut ledger = Ledger::open(home.path(), binding).unwrap();
+        assert_eq!(ledger.record().thread.as_deref(), Some("new-thread"));
+        let late = Envelope::new(
+            "human",
+            Destination::parse("owned-agent"),
+            "answer",
+            serde_json::json!({"text":"2"}),
+            Some("idle-question".to_owned().into()),
+            chrono::Utc::now(),
+        );
+        let error = ledger.prepare(&late).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("retired provider question"),
+            "{error}"
+        );
+        assert!(ledger.record().attempt.is_none());
+        ledger.prepare(&message()).unwrap();
+        assert!(ledger.record().conversation_used());
+    }
+
+    #[test]
+    fn an_unused_conversation_with_open_or_unacknowledged_questions_is_kept() {
+        let home = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(home.path(), binding(home.path())).unwrap();
+        ledger.bind_thread("idle-thread".into()).unwrap();
+        idle_question(&mut ledger, "idle-question", false);
+        let before = std::fs::read(ledger.file.path()).unwrap();
+        let error = ledger.discard_unused_thread().unwrap_err();
+        assert!(format!("{error:#}").contains("unacknowledged"), "{error}");
+        assert_eq!(std::fs::read(ledger.file.path()).unwrap(), before);
+        assert_eq!(ledger.record().thread.as_deref(), Some("idle-thread"));
+
+        let home = tempfile::tempdir().unwrap();
+        let mut ledger = Ledger::open(home.path(), binding(home.path())).unwrap();
+        ledger.bind_thread("idle-thread".into()).unwrap();
+        idle_question(&mut ledger, "idle-question", true);
+        ledger
+            .update_reviews(|reviews, closed| {
+                let mut open = closed[0].request.clone();
+                open.id = serde_json::json!("open-callback");
+                open.questions[0].message = Some("open-question".to_owned().into());
+                reviews.push(open);
+                Ok(true)
+            })
+            .unwrap();
+        let before = std::fs::read(ledger.file.path()).unwrap();
+        let error = ledger.discard_unused_thread().unwrap_err();
+        assert!(
+            format!("{error:#}").contains("open provider question"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(ledger.file.path()).unwrap(), before);
+    }
+
+    #[test]
+    fn a_full_route_history_keeps_an_unused_conversation_unchanged() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("idle-thread".into()).unwrap();
+        idle_question(&mut ledger, "idle-question", true);
+        let path = ledger.file.path().to_path_buf();
+        drop(ledger);
+        let mut full: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        full["retired_questions"] = (0..MAX_RETIRED_QUESTIONS)
+            .map(|n| serde_json::json!(format!("retired-{n}")))
+            .collect();
+        std::fs::write(&path, serde_json::to_vec(&full).unwrap()).unwrap();
+        let mut ledger = Ledger::open(home.path(), binding).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let error = ledger.discard_unused_thread().unwrap_err();
+        assert!(
+            format!("{error:#}").contains("route history is full"),
+            "{error}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(ledger.record().thread.as_deref(), Some("idle-thread"));
+        assert_eq!(ledger.record().closed_reviews.len(), 1);
+    }
+
+    #[test]
+    fn only_an_existing_record_of_the_same_binding_and_no_running_owner_is_opened() {
+        let home = tempfile::tempdir().unwrap();
+        let binding = binding(home.path());
+        let error = Ledger::open_existing(home.path(), binding.clone())
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("no managed Codex delivery record"));
+        assert!(!home.path().join("codex-input").exists());
+        let mut ledger = Ledger::open(home.path(), binding.clone()).unwrap();
+        ledger.bind_thread("thread".into()).unwrap();
+        let error = Ledger::open_existing(home.path(), binding.clone())
+            .err()
+            .unwrap();
+        assert!(format!("{error:#}").contains("already owns"), "{error}");
+        drop(ledger);
+        let elsewhere = tempfile::tempdir().unwrap();
+        let other = Binding {
+            cwd: elsewhere.path().into(),
+            ..binding.clone()
+        };
+        let error = Ledger::open_existing(home.path(), other).err().unwrap();
+        assert!(
+            format!("{error:#}").contains("another agent, workspace"),
+            "{error}"
+        );
+        let ledger = Ledger::open_existing(home.path(), binding).unwrap();
+        assert_eq!(ledger.record().thread.as_deref(), Some("thread"));
+    }
+
     #[test]
     fn completed_receipts_remain_bounded_and_conflicting_receipts_do_not_advance_state() {
         let home = tempfile::tempdir().unwrap();
@@ -1061,6 +1218,13 @@ fn valid_id(id: &str) -> bool {
 }
 
 impl Record {
+    /// Whether the conversation has been used: input was prepared or
+    /// accepted on it, so Codex keeps a rollout of it to resume. The one
+    /// answer to that question, for resuming and for discarding alike.
+    pub fn conversation_used(&self) -> bool {
+        self.attempt.is_some() || !self.completed.is_empty()
+    }
+
     fn validate(&self, binding: &Binding) -> Result<()> {
         ensure!(
             self.version >= 15 || self.secret_review.is_none(),
@@ -1557,23 +1721,94 @@ impl Ledger {
         self.save(next)
     }
 
+    /// Let go of a conversation that was never used, so a new one can be
+    /// started: Codex keeps no rollout of a thread with no input, so its
+    /// handle cannot be resumed. Questions it asked and that are closed and
+    /// acknowledged keep only their routes, as tombstones, so a late reply
+    /// to one stays queued and never becomes input; their detail goes with
+    /// the handle, in the one save that clears it.
     pub fn discard_unused_thread(&mut self) -> Result<()> {
         ensure!(
-            self.record.attempt.is_none()
-                && self.record.completed.is_empty()
-                && self.record.reviews.is_empty()
-                && self.record.secret_review.is_none()
-                && self.record.closed_reviews.is_empty()
-                && self.record.mcp_answers.is_empty()
-                && self.record.retired_questions.is_empty(),
+            !self.record.conversation_used(),
             "a conversation with prepared or accepted input cannot be discarded"
         );
-        if self.record.thread.is_some() {
-            let mut next = self.record.clone();
-            next.thread = None;
-            self.save(next)?;
+        ensure!(
+            self.record.reviews.is_empty() && self.record.secret_review.is_none(),
+            "a conversation with an open provider question cannot be discarded"
+        );
+        if self.record.thread.is_none()
+            && self.record.closed_reviews.is_empty()
+            && self.record.mcp_answers.is_empty()
+        {
+            return Ok(());
         }
-        Ok(())
+        let mut next = self.record.clone();
+        let mut routes = Vec::new();
+        for closed in &next.closed_reviews {
+            ensure!(
+                closed.acknowledged,
+                "a closed provider question's answers are still unacknowledged"
+            );
+            routes.extend(
+                closed
+                    .request
+                    .questions
+                    .iter()
+                    .filter_map(|q| q.message.clone()),
+            );
+        }
+        for answer in &next.mcp_answers {
+            ensure!(
+                answer.acknowledged,
+                "an MCP answer receipt is still unacknowledged"
+            );
+            ensure!(
+                answer
+                    .answer
+                    .reply_to
+                    .as_ref()
+                    .is_some_and(|id| next.retired_questions.contains(id)),
+                "MCP answer has no retained question route"
+            );
+        }
+        for route in routes {
+            if !next.retired_questions.contains(&route) {
+                next.retired_questions.push(route);
+            }
+        }
+        next.closed_reviews.clear();
+        next.mcp_answers.clear();
+        next.thread = None;
+        self.save(next)
+    }
+
+    /// Open the delivery record an agent's managed controller left here,
+    /// never a new one: refused when there is none, when it belongs to
+    /// another checkout, profile or socket, and while a controller holds it.
+    pub fn open_existing(home: &Path, binding: Binding) -> Result<Self> {
+        ensure!(
+            !binding.agent.is_empty()
+                && binding.agent.len() <= 128
+                && binding
+                    .agent
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'),
+            "invalid agent ID for Codex input ownership"
+        );
+        let record = home
+            .join("codex-input")
+            .join(&binding.agent)
+            .join("delivery.json");
+        ensure!(
+            std::fs::symlink_metadata(&record).is_ok_and(|meta| meta.is_file()),
+            "this agent has no managed Codex delivery record here"
+        );
+        Self::open(home, binding)
+    }
+
+    #[cfg(test)]
+    pub fn file_path(&self) -> &Path {
+        self.file.path()
     }
 
     #[cfg(test)]

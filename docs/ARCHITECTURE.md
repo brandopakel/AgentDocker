@@ -127,6 +127,23 @@ There is no automatic start based on elapsed
 time, public idle status or historical interruption.
 The prior native receipt is left unchanged. See [recovery](CODEX-INPUT.md#retained-hook-recovery).
 
+A provider question a managed Codex controller left open when it stopped is
+settled at its next start from its delivery record alone, with no daemon change
+and no new ledger version. One never answered, with every route known, closes
+as cancelled: its known routes are cancelled, the queue is read once, and in one
+save the closed question keeps every reply it owns as unapplied before those
+exact IDs are acknowledged. A written response, which may have reached Codex, is
+never sent again, and a question whose publication reply was lost, which leaves
+the daemon possibly holding a route the record never learned, is never closed or
+bound on a guess: both keep the start refused. Explicit `codex-input-resolve`
+closes a written response on the person's confirmation, receiver-local like
+`codex-queue-resolve`: it opens only an existing record of the controller's own
+binding, under its owner lock, checks a SHA-256 over what cannot change once the
+questions are published, records the intent with `journal_add` and requires its
+`journal_entry` before the archival close as cancelled, response kept, then the
+`provider_inbox` ACK. A retry with the same confirmation finishes only the ACK.
+See [a question open when its controller stopped](CODEX-INPUT.md#a-question-open-when-its-controller-stopped).
+
 Codex child hooks share the parent's session ID. The hook adapter therefore
 ignores child-scoped activity and input before contacting coordination. The
 exceptions are `SubagentStart` and `SubagentStop`, which name the subagent
