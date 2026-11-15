@@ -1817,7 +1817,7 @@ mod tests {
         rehash(layout, release)
     }
 
-    fn rehash(layout: &Layout, mut release: Release) -> Release {
+    pub(super) fn rehash(layout: &Layout, mut release: Release) -> Release {
         let old = layout.root.join("versions").join(&release.id);
         release.id = tree_hash(&layout.payload(&release)).unwrap();
         release.tree_sha256 = release.id.clone();

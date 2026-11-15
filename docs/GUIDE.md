@@ -81,7 +81,14 @@ supplies none (`kept`), an older form that follows the active release by itself
 whether the commands in `.local/bin` are all there (`complete`, `partial` with
 `missing_links`, or `none`). `foreign` lists what is in the installer's places
 and is not its own, which it never replaces or removes, and `way_out` says what
-to do about each thing that is wrong. The same words end the refusal of an
+to do about each thing that is wrong. Each command it names is written for the
+installation that was read: for any but your home's it carries that `--prefix`,
+quoted for a shell, since a command without one acts on the home's. The advice
+follows the release that is active: one that supplies its own application has
+it published again by installing the same package again; an older one that
+supplies none, and runs under the application a later release left, is told to
+install a current package, since installing its own again is refused while no
+application can run it. The same words end the refusal of an
 install, a rollback, an uninstall or a prune that finds such a thing in its way.
 It only reads: it cannot tell an uninstall from a first install that stopped
 before it made anything outside its own folder, since nothing on disk records
