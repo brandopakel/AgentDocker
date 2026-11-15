@@ -3735,9 +3735,10 @@ mod tests {
     /// capture's deadline ends it. The outage is counted at a short
     /// deadline, whether or not a stand-in started in time to reach its
     /// gate; that the deadline ends and reaps one is checked apart, on a
-    /// pass the test sees reach its gate, given the suite's bound to start
-    /// in. The agent's process and the stranger's are the test's own,
-    /// ended with it however it ends.
+    /// pass whose stand-in is seen to have reached its gate, the deadline
+    /// doubled from half a second up to the suite's bound until one is.
+    /// The agent's process and the stranger's are the test's own, ended
+    /// with it however it ends.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_unreadable_tmux_pane_clears_its_judgment() {
@@ -3845,22 +3846,32 @@ mod tests {
         for pid in gated() {
             assert!(!agentdocker_host::procinfo::alive(pid), "{pid} reaped");
         }
-        // And one seen to reach its gate is ended by the deadline alone.
-        // Given the suite's bound to start in, as an answering stand-in
-        // is, the pass runs while the test watches for it at the gate;
-        // nothing opens the gate, so the deadline is what ends it.
-        let before = gated().len();
-        bound(TMUX_BOUND);
-        let pass = tokio::spawn({
-            let daemon = daemon.clone();
-            async move { daemon.judge_once().await }
-        });
-        let at_gate = eventually(async || gated().get(before).copied()).await;
-        pass.await.unwrap();
+        // And one seen to reach its gate is ended by the deadline alone. A
+        // pass whose stand-in wrote its pid had it at the gate before the
+        // deadline; nothing opens the gate, so the deadline is what ended
+        // it. A pass whose stand-in had not started by then proves
+        // nothing, and is run again with twice the deadline, up to the
+        // suite's bound to start in: half a second on a machine at rest,
+        // never a race on a loaded one.
+        let mut deadline = StdDuration::from_millis(500);
+        let at_gate = loop {
+            let before = gated().len();
+            bound(deadline);
+            daemon.judge_once().await;
+            if let Some(pid) = gated().get(before).copied() {
+                break pid;
+            }
+            assert!(
+                deadline < TMUX_BOUND,
+                "no stand-in reached its gate within {TMUX_BOUND:?}"
+            );
+            deadline = (deadline * 2).min(TMUX_BOUND);
+        };
         assert!(
             !agentdocker_host::procinfo::alive(at_gate),
             "{at_gate} ended at the deadline and reaped"
         );
+        bound(TMUX_BOUND);
 
         for (how, calls_before) in [("gone", 2), ("replaced", 3)] {
             set("ok");
