@@ -2951,10 +2951,18 @@ async fn run() -> Result<()> {
             if let Response::Pong {
                 version,
                 uptime_secs,
+                authority,
                 ..
             } = client.call(&Request::Ping).await?
             {
-                println!("agentd {version} up {}", format::span_secs(uptime_secs));
+                let fenced = authority
+                    .filter(|a| *a != agentdocker_core::protocol::DaemonAuthority::Serving)
+                    .map(|a| format!("; {}", service::authority_text(a)))
+                    .unwrap_or_default();
+                println!(
+                    "agentd {version} up {}{fenced}",
+                    format::span_secs(uptime_secs)
+                );
             }
         }
         Command::Provider(args) => provider_status::run(&client, args).await?,

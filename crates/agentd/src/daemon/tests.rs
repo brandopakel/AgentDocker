@@ -66,6 +66,86 @@ async fn ping_reports_the_experimental_switches_the_daemon_applies() {
     );
 }
 
+/// The word `ping` says is read from memory alone: a latched storage
+/// failure first, as every request meets it, then the coordination state.
+#[test]
+fn the_authority_is_read_from_storage_then_coordination() {
+    use agentdocker_core::protocol::DaemonAuthority;
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let mut state = lock(&daemon.state);
+    let states = [
+        (Coordination::Serving, DaemonAuthority::Serving),
+        (
+            Coordination::Quiescing {
+                transfer: "t".into(),
+                offered: true,
+            },
+            DaemonAuthority::Offering,
+        ),
+        (
+            Coordination::Quiescing {
+                transfer: "t".into(),
+                offered: false,
+            },
+            DaemonAuthority::Candidate,
+        ),
+        (
+            Coordination::Transferred {
+                transfer: "t".into(),
+            },
+            DaemonAuthority::Transferred,
+        ),
+    ];
+    for (coordination, word) in states {
+        state.coordination = coordination;
+        state.storage_error = None;
+        assert_eq!(state.authority(), word);
+        state.storage_error = Some("fixture".into());
+        assert_eq!(state.authority(), DaemonAuthority::StorageFailed);
+    }
+}
+
+/// A storage failure is never a `pong`: `ping` is refused as every
+/// request is, and its refusal alone names the failure, the process and
+/// the version. A failure latched after `handle`'s own check is met by
+/// the builder's, in the same hold as the word it would have said.
+#[tokio::test]
+async fn ping_alone_names_a_storage_failure_and_never_in_a_pong() {
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    lock(&daemon.state).storage_error = Some("fixture write: disk gone".into());
+    let message =
+        "storage failed (fixture write: disk gone); coordination disabled until daemon restart";
+    for answer in [daemon.ping(), daemon.handle(Request::Ping).await] {
+        let Response::Error {
+            code: ErrorCode::StorageUnavailable,
+            message: said,
+            details: Some(details),
+        } = answer
+        else {
+            panic!("{answer:?}");
+        };
+        assert_eq!(said, message);
+        assert_eq!(
+            details,
+            json!({
+                "authority": "storage_failed",
+                "pid": std::process::id(),
+                "version": env!("CARGO_PKG_VERSION"),
+            })
+        );
+    }
+    assert_eq!(
+        daemon.handle(Request::Waiting).await,
+        Response::Error {
+            code: ErrorCode::StorageUnavailable,
+            message: message.into(),
+            details: None,
+        }
+    );
+}
+
 /// A spec that says where it is working.
 ///
 /// Identity compares the physical checkout and will not match two

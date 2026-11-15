@@ -102,6 +102,31 @@ pub const FEATURES: &[&str] = &[
     FEATURE_PLAN_REVISION,
 ];
 
+/// Whether a daemon may write coordination state, as its `pong` says.
+/// Derived from the daemon's memory at the moment it answers; nothing
+/// about it is stored.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonAuthority {
+    /// It writes coordination state.
+    Serving,
+    /// It offered coordination to a successor: every write answers
+    /// `transferring` until the offer is settled.
+    Offering,
+    /// It opened while another daemon's offer was open: every write
+    /// answers `transferring` until that offer is settled.
+    Candidate,
+    /// Coordination was handed off; this process stays fenced.
+    Transferred,
+    /// Its storage failed, and nothing is served until it restarts. Never
+    /// in a `pong`: `ping` is refused then, and only the details of that
+    /// refusal name it.
+    StorageFailed,
+    /// A word from a daemon newer than this client.
+    #[serde(other)]
+    Unknown,
+}
+
 /// What a client says when the daemon it reached does not hold a plan's
 /// edit to its revision: said in one wording by the command, the tool and
 /// the app, before anything is sent.
@@ -2166,6 +2191,10 @@ pub enum Response {
         /// the list.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         features: Vec<String>,
+        /// This daemon's authority over coordination state. Absent from a
+        /// daemon older than the word.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        authority: Option<DaemonAuthority>,
     },
     DaemonProcess {
         pid: u32,
@@ -2637,6 +2666,50 @@ fn default_human() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pong_says_its_authority_and_tolerates_none_or_a_newer_word() {
+        for (authority, word) in [
+            (DaemonAuthority::Serving, "serving"),
+            (DaemonAuthority::Offering, "offering"),
+            (DaemonAuthority::Candidate, "candidate"),
+            (DaemonAuthority::Transferred, "transferred"),
+            (DaemonAuthority::StorageFailed, "storage_failed"),
+        ] {
+            assert_eq!(serde_json::to_value(authority).unwrap(), word);
+            assert_eq!(
+                serde_json::from_value::<DaemonAuthority>(serde_json::json!(word)).unwrap(),
+                authority
+            );
+        }
+        let pong = |extra: &str| {
+            serde_json::from_str::<Response>(&format!(
+                r#"{{"type":"pong","version":"1","uptime_secs":2{extra}}}"#
+            ))
+            .unwrap()
+        };
+        assert!(matches!(
+            pong(""),
+            Response::Pong {
+                authority: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            pong(r#","authority":"candidate""#),
+            Response::Pong {
+                authority: Some(DaemonAuthority::Candidate),
+                ..
+            }
+        ));
+        assert!(matches!(
+            pong(r#","authority":"a_later_word""#),
+            Response::Pong {
+                authority: Some(DaemonAuthority::Unknown),
+                ..
+            }
+        ));
+    }
 
     /// `worktree_create` names a path only when the caller wants one: a
     /// request without it reads, and one made without it sends none, so
