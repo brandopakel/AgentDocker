@@ -1087,9 +1087,11 @@ says so and is marked as one to look at, not as done; when it refused, the
 stage says the service keeps the earlier release until it is restarted; with no
 service running it reads *next launch*. Installing a release that is already
 active asks the service nothing, so the stage is done there only when the
-service answering runs from that release's own files; when another release's
-service answers, as after a reload that was refused, it says that service runs
-until it is restarted. Running versions and agents remain protected by
+service answering runs from that release's own files in the installation's
+version store; when another release's service answers, as after a reload that
+was refused, it says that service runs until it is restarted; and when a
+service answers without its release being known, the stage is marked as one to
+look at and points to `agentdocker daemon status`. Running versions and agents remain protected by
 the existing installer rules. Public macOS downloads require Developer ID signing
 and notarization; locally signed builds are explicit previews.
 

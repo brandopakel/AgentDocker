@@ -230,28 +230,52 @@ pub fn handover(report: &Value) -> Option<Handover> {
     report["daemon"]["outcome"].as_str()?.parse().ok()
 }
 
-/// Whether the daemon the report saw serving is the installed release's
-/// own: `Some(true)` when its executable is under that release's folder
-/// in the version store, `Some(false)` when a daemon answers from
-/// anywhere else, `None` when none answers. The daemon says which
-/// executable it runs, and a release's files are kept under its id, so
-/// this is the report's own evidence of what serves, apart from what the
-/// installer asked for.
-pub fn serves_candidate(report: &Value) -> Option<bool> {
-    let executable = report["daemon"]["serving"]["executable"].as_str()?;
-    let Some(release) = report["candidate"]["id"].as_str() else {
-        return Some(false);
+/// Which release the daemon a report saw serving runs, as far as the
+/// report itself can say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Serving {
+    /// No daemon answered.
+    Nobody,
+    /// A daemon answers from the installed release's own folder in the
+    /// version store.
+    This,
+    /// A daemon answers from another release's folder in that store.
+    Another,
+    /// A daemon answers and the report cannot say which release it runs:
+    /// it named no executable, the executable is not in the store the
+    /// report names, or the report names no store or release to compare
+    /// with. Not an absence, and not proof of another release.
+    Unknown,
+}
+
+/// Which release the serving daemon runs. The daemon says which
+/// executable it runs (`daemon.serving.executable`, which it may not
+/// know), and the installer says where the version store is (`versions`)
+/// and which release it installed (`candidate.id`): a release's files are
+/// kept under its id in that store, so the executable is the release's
+/// own exactly when it is under that folder of that store. The store is
+/// the one the report names, not any folder called `versions` on the way
+/// there: a prefix may itself be under one.
+pub fn serving(report: &Value) -> Serving {
+    let daemon = &report["daemon"]["serving"];
+    if daemon.is_null() {
+        return Serving::Nobody;
+    }
+    let (Some(executable), Some(store), Some(release)) = (
+        daemon["executable"].as_str(),
+        report["versions"].as_str(),
+        report["candidate"]["id"].as_str(),
+    ) else {
+        return Serving::Unknown;
     };
-    let parts: Vec<_> = std::path::Path::new(executable)
-        .components()
-        .map(|part| part.as_os_str())
-        .collect();
-    Some(
-        !release.is_empty()
-            && parts
-                .windows(2)
-                .any(|pair| pair[0] == "versions" && pair[1] == release),
-    )
+    let Ok(within) = std::path::Path::new(executable).strip_prefix(store) else {
+        return Serving::Unknown;
+    };
+    match within.components().next() {
+        Some(first) if !release.is_empty() && first.as_os_str() == release => Serving::This,
+        Some(_) => Serving::Another,
+        None => Serving::Unknown,
+    }
 }
 
 /// What an apply has to pin: the package that was checked and the
@@ -591,44 +615,71 @@ mod tests {
         assert_eq!(handover(&json!({"preview": true})), None);
     }
 
-    /// Whether the daemon a report saw serving is the installed
-    /// release's own is read from the two things the report says: the
-    /// executable the daemon answered with, and the release's id, under
-    /// which the version store keeps its files.
+    /// Which release the serving daemon runs is read from what the
+    /// report says: the executable the daemon answered with, against the
+    /// version store and the release the installer names. Four answers,
+    /// and none of them is taken for another.
     #[test]
-    fn the_serving_daemon_is_the_releases_own_when_it_runs_from_its_folder() {
-        let report = |executable: Option<&str>| {
-            json!({"candidate": {"id": "bbbb"}, "daemon": {"serving": executable
-                .map(|executable| json!({"version": "1", "pid": 7, "executable": executable}))}})
-        };
+    fn which_release_serves_is_read_against_the_reports_own_store_and_release() {
         let store = "/home/.local/share/agentdocker/desktop/versions";
+        let report = |store: &str, serving: Value| json!({"versions": store, "candidate": {"id": "bbbb"}, "daemon": {"serving": serving}});
+        let daemon = |executable: &str| json!({"version": "1", "pid": 7, "executable": executable});
+        let at = |executable: &str| serving(&report(store, daemon(executable)));
         assert_eq!(
-            serves_candidate(&report(Some(&format!("{store}/bbbb/payload/bin/agentd")))),
-            Some(true)
+            at(&format!("{store}/bbbb/payload/bin/agentd")),
+            Serving::This
         );
-        // Another release's daemon, one from outside the store, and one
-        // whose path only mentions the id.
-        for elsewhere in [
-            format!("{store}/aaaa/payload/bin/agentd"),
-            "/work/target/debug/agentd".to_owned(),
-            "/versions/other/bbbb/agentd".to_owned(),
-            format!("{store}/bbbb-old/agentd"),
-        ] {
-            assert_eq!(
-                serves_candidate(&report(Some(&elsewhere))),
-                Some(false),
-                "{elsewhere}"
-            );
-        }
-        assert_eq!(serves_candidate(&report(None)), None, "no daemon answers");
-        assert_eq!(serves_candidate(&json!({"preview": true})), None);
-        // A report that names no release cannot say the daemon is its own.
         assert_eq!(
-            serves_candidate(
-                &json!({"daemon": {"serving": {"executable": format!("{store}/bbbb/agentd")}}})
-            ),
-            Some(false)
+            at(&format!("{store}/aaaa/payload/bin/agentd")),
+            Serving::Another
         );
+        assert_eq!(at(&format!("{store}/bbbb-old/agentd")), Serving::Another);
+        // Outside the store the report names, its release is not known:
+        // a build in a checkout, or a path that merely mentions the id.
+        assert_eq!(at("/work/target/debug/agentd"), Serving::Unknown);
+        assert_eq!(at("/elsewhere/versions/bbbb/agentd"), Serving::Unknown);
+
+        // A prefix that is itself under a folder called `versions/<this
+        // release>`: the store is still the one the report names, and the
+        // daemon of the release before, in that store, is another's.
+        let nested = "/tmp/versions/bbbb/.local/share/agentdocker/desktop/versions";
+        let under = |release: &str| {
+            serving(&report(
+                nested,
+                daemon(&format!(
+                    "{nested}/{release}/agentdocker-desktop/bin/agentd"
+                )),
+            ))
+        };
+        assert_eq!(
+            under("aaaa"),
+            Serving::Another,
+            "the earlier release serves"
+        );
+        assert_eq!(under("bbbb"), Serving::This);
+
+        // Nobody answers, which is not the same as a daemon that answers
+        // and does not say what it runs.
+        assert_eq!(serving(&report(store, Value::Null)), Serving::Nobody);
+        assert_eq!(serving(&json!({"preview": true})), Serving::Nobody);
+        assert_eq!(
+            serving(&report(
+                store,
+                json!({"version": "1", "pid": 7, "executable": null})
+            )),
+            Serving::Unknown
+        );
+        assert_eq!(
+            serving(&report(store, json!({"version": "1", "pid": 7}))),
+            Serving::Unknown
+        );
+        // A report that names no store, or no release, cannot say either.
+        let unanchored = json!({"candidate": {"id": "bbbb"},
+            "daemon": {"serving": daemon(&format!("{store}/bbbb/agentd"))}});
+        assert_eq!(serving(&unanchored), Serving::Unknown);
+        let unnamed = json!({"versions": store,
+            "daemon": {"serving": daemon(&format!("{store}/bbbb/agentd"))}});
+        assert_eq!(serving(&unnamed), Serving::Unknown);
     }
 
     #[test]
