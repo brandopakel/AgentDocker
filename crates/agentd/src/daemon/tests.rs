@@ -12182,13 +12182,18 @@ async fn a_second_checkout_touching_a_path_opens_a_channel_by_itself() {
 
 /// Work that git brings into a checkout is not that checkout's change. A
 /// pull, a merge or a branch switch writes every file of it, and each
-/// then equals the checkout's HEAD. So merging a branch into the main
-/// checkout while its author's worktree is still there opens no room
-/// between the two, though the ledger has both checkouts changing those
-/// paths; an edit neither has committed, of one path in both, still
-/// opens one.
+/// equals the checkout's HEAD once git is done. So merging a branch into
+/// the main checkout while its author's worktree is still there opens no
+/// room between the two, though the ledger has both checkouts changing
+/// those paths. Not in the middle of the merge either, when the files
+/// git has already written differ from a HEAD it has not yet moved: the
+/// merge here is held after its first file, the watcher records that
+/// file, and the change waits until git has finished. An edit neither
+/// has committed, of one path in both, still opens a room.
+#[cfg(unix)]
 #[tokio::test]
 async fn work_git_brings_into_a_checkout_opens_no_room_with_its_author() {
+    use std::os::unix::fs::PermissionsExt;
     if !have_git() {
         return;
     }
@@ -12197,7 +12202,31 @@ async fn work_git_brings_into_a_checkout_opens_no_room_with_its_author() {
     std::fs::create_dir_all(repo.join("src")).unwrap();
     std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
     std::fs::write(repo.join("src/b.rs"), "b\n").unwrap();
+    // Checking out `src/b.rs` waits for as long as the flag file is there:
+    // what holds a merge after it has written `src/a.rs`.
+    let flag = dir.path().join("hold");
+    let hold = dir.path().join("hold.sh");
+    std::fs::write(
+        &hold,
+        format!(
+            "#!/bin/sh\ncat\nwhile [ -e '{}' ]; do sleep 0.05; done\n",
+            flag.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&hold, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(repo.join(".gitattributes"), "src/b.rs filter=hold\n").unwrap();
     assert!(git(dir.path(), &repo, &["init", "-q"]));
+    assert!(git(
+        dir.path(),
+        &repo,
+        &["config", "filter.hold.clean", "cat"]
+    ));
+    assert!(git(
+        dir.path(),
+        &repo,
+        &["config", "filter.hold.smudge", hold.to_str().unwrap()]
+    ));
     assert!(git(dir.path(), &repo, &["add", "."]));
     assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
     let daemon = open(&dir);
@@ -12207,7 +12236,8 @@ async fn work_git_brings_into_a_checkout_opens_no_room_with_its_author() {
         std::time::Duration::from_secs(60),
         std::time::Duration::from_millis(50),
     ));
-    register_in(&daemon, "home", &repo).await;
+    let home = register_in(&daemon, "home", &repo).await;
+    let project = home.project.as_ref().unwrap().id();
     let Response::Worktree { path: side, .. } = daemon
         .handle(Request::WorktreeCreate {
             agent: "home".into(),
@@ -12244,24 +12274,73 @@ async fn work_git_brings_into_a_checkout_opens_no_room_with_its_author() {
         })
         .await
     };
+    // Whether a change in `checkout` still waits for git to finish there.
+    let waits = |checkout: &Path| lock(&daemon.state).contest_waiting.contains_key(checkout);
+    let judged = async |checkout: &Path| {
+        eventually(async || (!waits(checkout)).then_some(())).await;
+    };
 
-    // The author's work: an edit in its own worktree, then a commit.
+    // The author's work: edits in its own worktree, counted as its own
+    // once git is seen to be idle there, and then committed.
     std::fs::write(side.join("src/a.rs"), "a from the author\n").unwrap();
+    std::fs::write(side.join("src/b.rs"), "b from the author\n").unwrap();
     recorded(&side, "src/a.rs").await;
+    recorded(&side, "src/b.rs").await;
+    eventually(async || {
+        let state = lock(&daemon.state);
+        ["src/a.rs", "src/b.rs"]
+            .iter()
+            .all(|path| {
+                state
+                    .contested
+                    .get(&(project.clone(), PathBuf::from(path)))
+                    .is_some_and(|checkouts| checkouts.contains(&side))
+            })
+            .then_some(())
+    })
+    .await;
     assert!(git(dir.path(), &side, &["add", "."]));
     assert!(git(
         dir.path(),
         &side,
         &["commit", "-q", "-m", "the author's work"]
     ));
-    // Brought into the main checkout by git. The ledger has the row, and
-    // the room a row opens is opened in the step that records it.
-    assert!(git(dir.path(), &repo, &["merge", "-q", "side"]));
-    assert_eq!(
-        std::fs::read_to_string(repo.join("src/a.rs")).unwrap(),
-        "a from the author\n"
-    );
+
+    // Brought into the main checkout by git, and held half-way: the first
+    // file is written, the index is locked, HEAD has not moved.
+    std::fs::write(&flag, "").unwrap();
+    let merging = tokio::task::spawn_blocking({
+        let (home, repo) = (dir.path().to_path_buf(), repo.clone());
+        move || git(&home, &repo, &["merge", "-q", "side"])
+    });
+    eventually(async || {
+        (std::fs::read_to_string(repo.join("src/a.rs"))
+            .ok()
+            .as_deref()
+            == Some("a from the author\n")
+            && repo.join(".git/index.lock").exists())
+        .then_some(())
+    })
+    .await;
     recorded(&main, "src/a.rs").await;
+    // Well past the looks a settled checkout needs: the change is still
+    // waiting, because git is still writing, and no room has opened.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    assert!(repo.join(".git/index.lock").exists(), "the merge is held");
+    assert!(waits(&main), "the change waits for git to finish");
+    assert_eq!(rooms().await.len(), 0, "not in the middle of the merge");
+
+    // The merge completes: both files equal HEAD, and nothing counted.
+    std::fs::remove_file(&flag).unwrap();
+    assert!(merging.await.unwrap(), "the merge");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("src/b.rs")).unwrap(),
+        "b from the author\n"
+    );
+    recorded(&main, "src/b.rs").await;
+    judged(&main).await;
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    judged(&main).await;
     assert_eq!(
         rooms().await.len(),
         0,
@@ -12269,8 +12348,8 @@ async fn work_git_brings_into_a_checkout_opens_no_room_with_its_author() {
     );
 
     // An edit neither has committed, of one path in both, is a collision.
-    std::fs::write(repo.join("src/b.rs"), "b from main\n").unwrap();
-    std::fs::write(side.join("src/b.rs"), "b from the author\n").unwrap();
+    std::fs::write(repo.join("src/a.rs"), "a from main\n").unwrap();
+    std::fs::write(side.join("src/a.rs"), "a from the author, again\n").unwrap();
     let opened = eventually(async || {
         let found = rooms().await;
         (!found.is_empty()).then_some(found)
@@ -12278,7 +12357,7 @@ async fn work_git_brings_into_a_checkout_opens_no_room_with_its_author() {
     .await;
     assert_eq!(opened.len(), 1, "{opened:?}");
     assert_eq!(opened[0].members.len(), 2, "both agents are in it");
-    assert_eq!(opened[0].paths(), [PathBuf::from("src/b.rs")]);
+    assert_eq!(opened[0].paths(), [PathBuf::from("src/a.rs")]);
 }
 
 #[tokio::test]
