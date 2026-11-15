@@ -167,21 +167,7 @@ impl Pending {
     }
 
     /// Let the process run, now that the record is durable.
-    pub fn activate(self) -> io::Result<OwnedChild> {
-        self.activate_proving().map_err(|failure| failure.error)
-    }
-
-    /// [`Pending::activate`], saying of a failure whether it proves the
-    /// program never began. Every failure here comes before the thread is
-    /// resumed, and the process is ended still suspended, so each does.
-    pub fn activate_proving(self) -> Result<OwnedChild, ActivationFailure> {
-        self.resume().map_err(|error| ActivationFailure {
-            error,
-            never_ran: true,
-        })
-    }
-
-    fn resume(mut self) -> io::Result<OwnedChild> {
+    pub fn activate(mut self) -> io::Result<OwnedChild> {
         // Clone before ResumeThread. Failure must leave the launch gate
         // closed so Pending::drop still terminates the suspended child.
         let process = self.process.try_clone()?;
@@ -216,16 +202,6 @@ impl Pending {
     pub fn process_handle(&self) -> HANDLE {
         self.process.as_raw_handle() as HANDLE
     }
-}
-
-/// A launch that was not activated, and whether that proves its program
-/// never began.
-#[derive(Debug)]
-pub struct ActivationFailure {
-    pub error: io::Error,
-    /// The process never ran an instruction: it was ended still
-    /// suspended. False where the failure says nothing of that.
-    pub never_ran: bool,
 }
 
 impl Drop for Pending {

@@ -582,27 +582,40 @@ async fn supervise(
     let group = match Group::of(&pending, shared.input.as_ref()) {
         Ok(group) => group,
         Err(error) => {
-            // Dropped before its gate opened: the child is refused exec,
-            // so its program never began.
+            // Dropped before its gate opened: the Unix child is refused
+            // exec, so its program never began. Only the Unix launch gate
+            // is taken as proof; a Windows launch proves nothing here.
             drop(pending);
             return finish_failed(
                 &shared,
                 &child,
                 format!("{error:#}"),
-                true,
+                cfg!(unix),
                 &mut acknowledgement,
             )
             .await;
         }
     };
-    let mut owned = match tokio::task::spawn_blocking(move || pending.activate_proving()).await {
+    #[cfg(unix)]
+    let activation = tokio::task::spawn_blocking(move || {
+        pending
+            .activate_proving()
+            .map_err(|failure| (failure.error, failure.never_ran))
+    })
+    .await;
+    // Unchanged on Windows: its activation proves nothing of the program.
+    #[cfg(not(unix))]
+    let activation =
+        tokio::task::spawn_blocking(move || pending.activate().map_err(|error| (error, false)))
+            .await;
+    let mut owned = match activation {
         Ok(Ok(child)) => child,
-        Ok(Err(failure)) => {
+        Ok(Err((error, never_ran))) => {
             return finish_failed(
                 &shared,
                 &child,
-                format!("{:#}", failure.error),
-                failure.never_ran,
+                format!("{error:#}"),
+                never_ran,
                 &mut acknowledgement,
             )
             .await;
