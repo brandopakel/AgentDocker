@@ -42,9 +42,9 @@
 //! never logged, and no status or event names it or the address.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::atomic::Ordering;
 use std::time::{Duration as StdDuration, Instant};
 
+use super::markers::{Flag, Running};
 use super::*;
 use agentdocker_core::Activity;
 use agentdocker_core::config::JudgeConfig;
@@ -563,20 +563,22 @@ impl Daemon {
     /// turning the judge off or changing it is seen at once; and start a
     /// pass unless one is under way.
     pub fn judge_screens(self: &Arc<Self>) {
-        if !self.judge_watching.swap(true, Ordering::SeqCst) {
+        if let Some(running) = Running::take(self, Flag::JudgeWatching) {
             let daemon = self.clone();
             tokio::spawn(async move {
+                let _running = running;
+                daemon.fail_point("judge watching");
                 daemon.judge_setup().await;
-                daemon.judge_watching.store(false, Ordering::SeqCst);
             });
         }
-        if self.judging.swap(true, Ordering::SeqCst) {
+        let Some(running) = Running::take(self, Flag::Judging) else {
             return;
-        }
+        };
         let daemon = self.clone();
         tokio::spawn(async move {
+            let _running = running;
+            daemon.fail_point("judging");
             daemon.judge_once().await;
-            daemon.judging.store(false, Ordering::SeqCst);
         });
     }
 
@@ -1389,6 +1391,7 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::sync::Mutex as StdMutex;
+    use std::sync::atomic::Ordering;
     use tempfile::TempDir;
 
     const KEY: &str = "ts-test-key-0123456789abcdef";

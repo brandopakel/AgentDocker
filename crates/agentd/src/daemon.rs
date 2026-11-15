@@ -67,6 +67,7 @@ mod journal;
 mod judge;
 mod launch;
 mod leases;
+mod markers;
 pub(crate) mod otlp;
 mod panes;
 mod pause;
@@ -384,6 +385,9 @@ pub struct Daemon {
     /// across an await.
     #[cfg(test)]
     relaunch_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// The tasks a test has asked to fail where they stand (`fail_point`).
+    #[cfg(test)]
+    fail_points: Mutex<HashSet<&'static str>>,
     /// A test's pause in a registration, after its check and before the
     /// lock that commits it, met twice. Never held across an await.
     #[cfg(test)]
@@ -1897,6 +1901,8 @@ impl Daemon {
             transferred_exit: Notify::new(),
             #[cfg(test)]
             relaunch_hold: Mutex::new(None),
+            #[cfg(test)]
+            fail_points: Mutex::new(HashSet::new()),
             #[cfg(test)]
             register_hold: Mutex::new(None),
             #[cfg(test)]

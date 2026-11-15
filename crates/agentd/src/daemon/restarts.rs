@@ -22,6 +22,7 @@
 //! continue to describe it. A restart is the same process running again,
 //! not a different agent with the same name.
 
+use super::markers::PendingRestart;
 use super::*;
 use agentdocker_core::agent::restart_delay;
 
@@ -70,6 +71,7 @@ impl Daemon {
         // — it would hold its SQLite handle and its socket open long
         // after everything else had let go, which is exactly what a
         // leak check catches.
+        let pending = PendingRestart::held(self, id.clone());
         let daemon = Arc::downgrade(self);
         let id = id.clone();
         tokio::spawn(async move {
@@ -80,12 +82,14 @@ impl Daemon {
                     let Some(daemon) = daemon.upgrade() else {
                         return;
                     };
+                    daemon.fail_point("restart");
                     if daemon.restart_now(&id, delay).await {
                         let status = {
                             let mut state = lock(&daemon.state);
                             state.pending_restarts.remove(&id);
                             state.registry.get(&id).map(|record| record.status.clone())
                         };
+                        pending.released();
                         // A failed spawn can need another policy attempt. A
                         // running child will arrange its own on durable exit.
                         if let Some(status) = status {
