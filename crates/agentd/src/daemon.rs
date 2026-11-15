@@ -287,6 +287,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::ReviewGate { .. }
             | Request::List { .. }
             | Request::Inspect { .. }
+            | Request::Restarts { .. }
             | Request::Changes { .. }
             | Request::Overlap { .. }
             | Request::Questions { .. }
@@ -523,7 +524,9 @@ struct State {
     /// repeated key as new.
     keyed_sends: agentdocker_core::idempotency::IdempotencyLedger<Response>,
     supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
-    pending_restarts: HashSet<AgentId>,
+    /// Each scheduled restart's phase, in memory only: what a reader's
+    /// restart view takes beside the record (`agentdocker_core::restart`).
+    pending_restarts: HashMap<AgentId, agentdocker_core::restart::Phase>,
     container_busy: HashSet<AgentId>,
     transports: HashMap<AgentId, transport::Transport>,
     projects: HashMap<PathBuf, Option<String>>,
@@ -865,6 +868,22 @@ fn restore_terminal_after(pid: u32, started: DateTime<Utc>, mut ran: RanIn) {
                 debug!(%error, tty = ran.tty, "could not restore the stopped program's terminal");
             }
         });
+}
+
+/// The give-up an ending commits with it, when the record it commits has
+/// used up its restart policy (a managed agent, not a container, ended,
+/// its `on-failure` count spent): decided from that record, never from a
+/// query or a later look.
+pub(crate) fn restarts_exhausted(record: &AgentRecord) -> Option<EventKind> {
+    matches!(
+        agentdocker_core::restart::due(record),
+        Some(agentdocker_core::restart::Due::GivenUp { .. })
+    )
+    .then(|| EventKind::AgentRestartsExhausted {
+        agent: record.id.clone(),
+        attempts: record.restarts,
+        policy: record.spec.restart,
+    })
 }
 
 /// A pid a signal could address: positive, and within the range the OS
@@ -1861,7 +1880,7 @@ impl Daemon {
                     live_subscribers: HashMap::new(),
                     keyed_sends: agentdocker_core::idempotency::IdempotencyLedger::default(),
                     supervised: HashMap::new(),
-                    pending_restarts: HashSet::new(),
+                    pending_restarts: HashMap::new(),
                     container_busy: HashSet::new(),
                     transports: HashMap::new(),
                     projects,
@@ -2248,6 +2267,33 @@ impl Daemon {
         Ok(InFlight(self.clone()))
     }
 
+    /// [`Daemon::admit_background`] for a scheduled restart, which also
+    /// moves its scheduler entry in the same hold that decides: admitted,
+    /// it is starting; refused by a transfer, it waits to retry. The hold
+    /// that admits replaces any earlier refusal, so an old refusal is never
+    /// said of an attempt under way. A restart with no entry (one started
+    /// directly) is admitted the same way and moves nothing.
+    pub(crate) fn admit_restart(self: &Arc<Self>, id: &AgentId) -> Result<InFlight, Box<Response>> {
+        use agentdocker_core::restart::Phase;
+        let mut state = lock(&self.state);
+        if let Some(error) = state.storage_failure() {
+            return Err(Box::new(error));
+        }
+        if let Some(error) = state.transferring() {
+            if let Some(phase) = state.pending_restarts.get_mut(id) {
+                *phase = Phase::Refused { at: Utc::now() };
+                state.publish_restart(id);
+            }
+            return Err(Box::new(error));
+        }
+        state.in_flight += 1;
+        if let Some(phase) = state.pending_restarts.get_mut(id) {
+            *phase = Phase::Starting;
+            state.publish_restart(id);
+        }
+        Ok(InFlight(self.clone()))
+    }
+
     /// The wait is over and the request will write again: take a place
     /// back first, under the hold the caller already has, so going on is
     /// decided in the same hold as every other way the wait could end.
@@ -2480,6 +2526,7 @@ impl Daemon {
                 labels,
             } => self.list(all, project, labels).await,
             Request::Inspect { agent } => lock(&self.state).inspect(&agent),
+            Request::Restarts { agent } => lock(&self.state).restarts(agent.as_deref()),
             Request::Heartbeat { agent } => match self.resolve(&agent) {
                 Ok(id) => {
                     lock(&self.state).touch(&id);
@@ -4076,6 +4123,71 @@ impl State {
         !matches!(self.coordination, Coordination::Serving)
     }
 
+    /// What `restarts` answers: one agent's outlook, or every agent's,
+    /// live ones too, each with the run it was read against, in one hold.
+    fn restarts(&mut self, agent: Option<&str>) -> Response {
+        let ids: Vec<AgentId> = match agent {
+            Some(reference) => match self.resolve(reference) {
+                Ok(id) => vec![id],
+                Err(response) => return *response,
+            },
+            None => self
+                .registry
+                .all()
+                .map(|record| record.id.clone())
+                .collect(),
+        };
+        let outlooks = ids
+            .into_iter()
+            .filter_map(|id| {
+                let run = agentdocker_core::restart::RunEvidence::of(self.registry.get(&id)?);
+                let view = self.restart_view(&id);
+                Some((id, agentdocker_core::restart::Outlook { run, view }))
+            })
+            .collect();
+        Response::Restarts { outlooks }
+    }
+
+    /// Where an ended agent's restart stands, as this hold sees it: its
+    /// record, the scheduler's phase for it and the fence, read together.
+    pub(crate) fn restart_view(
+        &self,
+        id: &AgentId,
+    ) -> Option<agentdocker_core::restart::RestartView> {
+        let record = self.registry.get(id)?;
+        agentdocker_core::restart::view(
+            record,
+            self.pending_restarts.get(id).copied(),
+            self.fenced(),
+        )
+    }
+
+    /// Say where its restart stands now, live only, in the hold that moved
+    /// it, so the order a reader sees is the order the scheduler moved in.
+    pub(crate) fn publish_restart(&self, id: &AgentId) {
+        let _ = self.events.send(Event::new(
+            EventKind::AgentRestartChanged {
+                agent: id.clone(),
+                view: self.restart_view(id),
+                run: self
+                    .registry
+                    .get(id)
+                    .map(agentdocker_core::restart::RunEvidence::of),
+            },
+            Utc::now(),
+        ));
+    }
+
+    /// [`State::publish_restart`] for every scheduled restart: the fence
+    /// moved under all of them.
+    fn publish_pending_restarts(&self) {
+        let mut pending: Vec<_> = self.pending_restarts.keys().cloned().collect();
+        pending.sort();
+        for id in &pending {
+            self.publish_restart(id);
+        }
+    }
+
     /// The answer a mutating request gets while fenced.
     fn transferring(&self) -> Option<Response> {
         self.fenced().then(|| {
@@ -4138,6 +4250,9 @@ impl State {
                     transfer: transfer.id.clone(),
                     offered: true,
                 };
+                // Every scheduled restart now waits on the fence: said in
+                // this hold, from the state just set.
+                self.publish_pending_restarts();
                 info!(transfer = %transfer.id, successor_pid, "coordination offered; writes fenced");
                 Ok(transfer)
             }
@@ -4222,6 +4337,8 @@ impl State {
                 self.skipped_write = false;
                 self.next_seq += 1;
                 let _ = self.events.send(event);
+                // From the state that results: the fence has lifted.
+                self.publish_pending_restarts();
                 warn!(%transfer, reason, "coordination transfer aborted; writing resumed");
                 true
             }
@@ -4743,7 +4860,7 @@ impl State {
                         .is_none_or(|availability| availability.issue.is_none())
                     && self.leases.by_holder(&record.id).is_empty()
                     && self.inboxes.get(&record.id).is_none_or(VecDeque::is_empty)
-                    && !self.pending_restarts.contains(&record.id)
+                    && !self.pending_restarts.contains_key(&record.id)
                     && !self.supervised.contains_key(&record.id)
                     && !self.questions.values().any(|question| {
                         question.from == record.id.as_str()
@@ -4896,6 +5013,9 @@ impl State {
             status: status.clone(),
             ending,
         });
+        // An ending that uses up its restart policy says so in the same
+        // transaction: once, and kept or lost with the ending.
+        kinds.extend(restarts_exhausted(&record));
         let events: Vec<_> = kinds
             .into_iter()
             .map(|kind| Event::new(kind, now))

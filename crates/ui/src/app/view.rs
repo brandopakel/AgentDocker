@@ -1058,6 +1058,25 @@ impl App {
         )
     }
 
+    /// Where an ended agent's restart stands, as the daemon last said;
+    /// nothing for a live one, whatever an earlier answer left.
+    pub(super) fn restart_of(
+        &self,
+        agent: &AgentRecord,
+    ) -> Option<agentdocker_core::restart::RestartView> {
+        if agent.status.is_live() {
+            return None;
+        }
+        // Only an answer read against the very run this record shows.
+        match agentdocker_core::restart::Outlook::known_for(
+            self.restarts.get(agent.id.as_str()),
+            agent,
+        ) {
+            agentdocker_core::restart::Known::Known(view) => view,
+            agentdocker_core::restart::Known::Unknown => None,
+        }
+    }
+
     /// The words for what an agent is doing, live or finished.
     pub(super) fn activity_label(&self, agent: &AgentRecord) -> String {
         use agentdocker_core::readiness::State;
@@ -3105,6 +3124,13 @@ impl App {
             if let Some(chip) = super::chip::dead_end(format!("session-dead-end-{id}"), agent) {
                 content = content.push(chip.view(c));
             }
+            // Whether an ended run comes back.
+            if let Some(view) = self.restart_of(agent) {
+                content = content.push(
+                    super::chip::restart(format!("session-restart-{id}"), &view, Utc::now())
+                        .view(c),
+                );
+            }
             // One more chip, the first that applies: the time left to
             // answer, else the pull request.
             if standing.needs_you() || standing == agentdocker_core::standing::Standing::Failed {
@@ -3191,6 +3217,10 @@ impl App {
         .width(Fill);
         if let Some(chip) = super::chip::dead_end("inspector-dead-end", agent) {
             named = named.push(chip.view(c));
+        }
+        if let Some(view) = self.restart_of(agent) {
+            named =
+                named.push(super::chip::restart("inspector-restart", &view, Utc::now()).view(c));
         }
         let header = row![
             agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 32.0, c),
@@ -5352,6 +5382,84 @@ mod tests {
             crate::app::App::session_editor_folder(&agent),
             Some(worktree)
         );
+    }
+
+    /// An ended managed agent says whether it comes back, beside its
+    /// standing, in the session row and the panel, from the answer read
+    /// against the very run it shows; an answer for another run, none, or
+    /// a live agent shows nothing.
+    #[test]
+    fn an_ended_session_says_whether_it_comes_back() {
+        use super::super::view::testing::seen;
+        use super::*;
+        use agentdocker_core::restart::{Outlook, RestartView, RunEvidence, Waiting};
+        use agentdocker_core::{AgentSpec, AgentStatus, RestartPolicy};
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.link.open();
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                name: "worker".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        agent.end_run(AgentStatus::Exited { code: Some(1) }, None);
+        let c = Colors::new(false);
+        let id = agent.id.to_string();
+        let shown = |app: &App, agent: &AgentRecord| {
+            let rows = seen(app.session_rows(&[agent], c));
+            let panel = seen(app.inspector(agent, c));
+            (
+                rows.control(&format!("session-restart-{id}"))
+                    .map(|c| c.1.clone()),
+                panel.control("inspector-restart").map(|c| c.1.clone()),
+            )
+        };
+        assert_eq!(shown(&app, &agent), (None, None));
+        for (view, words) in [
+            (
+                RestartView::Waiting {
+                    attempt: 2,
+                    why: Waiting::HandingOver,
+                    at: None,
+                },
+                "Restart waiting: daemon handing over",
+            ),
+            (RestartView::Starting { attempt: 2 }, "Restart 2 starting"),
+            (
+                RestartView::GivenUp {
+                    attempts: 3,
+                    policy: RestartPolicy::OnFailure { max: 3 },
+                },
+                "Gave up restarting (on-failure:3, 3 restarts)",
+            ),
+        ] {
+            app.restarts.insert(
+                id.clone(),
+                Outlook {
+                    run: RunEvidence::of(&agent),
+                    view: Some(view),
+                },
+            );
+            let said = Some(words.to_owned());
+            assert_eq!(shown(&app, &agent), (said.clone(), said), "{view:?}");
+        }
+        // Read against another run of the record (a failed spawn between
+        // the reads): nothing, not "gave up" beside this run.
+        let mut later = agent.clone();
+        later.restarts += 1;
+        app.restarts.get_mut(&id).unwrap().run = RunEvidence::of(&later);
+        assert_eq!(shown(&app, &agent), (None, None), "another run");
+        app.restarts.get_mut(&id).unwrap().run = RunEvidence::of(&agent);
+        let mut live = agent.clone();
+        live.status = AgentStatus::Running;
+        assert_eq!(shown(&app, &live), (None, None), "a live agent shows none");
+        app.restarts.remove(&id);
+        assert_eq!(shown(&app, &agent), (None, None), "no answer shows none");
     }
 
     /// An ended session's panel says how its run ended where the daemon

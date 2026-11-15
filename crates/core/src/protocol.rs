@@ -441,6 +441,12 @@ pub enum Request {
     Inspect {
         agent: String,
     },
+    /// Where agents' restarts stand (`crate::restart::Outlook`): every
+    /// agent's, or one's, each with the run it was read against. Read only.
+    Restarts {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
+    },
     Heartbeat {
         agent: String,
     },
@@ -2209,6 +2215,14 @@ pub enum Response {
     },
     Agent {
         agent: AgentRecord,
+    },
+    /// The answer to `restarts`: for every agent asked about, live ones
+    /// too, its restart view and the run it was read against, from one
+    /// hold. A reader joins each to the record it shows by that run; an
+    /// agent missing from it, a run that differs, or a daemon that does
+    /// not know the request (and refuses it) is unknown.
+    Restarts {
+        outlooks: BTreeMap<AgentId, crate::restart::Outlook>,
     },
     Agents {
         agents: Vec<AgentRecord>,

@@ -48,6 +48,7 @@ pub use provider::{
 };
 pub use team::{Team, TeamMembership, TeamRole, Teammate};
 pub mod registry;
+pub mod restart;
 pub mod secret;
 pub mod seed;
 pub mod setup;

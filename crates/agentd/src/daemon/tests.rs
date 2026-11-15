@@ -8226,9 +8226,10 @@ async fn a_worktree_being_removed_takes_back_nobody_who_ended_there() {
     assert!(!keyed_was.status.is_live() && !session_was.status.is_live());
 
     // Waiting for its restart: counted as working there.
-    lock(&daemon.state)
-        .pending_restarts
-        .insert(session.id.clone());
+    lock(&daemon.state).pending_restarts.insert(
+        session.id.clone(),
+        agentdocker_core::restart::Phase::Delay { due: None },
+    );
     let answer = daemon.handle(remove()).await;
     assert!(
         matches!(&answer, Response::Error { code: ErrorCode::Conflict, message, .. }

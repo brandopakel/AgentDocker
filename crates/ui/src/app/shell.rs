@@ -1917,6 +1917,8 @@ impl App {
         match message {
             Message::Tick => {
                 self.ask_due_memory_search();
+                // A restart read refused by a full queue is owed until sent.
+                self.ask_restarts();
                 for activation in crate::notification_route::take() {
                     tasks.push(self.update(Message::Notification(activation)));
                 }

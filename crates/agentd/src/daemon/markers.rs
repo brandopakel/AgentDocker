@@ -97,7 +97,11 @@ impl PendingRestart {
 impl Drop for PendingRestart {
     fn drop(&mut self) {
         if let (Some(id), Some(daemon)) = (self.id.take(), self.daemon.upgrade()) {
-            lock(&daemon.state).pending_restarts.remove(&id);
+            // Removed and said in one hold: a task that ended without
+            // releasing leaves no restart scheduled, and readers learn so.
+            let mut state = lock(&daemon.state);
+            state.pending_restarts.remove(&id);
+            state.publish_restart(&id);
         }
     }
 }
@@ -201,7 +205,11 @@ mod tests {
             Response::Agent { .. }
         ));
         fail(&daemon, "restart");
-        let pending = || lock(&daemon.state).pending_restarts.contains(&record.id);
+        let pending = || {
+            lock(&daemon.state)
+                .pending_restarts
+                .contains_key(&record.id)
+        };
         for _look in 0..2 {
             daemon.consider_restart(&record.id, &record.status);
             assert!(pending(), "marked as waiting for its restart");

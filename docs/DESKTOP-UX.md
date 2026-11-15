@@ -180,7 +180,7 @@ it before retrying**, and why in its detail. Its standing still says
 removes the chip. An ended session's panel says how its run ended in its
 standing chip's detail where the daemon saw it — *Ended by signal 15*,
 *Ended, found gone*, *Never started*, *Deregistered* — and otherwise
-*Ended*; a failure keeps its reason. The name is set
+*Ended*; a failure keeps its reason. An ended managed agent whose restart policy brings it back, or gave up, also shows a chip beside its standing, in the session list and its panel, in the words `ps` uses — **Restart 2 of 3 in 4s**, **Restart 2 starting**, **Restart waiting: daemon handing over**, red **Gave up restarting (on-failure:3, 3 restarts)** — kept current as the daemon moves it. The name is set
 semibold when something there
 is new or waits on you, and is cut before the chip is. "Finished since you
 looked" means its turn ended, or the session did, while its project was not

@@ -400,7 +400,8 @@ async fn resume_events(
                     if event.seq == 0 && matches!(event.kind,
                         agentdocker_core::EventKind::FileChanged { .. }
                         | agentdocker_core::EventKind::AgentStale { .. }
-                        | agentdocker_core::EventKind::SecretReviewChanged { .. }) {
+                        | agentdocker_core::EventKind::SecretReviewChanged { .. }
+                        | agentdocker_core::EventKind::AgentRestartChanged { .. }) {
                         continue;
                     }
                     // The subscription and replay snapshot were taken under

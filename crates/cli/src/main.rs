@@ -3035,7 +3035,13 @@ async fn run() -> Result<()> {
                 Ok(Response::Usage { report }) => format::tokens_by_agent(&report),
                 _ => HashMap::new(),
             };
-            print_agents(&agents, &unadopted, &activity, sources, &tokens);
+            // Whether each ended one comes back, from the daemon that
+            // schedules it; a daemon that cannot say adds nothing.
+            let restarts = match client.call(&Request::Restarts { agent: None }).await {
+                Ok(Response::Restarts { outlooks }) => outlooks,
+                _ => BTreeMap::new(),
+            };
+            print_agents(&agents, &unadopted, &activity, sources, &tokens, &restarts);
             if input_details {
                 let now = chrono::Utc::now();
                 for agent in &agents {
@@ -5110,9 +5116,45 @@ async fn run() -> Result<()> {
                 println!("{} is now {}", agent.id.short(), agent.spec.name);
             }
         }
-        Command::Inspect { agent } => {
-            if let Response::Agent { agent } = client.call(&Request::Inspect { agent }).await? {
-                println!("{}", serde_json::to_string_pretty(&agent)?);
+        Command::Inspect { agent: reference } => {
+            // The record, then whether it comes back, joined by the run
+            // each was read against: on a mismatch both are read once
+            // more, and a second mismatch leaves the key out (unknown).
+            let mut shown = None;
+            for _ in 0..2 {
+                let Response::Agent { agent } = client
+                    .call(&Request::Inspect {
+                        agent: reference.clone(),
+                    })
+                    .await?
+                else {
+                    break;
+                };
+                let outlooks = match client
+                    .call(&Request::Restarts {
+                        agent: Some(agent.id.to_string()),
+                    })
+                    .await
+                {
+                    Ok(Response::Restarts { outlooks }) => Some(outlooks),
+                    _ => None,
+                };
+                let known = agentdocker_core::restart::Outlook::known_for(
+                    outlooks.as_ref().and_then(|o| o.get(&agent.id)),
+                    &agent,
+                );
+                let read_again =
+                    outlooks.is_some() && known == agentdocker_core::restart::Known::Unknown;
+                shown = Some((agent, known));
+                if !read_again {
+                    break;
+                }
+            }
+            if let Some((agent, known)) = shown {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&inspect_json(&agent, known)?)?
+                );
             }
         }
         Command::Logs {
@@ -6570,8 +6612,38 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
 
 /// Agents, then — dimmed — running agent processes nobody registered,
 /// shown under the name `adopt` would give them.
+/// The restart view `ps` shows beside a record: only one read against the
+/// very run it shows.
+fn restart_known(
+    outlooks: &BTreeMap<agentdocker_core::AgentId, agentdocker_core::restart::Outlook>,
+    record: &AgentRecord,
+) -> Option<agentdocker_core::restart::RestartView> {
+    match agentdocker_core::restart::Outlook::known_for(outlooks.get(&record.id), record) {
+        agentdocker_core::restart::Known::Known(view) => view,
+        agentdocker_core::restart::Known::Unknown => None,
+    }
+}
+
+/// `inspect`'s JSON: the record as it is, every key kept, with one more
+/// key, `restart`, where the daemon's answer was read against this very
+/// run: the view, or null where none applies. Unknown leaves the key out,
+/// never null.
+fn inspect_json(agent: &AgentRecord, known: agentdocker_core::restart::Known) -> Result<Value> {
+    let mut json = serde_json::to_value(agent)?;
+    if let (agentdocker_core::restart::Known::Known(view), Some(object)) =
+        (known, json.as_object_mut())
+    {
+        object.insert("restart".to_owned(), serde_json::to_value(view)?);
+    }
+    Ok(json)
+}
+
 /// What `ps` says in an agent's STATUS column.
-fn status_cell(a: &AgentRecord, now: chrono::DateTime<chrono::Utc>) -> String {
+fn status_cell(
+    a: &AgentRecord,
+    now: chrono::DateTime<chrono::Utc>,
+    restart: Option<&agentdocker_core::restart::RestartView>,
+) -> String {
     // A browser agent, or a conversation known by its key alone, no
     // process ends: registered until revoked or ended, but not connected
     // once unheard from.
@@ -6581,8 +6653,19 @@ fn status_cell(a: &AgentRecord, now: chrono::DateTime<chrono::Utc>) -> String {
         // Refused at a dead end, which 'created' would hide.
         dead_end.words().to_owned()
     } else {
-        // How it ended where the daemon saw, else its status.
-        a.ended_words()
+        // How it ended where the daemon saw, else its status; for an
+        // ended run, whether it comes back.
+        let mut words = a.ended_words();
+        if !a.status.is_live() {
+            let more = restart
+                .map(|view| view.words(now))
+                .or_else(|| a.restart_cleared_words());
+            if let Some(more) = more {
+                words.push_str(" · ");
+                words.push_str(&more);
+            }
+        }
+        words
     }
 }
 
@@ -6592,6 +6675,7 @@ fn print_agents(
     activity: &[AgentActivity],
     input_sources: &[AgentRecord],
     tokens: &HashMap<String, String>,
+    restarts: &BTreeMap<agentdocker_core::AgentId, agentdocker_core::restart::Outlook>,
 ) {
     let with_tokens = agents.iter().any(|a| tokens.contains_key(a.id.as_str()));
     let doing = |id: &agentdocker_core::AgentId| {
@@ -6645,7 +6729,7 @@ fn print_agents(
                     .to_owned(),
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
-                status_cell(a, chrono::Utc::now()),
+                status_cell(a, chrono::Utc::now(), restart_known(restarts, a).as_ref()),
                 if a.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
                     "App inbox".into()
                 } else {
@@ -7215,6 +7299,84 @@ mod tests {
     /// A container refused at a dead end says so in `ps` where its status
     /// alone would say `created`; once stopping or seen to run, the status
     /// speaks again.
+    /// `ps` adds whether an ended run comes back: the daemon's view in its
+    /// words, else a policy a stop cleared while it is still cleared; a
+    /// live record never. `inspect` keeps every key of the record and adds
+    /// `restart`: the view, null where none applies, and nothing at all
+    /// where the daemon could not say.
+    #[test]
+    fn ps_and_inspect_say_whether_an_ended_run_comes_back() {
+        use super::{AgentRecord, AgentSpec, inspect_json, status_cell};
+        use agentdocker_core::restart::RestartView;
+        use agentdocker_core::{AgentStatus, RestartPolicy};
+        use std::collections::BTreeMap;
+        let now = chrono::Utc::now();
+        let mut record = AgentRecord::new(AgentSpec::default(), true, now);
+        record.end_run(AgentStatus::Exited { code: Some(1) }, None);
+        let scheduled = RestartView::Scheduled {
+            attempt: 2,
+            of: Some(3),
+            at: Some(now + chrono::Duration::seconds(4)),
+        };
+        assert_eq!(
+            status_cell(&record, now, Some(&scheduled)),
+            "exited (1) · restart 2 of 3 in 4s"
+        );
+        let spent = RestartView::GivenUp {
+            attempts: 3,
+            policy: RestartPolicy::OnFailure { max: 3 },
+        };
+        assert_eq!(
+            status_cell(&record, now, Some(&spent)),
+            "exited (1) · gave up restarting (on-failure:3, 3 restarts)"
+        );
+        record.restart_before_stop = Some(RestartPolicy::OnFailure { max: 3 });
+        assert_eq!(
+            status_cell(&record, now, None),
+            "exited (1) · restart cleared by a stop (was on-failure:3)"
+        );
+        record.spec.restart = RestartPolicy::Always;
+        assert_eq!(
+            status_cell(&record, now, None),
+            "exited (1)",
+            "history, unsaid"
+        );
+        let mut live = record.clone();
+        live.status = AgentStatus::Running;
+        assert_eq!(status_cell(&live, now, Some(&scheduled)), "running");
+
+        use agentdocker_core::restart::{Known, Outlook, RunEvidence};
+        let plain = serde_json::to_value(&record).unwrap();
+        assert_eq!(
+            inspect_json(&record, Known::Unknown).unwrap(),
+            plain,
+            "unknown: no key"
+        );
+        let none = inspect_json(&record, Known::Known(None)).unwrap();
+        assert_eq!(none["restart"], serde_json::Value::Null);
+        let said = inspect_json(&record, Known::Known(Some(scheduled))).unwrap();
+        assert_eq!(said["restart"]["state"], "scheduled");
+        for (key, value) in plain.as_object().unwrap() {
+            assert_eq!(&said[key], value, "{key} kept");
+        }
+        // ps joins by run: an answer read against another run of the
+        // record (a failed spawn between the reads) shows nothing, and so
+        // does no answer.
+        let mut outlooks = BTreeMap::new();
+        assert_eq!(super::restart_known(&outlooks, &record), None);
+        let mut later = record.clone();
+        later.restarts += 1;
+        outlooks.insert(
+            record.id.clone(),
+            Outlook {
+                run: RunEvidence::of(&later),
+                view: Some(spent),
+            },
+        );
+        assert_eq!(super::restart_known(&outlooks, &record), None);
+        assert_eq!(super::restart_known(&outlooks, &later), Some(spent));
+    }
+
     /// `ps` says how a run ended where the daemon saw it, and its status
     /// otherwise: never a signal it did not see, never a failure's reason
     /// lost, never an old ending on a live record.
@@ -7225,7 +7387,7 @@ mod tests {
         let now = chrono::Utc::now();
         let mut record = AgentRecord::new(AgentSpec::default(), true, now);
         record.end_run(AgentStatus::Exited { code: None }, None);
-        assert_eq!(status_cell(&record, now), "exited (code unknown)");
+        assert_eq!(status_cell(&record, now, None), "exited (code unknown)");
         for (ending, words) in [
             (RunEnd::Signal { signal: 15 }, "ended by signal 15"),
             (RunEnd::FoundGone, "ended, found gone"),
@@ -7234,7 +7396,7 @@ mod tests {
             (RunEnd::Unknown, "exited (code unknown)"),
         ] {
             record.end_run(AgentStatus::Exited { code: None }, Some(ending));
-            assert_eq!(status_cell(&record, now), words);
+            assert_eq!(status_cell(&record, now, None), words);
         }
         record.end_run(
             AgentStatus::Failed {
@@ -7243,12 +7405,12 @@ mod tests {
             Some(RunEnd::NeverStarted),
         );
         assert_eq!(
-            status_cell(&record, now),
+            status_cell(&record, now, None),
             "failed: it could not be executed"
         );
         record.status = AgentStatus::Running;
         record.ending = Some(RunEnd::Signal { signal: 9 });
-        assert_eq!(status_cell(&record, now), "running");
+        assert_eq!(status_cell(&record, now, None), "running");
     }
 
     #[test]
@@ -7275,7 +7437,7 @@ mod tests {
             deadline: None,
             dead_end: None,
         });
-        assert_eq!(status_cell(&record, now), "created");
+        assert_eq!(status_cell(&record, now, None), "created");
         for (dead_end, words) in [
             (
                 ContainerDeadEnd::StartUnknown,
@@ -7291,14 +7453,14 @@ mod tests {
             ),
         ] {
             record.container.as_mut().unwrap().dead_end = Some(dead_end);
-            assert_eq!(status_cell(&record, now), words);
+            assert_eq!(status_cell(&record, now, None), words);
         }
         let mut stopping = record.clone();
         stopping.container.as_mut().unwrap().intent = ContainerIntent::Stop;
         stopping.mark_stopping();
-        assert_eq!(status_cell(&stopping, now), "stopping");
+        assert_eq!(status_cell(&stopping, now, None), "stopping");
         record.status = agentdocker_core::AgentStatus::Running;
-        assert_eq!(status_cell(&record, now), "running");
+        assert_eq!(status_cell(&record, now, None), "running");
     }
 
     /// A claim's first ask carries the whole wait it was given, whatever
