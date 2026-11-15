@@ -541,7 +541,11 @@ plan the text was read at. If an agent or another window edited the plan
 since, the save is refused with who changed which sections, and what you
 wrote stays in the editor, unsaved, where a later read of the plan does not
 replace it: open the plan again to take the newer text, or carry your change
-over and save again. Under it are the project's files,
+over and save again. One save is out at a time, and its answer is for the
+draft that sent it: if you have begun another plan or opened this one anew
+before it comes, what is in the editor is left as it is. A save the app could
+not send (its request queue was full) is said at once and can be sent again.
+Under it are the project's files,
 each opening with the system's app (a private copy) or deleted, and **Add a
 file**. Under those is the project's **Memory**: a **New memory** line to keep
 a fact for its agents (**Keep**, kept as the person's; the words stay until the daemon

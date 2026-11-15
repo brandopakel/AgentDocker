@@ -280,7 +280,7 @@ impl App {
                         primary(
                             "plan-save",
                             "Save",
-                            (connected && draft.dirty && !draft.saving)
+                            (connected && draft.dirty && draft.saving.is_none())
                                 .then_some(Message::PlanSave),
                         ),
                     ]

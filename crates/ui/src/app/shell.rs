@@ -48,8 +48,11 @@ pub(super) struct PlanDraft {
     pub revision: Option<u64>,
     /// Edited since it was read or saved.
     pub dirty: bool,
-    /// A save of it is with the daemon: no second one is sent meanwhile.
-    pub saving: bool,
+    /// The save of it that is with the daemon, by its number: no second
+    /// one is sent meanwhile, and that save's answer alone is this
+    /// draft's. A draft that takes this one's place has none, so an
+    /// answer that arrives late is not taken for the newer draft's.
+    pub saving: Option<u64>,
 }
 
 impl Default for PlanDraft {
@@ -61,7 +64,7 @@ impl Default for PlanDraft {
             status: agentdocker_core::PlanStatus::Draft,
             revision: None,
             dirty: false,
-            saving: false,
+            saving: None,
         }
     }
 }
@@ -84,7 +87,7 @@ impl PlanDraft {
     /// editor now stands on that revision. What the person typed while
     /// the save was on its way stays, and stays unsaved.
     pub fn saved(&mut self, plan: &agentdocker_core::Plan) {
-        self.saving = false;
+        self.saving = None;
         self.id = Some(plan.id.clone());
         self.revision = Some(plan.revision);
         self.dirty = self.body.text() != plan.body
@@ -96,7 +99,7 @@ impl PlanDraft {
     /// the revision it was written from are kept as they are, unsaved, for
     /// the person to reconcile with what the plan now says.
     pub fn refused(&mut self) {
-        self.saving = false;
+        self.saving = None;
         self.dirty = true;
     }
 }
@@ -2771,14 +2774,18 @@ impl App {
                 let draft = &mut self.shell.plan_draft;
                 if draft.title.trim().is_empty() {
                     self.say("A plan needs a title");
-                } else if !draft.saving {
+                } else if draft.saving.is_none() && project.is_some() {
                     // Still unsaved until the daemon says it kept it: a
                     // save it refuses must not leave the draft looking
                     // clean, for the next read of the plan to replace.
-                    draft.saving = true;
+                    // The save is numbered, and the draft remembers the
+                    // number: its answer is for this draft and no other.
+                    self.plan_saves += 1;
+                    let save = self.plan_saves;
+                    draft.saving = Some(save);
                     let request = Request::PlanSave {
                         from: agentdocker_core::HUMAN.into(),
-                        project: project.clone(),
+                        project,
                         plan: draft.id.clone(),
                         title: Some(draft.title.trim().to_owned()),
                         body: Some(draft.body.text()),
@@ -2789,13 +2796,10 @@ impl App {
                     };
                     // Its answer is the plan, which opens: a new one has
                     // its id from then on.
-                    if project.is_some() {
-                        self.send(Cmd::PlanSave {
-                            request: Box::new(request),
-                        });
-                    } else {
-                        self.shell.plan_draft.saving = false;
-                    }
+                    self.send(Cmd::PlanSave {
+                        save,
+                        request: Box::new(request),
+                    });
                 }
             }
             Message::QuickAdd(lane) => {
@@ -5945,33 +5949,23 @@ mod tests {
         // Saved: sent with the revision it was read at, and unsaved still.
         let _ = commands.try_iter().count();
         let _ = app.update(Message::PlanSave);
-        let sent = commands
-            .try_iter()
-            .find_map(|command| match command {
-                Cmd::PlanSave { request, .. } => Some(*request),
-                _ => None,
-            })
-            .expect("the save is sent");
+        let (save, sent) = plan_saves(&commands).pop().expect("the save is sent");
         assert!(
             matches!(&sent, Request::PlanSave { plan: Some(plan), body: Some(body), revision: Some(1), .. }
                 if plan == "abc123def456" && body.trim_end() == mine.trim_end()),
             "{sent:?}"
         );
-        assert!(app.shell.plan_draft.dirty && app.shell.plan_draft.saving);
+        assert!(app.shell.plan_draft.dirty);
+        assert_eq!(app.shell.plan_draft.saving, Some(save));
         // No second save while the first is with the daemon.
         let _ = app.update(Message::PlanSave);
-        assert!(
-            !commands
-                .try_iter()
-                .any(|command| matches!(command, Cmd::PlanSave { .. })),
-            "one save at a time"
-        );
+        assert!(plan_saves(&commands).is_empty(), "one save at a time");
 
         // Refused: somebody wrote revision 2 meanwhile. Then the plan as
         // it now stands is read, as it is whenever a plan changes.
         deliver(
             &mut app,
-            Msg::PlanSaved(Err("this edit was written from revision 1".into())),
+            Msg::PlanSaved(save, Err("this edit was written from revision 1".into())),
         );
         let theirs = stored(2, "## Lead\nnothing yet\n\n## Reviewer\nPASS\n");
         deliver(&mut app, Msg::Plan(Ok(Box::new((theirs, Vec::new())))));
@@ -5987,7 +5981,7 @@ mod tests {
             "and the revision it was written from"
         );
         assert!(
-            draft.dirty && !draft.saving,
+            draft.dirty && draft.saving.is_none(),
             "unsaved, and free to save again"
         );
         assert!(
@@ -5998,13 +5992,216 @@ mod tests {
 
         // Kept: the draft now stands on the revision the daemon made.
         let _ = app.update(Message::PlanSave);
+        let (again, _) = plan_saves(&commands).pop().expect("saved again");
         deliver(
             &mut app,
-            Msg::PlanSaved(Ok(Box::new((stored(3, mine), Vec::new())))),
+            Msg::PlanSaved(again, Ok(Box::new((stored(3, mine), Vec::new())))),
         );
         let draft = &app.shell.plan_draft;
         assert_eq!(draft.revision, Some(3));
-        assert!(!draft.dirty && !draft.saving);
+        assert!(!draft.dirty && draft.saving.is_none());
+    }
+
+    fn stored_plan(id: &str, revision: u64, title: &str, body: &str) -> agentdocker_core::Plan {
+        agentdocker_core::Plan {
+            id: id.into(),
+            project: "p".into(),
+            title: title.into(),
+            body: body.into(),
+            status: agentdocker_core::PlanStatus::Draft,
+            created_by: "agent-1".into(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            revision,
+            edits: Vec::new(),
+        }
+    }
+
+    /// The saves of a plan the app has queued since the queue was last
+    /// read, each with the number its draft knows it by.
+    fn plan_saves(commands: &CommandReceiver) -> Vec<(u64, Request)> {
+        commands
+            .try_iter()
+            .filter_map(|command| match command {
+                Cmd::PlanSave { save, request } => Some((save, *request)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The answer to a save belongs to the draft that sent it. A draft
+    /// that has taken its place since (a new plan begun, the same plan
+    /// opened anew) is another one: a late answer leaves it as it is,
+    /// field for field. Taken as its own, a kept save would give a new
+    /// plan's draft the saved plan's id and revision, and its next save
+    /// would write the new plan over that one and pass the revision
+    /// check; a late refusal would free it from a save of its own that is
+    /// still out.
+    #[test]
+    fn a_late_answer_to_a_plan_save_is_not_another_drafts() {
+        let (mut app, commands, messages) = app();
+        app.shell.catalog.selected = Some("/work/a".into());
+        let deliver = |app: &mut App, message: Msg| {
+            messages.send(message).unwrap();
+            let _ = app.update(Message::Tick);
+        };
+        let write = |app: &mut App, title: &str, body: &str| {
+            let _ = app.update(Message::PlanTitle(title.into()));
+            app.shell.plan_draft.body = iced::widget::text_editor::Content::with_text(body);
+            app.shell.plan_draft.dirty = true;
+        };
+        let fields = |app: &App| {
+            let draft = &app.shell.plan_draft;
+            (
+                draft.id.clone(),
+                draft.title.clone(),
+                draft.body.text(),
+                draft.status,
+                draft.revision,
+                draft.dirty,
+                draft.saving,
+            )
+        };
+        let kept = |id: &str, revision: u64, title: &str, body: &str| {
+            Ok(Box::new((
+                stored_plan(id, revision, title, body),
+                Vec::new(),
+            )))
+        };
+
+        // Plan A is open at revision 1, edited and saved: its answer is out.
+        deliver(&mut app, Msg::Plan(kept("aaaaaaaaaaaa", 1, "A", "a\n")));
+        write(&mut app, "A", "a, edited\n");
+        let _ = commands.try_iter().count();
+        let _ = app.update(Message::PlanSave);
+        let (save_a, _) = plan_saves(&commands).pop().expect("A's save is sent");
+
+        // Before it comes, the person begins a new plan, B.
+        let _ = app.update(Message::PlanNew);
+        write(&mut app, "B", "b\n");
+        let b = fields(&app);
+        assert_eq!((&b.0, b.4, b.6), (&None, None, None), "a new plan's draft");
+
+        // A's save is kept. That is not B's answer.
+        deliver(
+            &mut app,
+            Msg::PlanSaved(save_a, kept("aaaaaaaaaaaa", 2, "A", "a, edited\n")),
+        );
+        assert_eq!(fields(&app), b, "the newer draft, field for field");
+        assert!(app.plan_open.is_none(), "and A is not opened over it");
+
+        // So B's save makes a new plan, and does not write B over A.
+        let _ = app.update(Message::PlanSave);
+        let (save_b, sent) = plan_saves(&commands).pop().expect("B's save is sent");
+        assert!(
+            matches!(&sent, Request::PlanSave { plan: None, revision: None, title: Some(title), .. }
+                if title == "B"),
+            "{sent:?}"
+        );
+        assert_ne!(save_a, save_b);
+
+        // A refusal that comes late for the older save does not free B
+        // from its own, which is still out.
+        deliver(&mut app, Msg::PlanSaved(save_a, Err("refused late".into())));
+        assert_eq!(app.shell.plan_draft.saving, Some(save_b));
+        assert!(app.status.contains("refused late"), "{}", app.status);
+        let _ = app.update(Message::PlanSave);
+        assert!(plan_saves(&commands).is_empty(), "still one save at a time");
+
+        // B's own answer is B's.
+        deliver(
+            &mut app,
+            Msg::PlanSaved(save_b, kept("bbbbbbbbbbbb", 1, "B", "b\n")),
+        );
+        let draft = &app.shell.plan_draft;
+        assert_eq!(draft.id.as_deref(), Some("bbbbbbbbbbbb"));
+        assert_eq!(draft.revision, Some(1));
+        assert!(!draft.dirty && draft.saving.is_none());
+
+        // The same plan opened anew is a new draft too: the answer to a
+        // save of the one before it is not taken as its own, and the
+        // read it asked for is what fills it.
+        write(&mut app, "B", "b, edited\n");
+        let _ = app.update(Message::PlanSave);
+        let (save_b2, _) = plan_saves(&commands).pop().expect("B is saved again");
+        let _ = app.update(Message::PlanOpen("bbbbbbbbbbbb".into()));
+        let reopened = fields(&app);
+        deliver(
+            &mut app,
+            Msg::PlanSaved(save_b2, kept("bbbbbbbbbbbb", 2, "B", "b, edited\n")),
+        );
+        assert_eq!(
+            fields(&app),
+            reopened,
+            "the reopened draft, field for field"
+        );
+        deliver(
+            &mut app,
+            Msg::Plan(kept("bbbbbbbbbbbb", 2, "B", "b, edited\n")),
+        );
+        let draft = &app.shell.plan_draft;
+        assert_eq!(draft.revision, Some(2));
+        assert_eq!(draft.body.text().trim_end(), "b, edited");
+        assert!(!draft.dirty && draft.saving.is_none());
+    }
+
+    /// A save the worker's queue will not take never reaches the daemon,
+    /// so no answer to it will come. The draft is told so at once: it
+    /// stays unsaved with its text and the revision it was written from,
+    /// and the same save goes out once there is room. Left waiting, Save
+    /// would stay off for good.
+    #[test]
+    fn a_plan_save_the_queue_would_not_take_can_be_sent_again() {
+        let (mut app, commands, messages) = app();
+        app.shell.catalog.selected = Some("/work/a".into());
+        let first = stored_plan(
+            "abc123def456",
+            1,
+            "Where the work stands",
+            "## Lead\nnothing yet\n",
+        );
+        messages
+            .send(Msg::Plan(Ok(Box::new((first, Vec::new())))))
+            .unwrap();
+        let _ = app.update(Message::Tick);
+        let mine = "## Lead\nwhat the person wrote\n";
+        app.shell.plan_draft.body = iced::widget::text_editor::Content::with_text(mine);
+        app.shell.plan_draft.dirty = true;
+
+        let _ = commands.try_iter().count();
+        for _ in 0..super::super::queue::CAPACITY {
+            app.send(Cmd::Stop("fixture".into()));
+        }
+        let _ = app.update(Message::PlanSave);
+        let draft = &app.shell.plan_draft;
+        assert_eq!(
+            draft.saving, None,
+            "no answer will come: none is waited for"
+        );
+        assert!(draft.dirty, "unsaved still");
+        assert_eq!(draft.body.text().trim_end(), mine.trim_end());
+        assert_eq!(draft.revision, Some(1));
+        assert!(app.status.contains("queue is full"), "{}", app.status);
+
+        // The queue held what filled it and no save; once it has room the
+        // same save is queued.
+        let waiting: Vec<_> = commands.try_iter().collect();
+        assert_eq!(waiting.len(), super::super::queue::CAPACITY);
+        assert!(
+            !waiting
+                .iter()
+                .any(|command| matches!(command, Cmd::PlanSave { .. }))
+        );
+        let _ = app.update(Message::PlanSave);
+        let (save, sent) = plan_saves(&commands)
+            .pop()
+            .expect("the save is queued this time");
+        assert!(
+            matches!(&sent, Request::PlanSave { plan: Some(plan), body: Some(body), revision: Some(1), .. }
+                if plan == "abc123def456" && body.trim_end() == mine.trim_end()),
+            "{sent:?}"
+        );
+        assert_eq!(app.shell.plan_draft.saving, Some(save));
     }
 
     /// The board's Mine toggle keeps the cards the person holds and those
