@@ -1742,22 +1742,6 @@ impl Store {
         Ok(post)
     }
 
-    pub fn close_questions(
-        &self,
-        questions: &[agentdocker_core::MessageId],
-        events: &[Event],
-    ) -> Result<()> {
-        let tx = write_transaction(&self.conn)?;
-        for question in questions {
-            self.delete_document("question", question.as_str())?;
-        }
-        for event in events {
-            self.append_event(event)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
     /// Queue archived messages for one more recipient, with the event that
     /// says so, as one transaction. They are archived already and not
     /// archived again.

@@ -250,6 +250,96 @@ pub enum StaleAction {
     Withdraw,
 }
 
+/// Why a question closed, as its `question_closed` says, where the daemon
+/// knew. Cancellation is not one: it has its own `question_cancelled`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseReason {
+    /// A reply answered it (a person's or an agent's; this says nothing of
+    /// who).
+    Answered,
+    /// Its stale window passed and the daemon answered with its default.
+    Default,
+    /// Its time ran out unanswered.
+    Expired,
+    /// Its stale window passed and its asker's rule withdrew it.
+    Withdrawn,
+    /// It was a held message's card, and the message was released.
+    Released,
+    /// It was a held message's card, and the message was dropped.
+    Dropped,
+    /// A reason from a newer daemon.
+    #[serde(other)]
+    Unknown,
+}
+
+/// How a question ended, from its `question_closed`: the answer it records
+/// and the reason it gives, kept apart. A recorded answer is always an
+/// answer, whatever the reason says or leaves out; a reason never
+/// manufactures one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuestionEnding<'a> {
+    /// Answered by this message; `how` is unknown where the reason is
+    /// absent, unknown, or one that does not go with an answer.
+    Answered {
+        message: &'a MessageId,
+        how: AnswerKind,
+    },
+    Expired,
+    Withdrawn,
+    Released,
+    Dropped,
+    /// Closed without an answer for no reason it recorded (an older
+    /// daemon's event, a newer reason, or a reason that needs an answer it
+    /// does not have).
+    Unknown,
+}
+
+/// Which kind of answer closed a question.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnswerKind {
+    /// A reply, not the default.
+    Reply,
+    /// The daemon's default, on the stale window.
+    Default,
+    Unknown,
+}
+
+impl<'a> QuestionEnding<'a> {
+    pub fn of(answer: Option<&'a MessageId>, reason: Option<CloseReason>) -> Self {
+        match (answer, reason) {
+            (Some(message), reason) => Self::Answered {
+                message,
+                how: match reason {
+                    Some(CloseReason::Answered) => AnswerKind::Reply,
+                    Some(CloseReason::Default) => AnswerKind::Default,
+                    _ => AnswerKind::Unknown,
+                },
+            },
+            (None, Some(CloseReason::Expired)) => Self::Expired,
+            (None, Some(CloseReason::Withdrawn)) => Self::Withdrawn,
+            (None, Some(CloseReason::Released)) => Self::Released,
+            (None, Some(CloseReason::Dropped)) => Self::Dropped,
+            (None, _) => Self::Unknown,
+        }
+    }
+
+    /// What a reader says of it.
+    pub fn words(&self) -> String {
+        match self {
+            Self::Answered { message, how } => match how {
+                AnswerKind::Default => format!("answered by message {message} (its default)"),
+                AnswerKind::Reply | AnswerKind::Unknown => format!("answered by message {message}"),
+            },
+            Self::Expired => "closed; it expired".to_owned(),
+            Self::Withdrawn => "closed; withdrawn as stale".to_owned(),
+            Self::Released => "closed; its held message was released".to_owned(),
+            Self::Dropped => "closed; its held message was dropped".to_owned(),
+            Self::Unknown => "closed; reason unknown".to_owned(),
+        }
+    }
+}
+
 impl StaleAction {
     /// Parse the one-line spelling the CLI and the MCP tools take:
     /// `keep_waiting`, `withdraw`, or `answer:<label>`.
@@ -1184,6 +1274,101 @@ pub fn topic_matches(pattern: &str, topic: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reason travels as a word on `question_closed`, is absent from
+    /// an older daemon's event, and a word this reader does not know reads
+    /// as unknown rather than failing the event.
+    #[test]
+    fn a_close_reason_travels_as_a_word_and_reads_newer_words_as_unknown() {
+        use crate::EventKind;
+        let closed = |reason: Option<CloseReason>| EventKind::QuestionClosed {
+            question: "q".to_owned().into(),
+            answer: None,
+            reason,
+        };
+        let wire = serde_json::to_value(closed(Some(CloseReason::Withdrawn))).unwrap();
+        assert_eq!(wire["reason"], "withdrawn");
+        let older = serde_json::to_value(closed(None)).unwrap();
+        assert!(older.get("reason").is_none(), "{older}");
+        let read = |value: serde_json::Value| serde_json::from_value::<EventKind>(value).unwrap();
+        assert_eq!(
+            read(serde_json::json!({"event": "question_closed", "question": "q", "answer": null})),
+            closed(None)
+        );
+        assert_eq!(
+            read(
+                serde_json::json!({"event": "question_closed", "question": "q", "answer": null, "reason": "superseded"})
+            ),
+            closed(Some(CloseReason::Unknown))
+        );
+        for reason in [
+            CloseReason::Answered,
+            CloseReason::Default,
+            CloseReason::Expired,
+            CloseReason::Withdrawn,
+            CloseReason::Released,
+            CloseReason::Dropped,
+        ] {
+            assert_eq!(
+                read(serde_json::to_value(closed(Some(reason))).unwrap()),
+                closed(Some(reason))
+            );
+        }
+    }
+
+    /// A recorded answer is an answer whatever the reason says or leaves
+    /// out; only how it was given can be unknown. Without an answer the
+    /// reason says the ending, and a reason that needs an answer it does
+    /// not have, or none at all, is an unknown close, never an answer.
+    #[test]
+    fn an_answer_receipt_never_depends_on_the_reason() {
+        let message: MessageId = "m".to_owned().into();
+        let reasons = [
+            None,
+            Some(CloseReason::Answered),
+            Some(CloseReason::Default),
+            Some(CloseReason::Expired),
+            Some(CloseReason::Withdrawn),
+            Some(CloseReason::Released),
+            Some(CloseReason::Dropped),
+            Some(CloseReason::Unknown),
+        ];
+        for reason in reasons {
+            let how = match reason {
+                Some(CloseReason::Answered) => AnswerKind::Reply,
+                Some(CloseReason::Default) => AnswerKind::Default,
+                _ => AnswerKind::Unknown,
+            };
+            let ending = QuestionEnding::of(Some(&message), reason);
+            assert_eq!(
+                ending,
+                QuestionEnding::Answered {
+                    message: &message,
+                    how
+                },
+                "{reason:?}"
+            );
+            assert!(ending.words().starts_with("answered by message m"));
+            let unanswered = QuestionEnding::of(None, reason);
+            let expected = match reason {
+                Some(CloseReason::Expired) => QuestionEnding::Expired,
+                Some(CloseReason::Withdrawn) => QuestionEnding::Withdrawn,
+                Some(CloseReason::Released) => QuestionEnding::Released,
+                Some(CloseReason::Dropped) => QuestionEnding::Dropped,
+                _ => QuestionEnding::Unknown,
+            };
+            assert_eq!(unanswered, expected, "{reason:?}");
+            assert!(!unanswered.words().contains("answered"), "{reason:?}");
+        }
+        assert_eq!(
+            QuestionEnding::of(None, None).words(),
+            "closed; reason unknown"
+        );
+        assert_eq!(
+            QuestionEnding::of(Some(&message), Some(CloseReason::Default)).words(),
+            "answered by message m (its default)"
+        );
+    }
 
     /// The card a held message rides on says who sent what to whom, quotes
     /// it within bounds, offers exactly Release and Drop, and is put to the

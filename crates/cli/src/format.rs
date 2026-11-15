@@ -1066,10 +1066,16 @@ pub fn event_line(event: &Event) -> String {
                 agentdocker_core::AnswerRoute::Queue => "the queue",
             }
         ),
-        EventKind::QuestionClosed { question, answer } => match answer {
-            Some(answer) => format!("question answered {question} by message {answer}"),
-            None => format!("question closed  {question} (expired, or settled without an answer)"),
-        },
+        EventKind::QuestionClosed {
+            question,
+            answer,
+            reason,
+        } => format!(
+            // An answer is said by its message, whatever the reason; an
+            // ending with no recorded reason says so.
+            "question {question} {}",
+            agentdocker_core::QuestionEnding::of(answer.as_ref(), *reason).words()
+        ),
         EventKind::MessageHeld {
             message,
             question,
@@ -1822,6 +1828,44 @@ pub fn webhook_attempt_row(attempt: &agentdocker_core::WebhookAttempt) -> Vec<St
 
 #[cfg(test)]
 mod tests {
+
+    /// A closing says its ending: an answer by its message, whatever its
+    /// reason, and an unanswered close with no recorded reason says so.
+    #[test]
+    fn a_question_closing_says_its_ending() {
+        use agentdocker_core::{CloseReason, Event, EventKind};
+        let line = |answer: Option<&str>, reason| {
+            super::event_line(&Event::new(
+                EventKind::QuestionClosed {
+                    question: "q1".to_owned().into(),
+                    answer: answer.map(|id| id.to_owned().into()),
+                    reason,
+                },
+                chrono::Utc::now(),
+            ))
+        };
+        assert!(line(Some("m1"), None).ends_with("question q1 answered by message m1"));
+        assert!(
+            line(Some("m1"), Some(CloseReason::Expired))
+                .ends_with("question q1 answered by message m1")
+        );
+        assert!(
+            line(Some("m1"), Some(CloseReason::Default))
+                .ends_with("question q1 answered by message m1 (its default)")
+        );
+        assert!(line(None, None).ends_with("question q1 closed; reason unknown"));
+        assert!(
+            line(None, Some(CloseReason::Unknown)).ends_with("question q1 closed; reason unknown")
+        );
+        assert!(
+            line(None, Some(CloseReason::Withdrawn))
+                .ends_with("question q1 closed; withdrawn as stale")
+        );
+        assert!(
+            line(None, Some(CloseReason::Dropped))
+                .ends_with("question q1 closed; its held message was dropped")
+        );
+    }
     /// `questions` prints a typed question's options as rows under its
     /// words, with the Other line, on separators of its own: a control
     /// character in the words, a label or a description is escaped, never

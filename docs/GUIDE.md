@@ -1452,8 +1452,15 @@ Current behaviour that the sections above do not already state, by area.
   stale window goes **stale** once the window passes: by default it stays
   open and is marked so; `answer:<label>` takes that option as the answer,
   attributed to the daemon as the default; `withdraw` closes it and the
-  asker's wait ends with a timeout. Without a window nothing changes: the
-  question waits until it is answered, cancelled or expires.
+  asker's wait ends with a timeout saying it was withdrawn. Without a
+  window nothing changes: the question waits until it is answered,
+  cancelled or expires. An `ask` whose question expires says so, told
+  apart from a withdrawal and from its own wait running out. The event
+  stream says how each question ended: `question <id> answered by message
+  <id>` (with `(its default)` for a stale default), or `closed;` and why:
+  it expired, was withdrawn as stale, or its held message was released or
+  dropped. A closing recorded without a reason says `closed; reason
+  unknown`.
 
 - Conversations: every message is archived in the one conversation its
   destination names (`everyone:<project>`, `all`, `channel:<id>`,
@@ -2180,8 +2187,9 @@ Current behaviour that the sections above do not already state, by area.
   questions — Needs you in the app, `agentdocker questions --me`, the
   notification — as a card from the sender quoting the message, and
   **Release** delivers it as sent while **Drop** discards it
-  (`agentdocker answer <card> Release`). Cards nobody answers in a week
-  drop their message. Nothing is written by default, and a session running
+  (`agentdocker answer <card> Release`). Only `answer` decides: a reply to
+  the card (`send --reply-to <card>`) is refused, whatever it says, and
+  sends nothing. Cards nobody answers in a week drop their message. Nothing is written by default, and a session running
   on this machine is never held or refused by it.
 
 ### Daemon

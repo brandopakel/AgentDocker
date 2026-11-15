@@ -50,6 +50,7 @@ mod binding;
 pub(crate) mod brief;
 mod channels;
 mod checkouts;
+mod closing;
 // Codex's shared server listens on a Unix socket; Windows has none.
 #[cfg(unix)]
 pub(crate) mod codex_threads;
@@ -185,7 +186,8 @@ pub(crate) struct DocumentTransition {
     pub journal: Option<JournalEntry>,
     /// A question settled without an answer in the same commit — the card
     /// a held message rode on, once the message goes out — closed with
-    /// `question_closed {answer: None}`.
+    /// `question_closed {answer: None, reason: released}`. Nothing is sent
+    /// when that card is no longer open.
     pub closes: Option<MessageId>,
 }
 
@@ -1764,87 +1766,62 @@ impl Daemon {
             .into_iter()
             .map(|question| (question.id.clone(), question))
             .collect();
-        let mut expired: Vec<_> = questions
-            .values()
-            .filter(|question| question.expired(now))
-            .map(|question| question.id.clone())
-            .collect();
-        expired.sort();
-        let mut expiration_events: Vec<_> = expired
-            .iter()
-            .map(|question| {
-                Event::new(
-                    EventKind::QuestionClosed {
-                        question: question.clone(),
-                        answer: None,
-                    },
-                    now,
-                )
-            })
-            .collect();
-        if fenced {
-            let expired = expired.clone();
-            deferred.push(Box::new(move |store, seq| {
-                for (index, event) in expiration_events.iter_mut().enumerate() {
-                    event.seq = seq + index as u64;
-                }
-                store.close_questions(&expired, &expiration_events)?;
-                Ok(expiration_events.len() as u64)
-            }));
-        } else {
-            for (index, event) in expiration_events.iter_mut().enumerate() {
-                event.seq = next_seq + index as u64;
-            }
-            next_seq += expiration_events.len() as u64;
-            store.close_questions(&expired, &expiration_events)?;
-        }
-        for id in expired {
-            questions.remove(&id);
-        }
-        anyhow::ensure!(
-            questions.len() <= humans::MAX_QUESTIONS,
-            "too many stored pending questions"
-        );
-        // A held message rides on its question: one whose question has
-        // gone (expired at this start, above) is dropped as expired too,
-        // when writes are open; while fenced it is left for the tick.
         let mut held_messages: HashMap<MessageId, agentdocker_core::HeldMessage> = store
             .documents::<agentdocker_core::HeldMessage>(inbound::DOCUMENT, None)?
             .into_iter()
             .map(|held| (held.question.clone(), held))
             .collect();
-        let orphaned: Vec<_> = held_messages
-            .values()
-            .filter(|held| !questions.contains_key(&held.question))
-            .map(|held| (held.question.clone(), held.envelope.id.clone()))
-            .collect();
-        if !fenced && !orphaned.is_empty() {
-            let mut events: Vec<_> = orphaned
-                .iter()
-                .map(|(question, message)| {
-                    Event::new(
-                        EventKind::HeldMessageDropped {
-                            message: message.clone(),
-                            question: question.clone(),
-                            by: inbound::EXPIRY.to_owned(),
-                        },
-                        now,
-                    )
-                })
+        // What a start finds ended. A question whose time ran out closes as
+        // the tick closes it, with the held message it carries. A held
+        // message whose question was already gone (an older daemon's reply
+        // to its card could leave one) is dropped, attributed to recovery:
+        // nothing says how its question ended, so none is closed for it.
+        // Serving, that is one commit here. Fenced, nothing is written or
+        // forgotten here: each stays in memory beside what it rides on,
+        // the tick closes the expired after acceptance as it would any
+        // other, and acceptance drops the orphans as its first act.
+        if !fenced {
+            let mut expired: Vec<_> = questions
+                .values()
+                .filter(|question| question.expired(now))
+                .map(|question| question.id.clone())
                 .collect();
-            for (index, event) in events.iter_mut().enumerate() {
-                event.seq = next_seq + index as u64;
+            expired.sort();
+            let mut orphans: Vec<_> = held_messages
+                .values()
+                .filter(|held| !questions.contains_key(&held.question))
+                .collect();
+            orphans.sort_by(|a, b| a.question.cmp(&b.question));
+            let mut ended = closing::Closing::default();
+            for held in orphans {
+                ended.orphan(held);
             }
-            next_seq += events.len() as u64;
-            let delete: Vec<(&str, String)> = orphaned
-                .iter()
-                .map(|(question, _)| (inbound::DOCUMENT, question.as_str().to_owned()))
-                .collect();
-            store.documents_change(&[], &delete, &events)?;
-            for (question, _) in &orphaned {
-                held_messages.remove(question);
+            for question in &expired {
+                ended.end(
+                    question,
+                    held_messages.get(question),
+                    closing::Ending::Closed(agentdocker_core::CloseReason::Expired),
+                    inbound::EXPIRY,
+                );
+            }
+            if !ended.is_empty() {
+                let mut events = ended.events(Vec::new(), now);
+                for (index, event) in events.iter_mut().enumerate() {
+                    event.seq = next_seq + index as u64;
+                }
+                next_seq += events.len() as u64;
+                store.documents_change(&[], &ended.deletes(), &events)?;
+                ended.apply(&mut questions, &mut held_messages, &mut HashSet::new());
             }
         }
+        anyhow::ensure!(
+            questions
+                .values()
+                .filter(|question| !question.expired(now))
+                .count()
+                <= humans::MAX_QUESTIONS,
+            "too many stored pending questions"
+        );
 
         let (bus, _) = broadcast::channel(1024);
         let (events, _) = broadcast::channel(1024);
@@ -6030,6 +6007,21 @@ impl State {
                 .filter(|pending| self.put_to(pending, &AgentId::from(envelope.from.as_str())))
                 .map(|pending| pending.id.clone()),
         };
+        // A held message's card ends only by the held decision, which
+        // `answer` makes: Release delivers the message, Drop discards it.
+        // A reply that would close it is neither, whatever it says, and is
+        // refused before anything is written or sent.
+        if let Some(card) = closed
+            .as_ref()
+            .filter(|id| self.held_messages.contains_key(*id))
+        {
+            return Response::error(
+                ErrorCode::Conflict,
+                format!(
+                    "question {card} holds a message for a decision; answer it Release or Drop with `answer`, not a reply"
+                ),
+            );
+        }
         if let Some(
             presentation @ (agentdocker_core::QuestionPresentation::McpUrl { .. }
             | agentdocker_core::QuestionPresentation::McpForm { .. }),
@@ -6145,14 +6137,21 @@ impl State {
         kinds.extend(stale);
         // A question the document settles without an answer: a held
         // message's card, closed as its message goes out.
-        let settled = document
+        let settled = document.as_ref().and_then(|d| d.closes.clone());
+        if let Some(card) = settled
             .as_ref()
-            .and_then(|d| d.closes.clone())
-            .filter(|id| self.questions.contains_key(id));
+            .filter(|id| !self.questions.contains_key(*id))
+        {
+            return Response::error(
+                ErrorCode::NotFound,
+                format!("question {card} was answered or expired"),
+            );
+        }
         if let Some(settled) = &settled {
             kinds.push(EventKind::QuestionClosed {
                 question: settled.clone(),
                 answer: None,
+                reason: Some(agentdocker_core::CloseReason::Released),
             });
         }
         kinds.push(EventKind::MessageSent {
@@ -6176,6 +6175,11 @@ impl State {
             kinds.push(EventKind::QuestionClosed {
                 question: closed.clone(),
                 answer: Some(envelope.id.clone()),
+                reason: Some(if default_for.is_some() {
+                    agentdocker_core::CloseReason::Default
+                } else {
+                    agentdocker_core::CloseReason::Answered
+                }),
             });
         }
         let events: Vec<_> = kinds
@@ -6246,11 +6250,29 @@ impl State {
                         .questions
                         .insert(question.id.clone(), question.clone());
                 }
+                let State {
+                    questions,
+                    held_messages,
+                    blocked_defaults,
+                    ..
+                } = state;
                 if let Some(closed) = &closed {
-                    state.questions.remove(closed);
+                    closing::Closing::forget(
+                        closed,
+                        default_for.is_some(),
+                        questions,
+                        held_messages,
+                        blocked_defaults,
+                    );
                 }
                 if let Some(settled) = &settled {
-                    state.questions.remove(settled);
+                    closing::Closing::forget(
+                        settled,
+                        false,
+                        questions,
+                        held_messages,
+                        blocked_defaults,
+                    );
                 }
             },
         );

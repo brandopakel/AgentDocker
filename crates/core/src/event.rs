@@ -92,11 +92,16 @@ pub enum EventKind {
         question: MessageId,
         expires_at: DateTime<Utc>,
     },
-    /// No answer means the question expired, or was settled without one: a
-    /// held message released or dropped. The original inbox message remains.
+    /// The question closed: answered by `answer`, or without one. `reason`
+    /// says why, where the daemon knew ([`crate::CloseReason`]); absent from
+    /// an older daemon's event, which reads as unknown. An answer recorded
+    /// here is an answer whatever the reason says. Cancellation has its own
+    /// `question_cancelled`. The original inbox message remains.
     QuestionClosed {
         question: MessageId,
         answer: Option<MessageId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<crate::CloseReason>,
     },
     /// How an answer reached its asker: handed over as the result of the
     /// synchronous `ask` that was waiting for it (and taken out of the

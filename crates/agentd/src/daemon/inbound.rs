@@ -189,75 +189,22 @@ impl State {
                     released: Vec::new(),
                     journal: None,
                 };
-                let response =
-                    self.publish_with_channel(held.envelope, None, None, Some(transition));
-                if matches!(response, Response::Sent { .. }) {
-                    self.held_messages.remove(question);
-                }
-                response
+                // The card closes in the message's own transaction, and
+                // its held copy leaves memory with it.
+                self.publish_with_channel(held.envelope, None, None, Some(transition))
             }
             HeldDecision::Drop => {
-                self.drop_held(
-                    &[(question.clone(), held.envelope.id.clone())],
+                let mut closing = super::closing::Closing::default();
+                closing.end(
+                    question,
+                    Some(&held),
+                    super::closing::Ending::Closed(agentdocker_core::CloseReason::Dropped),
                     by,
-                    Some(EventKind::QuestionClosed {
-                        question: question.clone(),
-                        answer: None,
-                    }),
                 );
+                let _ = self.close("held message drop", Vec::new(), closing, Utc::now());
                 self.write_failure().unwrap_or(Response::Ok)
             }
         }
-    }
-
-    /// Discard held messages with their cards: the question documents and
-    /// the held copies go, with `closing` (the card's own closure, when the
-    /// caller has not already committed one) and one `held_message_dropped`
-    /// each. Memory follows the commit.
-    pub(super) fn drop_held(
-        &mut self,
-        dropped: &[(MessageId, MessageId)],
-        by: &str,
-        closing: Option<EventKind>,
-    ) {
-        if dropped.is_empty() {
-            return;
-        }
-        let now = Utc::now();
-        let mut events: Vec<Event> = closing
-            .into_iter()
-            .map(|kind| Event::new(kind, now))
-            .collect();
-        events.extend(dropped.iter().map(|(question, message)| {
-            Event::new(
-                EventKind::HeldMessageDropped {
-                    message: message.clone(),
-                    question: question.clone(),
-                    by: by.to_owned(),
-                },
-                now,
-            )
-        }));
-        let delete: Vec<(&str, String)> = dropped
-            .iter()
-            .flat_map(|(question, _)| {
-                [
-                    ("question", question.as_str().to_owned()),
-                    (DOCUMENT, question.as_str().to_owned()),
-                ]
-            })
-            .collect();
-        let _ = self.commit(
-            "held message drop",
-            events,
-            |store, events| store.documents_change(&[], &delete, events),
-            |state, _, ()| {
-                for (question, _) in dropped {
-                    state.questions.remove(question);
-                    state.held_messages.remove(question);
-                }
-            },
-        );
     }
 
     /// Whether this question carries a held message.
@@ -269,7 +216,7 @@ impl State {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentdocker_core::{HUMAN_RUNTIME, HeldMessage};
+    use agentdocker_core::{CloseReason, HUMAN_RUNTIME, HeldMessage};
     use tempfile::TempDir;
 
     fn open(dir: &TempDir) -> Arc<Daemon> {
@@ -374,6 +321,43 @@ mod tests {
             .into_iter()
             .map(|event| event.kind)
             .collect()
+    }
+
+    /// How these questions ended, in the order the stream says it: held
+    /// messages dropped or released, closes and cancels, and `message`'s
+    /// own `message_sent` when it goes out.
+    fn endings(
+        daemon: &Arc<Daemon>,
+        message: &MessageId,
+        questions: &[&MessageId],
+    ) -> Vec<EventKind> {
+        kinds(daemon)
+            .into_iter()
+            .filter(|kind| match kind {
+                EventKind::HeldMessageDropped { question, .. }
+                | EventKind::HeldMessageReleased { question, .. }
+                | EventKind::QuestionClosed { question, .. }
+                | EventKind::QuestionCancelled { question, .. } => questions.contains(&question),
+                EventKind::MessageSent { message: sent, .. } => sent == message,
+                _ => false,
+            })
+            .collect()
+    }
+
+    fn closed(question: &MessageId, answer: Option<&MessageId>, reason: CloseReason) -> EventKind {
+        EventKind::QuestionClosed {
+            question: question.clone(),
+            answer: answer.cloned(),
+            reason: Some(reason),
+        }
+    }
+
+    fn dropped(message: &MessageId, question: &MessageId, by: &str) -> EventKind {
+        EventKind::HeldMessageDropped {
+            message: message.clone(),
+            question: question.clone(),
+            by: by.to_owned(),
+        }
     }
 
     /// With nothing written a connector sender's word is delivered like
@@ -607,7 +591,7 @@ mod tests {
             .expect("released");
         let closed_at = events
             .iter()
-            .position(|kind| matches!(kind, EventKind::QuestionClosed { question: q, answer: None } if *q == question))
+            .position(|kind| matches!(kind, EventKind::QuestionClosed { question: q, answer: None, .. } if *q == question))
             .expect("closed");
         let sent_at = events
             .iter()
@@ -738,18 +722,14 @@ mod tests {
         assert!(lock(&daemon.state).held_messages.is_empty());
         let held: Vec<HeldMessage> = lock(&daemon.state).store.documents(DOCUMENT, None).unwrap();
         assert!(held.is_empty());
-        let events = kinds(&daemon);
-        assert!(
-            events.iter().any(
-                |kind| matches!(kind, EventKind::HeldMessageDropped { message: m, question: q, by }
-            if *m == message && *q == question && by == person.id.as_str())
-            ),
-            "{events:?}"
+        // The held message first, then the card it rode on; never sent.
+        assert_eq!(
+            endings(&daemon, &message, &[&question]),
+            [
+                dropped(&message, &question, person.id.as_str()),
+                closed(&question, None, CloseReason::Dropped),
+            ]
         );
-        assert!(events.iter().any(|kind| matches!(kind, EventKind::QuestionClosed { question: q, answer: None } if *q == question)));
-        assert!(!events.iter().any(
-            |kind| matches!(kind, EventKind::MessageSent { message: m, .. } if *m == message)
-        ));
     }
 
     /// A held `ask` does not wait: the asker hears `held` at once, and the
@@ -828,10 +808,17 @@ mod tests {
         assert!(inbox(&daemon, &local).await.is_empty());
         let held: Vec<HeldMessage> = lock(&daemon.state).store.documents(DOCUMENT, None).unwrap();
         assert!(held.is_empty());
-        assert!(kinds(&daemon).iter().any(
-            |kind| matches!(kind, EventKind::HeldMessageDropped { message: m, question: q, by }
-            if *m == message && *q == question && by == remote.id.as_str())
-        ));
+        assert!(lock(&daemon.state).questions.is_empty());
+        assert_eq!(
+            endings(&daemon, &message, &[&question]),
+            [
+                dropped(&message, &question, remote.id.as_str()),
+                EventKind::QuestionCancelled {
+                    question: question.clone(),
+                    agent: remote.id.clone(),
+                },
+            ]
+        );
     }
 
     /// A held message outlives a restart with its card, and an expired
@@ -868,7 +855,7 @@ mod tests {
         } = daemon
             .handle(Request::Answer {
                 from: None,
-                message: question,
+                message: question.clone(),
                 text: "Release".into(),
                 choices: Vec::new(),
                 note: None,
@@ -880,6 +867,16 @@ mod tests {
         };
         assert_eq!(released, message);
         assert_eq!(inbox(&daemon, &local).await.len(), 1);
+        let ended = endings(&daemon, &message, &[&question]);
+        assert!(
+            matches!(&ended[..], [
+                EventKind::HeldMessageReleased { message: m, question: q, .. },
+                close,
+                EventKind::MessageSent { message: sent, .. },
+            ] if *m == message && *q == question && *sent == message
+                && *close == closed(&question, None, CloseReason::Released)),
+            "{ended:?}"
+        );
 
         // The other card expires: its message goes with it.
         {
@@ -892,10 +889,13 @@ mod tests {
         }
         let held: Vec<HeldMessage> = lock(&daemon.state).store.documents(DOCUMENT, None).unwrap();
         assert!(held.is_empty());
-        assert!(kinds(&daemon).iter().any(
-            |kind| matches!(kind, EventKind::HeldMessageDropped { message: m, question: q, by }
-            if *m == second && *q == second_card && by == EXPIRY)
-        ));
+        assert_eq!(
+            endings(&daemon, &second, &[&second_card]),
+            [
+                dropped(&second, &second_card, EXPIRY),
+                closed(&second_card, None, CloseReason::Expired),
+            ]
+        );
         assert_eq!(
             inbox(&daemon, &local).await.len(),
             1,
@@ -972,9 +972,21 @@ mod tests {
         );
         assert!(lock(&daemon.state).questions.is_empty());
         assert!(lock(&daemon.state).held_messages.is_empty());
-        let events = kinds(&daemon);
-        assert!(events.iter().any(|kind| matches!(kind, EventKind::QuestionClosed { question, answer: Some(a) } if *question == asked && *a == message)));
-        assert!(events.iter().any(|kind| matches!(kind, EventKind::QuestionClosed { question, answer: None } if *question == card)));
+        // Both closings and the message in the release's one commit: the
+        // card first, as a release always says it, then the message and
+        // the question it answers.
+        let ended = endings(&daemon, &message, &[&card, &asked]);
+        assert!(
+            matches!(&ended[..], [
+                EventKind::HeldMessageReleased { question: q, .. },
+                card_closed,
+                EventKind::MessageSent { message: sent, .. },
+                answered,
+            ] if *q == card && *sent == message
+                && *card_closed == closed(&card, None, CloseReason::Released)
+                && *answered == closed(&asked, Some(&message), CloseReason::Answered)),
+            "{ended:?}"
+        );
 
         // Restored from the store, nothing of either remains.
         drop(daemon);
@@ -987,6 +999,356 @@ mod tests {
         assert!(questions.is_empty(), "{questions:?}");
         let held: Vec<HeldMessage> = state.store.documents(DOCUMENT, None).unwrap();
         assert!(held.is_empty());
+    }
+
+    /// A release whose write fails commits neither closing nor the
+    /// message: the card, the question its message answers and the held
+    /// copy all stand, on disk, for the next open.
+    #[tokio::test]
+    async fn a_failed_release_closes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let root = checkout(&dir, "[inbound]\nconnector = \"hold\"\n");
+        let daemon = open(&dir);
+        let (_, local, remote) = cast(&daemon, &root).await;
+        let Response::Sent { message: asked, .. } = daemon
+            .handle(Request::PostQuestion {
+                from: local.id.to_string(),
+                to: remote.id.to_string(),
+                question: "which flag?".into(),
+                presentation: None,
+                timeout_secs: 600,
+                form: Default::default(),
+            })
+            .await
+        else {
+            panic!("asked")
+        };
+        let Response::Held {
+            message,
+            question: card,
+        } = daemon
+            .handle(Request::Send {
+                from: remote.id.to_string(),
+                to: local.id.to_string(),
+                kind: "message".into(),
+                payload: json!({ "text": "--verbose" }),
+                reply_to: Some(asked.clone()),
+                links: Vec::new(),
+                idempotency_key: None,
+            })
+            .await
+        else {
+            panic!("held")
+        };
+        lock(&daemon.state)
+            .store
+            .reject_event_for_test("question_closed");
+        let release = daemon
+            .handle(Request::Answer {
+                from: None,
+                message: card.clone(),
+                text: "Release".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
+            })
+            .await;
+        assert!(matches!(release, Response::Error { .. }), "{release:?}");
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(state.questions.len(), 2);
+            assert_eq!(state.held_messages.len(), 1);
+        }
+        assert!(endings(&daemon, &message, &[&card, &asked]).is_empty());
+        drop(daemon);
+        let daemon = open(&dir);
+        let state = lock(&daemon.state);
+        assert_eq!(state.questions.len(), 2);
+        assert_eq!(state.held_messages[&card].envelope.id, message);
+        assert!(
+            state
+                .inboxes
+                .get(&local.id)
+                .is_none_or(|queue| queue.is_empty())
+        );
+    }
+
+    /// A reply that would close a held card is refused, whatever it says:
+    /// only `answer` makes the held decision. Nothing is written or sent,
+    /// and the card and its message stand exactly as they were for the
+    /// explicit Release or Drop that each close once.
+    #[tokio::test]
+    async fn a_reply_to_a_held_card_is_refused_and_changes_nothing() {
+        let dir = TempDir::new().unwrap();
+        let root = checkout(&dir, "[inbound]\nconnector = \"hold\"\n");
+        let daemon = open(&dir);
+        let (person, local, remote) = cast(&daemon, &root).await;
+        let Response::Held { message, question } =
+            daemon.handle(send(&remote, "local", "first")).await
+        else {
+            panic!("held")
+        };
+        let Response::Held {
+            message: other,
+            question: other_card,
+        } = daemon.handle(send(&remote, "local", "second")).await
+        else {
+            panic!("held")
+        };
+        let stored = |daemon: &Arc<Daemon>| {
+            let state = lock(&daemon.state);
+            let mut questions: Vec<agentdocker_core::Question> =
+                state.store.documents("question", None).unwrap();
+            questions.sort_by(|a, b| a.id.cmp(&b.id));
+            let mut held: Vec<HeldMessage> = state.store.documents(DOCUMENT, None).unwrap();
+            held.sort_by(|a, b| a.question.cmp(&b.question));
+            (
+                serde_json::to_string(&questions).unwrap(),
+                serde_json::to_string(&held).unwrap(),
+            )
+        };
+        let before = stored(&daemon);
+        let said = daemon.recent_events(1)[0].seq;
+        let cards = inbox(&daemon, &person).await;
+        for text in ["Release", "Drop", "sure, deliver it"] {
+            let reply = daemon
+                .handle(Request::Send {
+                    from: person.id.to_string(),
+                    to: remote.id.to_string(),
+                    kind: "message".into(),
+                    payload: json!({ "text": text }),
+                    reply_to: Some(question.clone()),
+                    links: Vec::new(),
+                    idempotency_key: None,
+                })
+                .await;
+            assert!(
+                matches!(&reply, Response::Error { code: ErrorCode::Conflict, message, .. }
+                    if message.contains("Release or Drop")),
+                "{text}: {reply:?}"
+            );
+        }
+        assert_eq!(stored(&daemon), before, "byte for byte");
+        assert_eq!(daemon.recent_events(1)[0].seq, said, "nothing said");
+        assert!(inbox(&daemon, &remote).await.is_empty(), "no reply sent");
+        assert!(inbox(&daemon, &local).await.is_empty());
+        assert_eq!(inbox(&daemon, &person).await, cards);
+        {
+            let state = lock(&daemon.state);
+            assert_eq!(state.questions.len(), 2);
+            assert_eq!(state.held_messages.len(), 2);
+        }
+        // The decisions themselves still close each card once.
+        let decide = |card: &MessageId, text: &str| Request::Answer {
+            from: None,
+            message: card.clone(),
+            text: text.into(),
+            choices: Vec::new(),
+            note: None,
+            other: None,
+        };
+        let released = daemon.handle(decide(&question, "Release")).await;
+        assert!(
+            matches!(&released, Response::Sent { message: m, .. } if *m == message),
+            "{released:?}"
+        );
+        let dropped_ = daemon.handle(decide(&other_card, "Drop")).await;
+        assert!(matches!(dropped_, Response::Ok), "{dropped_:?}");
+        let ended = endings(&daemon, &message, &[&question]);
+        assert!(
+            matches!(&ended[..], [
+                EventKind::HeldMessageReleased { .. },
+                close,
+                EventKind::MessageSent { .. },
+            ] if *close == closed(&question, None, CloseReason::Released)),
+            "{ended:?}"
+        );
+        assert_eq!(
+            endings(&daemon, &other, &[&other_card]),
+            [
+                dropped(&other, &other_card, person.id.as_str()),
+                closed(&other_card, None, CloseReason::Dropped),
+            ]
+        );
+        assert_eq!(inbox(&daemon, &local).await.len(), 1);
+    }
+
+    /// Two held messages as an older daemon could leave them in the store:
+    /// one whose card's time has run out, and one whose card is already
+    /// gone (its reply could close the card and leave the message).
+    /// Written straight to the store, past any fence.
+    struct Stored {
+        card: MessageId,
+        expired: MessageId,
+        gone: MessageId,
+        orphan: MessageId,
+    }
+
+    async fn store_endings(daemon: &Arc<Daemon>, root: &Path) -> Stored {
+        let (_, _, remote) = cast(daemon, root).await;
+        let Response::Held {
+            message: expired,
+            question: card,
+        } = daemon.handle(send(&remote, "local", "late")).await
+        else {
+            panic!("held")
+        };
+        let Response::Held {
+            message: orphan,
+            question: gone,
+        } = daemon.handle(send(&remote, "local", "lost")).await
+        else {
+            panic!("held")
+        };
+        let state = lock(&daemon.state);
+        let mut question = state.questions[&card].clone();
+        question.expires_at = Utc::now() - Duration::seconds(1);
+        state
+            .store
+            .put_document("question", card.as_str(), &question)
+            .unwrap();
+        state
+            .store
+            .documents_change(&[], &[("question", gone.to_string())], &[])
+            .unwrap();
+        Stored {
+            card,
+            expired,
+            gone,
+            orphan,
+        }
+    }
+
+    impl Stored {
+        /// Ended once, each as it should be: the expired card's message
+        /// dropped as expired and the card closed as expired; the orphan
+        /// dropped, attributed to recovery, with no closing made up for
+        /// the question that was already gone. Nothing of either is left
+        /// in memory or on disk.
+        fn ended_once(&self, daemon: &Arc<Daemon>) {
+            assert_eq!(
+                endings(daemon, &self.expired, &[&self.card]),
+                [
+                    dropped(&self.expired, &self.card, EXPIRY),
+                    closed(&self.card, None, CloseReason::Expired),
+                ]
+            );
+            assert_eq!(
+                endings(daemon, &self.orphan, &[&self.gone]),
+                [dropped(
+                    &self.orphan,
+                    &self.gone,
+                    crate::daemon::closing::RECOVERY
+                )]
+            );
+            let state = lock(&daemon.state);
+            assert!(state.questions.is_empty(), "{:?}", state.questions);
+            assert!(state.held_messages.is_empty());
+            let questions: Vec<agentdocker_core::Question> =
+                state.store.documents("question", None).unwrap();
+            assert!(questions.is_empty(), "{questions:?}");
+            let held: Vec<HeldMessage> = state.store.documents(DOCUMENT, None).unwrap();
+            assert!(held.is_empty());
+        }
+    }
+
+    /// Serving, an open ends what it finds ended in one commit, once; a
+    /// failed commit leaves it all for the next open, which ends it once.
+    #[tokio::test]
+    async fn an_open_ends_an_expired_card_and_an_orphan_once() {
+        let dir = TempDir::new().unwrap();
+        let root = checkout(&dir, "[inbound]\nconnector = \"hold\"\n");
+        let daemon = open(&dir);
+        let stored = store_endings(&daemon, &root).await;
+        drop(daemon);
+
+        // The orphan's drop fails: nothing of the commit lands.
+        let store = Store::open(&dir.path().join("state.db")).unwrap();
+        store.reject_event_for_test("question_closed");
+        assert!(Daemon::with_store(dir.path().into(), dir.path().join("sock"), store).is_err());
+        {
+            let store = Store::open(&dir.path().join("state.db")).unwrap();
+            let held: Vec<HeldMessage> = store.documents(DOCUMENT, None).unwrap();
+            assert_eq!(held.len(), 2, "neither drop landed");
+        }
+
+        let daemon = open(&dir);
+        stored.ended_once(&daemon);
+        drop(daemon);
+        let daemon = open(&dir);
+        stored.ended_once(&daemon);
+    }
+
+    /// Fenced, an open writes nothing and forgets nothing: the expired card
+    /// and its message stay together, the orphan stays. Acceptance drops
+    /// the orphan as its first act and the tick closes the card with its
+    /// message, each once, memory and disk together.
+    #[tokio::test]
+    async fn a_fenced_open_ends_them_once_it_may_write() {
+        let dir = TempDir::new().unwrap();
+        let root = checkout(&dir, "[inbound]\nconnector = \"hold\"\n");
+        let predecessor = open(&dir);
+        let stored = store_endings(&predecessor, &root).await;
+        let transfer = predecessor.offer_transfer(std::process::id()).unwrap();
+        let successor =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock2")).unwrap());
+        {
+            let state = lock(&successor.state);
+            assert!(state.questions.contains_key(&stored.card));
+            assert_eq!(state.held_messages.len(), 2);
+            let held: Vec<HeldMessage> = state.store.documents(DOCUMENT, None).unwrap();
+            assert_eq!(held.len(), 2);
+        }
+        assert!(endings(&successor, &stored.expired, &[&stored.card]).is_empty());
+        assert!(endings(&successor, &stored.orphan, &[&stored.gone]).is_empty());
+
+        successor.accept_transfer(&transfer.id).unwrap();
+        assert_eq!(
+            endings(&successor, &stored.orphan, &[&stored.gone]).len(),
+            1,
+            "acceptance drops the orphan"
+        );
+        assert!(
+            lock(&successor.state)
+                .held_messages
+                .contains_key(&stored.card),
+            "the expired card's message waits for the tick, beside its card"
+        );
+        lock(&successor.state).expire_questions(Utc::now());
+        stored.ended_once(&successor);
+        drop(successor);
+        drop(predecessor);
+        let daemon = open(&dir);
+        stored.ended_once(&daemon);
+    }
+
+    /// Acceptance's drop of the orphan failing leaves it in memory and on
+    /// disk; the next open drops it once.
+    #[tokio::test]
+    async fn a_failed_drop_at_acceptance_is_done_once_at_the_next_open() {
+        let dir = TempDir::new().unwrap();
+        let root = checkout(&dir, "[inbound]\nconnector = \"hold\"\n");
+        let predecessor = open(&dir);
+        let stored = store_endings(&predecessor, &root).await;
+        let transfer = predecessor.offer_transfer(std::process::id()).unwrap();
+        let successor =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock2")).unwrap());
+        lock(&successor.state)
+            .store
+            .reject_event_for_test("held_message_dropped");
+        successor.accept_transfer(&transfer.id).unwrap();
+        {
+            let state = lock(&successor.state);
+            assert!(state.write_failure().is_some());
+            assert_eq!(state.held_messages.len(), 2);
+            let held: Vec<HeldMessage> = state.store.documents(DOCUMENT, None).unwrap();
+            assert_eq!(held.len(), 2);
+        }
+        assert!(endings(&successor, &stored.orphan, &[&stored.gone]).is_empty());
+        drop(successor);
+        drop(predecessor);
+        let daemon = open(&dir);
+        stored.ended_once(&daemon);
     }
 
     /// The host's file holds what a project would accept: a repository
