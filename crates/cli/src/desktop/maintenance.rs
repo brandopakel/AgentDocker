@@ -105,6 +105,14 @@ fn plan<T: Into<services::References>>(
             !references.any,
             "a daemon or connector user service is installed; remove its registration before removing desktop launchers"
         );
+        // The pointer goes first: the installation is deactivated before
+        // anything of it is removed, so an uninstall that stops part-way
+        // never reads as an active installation with pieces missing. What
+        // it leaves then is no active release and some launchers or
+        // commands, which this plan lists again when it is run again.
+        if active.is_some() {
+            plan.remove.push(layout.root.join("current"));
+        }
         for (path, _) in layout.links() {
             if path.symlink_metadata().is_ok() {
                 plan.remove.push(path);
@@ -120,9 +128,6 @@ fn plan<T: Into<services::References>>(
             && legacy.symlink_metadata().is_ok()
         {
             plan.remove.push(legacy.clone());
-        }
-        if active.is_some() {
-            plan.remove.push(layout.root.join("current"));
         }
         return Ok((plan, pins));
     };
@@ -203,18 +208,15 @@ fn plan<T: Into<services::References>>(
 fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
     layout.preflight()?;
     if plan.operation == "uninstall" {
+        // Read before the pointer goes: a program started through the
+        // command in the bin folder is found through the pointer, and
+        // the release it is in is kept.
+        let program = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.canonicalize().ok());
         for path in &plan.remove {
-            // preflight verifies every owned link and the exact Linux launcher.
-            // Recheck while each path is still present before unlinking it.
-            layout.preflight()?;
-            if path.symlink_metadata()?.is_dir() {
-                // Only our own launcher bundle reaches here (preflight).
-                layout.launch_services(Registration::Unregister, path);
-                std::fs::remove_dir_all(path)?;
-            } else {
-                std::fs::remove_file(path)?;
-            }
-            std::fs::File::open(path.parent().context("launcher has no parent")?)?.sync_all()?;
+            remove_owned(layout, path)
+                .with_context(|| stopped(layout, path, program.as_deref()))?;
         }
         layout.settle_launch_services();
     } else {
@@ -236,6 +238,50 @@ fn apply(layout: &Layout, plan: &Plan) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Remove one thing an uninstall plan lists.
+fn remove_owned(layout: &Layout, path: &Path) -> Result<()> {
+    // preflight verifies every owned link and the exact Linux launcher.
+    // Recheck while each path is still present before unlinking it.
+    layout.preflight()?;
+    if path.symlink_metadata()?.is_dir() {
+        // Only our own launcher bundle reaches here (preflight).
+        layout.launch_services(Registration::Unregister, path);
+        std::fs::remove_dir_all(path)?;
+    } else {
+        std::fs::remove_file(path)?;
+    }
+    std::fs::File::open(path.parent().context("launcher has no parent")?)?.sync_all()?;
+    Ok(())
+}
+
+/// What an uninstall says when it stops at `path`. The pointer is the
+/// first thing it removes, so while the pointer is there nothing was
+/// removed; once it is gone no release is active, a command still in
+/// the bin folder runs nothing, and the way to finish is the same
+/// uninstall, typed with a program that still runs: this one, unless it
+/// was itself in what the uninstall was removing (the application).
+fn stopped(layout: &Layout, path: &Path, program: Option<&Path>) -> String {
+    if layout.root.join("current").symlink_metadata().is_ok() {
+        return format!(
+            "the uninstall stopped at {} and removed nothing: the installation is as it was",
+            path.display()
+        );
+    }
+    let again = match program.filter(|program| program.is_file()) {
+        Some(program) => layout.uninstall_with(Some(program)),
+        None => format!(
+            "{}, typed with the `agentdocker` of a package or of a release kept under {}",
+            layout.uninstall_with(None),
+            layout.root.join("versions").display()
+        ),
+    };
+    format!(
+        "the uninstall stopped at {}. It had deactivated the installation: no release is active, and any command left in {} runs nothing. Run it again to remove what is left: {again}",
+        path.display(),
+        layout.bin.display()
+    )
 }
 
 fn service_installed(layout: &Layout) -> Result<services::References> {
@@ -735,6 +781,167 @@ mod tests {
         for (link, _) in layout.links() {
             assert!(link.symlink_metadata().is_err());
         }
+    }
+
+    /// An uninstall deactivates before it removes: the pointer is the
+    /// first thing to go. Stopped after any step, no release is active,
+    /// what is left reads as an operation that stopped (never as an
+    /// installation in use with pieces missing), and running it again
+    /// removes the rest. Before, the pointer went last, and an uninstall
+    /// stopped anywhere read as installed.
+    #[test]
+    fn an_uninstall_stopped_at_any_step_has_deactivated_and_finishes_when_run_again() {
+        let steps = {
+            let (_temp, layout) = fixture();
+            let release = retained(&layout, "current", 1);
+            layout.activate(release, None).unwrap();
+            let (whole, _) = plan(&layout, None, false, || Ok(false)).unwrap();
+            assert_eq!(
+                whole.remove.first(),
+                Some(&layout.root.join("current")),
+                "the pointer is removed first: {:?}",
+                whole.remove
+            );
+            whole.remove.len()
+        };
+        assert!(steps >= 5, "the pointer, three commands and the launcher");
+        for stopped_after in 1..steps {
+            let (_temp, layout) = fixture();
+            let release = retained(&layout, "current", 1);
+            layout.activate(release.clone(), None).unwrap();
+            let (mut review, _) = plan(&layout, None, false, || Ok(false)).unwrap();
+            let rest = review.remove.split_off(stopped_after);
+            apply(&layout, &review).unwrap();
+
+            assert!(
+                layout.active().unwrap().is_none(),
+                "stopped after {stopped_after}: deactivated"
+            );
+            let found = layout.condition(None);
+            assert_eq!(
+                found.installation, "interrupted",
+                "stopped after {stopped_after}: {found:?}"
+            );
+            assert!(
+                found.way_out[0].contains("an uninstall stopped before it had removed them"),
+                "{:?}",
+                found.way_out
+            );
+            // Run again, it plans exactly what was left, and finishes.
+            let (again, _) = plan(&layout, None, false, || Ok(false)).unwrap();
+            assert_eq!(again.remove, rest, "stopped after {stopped_after}");
+            apply(&layout, &again).unwrap();
+            let found = layout.condition(None);
+            assert_eq!(
+                (found.installation, found.launcher, found.links),
+                ("deactivated", "missing", "none"),
+                "stopped after {stopped_after}: {found:?}"
+            );
+            assert!(found.way_out.is_empty());
+            assert!(layout.payload(&release).exists(), "the release is kept");
+        }
+    }
+
+    /// A removal that fails, rather than a process that dies: the
+    /// uninstall says where it stopped and what that left. On the pointer
+    /// itself nothing was removed and the installation is as it was; on
+    /// anything after it the installation is deactivated, and the message
+    /// gives the uninstall to run again typed with the program that is
+    /// running, since the command in the bin folder runs nothing by then.
+    #[cfg(unix)]
+    #[test]
+    fn an_uninstall_that_fails_says_what_it_left_and_how_to_finish() {
+        use std::os::unix::fs::PermissionsExt;
+        // Permission bits do not stop the superuser from unlinking.
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let writable = |path: &Path, yes: bool| {
+            let mode = if yes { 0o700 } else { 0o500 };
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        let (_temp, layout) = fixture();
+        let release = retained(&layout, "current", 1);
+        layout.activate(release, None).unwrap();
+        let (whole, _) = plan(&layout, None, false, || Ok(false)).unwrap();
+
+        // The pointer cannot be removed: nothing is.
+        writable(&layout.root, false);
+        let refused = apply(&layout, &whole);
+        writable(&layout.root, true);
+        let said = format!("{:#}", refused.unwrap_err());
+        assert!(
+            said.contains("removed nothing: the installation is as it was"),
+            "{said}"
+        );
+        assert!(layout.active().unwrap().is_some());
+        let found = layout.condition(layout.active().unwrap().as_ref());
+        assert_eq!(
+            (found.installation, found.links, found.way_out.len()),
+            ("active", "complete", 0),
+            "{found:?}"
+        );
+        assert_eq!(
+            plan(&layout, None, false, || Ok(false)).unwrap().0.remove,
+            whole.remove,
+            "the same uninstall is still to do"
+        );
+
+        // A command cannot be removed: the pointer is gone by then.
+        writable(&layout.bin, false);
+        let refused = apply(&layout, &whole);
+        writable(&layout.bin, true);
+        let said = format!("{:#}", refused.unwrap_err());
+        let program = std::env::current_exe().unwrap().canonicalize().unwrap();
+        assert!(
+            said.contains(&format!(
+                "the uninstall stopped at {}. It had deactivated the installation",
+                layout.bin.join("agentdocker").display()
+            )) && said.contains(&format!(
+                "runs nothing. Run it again to remove what is left: `'{}' desktop --prefix '{}' uninstall`",
+                program.display(),
+                layout.prefix.display()
+            )),
+            "{said}"
+        );
+        // A program that is gone by then (it was in what was being
+        // removed) is not named: the person is told where one is.
+        let gone = stopped(
+            &layout,
+            &layout.application,
+            Some(&layout.application.join("agentdocker")),
+        );
+        assert!(
+            gone.contains(&format!(
+                "`agentdocker desktop --prefix '{}' uninstall`, typed with the `agentdocker` of a package or of a release kept under {}",
+                layout.prefix.display(),
+                layout.root.join("versions").display()
+            )),
+            "{gone}"
+        );
+        assert!(layout.active().unwrap().is_none());
+        let found = layout.condition(None);
+        assert_eq!(
+            (found.installation, found.links),
+            ("interrupted", "complete"),
+            "{found:?}"
+        );
+        assert!(
+            found.way_out[0].contains("runs nothing while no release is active"),
+            "{:?}",
+            found.way_out
+        );
+        // Run again, as it says, it removes the rest.
+        let (again, _) = plan(&layout, None, false, || Ok(false)).unwrap();
+        assert_eq!(again.remove, whole.remove[1..]);
+        apply(&layout, &again).unwrap();
+        let found = layout.condition(None);
+        assert_eq!(
+            (found.installation, found.links, found.way_out.len()),
+            ("deactivated", "none", 0),
+            "{found:?}"
+        );
     }
 
     #[test]
