@@ -1,5 +1,6 @@
 //! Native installation controls backed by the sibling CLI's checked operations.
 
+use agentdocker_core::desktop_report::{Handover, UpdateOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -185,7 +186,10 @@ impl Panel {
                 .update
                 .as_ref()
                 .or_else(|| self.report.as_ref()?.get("update"))
-                .is_some_and(|update| update["preview_consent_required"] == true)
+                .is_some_and(|update| match update_outcome(update) {
+                    Some(outcome) => outcome == UpdateOutcome::NeedsConsent,
+                    None => update["preview_consent_required"] == true,
+                })
     }
 
     /// The newer version the last check or preview found, if any.
@@ -194,9 +198,83 @@ impl Panel {
             .update
             .as_ref()
             .or_else(|| self.report.as_ref()?.get("update"))?;
-        (update["update_available"] == true)
+        let offered = match update_outcome(update) {
+            Some(outcome) => outcome.offers(),
+            None => update["update_available"] == true,
+        };
+        offered
             .then(|| update["available"]["version"].as_str())
             .flatten()
+    }
+}
+
+/// What an update report says happened, by its word (`update.outcome`).
+/// `None` for a report that says none, which is then read by the keys it
+/// has, as every report was: a build that prints no word, and a word this
+/// build does not know.
+pub fn update_outcome(update: &Value) -> Option<UpdateOutcome> {
+    update["outcome"].as_str()?.parse().ok()
+}
+
+/// Whether an update report says nothing has been published yet.
+pub fn unpublished(update: &Value) -> bool {
+    match update_outcome(update) {
+        Some(outcome) => outcome == UpdateOutcome::NotPublished,
+        None => update["published"] == false,
+    }
+}
+
+/// How the handover to the running daemon went after an activation, by
+/// the report's word (`daemon.outcome`); `None` as for `update_outcome`.
+pub fn handover(report: &Value) -> Option<Handover> {
+    report["daemon"]["outcome"].as_str()?.parse().ok()
+}
+
+/// Which release the daemon a report saw serving runs, as far as the
+/// report itself can say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Serving {
+    /// No daemon answered.
+    Nobody,
+    /// A daemon answers from the installed release's own folder in the
+    /// version store.
+    This,
+    /// A daemon answers from another release's folder in that store.
+    Another,
+    /// A daemon answers and the report cannot say which release it runs:
+    /// it named no executable, the executable is not in the store the
+    /// report names, or the report names no store or release to compare
+    /// with. Not an absence, and not proof of another release.
+    Unknown,
+}
+
+/// Which release the serving daemon runs. The daemon says which
+/// executable it runs (`daemon.serving.executable`, which it may not
+/// know), and the installer says where the version store is (`versions`)
+/// and which release it installed (`candidate.id`): a release's files are
+/// kept under its id in that store, so the executable is the release's
+/// own exactly when it is under that folder of that store. The store is
+/// the one the report names, not any folder called `versions` on the way
+/// there: a prefix may itself be under one.
+pub fn serving(report: &Value) -> Serving {
+    let daemon = &report["daemon"]["serving"];
+    if daemon.is_null() {
+        return Serving::Nobody;
+    }
+    let (Some(executable), Some(store), Some(release)) = (
+        daemon["executable"].as_str(),
+        report["versions"].as_str(),
+        report["candidate"]["id"].as_str(),
+    ) else {
+        return Serving::Unknown;
+    };
+    let Ok(within) = std::path::Path::new(executable).strip_prefix(store) else {
+        return Serving::Unknown;
+    };
+    match within.components().next() {
+        Some(first) if !release.is_empty() && first.as_os_str() == release => Serving::This,
+        Some(_) => Serving::Another,
+        None => Serving::Unknown,
     }
 }
 
@@ -472,6 +550,136 @@ mod tests {
         p.receive(Ok(json!({"preview": false})));
         assert!(p.error.is_none());
         assert!(p.report.is_some());
+    }
+
+    /// A report is read by its outcome word. Here the word and the keys
+    /// are made to disagree, which a real report's never do, to show
+    /// which one is read; and a report with no word, or with one this
+    /// build does not know, is read by its keys as every report was.
+    #[test]
+    fn a_report_is_read_by_its_word_and_by_its_keys_without_one() {
+        let offered = |update: Value| {
+            let mut panel = Panel::default();
+            panel.receive_update(Ok(json!({ "update": update })));
+            (
+                panel.update_available().map(str::to_owned),
+                panel.preview_consent_needed(),
+            )
+        };
+        let keys = |available: bool, consent: bool| {
+            json!({"update_available": available, "preview_consent_required": consent,
+                "available": {"version": "0.3.0"}})
+        };
+        let worded = |word: &str, available: bool, consent: bool| {
+            let mut update = keys(available, consent);
+            update["outcome"] = json!(word);
+            update
+        };
+        let newer = Some("0.3.0".to_owned());
+        // The word, whatever the keys say.
+        assert_eq!(offered(worded("up_to_date", true, true)), (None, false));
+        assert_eq!(offered(worded("not_published", true, false)), (None, false));
+        assert_eq!(offered(worded("applied", true, false)), (None, false));
+        assert_eq!(
+            offered(worded("available", false, true)),
+            (newer.clone(), false)
+        );
+        assert_eq!(
+            offered(worded("needs_consent", false, false)),
+            (newer.clone(), true)
+        );
+        assert_eq!(
+            offered(worded("previewed", false, false)),
+            (newer.clone(), false)
+        );
+        // No word, or one this build does not know: the keys.
+        assert_eq!(offered(keys(true, true)), (newer.clone(), true));
+        assert_eq!(offered(keys(false, false)), (None, false));
+        assert_eq!(offered(worded("installed", true, false)), (newer, false));
+
+        assert!(unpublished(
+            &json!({"outcome": "not_published", "published": true})
+        ));
+        assert!(!unpublished(
+            &json!({"outcome": "up_to_date", "published": false})
+        ));
+        assert!(unpublished(&json!({"published": false})));
+        assert!(!unpublished(&json!({"published": true})));
+
+        assert_eq!(
+            handover(&json!({"daemon": {"outcome": "reloaded_silent", "reloaded": true}})),
+            Some(Handover::ReloadedSilent)
+        );
+        assert_eq!(handover(&json!({"daemon": {"reloaded": true}})), None);
+        assert_eq!(handover(&json!({"daemon": {"outcome": "restarted"}})), None);
+        assert_eq!(handover(&json!({"preview": true})), None);
+    }
+
+    /// Which release the serving daemon runs is read from what the
+    /// report says: the executable the daemon answered with, against the
+    /// version store and the release the installer names. Four answers,
+    /// and none of them is taken for another.
+    #[test]
+    fn which_release_serves_is_read_against_the_reports_own_store_and_release() {
+        let store = "/home/.local/share/agentdocker/desktop/versions";
+        let report = |store: &str, serving: Value| json!({"versions": store, "candidate": {"id": "bbbb"}, "daemon": {"serving": serving}});
+        let daemon = |executable: &str| json!({"version": "1", "pid": 7, "executable": executable});
+        let at = |executable: &str| serving(&report(store, daemon(executable)));
+        assert_eq!(
+            at(&format!("{store}/bbbb/payload/bin/agentd")),
+            Serving::This
+        );
+        assert_eq!(
+            at(&format!("{store}/aaaa/payload/bin/agentd")),
+            Serving::Another
+        );
+        assert_eq!(at(&format!("{store}/bbbb-old/agentd")), Serving::Another);
+        // Outside the store the report names, its release is not known:
+        // a build in a checkout, or a path that merely mentions the id.
+        assert_eq!(at("/work/target/debug/agentd"), Serving::Unknown);
+        assert_eq!(at("/elsewhere/versions/bbbb/agentd"), Serving::Unknown);
+
+        // A prefix that is itself under a folder called `versions/<this
+        // release>`: the store is still the one the report names, and the
+        // daemon of the release before, in that store, is another's.
+        let nested = "/tmp/versions/bbbb/.local/share/agentdocker/desktop/versions";
+        let under = |release: &str| {
+            serving(&report(
+                nested,
+                daemon(&format!(
+                    "{nested}/{release}/agentdocker-desktop/bin/agentd"
+                )),
+            ))
+        };
+        assert_eq!(
+            under("aaaa"),
+            Serving::Another,
+            "the earlier release serves"
+        );
+        assert_eq!(under("bbbb"), Serving::This);
+
+        // Nobody answers, which is not the same as a daemon that answers
+        // and does not say what it runs.
+        assert_eq!(serving(&report(store, Value::Null)), Serving::Nobody);
+        assert_eq!(serving(&json!({"preview": true})), Serving::Nobody);
+        assert_eq!(
+            serving(&report(
+                store,
+                json!({"version": "1", "pid": 7, "executable": null})
+            )),
+            Serving::Unknown
+        );
+        assert_eq!(
+            serving(&report(store, json!({"version": "1", "pid": 7}))),
+            Serving::Unknown
+        );
+        // A report that names no store, or no release, cannot say either.
+        let unanchored = json!({"candidate": {"id": "bbbb"},
+            "daemon": {"serving": daemon(&format!("{store}/bbbb/agentd"))}});
+        assert_eq!(serving(&unanchored), Serving::Unknown);
+        let unnamed = json!({"versions": store,
+            "daemon": {"serving": daemon(&format!("{store}/bbbb/agentd"))}});
+        assert_eq!(serving(&unnamed), Serving::Unknown);
     }
 
     #[test]

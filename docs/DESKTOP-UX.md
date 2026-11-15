@@ -1080,7 +1080,18 @@ releases and what earlier commands left in the installation's folder (each with
 what it is: left by a cleanup or an activation that stopped, an activation record
 no longer in use, an update's download that is installed or passed over), and as
 **Keep** what stays, with the reason. Apply is tied to the reviewed payload or cleanup
-plan and refuses stale inputs. Running versions and agents remain protected by
+plan and refuses stale inputs. After an apply the last stage, **Switch over**,
+is done only when the service reloaded to the release and answers. When it
+reloaded and has not answered since, or what it did is not known, the stage
+says so and is marked as one to look at, not as done; when it refused, the
+stage says the service keeps the earlier release until it is restarted; with no
+service running it reads *next launch*. Installing a release that is already
+active asks the service nothing, so the stage is done there only when the
+service answering runs from that release's own files in the installation's
+version store; when another release's service answers, as after a reload that
+was refused, it says that service runs until it is restarted; and when a
+service answers without its release being known, the stage is marked as one to
+look at and points to `agentdocker daemon status`. Running versions and agents remain protected by
 the existing installer rules. Public macOS downloads require Developer ID signing
 and notarization; locally signed builds are explicit previews.
 

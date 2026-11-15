@@ -18,6 +18,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use agentdocker_core::desktop_report::{UpdateFacts, UpdateOutcome, UpdateStep};
 use agentdocker_core::{Request, Response};
 use agentdocker_host::{command, dirs};
 use anyhow::{Context, Result, bail, ensure};
@@ -826,17 +827,19 @@ fn run_with_home(
         }
     }
     let Some((feed, release, feed_url)) = found else {
+        let mut update = json!({
+            "feeds": feeds,
+            "unpublished": unpublished,
+            "published": false,
+            "installed_version": installed,
+            "running_version": running,
+            "update_available": false,
+            "note": "No release has been published to these update channels yet.",
+        });
+        worded(&mut update, UpdateStep::Checked);
         println!(
             "{}",
-            serde_json::to_string_pretty(&json!({"update": {
-                "feeds": feeds,
-                "unpublished": unpublished,
-                "published": false,
-                "installed_version": installed,
-                "running_version": running,
-                "update_available": false,
-                "note": "No release has been published to these update channels yet.",
-            }}))?
+            serde_json::to_string_pretty(&json!({"update": update}))?
         );
         return Ok(());
     };
@@ -895,6 +898,7 @@ fn run_with_home(
         "daemon": guidance,
     });
     if options.check || !update_available {
+        worded(&mut update, UpdateStep::Checked);
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({"update": update}))?
@@ -1007,14 +1011,77 @@ fn run_with_home(
         // must not turn a completed update into a false installation failure.
         report["extraction_cleanup"] = json!({"path": extracted, "error": error.to_string()});
     }
+    worded(
+        &mut update,
+        if options.apply {
+            UpdateStep::Applied
+        } else {
+            UpdateStep::Previewed
+        },
+    );
     report["update"] = update;
     println!("{}", serde_json::to_string_pretty(&report)?);
     Ok(())
 }
 
+/// An update report's `update` object with its outcome word, `outcome`,
+/// beside the keys it has. The word is computed from those keys
+/// (`desktop_report::UpdateOutcome`) and from how far the command went, so
+/// it cannot say something they do not.
+fn worded(update: &mut serde_json::Value, step: UpdateStep) {
+    let facts = UpdateFacts {
+        published: update["published"] == true,
+        available: update["update_available"] == true,
+        consent_required: update["preview_consent_required"] == true,
+        step,
+    };
+    update["outcome"] = json!(UpdateOutcome::of(facts));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each report an update prints carries its outcome word beside the
+    /// keys it had, computed from them: the three shapes the command
+    /// prints, with the keys each has.
+    #[test]
+    fn each_update_report_says_its_outcome_beside_its_keys() {
+        let word = |mut update: Value, step| {
+            let before = update.clone();
+            worded(&mut update, step);
+            let said = update["outcome"].as_str().unwrap().to_owned();
+            update.as_object_mut().unwrap().remove("outcome");
+            assert_eq!(update, before, "every other key is as it was");
+            said
+        };
+        // Nothing published: the report has no `preview_consent_required`.
+        assert_eq!(
+            word(
+                json!({"published": false, "update_available": false, "feeds": []}),
+                UpdateStep::Checked
+            ),
+            "not_published"
+        );
+        let published = |available: bool, consent: bool| json!({"published": true, "update_available": available, "preview_consent_required": consent});
+        assert_eq!(
+            word(published(false, false), UpdateStep::Checked),
+            "up_to_date"
+        );
+        assert_eq!(
+            word(published(true, false), UpdateStep::Checked),
+            "available"
+        );
+        assert_eq!(
+            word(published(true, true), UpdateStep::Checked),
+            "needs_consent"
+        );
+        assert_eq!(
+            word(published(true, false), UpdateStep::Previewed),
+            "previewed"
+        );
+        assert_eq!(word(published(true, false), UpdateStep::Applied), "applied");
+    }
 
     #[test]
     fn windows_updates_require_preview_policy_and_the_exact_zip_name() {

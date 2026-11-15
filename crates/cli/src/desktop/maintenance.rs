@@ -490,6 +490,70 @@ mod tests {
         release
     }
 
+    /// A plan's id is the hash of its JSON, and a preview is applied by
+    /// naming that id: the bytes are a contract between the two runs, and
+    /// with the app, which passes the id back. They are pinned here: the
+    /// field names, their order, what is left out when empty, and the
+    /// hash of exactly those bytes.
+    #[test]
+    fn a_plans_serialization_and_its_id_are_pinned() {
+        let plan = |operation, current: Option<&str>, remove: &[&str], keep| Plan {
+            operation,
+            current: current.map(str::to_owned),
+            remove: remove.iter().map(PathBuf::from).collect(),
+            retained: Vec::new(),
+            keep,
+            sweep: Vec::new(),
+            unswept: Vec::new(),
+        };
+        let mut prune = plan(
+            "prune",
+            Some("release-id"),
+            &["/prefix/versions/old"],
+            Some(1),
+        );
+        prune.retained.push(Entry {
+            path: "/prefix/versions/kept".into(),
+            reason: "additional retained version",
+        });
+        let mut swept = plan("prune", Some("release-id"), &[], Some(0));
+        swept.sweep.push(sweep::Leftover {
+            path: "/prefix/generations/left".into(),
+            kind: "generation",
+        });
+        swept.unswept.push(Entry {
+            path: "/prefix/retired/other".into(),
+            reason: "unrecognized; preserved",
+        });
+        let uninstall = plan(
+            "uninstall",
+            None,
+            &["/prefix/current", "/prefix/.local/bin/agentdocker"],
+            None,
+        );
+        let pinned = [
+            (
+                &prune,
+                r#"{"operation":"prune","current":"release-id","remove":["/prefix/versions/old"],"retained":[{"path":"/prefix/versions/kept","reason":"additional retained version"}],"keep":1}"#,
+                "30d105c9f757ce49b88c73106e0abfc81c04b0ceb8b1e4bee127f7e511277d9b",
+            ),
+            (
+                &swept,
+                r#"{"operation":"prune","current":"release-id","remove":[],"retained":[],"keep":0,"sweep":[{"path":"/prefix/generations/left","kind":"generation"}],"unswept":[{"path":"/prefix/retired/other","reason":"unrecognized; preserved"}]}"#,
+                "b97fa02e02f8f40c4c7c033f575e8eaaec3edfc2357e7a556f2e740b4f1cd560",
+            ),
+            (
+                &uninstall,
+                r#"{"operation":"uninstall","current":null,"remove":["/prefix/current","/prefix/.local/bin/agentdocker"],"retained":[],"keep":null}"#,
+                "5d086bb43697f775a9669d626a9397c66bd4d2fdd92b972b46bc5618552f49a0",
+            ),
+        ];
+        for (plan, bytes, id) in pinned {
+            assert_eq!(serde_json::to_string(plan).unwrap(), bytes);
+            assert_eq!(plan.id().unwrap(), id, "{bytes}");
+        }
+    }
+
     #[test]
     fn pruning_keeps_active_previous_running_and_legacy_releases() {
         let (_temp, layout) = fixture();

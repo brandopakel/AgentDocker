@@ -7372,6 +7372,20 @@ mod tests {
             .expect("parsing does not panic")
     }
 
+    /// `desktop update --check` only looks and `--apply` installs: asked
+    /// for both, the command is refused. It used to look, and say
+    /// nothing of the install it had been asked for and did not make.
+    #[test]
+    fn a_desktop_update_cannot_both_check_and_apply() {
+        let refused = parse_cli(["agentdocker", "desktop", "update", "--check", "--apply"]);
+        let error = refused.err().expect("both flags are refused");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        for alone in ["--check", "--apply"] {
+            assert!(parse_cli(["agentdocker", "desktop", "update", alone]).is_ok());
+        }
+        assert!(parse_cli(["agentdocker", "desktop", "update"]).is_ok());
+    }
+
     /// `plan edit --body` takes the revision the new text was written
     /// from; a change of title or status takes none.
     #[test]

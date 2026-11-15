@@ -98,6 +98,7 @@ def main():
         # 2. Same version installed nowhere yet: the running CLI is the baseline, so nothing is newer.
         same = cli(binary, prefix, "update", "--feed", feed_url, "--check", "--local-preview", env=env)
         assert same["update"]["update_available"] is False, same
+        assert same["update"]["outcome"] == "up_to_date", same
         assert not (prefix / ".local/share/agentdocker/desktop/downloads" / version).exists(), "check downloaded something"
         report["steps"].append("check reports no update for the running version and downloads nothing")
 
@@ -122,6 +123,7 @@ def main():
         feed_path.write_text(json.dumps(feed))
         check = cli(binary, prefix, "update", "--feed", feed_url, "--check", "--local-preview", env=env)
         assert check["update"]["update_available"] is True and check["update"]["available"]["version"] == newer, check
+        assert check["update"]["outcome"] == "available", check
         report["steps"].append("check sees the advertised newer version")
         mismatch = cli(binary, prefix, "update", "--feed", feed_url, "--local-preview", env=env, success=False)
         assert "does not match the feed entry" in mismatch, mismatch
@@ -168,10 +170,15 @@ def main():
         preview = cli(binary, prefix, "update", "--feed", feed_url, "--local-preview", env=env)
         assert preview["preview"] is True and preview["candidate"]["version"] == newer, preview
         assert preview["update"]["downloaded"].endswith(archive_name), preview["update"]
+        assert preview["update"]["outcome"] == "previewed", preview["update"]
         assert cli(binary, prefix, "status", env=env)["installation"] is None, "preview installed something"
         report["steps"].append("download, verify, extract and preview of the newer release")
         applied = cli(binary, prefix, "update", "--feed", feed_url, "--local-preview", "--apply", env=env)
         assert applied["preview"] is False, applied
+        # The words beside the keys: the update was applied, and no daemon
+        # runs here, so none was asked to switch.
+        assert applied["update"]["outcome"] == "applied", applied["update"]
+        assert applied["daemon"]["outcome"] == "no_daemon", applied["daemon"]
         status = cli(binary, prefix, "status", env=env)
         assert status["installation"]["current"]["version"] == newer, status
         for name in ("agentdocker", "agentd", "agentdocker-ui"):
@@ -180,6 +187,7 @@ def main():
         report["steps"].append("apply produced a managed installation of the advertised version")
         again = cli(binary, prefix, "update", "--feed", feed_url, "--check", "--local-preview", env=env)
         assert again["update"]["update_available"] is False and again["update"]["installed_version"] == newer, again
+        assert again["update"]["outcome"] == "up_to_date", again
         report["steps"].append("second check finds nothing newer than the installed version")
         report["installed"] = status["installation"]["current"]
         report["passed"] = True

@@ -203,7 +203,7 @@ enum DesktopCommand {
         #[arg(long, env = update::FEED_ENV)]
         feed: Option<String>,
         /// Only report whether a newer release exists; download nothing.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "apply")]
         check: bool,
         /// Install the verified release for the next launch instead of previewing it.
         #[arg(long)]
@@ -1615,7 +1615,11 @@ fn perform(layout: &Layout, install: Install) -> Result<serde_json::Value> {
                 serving["pid"]
             )
         };
-        json!({"answered": !serving.is_null(), "reloaded": false, "serving": serving, "summary": summary})
+        handover(
+            json!({"answered": !serving.is_null(), "reloaded": false, "serving": serving, "summary": summary}),
+            false,
+            true,
+        )
     };
     report["activation"] = json!(daemon["summary"]);
     report["daemon"] = daemon;
@@ -1675,7 +1679,11 @@ fn daemon_after_activation(socket: Option<PathBuf>) -> serde_json::Value {
             .enable_all()
             .build()
         else {
-            return json!({"answered": false, "summary": "next app/CLI launch; no daemon was asked"});
+            return handover(
+                json!({"answered": false, "summary": "next app/CLI launch; no daemon was asked"}),
+                true,
+                false,
+            );
         };
         runtime.block_on(async {
             let client = crate::client::Client::new(socket).with_start_timeout(None);
@@ -1689,12 +1697,16 @@ fn daemon_after_activation(socket: Option<PathBuf>) -> serde_json::Value {
                 _ => None,
             };
             let Some(before) = serving(client.call(&Request::Ping).await) else {
-                return json!({
-                    "answered": false,
-                    "summary": "next app/CLI launch; no daemon answered, so none needed reloading",
-                });
+                return handover(
+                    json!({
+                        "answered": false,
+                        "summary": "next app/CLI launch; no daemon answered, so none needed reloading",
+                    }),
+                    true,
+                    true,
+                );
             };
-            match client.call_raw(&Request::Reload).await {
+            let report = match client.call_raw(&Request::Reload).await {
                 Ok(Response::Ok) => {
                     let after = serving(client.call(&Request::Ping).await);
                     let summary = match &after {
@@ -1741,16 +1753,106 @@ fn daemon_after_activation(socket: Option<PathBuf>) -> serde_json::Value {
                         "summary": format!("{reason}; {observed}; check `agentdocker daemon status`"),
                     })
                 }
-            }
+            };
+            handover(report, true, true)
         })
     })
     .join()
-    .unwrap_or_else(|_| json!({"answered": false, "summary": "next app/CLI launch; the daemon could not be asked"}))
+    .unwrap_or_else(|_| {
+        handover(
+            json!({"answered": false, "summary": "next app/CLI launch; the daemon could not be asked"}),
+            true,
+            false,
+        )
+    })
+}
+
+/// A handover report with its outcome word, `outcome`, beside the keys it
+/// has. The word is computed from those keys (`desktop_report::Handover`),
+/// so it cannot say something they do not: `changed` is whether the
+/// activation moved to another release, and `asked` whether the daemon
+/// could be asked at all, the two things the keys do not carry.
+fn handover(mut report: serde_json::Value, changed: bool, asked: bool) -> serde_json::Value {
+    use agentdocker_core::desktop_report::{Handover, HandoverFacts};
+    let facts = HandoverFacts {
+        changed,
+        answered: asked.then(|| report["answered"] == true),
+        reloaded: report["reloaded"].as_bool(),
+        serving: !report["serving"].is_null(),
+    };
+    report["outcome"] = json!(Handover::of(facts));
+    report
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each handover report, by the keys the code builds for it, and the
+    /// word it carries beside them. A reload that was accepted and is
+    /// followed by silence has the same keys as one that worked, but for
+    /// a null `serving`: its word is its own.
+    #[test]
+    fn each_handover_report_says_its_outcome_beside_its_keys() {
+        let serving = json!({"version": "1", "pid": 7, "executable": "/release/agentd"});
+        // (the report, the activation changed the release, the daemon could be asked)
+        let rows = [
+            (
+                json!({"answered": false, "summary": "no daemon was asked"}),
+                true,
+                false,
+                "unknown",
+            ),
+            (
+                json!({"answered": false, "summary": "no daemon answered"}),
+                true,
+                true,
+                "no_daemon",
+            ),
+            (
+                json!({"answered": true, "reloaded": true, "before": serving, "serving": serving, "summary": "reloaded"}),
+                true,
+                true,
+                "reloaded",
+            ),
+            (
+                json!({"answered": true, "reloaded": true, "before": serving, "serving": null, "summary": "reloaded, but"}),
+                true,
+                true,
+                "reloaded_silent",
+            ),
+            (
+                json!({"answered": true, "reloaded": false, "serving": serving, "refusal": {"code": "unavailable", "message": "off"}, "summary": "not reloaded"}),
+                true,
+                true,
+                "refused",
+            ),
+            (
+                json!({"answered": true, "reloaded": null, "before": serving, "serving": serving, "summary": "lost"}),
+                true,
+                true,
+                "unknown",
+            ),
+            (
+                json!({"answered": true, "reloaded": false, "serving": serving, "summary": "unchanged: already active"}),
+                false,
+                true,
+                "unchanged",
+            ),
+            (
+                json!({"answered": false, "reloaded": false, "serving": null, "summary": "unchanged: no daemon"}),
+                false,
+                true,
+                "unchanged",
+            ),
+        ];
+        for (report, changed, asked, word) in rows {
+            let mut worded = handover(report.clone(), changed, asked);
+            assert_eq!(worded["outcome"], word, "{report}");
+            worded.as_object_mut().unwrap().remove("outcome");
+            assert_eq!(worded, report, "every other key is as it was");
+        }
+    }
 
     #[cfg(unix)]
     #[test]
@@ -1807,6 +1909,7 @@ mod tests {
             server.join().unwrap();
             assert_eq!(report["before"]["pid"], 101);
             assert!(report["reloaded"].is_null(), "{report}");
+            assert_eq!(report["outcome"], "unknown", "a lost reply proves nothing");
             match observed_pid {
                 Some(pid) => assert_eq!(report["serving"]["pid"], pid),
                 None => assert!(report["serving"].is_null(), "{report}"),

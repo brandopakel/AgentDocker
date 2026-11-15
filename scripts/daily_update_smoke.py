@@ -48,7 +48,7 @@ if args == ['desktop', 'update', '--check']:
         log.write(json.dumps({'args':args, 'saved_attempt': saved['updates']['last_attempt']}) + '\n')
     if pathlib.Path(os.environ['DAILY_FAILURE']).exists():
         sys.exit('controlled offline failure')
-    print(json.dumps({'update': {'update_available': True, 'available': {'version': '0.2.0'}, 'installed_version': '0.1.0', 'channel': 'stable', 'daemon': 'unchanged'}}))
+    print(json.dumps({'update': {'outcome': 'available', 'update_available': True, 'available': {'version': '0.2.0'}, 'installed_version': '0.1.0', 'channel': 'stable', 'daemon': 'unchanged'}}))
 elif args == ['desktop', 'status']:
     print(json.dumps({'installation': None}))
 elif args[:1] == ['desktop']:
