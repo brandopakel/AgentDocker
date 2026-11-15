@@ -105,6 +105,7 @@ mod tests {
             options: Default::default(),
             workspace: None,
             deadline: None,
+            dead_end: None,
         });
         let environment = ContainerEnvironment::of(&record);
         let mut validation = Validation {

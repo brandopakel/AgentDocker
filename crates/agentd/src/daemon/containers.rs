@@ -2,7 +2,9 @@
 use super::*;
 use agentdocker_core::{
     ImageBuild,
-    container::{ContainerIntent, ContainerRunOptions, ManagedContainer},
+    container::{
+        ContainerDeadEnd, ContainerIntent, ContainerPhase, ContainerRunOptions, ManagedContainer,
+    },
 };
 use agentdocker_host::containers::{ContainerBackend, ContainerError, ContainerState, Inspection};
 
@@ -182,6 +184,7 @@ impl Daemon {
             options,
             workspace: None,
             deadline: None,
+            dead_end: None,
         });
         if record.container.as_ref().unwrap().options.mount_checkout {
             let home = self.home.clone();
@@ -280,6 +283,8 @@ impl Daemon {
                 } else {
                     ContainerIntent::Stop
                 };
+                // A stop supersedes a dead end: it is the way out.
+                c.dead_end = None;
                 // Committed with its `agent_stopping` by the container
                 // transition, the stop marked on the run with it.
                 record.mark_stopping();
@@ -451,20 +456,27 @@ impl Daemon {
         }
         let c = record.container.as_ref().unwrap();
         if !c.create_attempted {
-            if c.intent != ContainerIntent::Run {
-                self.update_container(id, |r| r.status = AgentStatus::Exited { code: None })?;
-                self.retire_transport(id).await?;
-                return Ok(());
+            // Only the original launch prepares, under the busy mark its
+            // publication set, so `create` is this drive's own knowledge
+            // that it owns the preparation.
+            match ContainerPhase::of(&record.status, c, create) {
+                ContainerPhase::Prepared => {
+                    self.update_container(id, |r| {
+                        r.container.as_mut().unwrap().create_attempted = true
+                    })?;
+                    record = self.current_container(id)?;
+                }
+                // Stopped before anything was created: nothing in the
+                // engine to stop.
+                ContainerPhase::Stopping => {
+                    self.update_container(id, |r| r.status = AgentStatus::Exited { code: None })?;
+                    self.retire_transport(id).await?;
+                    return Ok(());
+                }
+                // A preparation nobody here owns, or a pair the daemon never
+                // writes: nothing is created on a guess.
+                _ => return Err(self.refuse_at(id, ContainerPhase::PrepareAbandoned)),
             }
-            if !create {
-                return Err(ContainerError::unavailable(
-                    "launch preparation did not finish; stop before starting a replacement".into(),
-                ));
-            }
-            self.update_container(id, |r| {
-                r.container.as_mut().unwrap().create_attempted = true
-            })?;
-            record = self.current_container(id)?;
         }
         let inspected = if create {
             // Only the original run request creates. Recovery only discovers an existing
@@ -486,8 +498,12 @@ impl Daemon {
         match (c.intent, inspected.state) {
             (ContainerIntent::Run, ContainerState::Created) => {
                 self.check_container_admission(&record)?;
-                if c.start_attempted {
-                    return Err(ContainerError::unavailable(c.last_error.clone().unwrap_or_else(|| "previous start outcome is unknown; stop this container before retrying as a new agent".into())));
+                // This drive has issued no start yet, so a start already
+                // attempted was an earlier operation's: its outcome is
+                // unknown, and it is never issued again.
+                match ContainerPhase::of(&record.status, c, false) {
+                    ContainerPhase::Created => {}
+                    _ => return Err(self.refuse_at(id, ContainerPhase::StartUnknown)),
                 }
                 self.update_container(id, |r| {
                     r.container.as_mut().unwrap().start_attempted = true
@@ -523,6 +539,28 @@ impl Daemon {
         Ok(())
     }
 
+    /// Refuse at a dead end: its observation and its reason are kept in one
+    /// update, with the earlier error appended once. A stop asked for
+    /// meanwhile supersedes it and is not undone: the update reads the
+    /// record as it stands.
+    fn refuse_at(&self, id: &AgentId, phase: ContainerPhase) -> ContainerError {
+        let reason = phase.dead_end().expect("refused only at a dead end");
+        let mut message = reason.to_owned();
+        let _ = self.update_container(id, |r| {
+            let c = r.container.as_mut().unwrap();
+            if let Some(earlier) = c.last_error.as_ref().filter(|e| !e.starts_with(reason)) {
+                message = format!("{reason} (earlier: {earlier})");
+            } else if let Some(kept) = &c.last_error {
+                message.clone_from(kept);
+            }
+            if c.intent == ContainerIntent::Run && r.status == AgentStatus::Created {
+                c.dead_end = ContainerDeadEnd::of(phase);
+                c.last_error = Some(message.clone());
+            }
+        });
+        ContainerError::unavailable(message)
+    }
+
     fn observe_container(
         &self,
         id: &AgentId,
@@ -533,6 +571,10 @@ impl Daemon {
             c.id = Some(inspected.id.clone());
             if inspected.state != ContainerState::Created || !c.start_attempted {
                 c.last_error = None;
+            }
+            // The engine's word on a run or an exit ends a dead end.
+            if inspected.state != ContainerState::Created {
+                c.dead_end = None;
             }
             record.status = match inspected.state {
                 ContainerState::Exited(code) => AgentStatus::Exited { code: Some(code) },
@@ -680,6 +722,7 @@ impl Daemon {
         container.start_attempted = false;
         container.create_attempted = false;
         container.last_error = None;
+        container.dead_end = None;
         container.deadline = Some(Utc::now() + Duration::seconds(timeout_secs as i64));
         let workspace = container.workspace.as_mut().unwrap();
         workspace.read_only = true;
@@ -734,15 +777,23 @@ impl Daemon {
 mod tests {
     use super::*;
     use agentdocker_core::{ContainerEngine, ImageBuildSpec};
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::mpsc;
 
     #[derive(Default)]
     struct Fake {
         observed: Mutex<Option<Inspection>>,
         actions: Mutex<Vec<&'static str>>,
+        /// Inspections asked for, kept apart from `actions`, which are the
+        /// calls that change the engine.
+        inspections: AtomicUsize,
         unavailable: AtomicBool,
         lost_create: AtomicBool,
         lost_start: AtomicBool,
+        /// The start takes effect and only its reply is lost.
+        lost_start_after_run: AtomicBool,
+        /// The next start says it has arrived and waits to be let go.
+        held_start: Mutex<Option<(mpsc::Sender<()>, mpsc::Receiver<()>)>>,
         stop_stays_live: AtomicBool,
         invalid_transport: AtomicBool,
     }
@@ -767,6 +818,7 @@ mod tests {
             Ok(inspection)
         }
         fn inspect(&self, _: &AgentRecord) -> Result<Inspection, ContainerError> {
+            self.inspections.fetch_add(1, Ordering::SeqCst);
             if self.invalid_transport.load(Ordering::SeqCst) {
                 return Err(agentdocker_host::transport::TransportError {
                     code: ErrorCode::Invalid,
@@ -783,10 +835,18 @@ mod tests {
         }
         fn start(&self, _: &AgentRecord) -> Result<(), ContainerError> {
             lock(&self.actions).push("start");
+            let held = lock(&self.held_start).take();
+            if let Some((arrived, release)) = held {
+                arrived.send(()).unwrap();
+                release.recv().unwrap();
+            }
             if self.lost_start.load(Ordering::SeqCst) {
                 return Err(ContainerError::unavailable("lost start response".into()));
             }
             lock(&self.observed).as_mut().unwrap().state = ContainerState::Running;
+            if self.lost_start_after_run.load(Ordering::SeqCst) {
+                return Err(ContainerError::unavailable("lost start response".into()));
+            }
             Ok(())
         }
         fn stop(&self, _: &AgentRecord, force: bool) -> Result<(), ContainerError> {
@@ -1236,7 +1296,21 @@ mod tests {
                     .is_err()
             );
         }
+        // Inspected and refused, each time: not failed, still live (only an
+        // exit releases what it holds), and shown at its dead end rather
+        // than as created.
+        let refused = retained(&daemon);
+        assert_eq!(refused.status, AgentStatus::Created);
+        assert!(daemon.is_live(&pending.id));
+        assert_eq!(
+            refused.container_dead_end(),
+            Some(ContainerDeadEnd::StartUnknown)
+        );
+        assert_eq!(fake.inspections.load(Ordering::SeqCst), 2);
         assert_eq!(lock(&fake.actions).as_slice(), ["create", "start"]);
+        // The stop is the way out, and the dead end goes with its intent.
+        daemon.request_container_stop(&pending.id, false).unwrap();
+        assert_eq!(retained(&daemon).container.unwrap().dead_end, None);
         let Response::Agent { agent } = daemon.stop_agent(pending.id.as_str(), false).await else {
             panic!()
         };
@@ -1443,5 +1517,242 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!daemon.is_live(&agent.id));
+    }
+
+    /// A start refused as uncertain stays shown as one through a failed
+    /// inspection, whose error takes `last_error`; only the engine's word
+    /// that it runs ends it. The earlier error is quoted once, never nested.
+    #[tokio::test]
+    async fn a_dead_end_outlasts_a_failed_inspection_until_the_engine_says_it_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        fake.lost_start.store(true, Ordering::SeqCst);
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        assert!(matches!(
+            launch(&daemon, tmp.path()).await,
+            Response::Error { .. }
+        ));
+        let id = retained(&daemon).id;
+        drop(daemon);
+        let daemon = open(tmp.path(), fake.clone());
+        let reason = ContainerPhase::StartUnknown.dead_end().unwrap();
+        for _ in 0..2 {
+            let message = daemon
+                .drive_container(id.clone(), false)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert_eq!(message, format!("{reason} (earlier: lost start response)"));
+            let record = retained(&daemon);
+            assert_eq!(
+                record.container_dead_end(),
+                Some(ContainerDeadEnd::StartUnknown)
+            );
+            assert_eq!(record.container.unwrap().last_error, Some(message));
+        }
+        fake.unavailable.store(true, Ordering::SeqCst);
+        daemon.drive_container(id.clone(), false).await.unwrap_err();
+        let record = retained(&daemon);
+        assert_eq!(
+            record.container.as_ref().unwrap().last_error.as_deref(),
+            Some("engine unreachable")
+        );
+        assert_eq!(
+            record.container_dead_end(),
+            Some(ContainerDeadEnd::StartUnknown)
+        );
+        // Back, the engine says the lost start did take effect.
+        fake.unavailable.store(false, Ordering::SeqCst);
+        lock(&fake.observed).as_mut().unwrap().state = ContainerState::Running;
+        daemon.drive_container(id.clone(), false).await.unwrap();
+        let record = retained(&daemon);
+        assert_eq!(record.status, AgentStatus::Running);
+        let c = record.container.unwrap();
+        assert_eq!((c.dead_end, c.last_error), (None, None));
+        assert_eq!(lock(&fake.actions).as_slice(), ["create", "start"]);
+    }
+
+    /// A start whose reply is lost after the engine began the run is found
+    /// running by the next drive: no dead end, no second start.
+    #[tokio::test]
+    async fn a_start_reply_lost_after_the_run_began_is_found_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        fake.lost_start_after_run.store(true, Ordering::SeqCst);
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        assert!(matches!(
+            launch(&daemon, tmp.path()).await,
+            Response::Error { .. }
+        ));
+        let pending = retained(&daemon);
+        assert_eq!(pending.status, AgentStatus::Created);
+        assert!(pending.container.as_ref().unwrap().start_attempted);
+        drop(daemon);
+        let daemon = open(tmp.path(), fake.clone());
+        daemon
+            .drive_container(pending.id.clone(), false)
+            .await
+            .unwrap();
+        let record = retained(&daemon);
+        assert_eq!(record.status, AgentStatus::Running);
+        let c = record.container.unwrap();
+        assert_eq!((c.dead_end, c.last_error), (None, None));
+        assert_eq!(fake.inspections.load(Ordering::SeqCst), 1);
+        assert_eq!(lock(&fake.actions).as_slice(), ["create", "start"]);
+    }
+
+    /// After a launch lost its create reply, the recovery's own first
+    /// start, held at the engine, is never taken for an uncertain one: no
+    /// dead end while it is under way, and a drive meanwhile does nothing.
+    /// If its reply is lost too, the next drive refuses it and never
+    /// starts it again.
+    #[tokio::test]
+    async fn a_recovery_first_start_in_flight_is_never_a_dead_end() {
+        for lost in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let fake = Arc::new(Fake::default());
+            fake.lost_create.store(true, Ordering::SeqCst);
+            let daemon = open(tmp.path(), fake.clone());
+            seed(&daemon);
+            assert!(matches!(
+                launch(&daemon, tmp.path()).await,
+                Response::Error { .. }
+            ));
+            let id = retained(&daemon).id;
+            fake.lost_start.store(lost, Ordering::SeqCst);
+            let (arrived, arrival) = mpsc::channel();
+            let (release, released) = mpsc::channel();
+            *lock(&fake.held_start) = Some((arrived, released));
+            let worker = daemon.clone();
+            let recovery = tokio::spawn({
+                let id = id.clone();
+                async move { worker.drive_container(id, false).await }
+            });
+            tokio::task::spawn_blocking(move || {
+                arrival.recv_timeout(std::time::Duration::from_secs(5))
+            })
+            .await
+            .unwrap()
+            .unwrap();
+            let held = retained(&daemon);
+            assert_eq!(held.status, AgentStatus::Created);
+            assert!(held.container.as_ref().unwrap().start_attempted);
+            assert_eq!(held.container.as_ref().unwrap().dead_end, None);
+            // A drive meanwhile, as the reconcile pass may begin, leaves
+            // the agent to the one under way.
+            daemon.drive_container(id.clone(), false).await.unwrap();
+            assert_eq!(retained(&daemon).container.unwrap().dead_end, None);
+            release.send(()).unwrap();
+            let finished = tokio::time::timeout(std::time::Duration::from_secs(5), recovery)
+                .await
+                .unwrap()
+                .unwrap();
+            let record = retained(&daemon);
+            assert_eq!(record.container.as_ref().unwrap().dead_end, None);
+            if lost {
+                assert!(finished.is_err());
+                let message = daemon
+                    .drive_container(id.clone(), false)
+                    .await
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    message.starts_with(ContainerPhase::StartUnknown.dead_end().unwrap()),
+                    "{message}"
+                );
+                assert_eq!(
+                    retained(&daemon).container_dead_end(),
+                    Some(ContainerDeadEnd::StartUnknown)
+                );
+            } else {
+                finished.unwrap();
+                assert_eq!(record.status, AgentStatus::Running);
+                assert_eq!(record.container.unwrap().last_error, None);
+            }
+            assert_eq!(lock(&fake.actions).as_slice(), ["create", "start"]);
+        }
+    }
+
+    /// A preparation recovery finds unfinished is refused without creating
+    /// or inspecting anything, kept as a dead end, and a stop retires it.
+    #[tokio::test]
+    async fn an_abandoned_preparation_is_refused_and_a_stop_retires_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        fake.lost_create.store(true, Ordering::SeqCst);
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        assert!(matches!(
+            launch(&daemon, tmp.path()).await,
+            Response::Error { .. }
+        ));
+        let id = retained(&daemon).id;
+        // As if the launch had ended before it wrote that it creates.
+        daemon
+            .update_container(&id, |r| {
+                r.container.as_mut().unwrap().create_attempted = false
+            })
+            .unwrap();
+        *lock(&fake.observed) = None;
+        lock(&fake.actions).clear();
+        drop(daemon);
+        let daemon = open(tmp.path(), fake.clone());
+        let reason = ContainerPhase::PrepareAbandoned.dead_end().unwrap();
+        for _ in 0..2 {
+            let message = daemon
+                .drive_container(id.clone(), false)
+                .await
+                .unwrap_err()
+                .to_string();
+            assert_eq!(message, format!("{reason} (earlier: lost create response)"));
+            assert_eq!(
+                retained(&daemon).container_dead_end(),
+                Some(ContainerDeadEnd::PrepareAbandoned)
+            );
+        }
+        assert!(lock(&fake.actions).is_empty());
+        assert_eq!(fake.inspections.load(Ordering::SeqCst), 0);
+        let Response::Agent { agent } = daemon.stop_agent(id.as_str(), false).await else {
+            panic!()
+        };
+        assert_eq!(agent.status, AgentStatus::Exited { code: None });
+        assert_eq!(agent.container.unwrap().dead_end, None);
+        assert!(lock(&fake.actions).is_empty());
+    }
+
+    /// A stop committed after the drive read the record wins: the refusal
+    /// reads the record as it stands and leaves no dead end on it.
+    #[tokio::test]
+    async fn a_stop_that_wins_keeps_no_dead_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fake = Arc::new(Fake::default());
+        fake.lost_start.store(true, Ordering::SeqCst);
+        let daemon = open(tmp.path(), fake.clone());
+        seed(&daemon);
+        assert!(matches!(
+            launch(&daemon, tmp.path()).await,
+            Response::Error { .. }
+        ));
+        let read = retained(&daemon);
+        let c = read.container.as_ref().unwrap();
+        assert_eq!(
+            ContainerPhase::of(&read.status, c, false),
+            ContainerPhase::StartUnknown
+        );
+        daemon.request_container_stop(&read.id, false).unwrap();
+        let error = daemon.refuse_at(&read.id, ContainerPhase::StartUnknown);
+        assert!(
+            error
+                .to_string()
+                .starts_with(ContainerPhase::StartUnknown.dead_end().unwrap())
+        );
+        let record = retained(&daemon);
+        assert_eq!(record.status, AgentStatus::Stopping);
+        let c = record.container.unwrap();
+        assert_eq!(c.intent, ContainerIntent::Stop);
+        assert_eq!(c.dead_end, None);
+        assert_eq!(c.last_error.as_deref(), Some("lost start response"));
     }
 }
