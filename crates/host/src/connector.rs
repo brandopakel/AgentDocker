@@ -14,6 +14,10 @@ pub struct Serving {
     pub pid: u32,
     /// The HTTPS origin the vendors reach; `/mcp` under it is the endpoint.
     pub public_url: String,
+    /// The origin the person's browser opens for consent when it is not the
+    /// public one (`--authorize-url`); `/authorize` under it is the page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorize_url: Option<String>,
     /// The loopback address the process listens on.
     pub bind: String,
     /// The project a browser agent joins unless the person picks another
@@ -155,6 +159,7 @@ mod tests {
         Serving {
             pid,
             public_url: "https://node.example.ts.net".into(),
+            authorize_url: None,
             bind: "127.0.0.1:1".into(),
             default_project: Some("/p/orchard".into()),
             pairing_code: "ABCD-EFGH".into(),

@@ -147,7 +147,19 @@ folder but no tty or process, and a folder is not an identity (an agent can work
 in another folder than its tab reports, and that folder can be another tab's). The
 standing chip beside the name in its details says in its detail what it is
 doing, its tool and where it runs (*in Terminal (ttys005)*, *in
-tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
+tmux:%3*). Under the name, the daemon's three-part answer is three chips, one
+each, so idle and needs-input are never one word: its **state** — **Working**
+(on its task), **Blocked** (waiting on a lease another agent holds), **Done**,
+**Failed** (red) or **Stopped** — its **status** this moment — **Busy**,
+**Waiting** (amber when it waits on you; neutral, with a clock, when only on a
+lease) or **Idle** — and, when it waits on you, **what for**: **Wants
+permission**, **Needs input** (in its own terminal: a question dialog, a
+choice, an unsent draft), **Sandbox request** or **Has a question** (one it
+asked here). How good the word is lives in the status chip's detail: *Weak
+evidence: inferred, not reported* when it rests on an idle timer, a quiet
+terminal or no fresh report at all, which is also why **Idle** on weak
+evidence never claims more than that. A daemon predating the answer shows no
+such chips. Its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
 An agent without a terminal to reach opens its details instead.
 
@@ -189,6 +201,14 @@ its next colour (Claude Code's eight), its cross deletes it — pressed twice, a
 the second press takes it from every agent holding it and says how many — and
 **New role** adds one by name. The person is given no roles. With a daemon that
 has no palette, none of this is shown.
+
+An agent in a **Claude Code agent team** shows one more chip after its name
+in the session list and in its panel: **Lead of &lt;team&gt;** for the lead,
+**Teammate of &lt;lead&gt;** for a teammate, each an icon and its words, in the
+colour the lead gave the teammate (the same eight as roles) and the quiet
+tones otherwise. The full relation — the teammate's own name, its lead and its
+team — is the chip's tooltip and its spoken value. Nothing of the team is
+edited here: its names, colours and inboxes are Claude's.
 **Open in…** (the code icon beside the terminal icon in the header) opens the project's folder in an editor
 installed on this computer: a small menu lists the ones found (the one chosen
 last first, remembered with the workspace preferences), and with only one
@@ -210,7 +230,12 @@ palette has one **Open in** row per editor for the selected project.
 only what waits on you: questions, each row the asker, the ask, the
 time-left chip (*4m left*, *Expired*) and **Answer** (a question from a
 session that has since ended carries a *Session ended* chip, and its spoken
-line says it was asked before the session ended), and sessions stopped at a
+line says it was asked before the session ended; a permission or access
+request carries its kind as a chip, **Permission** or **Access**, a plain
+question none; one whose stale window passed unanswered carries **Stale**,
+with what that means in the chip's detail; a remote sender's message
+the project holds is a question from that sender with **Release** and
+**Drop** as its choices), and sessions stopped at a
 permission prompt or question in their own terminal, each the agent's name
 with a chip for the errand — **Wants permission**, **Has a question**, or
 **Waiting for you** when its hooks did not say which — read aloud as *Claude
@@ -583,7 +608,7 @@ new leases until **Resume**, and while it holds the header shows a chip
 beside **Resume** that starts the reason (*Paused · reason*), the whole
 reason in its detail when the chip cuts it. What an agent already holds, it keeps; your own actions are not
 held; only you can pause or resume, an agent asks with a message.
-**Launch agent…** opens the form, led by its **Task** field. For Claude and Codex it offers **Model** and **Effort**, each a chip that opens its list: the provider's default first, named (*Default (&lt;model&gt;)*), then the models the provider shows on this machine (Codex's `models_cache.json`; Claude's aliases) and the efforts the chosen model takes. The defaults are read from the provider's own settings (`~/.codex/config.toml`, `~/.claude/settings.json`) off the UI thread; nothing is fetched. A choice becomes the tool's own options (`--model`, `--effort`, `-c model_reasoning_effort=…`) before **More options**' arguments, which win where they name one (in any spelling the tool takes, the last in force): the chip then shows the argument's value and gives way to it, and an effort the model in force does not take is dropped. Changing the tool starts from its defaults, and a read made for an earlier tool never applies. The session's panel says the model and effort it was launched with (`<model> · xhigh`). In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder under AgentDocker's worktree directory, with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
+**Launch agent…** opens the form, led by its **Task** field. For Claude and Codex it offers **Model** and **Effort**, each a chip that opens its list: the provider's default first, named (*Default (&lt;model&gt;)*), then the models the provider shows on this machine (Codex's `models_cache.json`; Claude's aliases) and the efforts the chosen model takes. The defaults are read from the provider's own settings (`~/.codex/config.toml`, `~/.claude/settings.json`) off the UI thread; nothing is fetched. A choice becomes the tool's own options (`--model`, `--effort`, `-c model_reasoning_effort=…`) before **More options**' arguments, which win where they name one (in any spelling the tool takes, the last in force): the chip then shows the argument's value and gives way to it, and an effort the model in force does not take is dropped. Changing the tool starts from its defaults, and a read made for an earlier tool never applies. The session's panel says the model and effort it was launched with (`<model> · xhigh`). In a git project it offers **Own worktree**, on by default: the session works on a branch of its own (`agent/<name>`) in its own folder inside the project (`.agentdocker/worktrees/<name>`, which AgentDocker keeps out of git), with the files the project's `.worktreeinclude` lists copied in; off, it works in the project folder on its current branch. Pressing the button again leaves the form open; **Cancel**
 or a press outside the dialog closes it) to choose an installed CLI and start it at the project root
 (the folder on the header title's tooltip). With Codex chosen and no saved trusted entry found for the project root, the form shows *Trust unconfirmed* in amber, whose tooltip directs the person to open Codex in that folder to review trust before launching. A missing trust entry alone does not establish effective sandbox or approval policy; explicit provider configuration can override those defaults. Saved trust is read off the UI thread only for an open Codex form; results for an older form, project or tool are ignored, and unreadable paths remain unknown. Every project-selection path, including notifications while the form stays open, clears the previous notice and checks the newly selected project. AgentDocker never trusts a folder on the person's behalf. Claude and Codex launches default to **Idle messages: On**;
 each switch says what it means on its tooltip, and turned off this one says
@@ -864,7 +889,19 @@ with its mark, the latest line and how many items wait; **Everyone** shows all
 of them. The conversation on the right starts with that agent's open questions
 as cards, because they carry Answer, Allow, Deny and review controls, followed
 by its messages as bubbles, newest last; long messages fold after eight lines
-behind **Show more**. Under an open conversation the composer sends to that
+behind **Show more**. A question card leads with a tile for its kind and the
+question as its title; a permission or access request adds its kind chip
+(**Permission**, **Access**) and a stale one **Stale**, beside the time left.
+Options an agent offered are full-width rows, the label on the left and what
+choosing it means on the right, a refusal in red; pressing one is the answer,
+and the chosen row stands in for the rows as the receipt while it goes. A
+multi-select question's rows pick and unpick (a picked row stays washed) and
+**Send choices** sends them together, each by its number; words in the box beside them go as the
+*Other*, alone or with the picked rows, exactly as written (a typed *2* is the
+words *2*, never the second option). Writing is the *Other*: the box is there
+when the question takes words of your own, on a single-choice question too,
+where the written answer is sent as its *Other*, and absent when it takes only
+its options. Under an open conversation the composer sends to that
 agent (**Send**) or to every agent in its project (**Send to everyone**); a
 failed send shows *Not sent* and why under the box, as does the delivery
 notice when recipients need attention, and drafts survive navigation, a failed
@@ -914,7 +951,11 @@ Peer input needs the opt-in adapters in [CODEX-INPUT.md](CODEX-INPUT.md) and
 Version, Command, Browser, URL, Code — and each live session as its name with
 its readiness chip and its contact chips (*MCP · recent*, *Hooks · none*), plus **Review setup**,
 **Check connections** and **Setup history**; an incomplete inventory is the
-alert mark; **Other tools (n)** expands
+alert mark. A tool that declares its MCP servers in each agent's file rather
+than in one of its own (Docker Agent) shows MCP as *In each agent's YAML*,
+with the `setup … --agent <file>` command that adds AgentDocker's as its tip;
+its row reads *Set up per agent file* rather than *Integration unavailable*,
+and it offers no Set up of its own, since the app does not name an agent file. **Other tools (n)** expands
 the inventory. Delivery, a session's readiness chip, says the same words as `ps`
 and a send's warning: **Ready for messages** (nothing taken
 yet), **Receiving messages**, **Not receiving messages**, **Not heard from
@@ -934,21 +975,27 @@ detail, beside a chip with the queued count (*2 queued*); an ended session's
 latest receipt is *Last message* under its **Details**.
 A setup review is named for its tool; its files show their MCP, Hooks or Shell
 lines as a diff, and its state is the footer's chip (*Waiting for you*,
-*Applying…*, *Nothing to change*). Applying a plan turns that chip to *Saved*,
+*Applying…*, *Undoing…*, *Nothing to change*). Applying a plan turns that chip to *Saved*,
 whose detail says what loads it (*Start a fresh session to load it*, or a new
-terminal for the shell), with **Undo** available afterwards. Fresh
+terminal for the shell), with **Undo** available afterwards. A plan whose
+receipt was left part-way through an apply or an undo, while this window runs
+no setup operation, was interrupted, and is not shown as in progress: the chip
+reads *Apply interrupted* or *Undo interrupted* with the alert mark and no
+progress ring, its detail says what finishes it (*Connect again to finish it*,
+*Undo again to finish it*), and that button is offered. Fresh
 sessions load saved setup; only the provider can request its required approval.
 The connection check is one line per installed tool, a *Configuration
 checked* chip when configuration passes or the alert mark with the first
 problem printed and all of them its detail, and closes with **Close**. Busy is a *Checking…*
 chip, and a failure one line beside the alert mark. Setup history lists each
-saved setup with its phase as a chip (*Applied*, *Prepared*, *Undone*). A connection
+saved setup with its phase as a chip (*Applied*, *Prepared*, *Undone*), or
+with *Apply interrupted* or *Undo interrupted* for one left part-way. A connection
 failure retains the last snapshot and clearly pauses daemon actions.
 
 ## Settings and installation
 
 Settings is a column of names beside their controls: Appearance (Theme, Text
-size, Notifications, Roomy rows), Terminal (Terminal text, Terminal colours)
+size, Notifications, Roomy rows and, on macOS, Menu bar item), Terminal (Terminal text, Terminal colours)
 and Installation (Update checks, Installation), with no line of explanation
 under any of them. Preferences are stored privately in the AgentDocker state directory.
 A malformed preference file is preserved and reported rather than silently reset.
@@ -1041,6 +1088,14 @@ and notarization; locally signed builds are explicit previews.
 
 On macOS the dock icon shows how many questions and prompts are waiting on you,
 in every project: the rows Needs you holds. It shows nothing when none are waiting.
+A menu-bar item shows the mark and, beside it as text, the same number, nothing at
+zero; its tooltip says it in words (*AgentDocker · 3 waiting on you*). With the item
+on (Settings → Appearance → **Menu bar item**, on by default), closing the window
+keeps the app running with the item as its one presence, and a click on the item
+brings the window back; clicked while the window is open, it brings the window to
+the front. The item has no menu and opens no panel. Quit is the app menu's or the
+Dock's **Quit** as before. With the item off, closing the window quits, as it does
+on Linux and Windows, which have no menu-bar item.
 
 Text inputs and the terminal support native input methods. Focus indicators,
 and the words every state chip prints and carries as its accessible name,

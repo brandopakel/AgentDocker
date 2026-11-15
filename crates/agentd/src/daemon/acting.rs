@@ -127,6 +127,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
     match request {
         R::RecordEmission { agent, .. }
         | R::WorktreeCreate { agent, .. }
+        | R::WorktreeRemoveNamed { agent, .. }
         | R::Commit { agent, .. }
         | R::Integrate { agent, .. }
         | R::Checkpoint { agent, .. }
@@ -156,15 +157,19 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::Claim { agent, .. }
         | R::Renew { agent, .. }
         | R::Release { agent, .. }
+        | R::ReleaseResource { agent, .. }
         | R::ReleaseAll { agent, .. }
         | R::JournalAdd { agent, .. }
         | R::ChannelOpen { agent, .. }
         | R::ChannelInvite { agent, .. }
         | R::ChannelClose { agent, .. }
         | R::ReviewRequest { agent, .. }
-        | R::Review { agent, .. } => Some(agent),
+        | R::Review { agent, .. }
+        | R::SupersedeVerdict { agent, .. } => Some(agent),
         R::MergeBranch { from, .. }
         | R::Send { from, .. }
+        | R::RequestRelease { from, .. }
+        | R::RespondRelease { from, .. }
         | R::AnswerSecretReview { from, .. }
         | R::CancelSecretReview { from, .. }
         | R::Ask { from, .. }
@@ -190,6 +195,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::RoleDelete { from, .. }
         | R::MemoryAdd { from, .. }
         | R::MemoryForget { from, .. }
+        | R::MemoryRetire { from, .. }
         | R::PlanSave { from, .. }
         | R::FilePut { from, .. }
         | R::FileLink { from, .. }
@@ -200,6 +206,8 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         // only to some roles is read by; one that names nobody reads what is
         // for everyone.
         R::MemorySearch { from, .. } | R::MemoryProfile { from, .. } => from.as_mut(),
+        // A brief is read for its reader, whose own project it is.
+        R::Brief { from, .. } => Some(from),
         R::MarkRead { reader, .. } => reader.as_mut(),
         // A digest that moves a reader's cursor acts for that reader.
         R::Journal {
@@ -1296,6 +1304,7 @@ mod tests {
             serde_json::json!({"op": "mark_read", "conversation": "c1", "through": 4, "reader": "x"}),
             serde_json::json!({"op": "journal", "project": "p", "digest": {"reader": "x", "max_entries": 5, "max_chars": 500, "advance": true}}),
             serde_json::json!({"op": "worktree_create", "agent": "x", "path": "/w", "branch": "b", "from": "main"}),
+            serde_json::json!({"op": "worktree_remove_named", "agent": "x", "branch": "b"}),
             serde_json::json!({"op": "memory_search", "from": "x", "query": "q"}),
             serde_json::json!({"op": "memory_profile", "from": "x"}),
         ] {
@@ -1668,6 +1677,8 @@ mod tests {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
+            fresh: false,
         };
         let me = Some((std::process::id(), procinfo::start_time(std::process::id())));
         assert!(daemon.agent_refusal(me, &mut own).await.is_none());
@@ -3065,6 +3076,8 @@ mod tests {
                     wait_secs: 0,
                     priority: 0,
                     automatic: false,
+                    actor: None,
+                    fresh: false,
                 })
                 .await;
             assert!(matches!(lease, Response::Lease { .. }), "{lease:?}");
@@ -3148,6 +3161,8 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
+                fresh: false,
             })
             .await;
         assert!(matches!(lease, Response::Lease { .. }), "{lease:?}");
@@ -3159,6 +3174,7 @@ mod tests {
                 payload: json!("for B alone"),
                 reply_to: None,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await;
         assert!(!matches!(sent, Response::Error { .. }), "{sent:?}");
@@ -3408,6 +3424,7 @@ mod tests {
                         payload: json!("for B alone"),
                         reply_to: None,
                         links: Vec::new(),
+                        idempotency_key: None,
                     })
                     .await;
                 assert!(!matches!(sent, Response::Error { .. }), "{sent:?}");

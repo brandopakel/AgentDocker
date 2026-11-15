@@ -1,4 +1,5 @@
 use super::*;
+use agentdocker_core::team;
 
 impl Daemon {
     /// Return the last successful scan only while it is fresh and healthy.
@@ -121,10 +122,23 @@ impl Daemon {
         Ok(found)
     }
 
+    /// Where the runtime inventory looks: this machine's own places, or
+    /// in a test the machine the test laid out (a bare one by default).
+    pub(in crate::daemon) fn runtime_roots(&self) -> agentdocker_host::runtimes::Roots {
+        #[cfg(test)]
+        {
+            lock(&self.runtime_roots).clone()
+        }
+        #[cfg(not(test))]
+        {
+            agentdocker_host::runtimes::Roots::from_env()
+        }
+    }
+
     /// The agent tools on this machine, with how many unregistered
     /// processes of each the last scan saw.
     pub(super) async fn runtimes(&self) -> Response {
-        let roots = agentdocker_host::runtimes::Roots::from_env();
+        let roots = self.runtime_roots();
         let inventory = tokio::task::spawn_blocking(move || {
             agentdocker_host::runtimes::inventory(&roots, "agentdocker")
         })
@@ -213,6 +227,13 @@ impl Daemon {
                         cwd,
                         started_at: procinfo::start_time(p.pid),
                         session: multiplexer::of(p.pid, &by_pid, None),
+                        team: team::membership(
+                            &team::SessionFacts {
+                                argv: Some(&p.argv),
+                                ..Default::default()
+                            },
+                            &[],
+                        ),
                     })
                 })
                 .collect();

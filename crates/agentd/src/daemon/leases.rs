@@ -1,21 +1,39 @@
 use super::*;
 use agentdocker_core::wait::{self, Priority};
-use agentdocker_core::{Blocked, WaitOutcome};
+use agentdocker_core::{Blocked, ClaimRequest, WaitOutcome};
+
+/// What a claim asks for, as the request spelt it.
+pub(super) struct ClaimArgs {
+    pub resource: String,
+    pub mode: LeaseMode,
+    pub amount: Option<u64>,
+    pub ttl_secs: u64,
+    pub note: Option<String>,
+    pub wait_secs: u64,
+    pub priority: Priority,
+    pub automatic: bool,
+    pub fresh: bool,
+    /// Who inside the agent's session claims it, as its adapter reports
+    /// it; the daemon decides whether that names a teammate who owns the
+    /// lease ([`State::owner_actor`]).
+    pub actor: Option<String>,
+}
 
 impl Daemon {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn claim(
-        self: &Arc<Self>,
-        reference: &str,
-        resource: String,
-        mode: LeaseMode,
-        amount: Option<u64>,
-        ttl_secs: u64,
-        note: Option<String>,
-        wait_secs: u64,
-        priority: Priority,
-        automatic: bool,
-    ) -> Response {
+    pub(super) async fn claim(self: &Arc<Self>, reference: &str, args: ClaimArgs) -> Response {
+        let ClaimArgs {
+            resource,
+            mode,
+            amount,
+            ttl_secs,
+            note,
+            wait_secs,
+            priority,
+            automatic,
+            fresh,
+            actor,
+        } = args;
+        let actor = actor.map(|a| a.trim().to_owned()).filter(|a| !a.is_empty());
         if !wait::valid_priority(priority) {
             return Response::error(
                 ErrorCode::Invalid,
@@ -110,6 +128,11 @@ impl Daemon {
                     if let Some(pause) = state.pause_holding(&holder) {
                         break 'attempt Err((pause_refusal(pause), gone));
                     }
+                    // Nor is anything claimed in a worktree on its way out,
+                    // by a waiter that queued before its removal began either.
+                    if let Some(refusal) = state.removal_refuses_claim(&resource) {
+                        break 'attempt Err((refusal, gone));
+                    }
                     let now = Utc::now();
                     state.expire_leases_at(now);
                     if let Some(error) = state.write_failure() {
@@ -151,22 +174,30 @@ impl Daemon {
                             ));
                         }
                     }
+                    // Who inside the holder's session owns what it takes:
+                    // part of the lease's ownership, so two agents of one
+                    // session are refused by each other as any two are.
+                    let owner = state.owner_actor(&holder, actor.as_deref());
                     let result = if state.may_attempt(waiting.ticket()) {
                         state.leases.clone().claim_as(
-                            resource.clone(),
-                            holder.clone(),
-                            // A quota is shared by construction: it is spent,
-                            // not occupied, so exclusivity would make every
-                            // budget a lock on itself.
-                            if resource.kind() == "quota" {
-                                LeaseMode::Shared
-                            } else {
-                                mode
+                            ClaimRequest {
+                                resource: resource.clone(),
+                                holder: holder.clone(),
+                                actor: owner,
+                                // A quota is shared by construction: it is
+                                // spent, not occupied, so exclusivity would
+                                // make every budget a lock on itself.
+                                mode: if resource.kind() == "quota" {
+                                    LeaseMode::Shared
+                                } else {
+                                    mode
+                                },
+                                ttl: ttl(ttl_secs),
+                                note: note.clone(),
+                                automatic,
+                                fresh,
                             },
-                            ttl(ttl_secs),
-                            note.clone(),
                             now,
-                            automatic,
                         )
                     } else {
                         Err(LeaseError::Conflict {
@@ -221,18 +252,64 @@ impl Daemon {
                         Err(err) => match err {
                             // Said by whom, by name: the holder is somebody the
                             // person can go and talk to, and an id is not a name.
+                            // A fresh claim with a lease of the asker's own
+                            // in its way: another worker of the same agent
+                            // holds it. Answered at once, whatever wait was
+                            // asked and whoever else is in the way too: an
+                            // agent queued behind itself is a ring of one,
+                            // and the asker's client asks again instead.
+                            LeaseError::Conflict { held_by, .. }
+                                if fresh && held_by.iter().any(|l| l.holder == holder) =>
+                            {
+                                // Its own leases are named; any of other
+                                // agents in the way too are in the details.
+                                let own: Vec<String> = held_by
+                                    .iter()
+                                    .filter(|l| l.holder == holder)
+                                    .map(|l| l.id.to_string())
+                                    .collect();
+                                break 'attempt Err((
+                                    Response::Error {
+                                        code: ErrorCode::Conflict,
+                                        message: format!(
+                                            "{resource} is already held by this agent (lease {}): a fresh claim waits for it to be released",
+                                            own.join(", ")
+                                        ),
+                                        details: Some(json!({ "own": true, "held_by": held_by })),
+                                    },
+                                    gone,
+                                ));
+                            }
                             LeaseError::Conflict { held_by, .. } => {
                                 let holders = held_by
                                     .iter()
                                     .map(|l| {
-                                        let name = state
-                                            .registry
-                                            .get(&l.holder)
+                                        let holder = state.registry.get(&l.holder);
+                                        let name = holder
                                             .map(|a| a.spec.name.as_str())
                                             .filter(|n| !n.is_empty())
                                             .unwrap_or("an unknown agent");
+                                        // A member of a Claude Code team by
+                                        // the name its lead gave it: the name
+                                        // the team's other agents know. An
+                                        // in-process teammate owns its lease
+                                        // under the lead's session, and is
+                                        // named by the roster its holder was
+                                        // placed by.
+                                        let team = holder
+                                            .and_then(|a| a.team.as_ref())
+                                            .map(|t| {
+                                                format!(
+                                                    ", {}",
+                                                    t.describe_acting(
+                                                        l.actor.as_deref(),
+                                                        state.team_rosters.get(&l.holder),
+                                                    )
+                                                )
+                                            })
+                                            .unwrap_or_default();
                                         format!(
-                                            "{name} ({}; {} on {})",
+                                            "{name}{team} ({}; {} on {})",
                                             l.holder.short(),
                                             l.mode,
                                             l.resource
@@ -419,10 +496,14 @@ impl Daemon {
         } else {
             return Ok(key);
         };
-        let path = tokio::task::spawn_blocking(move || project::try_canonical(&path))
-            .await
-            .map_err(|err| Box::new(Response::error(ErrorCode::Internal, err.to_string())))?
-            .map_err(|err| Box::new(Response::error(ErrorCode::Invalid, err.to_string())))?;
+        let path = physical(path).await.map_err(|err| {
+            // A runtime failure is the daemon's; an unresolvable path is the caller's.
+            Box::new(if err.is::<tokio::task::JoinError>() {
+                Response::internal(err)
+            } else {
+                Response::invalid(err)
+            })
+        })?;
         if !path.is_absolute() {
             return Err(Box::new(Response::error(
                 ErrorCode::Invalid,
@@ -529,26 +610,83 @@ impl State {
         }
     }
 
+    /// Release the leases `reference` holds on exactly `resource`, which is
+    /// already the daemon's own spelling of it ([`Daemon::localise`]). A
+    /// lease on a folder is not a lease on a file in it, nor the other way
+    /// round: only the resource itself is released, and holding nothing on
+    /// it is `not_found`, with whatever is held around it left in place.
+    pub(super) fn release_resource(
+        &mut self,
+        reference: &str,
+        resource: &ResourceKey,
+        summary: Option<String>,
+        source: SummarySource,
+    ) -> Response {
+        let holder = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        self.expire_leases();
+        let released: Vec<Lease> = self
+            .leases
+            .by_holder(&holder)
+            .into_iter()
+            .filter(|l| l.resource == *resource)
+            .cloned()
+            .collect();
+        if released.is_empty() {
+            return Response::not_found(format!(
+                "you hold no lease on {resource}; `leases` lists what is held"
+            ));
+        }
+        let released = self.finish_release(&holder, released, summary, source);
+        Response::Leases { leases: released }
+    }
+
+    /// Release the agent's leases, or with `only_automatic` those an
+    /// adapter took for an edit. An `actor` that is a teammate inside the
+    /// agent's session ([`State::owner_actor`]) releases only the leases it
+    /// owns: its turn ended, not its session's. No actor, or one that names
+    /// no teammate, is the session itself, and every lease of the agent's
+    /// is released, its in-process teammates' included — the session's own
+    /// turn end is the only boundary its hooks see for them, and a teammate
+    /// takes its lease again at its next edit.
     pub(super) fn release_all(
         &mut self,
         reference: &str,
         summary: Option<String>,
         source: SummarySource,
         only_automatic: bool,
+        actor: Option<&str>,
     ) -> Response {
         let holder = match self.resolve(reference) {
             Ok(id) => id,
             Err(response) => return *response,
         };
+        let owner = self.owner_actor(&holder, actor);
         let released = self
             .leases
             .by_holder(&holder)
             .into_iter()
             .filter(|l| !only_automatic || l.automatic)
+            .filter(|l| owner.is_none() || l.actor == owner)
             .cloned()
             .collect();
         let released = self.finish_release(&holder, released, summary, source);
         Response::Leases { leases: released }
+    }
+
+    /// The owner an `actor` reported inside `holder`'s session is: another
+    /// member of the holder's Claude Code team, as the roster the holder was
+    /// placed by names it, else `None` — the session itself (see
+    /// [`agentdocker_core::TeamMembership::owner_actor`]). As of the last
+    /// read of the team: every five seconds, and at each registration.
+    pub(super) fn owner_actor(&self, holder: &AgentId, actor: Option<&str>) -> Option<String> {
+        self.registry
+            .get(holder)?
+            .team
+            .as_ref()?
+            .owner_actor(actor, self.team_rosters.get(holder))
     }
 
     /// Stage deletion and the journal/replay evidence in one transaction,

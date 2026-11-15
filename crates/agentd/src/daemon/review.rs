@@ -319,34 +319,38 @@ impl Daemon {
                 "merged, but the new head could not be read",
             );
         };
-        let mut state = lock(&self.state);
-        if let Some(person) = person {
-            let short: String = commit.chars().take(7).collect();
-            let summary = format!(
-                "merged {branch} into {target} ({} commit{}) as {short}",
-                review.commits.len(),
-                if review.commits.len() == 1 { "" } else { "s" }
-            );
-            if let Some(mut entry) = state.plain_entry(
-                &person,
-                JournalKind::Commit,
-                summary,
-                SummarySource::Explicit,
-            ) {
-                entry.branch = Some(target.clone());
-                entry.head_before = before;
-                entry.head_after = Some(commit.clone());
-                entry.paths_total = review.files.len();
-                state.append_journal(entry);
+        // A block of its own: the hold ends here, before `_committing`
+        // takes the same lock on its way out.
+        {
+            let mut state = lock(&self.state);
+            if let Some(person) = person {
+                let short: String = commit.chars().take(7).collect();
+                let summary = format!(
+                    "merged {branch} into {target} ({} commit{}) as {short}",
+                    review.commits.len(),
+                    if review.commits.len() == 1 { "" } else { "s" }
+                );
+                if let Some(mut entry) = state.plain_entry(
+                    &person,
+                    JournalKind::Commit,
+                    summary,
+                    SummarySource::Explicit,
+                ) {
+                    entry.branch = Some(target.clone());
+                    entry.head_before = before;
+                    entry.head_after = Some(commit.clone());
+                    entry.paths_total = review.files.len();
+                    state.append_journal(entry);
+                }
+                state.last_head.insert(root.clone(), commit.clone());
             }
-            state.last_head.insert(root.clone(), commit.clone());
+            state.emit(EventKind::BranchMerged {
+                agent,
+                branch,
+                target: target.clone(),
+                commit: commit.clone(),
+            });
         }
-        state.emit(EventKind::BranchMerged {
-            agent,
-            branch,
-            target: target.clone(),
-            commit: commit.clone(),
-        });
         Response::BranchMerged { target, commit }
     }
 }

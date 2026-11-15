@@ -344,7 +344,7 @@ impl State {
                     kind,
                     channel.name.clone(),
                     channel.title(),
-                    channel.members.clone(),
+                    self.live_members(channel),
                 ))
             }
             ConversationKind::Dm => {
@@ -724,6 +724,7 @@ mod tests {
                 payload: serde_json::json!({ "text": text }),
                 reply_to,
                 links: Vec::new(),
+                idempotency_key: None,
             })
             .await
         {

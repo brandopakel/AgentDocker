@@ -26,13 +26,16 @@ impl AgentId {
 
     /// Abbreviated form for tables, like the 12-character IDs in `docker ps`.
     pub fn short(&self) -> &str {
-        let end = self
-            .0
-            .char_indices()
-            .nth(12)
-            .map_or(self.0.len(), |(i, _)| i);
-        &self.0[..end]
+        short(&self.0)
     }
+}
+
+/// The first twelve characters of an id-like string, the abbreviation
+/// `docker ps` shows, without splitting a character: a shorter string is
+/// returned whole.
+pub fn short(s: &str) -> &str {
+    let end = s.char_indices().nth(12).map_or(s.len(), |(i, _)| i);
+    &s[..end]
 }
 
 impl From<String> for AgentId {
@@ -259,6 +262,11 @@ pub struct DiscoveredProcess {
     /// the tool that already owns its terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<crate::multiplexer::Session>,
+    /// The Claude Code team its command line puts it in, as a teammate;
+    /// a lead is only known once its session is registered. See
+    /// [`crate::team`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<crate::team::TeamMembership>,
 }
 
 impl DiscoveredProcess {
@@ -297,7 +305,7 @@ impl fmt::Display for AgentStatus {
             Self::Running => f.write_str("running"),
             Self::Stopping => f.write_str("stopping"),
             Self::Exited { code: Some(code) } => write!(f, "exited ({code})"),
-            Self::Exited { code: None } => f.write_str("exited (signal)"),
+            Self::Exited { code: None } => f.write_str("exited (code unknown)"),
             Self::Failed { reason } => write!(f, "failed: {reason}"),
         }
     }
@@ -379,6 +387,14 @@ pub struct AgentRecord {
     pub last_seen: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reported_activity: Option<crate::ActivityObservation>,
+    /// When the newest first-hand (strong) observation of this agent was
+    /// made — its own adapter's report, Codex's shared server's — kept
+    /// apart from `reported_activity`, which a later weak word may
+    /// replace. A screen read before it is never judged waiting
+    /// ([`crate::judgment::ScreenJudgment::superseded_on`]). A daemon
+    /// predating it ignores it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_hand_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_delivery: Option<crate::InputDelivery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -408,11 +424,25 @@ pub struct AgentRecord {
     /// The opt-in judge read its quiet screen as waiting on the person:
     /// what for, how sure, and which screen of which process. It raises
     /// the agent's activity while it stands and never lowers it; a change
-    /// of screen, a screen that can no longer be read, a report from the
-    /// agent's own adapter or another process ends it (see
-    /// [`crate::judgment`]).
+    /// of screen, a screen that can no longer be read, a first-hand report
+    /// made after the screen was read (which takes it off the record for
+    /// good) or another process ends it (see [`crate::judgment`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judged: Option<crate::judgment::ScreenJudgment>,
+    /// Its place in a Claude Code agent team — the lead of one, or a
+    /// teammate with the name and colour its lead gave it — as the
+    /// daemon reads it from the process's command line and Claude's team
+    /// files ([`crate::team`]). Attached and taken away by the daemon
+    /// alone (`agent_team_changed`); a client's own value is dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<crate::team::TeamMembership>,
+    /// What the provider itself says of this agent's conversation: the
+    /// role it gave the thread and the thread that spawned it (Codex's
+    /// multi-agent threads). Learned once the conversation is bound and
+    /// its rollout or shared server has been read; `None` until then, and
+    /// for runtimes that say nothing of the kind. See [`ProviderThread`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread: Option<ProviderThread>,
 }
 
 /// The label an agent's roles are kept in (`role=reviewer`, or
@@ -569,6 +599,74 @@ pub struct SessionKey {
 pub struct SessionContact {
     pub adapter: crate::AdapterKind,
     pub observed_at: DateTime<Utc>,
+}
+
+/// A conversation named by the provider's own thread id, and the agent
+/// whose conversation it is when the daemon has a record keyed by it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadRef {
+    pub thread: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<AgentId>,
+}
+
+/// Where what the provider says of a thread was read.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadSource {
+    /// The first record of the thread's rollout file.
+    #[default]
+    Rollout,
+    /// Codex's shared app-server, read for the thread.
+    CodexServer,
+}
+
+/// What the provider itself says of an agent's conversation. A Codex
+/// thread spawned by another carries the role the spawning agent gave it
+/// (`agent_role`), a nickname and its parent thread; a root thread has
+/// none of these, and its record still says it was read. These are the
+/// provider's words about its own threads, apart from the roles the
+/// person gives agents in AgentDocker (the `role` label).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderThread {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nickname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<ThreadRef>,
+    #[serde(default)]
+    pub source: ThreadSource,
+}
+
+impl ProviderThread {
+    /// This, with what `later` adds: a role, nickname or parent this
+    /// lacks, and a parent's agent once one is known. What this already
+    /// says stands, and a reading that adds nothing leaves it as it is,
+    /// its source included; otherwise the source is the later reading's.
+    pub fn merged(&self, later: &ProviderThread) -> ProviderThread {
+        let parent = match (&self.parent, &later.parent) {
+            (Some(mine), Some(theirs)) if mine.thread == theirs.thread => Some(ThreadRef {
+                thread: mine.thread.clone(),
+                agent: mine.agent.clone().or_else(|| theirs.agent.clone()),
+            }),
+            (Some(mine), _) => Some(mine.clone()),
+            (None, theirs) => theirs.clone(),
+        };
+        let merged = ProviderThread {
+            role: self.role.clone().or_else(|| later.role.clone()),
+            nickname: self.nickname.clone().or_else(|| later.nickname.clone()),
+            parent,
+            source: self.source,
+        };
+        if merged == *self {
+            return merged;
+        }
+        ProviderThread {
+            source: later.source,
+            ..merged
+        }
+    }
 }
 
 impl AgentRecord {
@@ -766,6 +864,7 @@ impl AgentRecord {
             finished_at: None,
             last_seen: now,
             reported_activity: None,
+            first_hand_at: None,
             input_delivery: None,
             provider_availability: None,
             adapter_contacts: Default::default(),
@@ -774,6 +873,8 @@ impl AgentRecord {
             input_binding: None,
             legacy_offers: Default::default(),
             judged: None,
+            team: None,
+            thread: None,
         }
     }
 }
@@ -781,6 +882,17 @@ impl AgentRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An exit with no recorded code says only that: the process may have
+    /// been found gone without anyone seeing it end, and a missing code
+    /// names no cause. A recorded code is shown as it is, zero included.
+    #[test]
+    fn an_exit_without_a_recorded_code_claims_no_cause() {
+        let shown = |code| AgentStatus::Exited { code }.to_string();
+        assert_eq!(shown(None), "exited (code unknown)");
+        assert_eq!(shown(Some(0)), "exited (0)");
+        assert_eq!(shown(Some(137)), "exited (137)");
+    }
 
     /// A stop is marked on the run it was asked of, outlives the exit,
     /// and is not the next run's; a record written without the mark reads
@@ -974,6 +1086,18 @@ mod tests {
         assert_eq!(id.short().len(), 12);
         assert!(id.as_str().starts_with(id.short()));
         assert_eq!(AgentId::from("abc").short(), "abc");
+    }
+
+    /// Twelve characters, not twelve bytes: a multi-byte id is cut on a
+    /// character boundary, and one shorter than twelve comes back whole.
+    #[test]
+    fn short_counts_characters_not_bytes() {
+        assert_eq!(short("ééééééééééééééé"), "éééééééééééé");
+        assert_eq!(short("ééééééééééééééé").chars().count(), 12);
+        assert_eq!(short("日本語の識別子です長い"), "日本語の識別子です長い");
+        assert_eq!(short("abc"), "abc");
+        assert_eq!(short(""), "");
+        assert_eq!(short("0123456789abcdef"), "0123456789ab");
     }
 
     /// A session known by its key alone: its key is runtime, profile and

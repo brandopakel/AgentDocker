@@ -69,7 +69,7 @@ where to check the permission if the action times out.
 | --- | --- |
 | Projects | All projects home; selecting a project opens its shared Chat with a compact list of current agents. Agents is the second tab and Board the third; History, Files in use, Usage and AgentDocker commands are under More. Open project terminal is visible in the project header. |
 | Inbox | Questions, retained answer drafts and messages addressed to the user; Messages (conversations, threads, read cursors) against a daemon that keeps them |
-| Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo** |
+| Tools (rail id `connections`) | Installed tools and connection status. **Set up** appears for an installed tool missing MCP or hooks when no active session report exists. Expanded Details offers **Review setup**, health and history; setup plans use **Connect**, and applied plans offer **Undo**, as does a plan whose undo was interrupted |
 | Settings | Appearance, terminal, update checks, installation and retained versions |
 
 Light and dark appearances share the same hierarchy and the same visual
@@ -120,6 +120,20 @@ control does, its id or its accessible label:
   where it says more (which need, *finished since you looked*); attention for
   needs you, alert for failed, the accent for news, neutral for the rest,
   with an icon for each but running, idle and ended.
+- **State, status and what it waits for.** The daemon's three-part answer
+  (`agentdocker_core::status::IdentityStatus`, read from `activity`, never
+  computed in the app) is drawn by `chip::identity` as up to three chips in
+  one order — the state (`State::label`: *Working*, *Blocked*, *Done*,
+  *Failed*, *Stopped*), the status this moment (`Status::label`: *Busy*,
+  *Waiting*, *Idle*) and, only when something is waited for from the person,
+  what for (`WaitingFor::label`: *Wants permission*, *Needs input*, *Sandbox
+  request*, *Has a question*) — under the inspector's header
+  (`inspector-state`, `inspector-status`, `inspector-waiting-for`). Idle and
+  needs-input are therefore never one chip. Attention tone for a wait on the
+  person, alert for failed, positive for done, neutral for the rest; the
+  evidence (`Evidence`) is the status chip's detail, where a weak word says
+  so. Nothing is drawn for a daemon that gave no answer. The standing chip
+  stays the one-word summary on every row.
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project
   in a focused window, the session is marked unviewed: its standing is
@@ -456,7 +470,9 @@ control does, its id or its accessible label:
   right, padded 8 by 14, with rules inset 14 (the same rows serve
   Installation), and no row or group has a line of why: the theme as a
   segmented control, text sizes as `− 14 pt +` steppers, switches for
-  notifications, roomier rows, update checks and preview builds, terminal
+  notifications, roomier rows, the menu bar item (macOS only; a switch read
+  aloud as what pressing it does, *Remove the menu bar item* or *Show the
+  menu bar item*), update checks and preview builds, terminal
   colours as preview swatches with an accent ring. The terminal
   pane has a header (agent over its folder in mono, a *Live*, *Scrolled back*
   or *Ended* chip and a small Detach) above the grid on its palette's ground,

@@ -327,7 +327,7 @@ impl Daemon {
                 {
                     break;
                 }
-                state.release_all(id.as_str(), None, SummarySource::Explicit, false);
+                state.release_all(id.as_str(), None, SummarySource::Explicit, false, None);
                 if state.storage_error.is_some() {
                     break;
                 }
@@ -566,6 +566,10 @@ impl Daemon {
                 .any(|agent| agent.id != previous.id && agent.spec.name == previous.spec.name),
             "another live agent now owns this name"
         );
+        anyhow::ensure!(
+            state.removal_refuses_record(current).is_none(),
+            "its worktree is being removed"
+        );
         let mut record = current.clone();
         record.status = AgentStatus::Created;
         record.begin_run();
@@ -582,6 +586,12 @@ impl Daemon {
         let mut leases = Vec::new();
         let mut reclaimed = Vec::new();
         for held in &point.leases {
+            // A lease it held is not taken back in a worktree on its way
+            // out: this claims on the table itself, past the claim loop.
+            anyhow::ensure!(
+                state.removal_refuses_claim(&held.resource).is_none(),
+                "a lease it held is in a worktree being removed"
+            );
             if planned.by_holder(&record.id).into_iter().any(|lease| {
                 lease.resource == held.resource && lease.mode == held.mode && !lease.is_expired(now)
             }) {
@@ -1231,6 +1241,8 @@ mod tests {
                     note: None,
                     amount: None,
                     automatic: false,
+                    actor: None,
+                    fresh: false,
                 })
                 .await,
             Response::Lease { .. }
@@ -1682,6 +1694,8 @@ mod tests {
                     note: None,
                     amount: None,
                     automatic: false,
+                    actor: None,
+                    fresh: false,
                 })
                 .await,
             Response::Lease { .. }

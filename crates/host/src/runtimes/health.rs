@@ -168,12 +168,12 @@ pub(super) fn configuration(
 
 fn mcp(spec: &RuntimeSpec, roots: &Roots, marker: &str) -> Vec<Check> {
     let Some(path) = mcp_config_path(spec, roots) else {
-        return vec![Check::new(
-            "mcp",
-            None,
-            Status::Unsupported,
-            "No supported MCP setup adapter",
-        )];
+        let detail = if spec.mcp == McpWiring::AgentConfig {
+            "MCP servers are declared in each agent's YAML file; `agentdocker setup docker-agent --agent <file>` adds the toolset to one"
+        } else {
+            "No supported MCP setup adapter"
+        };
+        return vec![Check::new("mcp", None, Status::Unsupported, detail)];
     };
     let is_toml = matches!(spec.mcp, McpWiring::TomlServers { .. });
     let value = match configuration("mcp", &path, is_toml) {
