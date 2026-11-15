@@ -383,6 +383,11 @@ pub struct Daemon {
     /// lock that commits it, met twice. Never held across an await.
     #[cfg(test)]
     register_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    /// A test's pause in a worktree's removal, after the step that found
+    /// it idle and reserved it and before git is asked, met twice. Never
+    /// held across an await.
+    #[cfg(test)]
+    removal_hold: Mutex<Option<Arc<tokio::sync::Barrier>>>,
     /// A test's hold on one agent's claim at one point of its wait
     /// (`waiting::ClaimPoint`), so another claim can act in between. Taken
     /// once; never held across an await.
@@ -563,6 +568,13 @@ struct State {
     /// without this it writes its own guessed-at entry for a commit the
     /// daemon is about to record properly.
     committing: std::collections::BTreeSet<PathBuf>,
+    /// Linked worktrees being removed right now, each with the branch
+    /// checked out in it. The step that found one idle put it here, and
+    /// until its removal has ended, whichever way, nobody new comes to
+    /// work in it and nothing in it, nor its branch, is claimed: git takes
+    /// several commands to remove a worktree, and an agent let in between
+    /// them would lose the checkout it was just told it had.
+    removing: BTreeMap<PathBuf, Option<String>>,
     /// A shared installation pin per binding that has a launch descriptor,
     /// held for the binding's life so the release its controller runs
     /// from is not pruned while the controller is dead and waiting to be
@@ -1774,6 +1786,7 @@ impl Daemon {
                 checkout_reads: HashMap::new(),
                 checkout_scans: HashSet::new(),
                 committing: std::collections::BTreeSet::new(),
+                removing: BTreeMap::new(),
                 controller_pins: HashMap::new(),
                 question_waiters: HashSet::new(),
                 held_answers: HashMap::new(),
@@ -1812,6 +1825,8 @@ impl Daemon {
             relaunch_hold: Mutex::new(None),
             #[cfg(test)]
             register_hold: Mutex::new(None),
+            #[cfg(test)]
+            removal_hold: Mutex::new(None),
             #[cfg(test)]
             claim_hold: Mutex::new(None),
             #[cfg(test)]
@@ -2210,6 +2225,11 @@ impl Daemon {
             }
             Request::WorktreeDiff { agent } => self.worktree_diff(&agent).await,
             Request::WorktreeRemove { agent } => self.worktree_remove(&agent).await,
+            Request::WorktreeRemoveNamed {
+                agent,
+                path,
+                branch,
+            } => self.worktree_remove_named(&agent, path, branch).await,
             Request::ReviewBranch { agent } => self.review_branch(&agent).await,
             Request::MergeBranch { from, agent, head } => {
                 self.merge_branch(&from, &agent, &head).await
@@ -4784,6 +4804,11 @@ impl State {
                         "the conversation's ended record still has its process; let it finish first",
                     ));
                 }
+                // Not back into a worktree on its way out: refused before
+                // anything of the record or its name is touched.
+                if let Some(refusal) = self.removal_refuses_record(&record) {
+                    return Some(refusal);
+                }
                 // Its process is gone: kept by contact from here on.
                 record.pid = None;
                 record.process_started_at = None;
@@ -4917,6 +4942,11 @@ impl State {
         }
         if let Some(error) = self.write_failure() {
             return Some(error);
+        }
+        // A proven terminal does not bring its conversation's record back
+        // into a worktree on its way out either.
+        if let Some(refusal) = self.removal_refuses_record(&record) {
+            return Some(refusal);
         }
         if !record.status.is_live() {
             self.free_name(&mut record);
@@ -5928,6 +5958,60 @@ impl State {
         }
     }
 
+    /// The refusal for a record that would come to work in a worktree
+    /// being removed ([`State::removing`]).
+    ///
+    /// There is no single door a record comes back to life through, so
+    /// each one asks this under the lock that commits it: a record that
+    /// is made or registered ([`State::insert_record_announcing`]); a
+    /// supervised process, before it is spawned and when it is committed
+    /// as running ([`State::run_refusal`]: a launch, a restart, a
+    /// restore, a pane, a container); a session relaunched under its
+    /// ended record (`Daemon::resume_session`); a keyed conversation
+    /// heard from again or joined by its proven terminal
+    /// ([`State::keyed_session`], [`State::prove_keyed`]); and a restore
+    /// that plans a record's return with its leases. The other side of
+    /// the same care is in the removal's own look, which counts a record
+    /// waiting for its restart as working there. A new way back to life
+    /// has to ask this too.
+    fn removal_refuses_record(&self, record: &AgentRecord) -> Option<Response> {
+        if self.removing.is_empty() {
+            return None;
+        }
+        let dir = record
+            .project
+            .as_ref()
+            .map(|project| project.dir().to_path_buf())
+            .or_else(|| record.spec.workdir.clone())?;
+        let dir = project::canonical(&dir);
+        let path = self.removing.keys().find(|path| dir.starts_with(path))?;
+        Some(Response::error(
+            ErrorCode::Conflict,
+            format!(
+                "{} is being removed: nobody new comes to work there",
+                path.display()
+            ),
+        ))
+    }
+
+    /// The refusal for a claim on a path in or over a worktree being
+    /// removed, or on its branch ([`State::removing`]).
+    fn removal_refuses_claim(&self, resource: &ResourceKey) -> Option<Response> {
+        let (path, _) = self.removing.iter().find(|(path, branch)| {
+            resource.overlaps(&ResourceKey::new(format!("path:{}", path.display())))
+                || branch
+                    .as_ref()
+                    .is_some_and(|branch| *resource == ResourceKey::new(format!("branch:{branch}")))
+        })?;
+        Some(Response::error(
+            ErrorCode::Conflict,
+            format!(
+                "{} is being removed: nothing in it, nor its branch, is claimed until that has ended",
+                path.display()
+            ),
+        ))
+    }
+
     fn insert_record(&mut self, record: AgentRecord) -> Response {
         self.insert_record_announcing(record, true, None)
     }
@@ -5956,6 +6040,9 @@ impl State {
     ) -> Response {
         if let Some(error) = self.write_failure() {
             return error;
+        }
+        if let Some(refusal) = self.removal_refuses_record(&record) {
+            return refusal;
         }
         if record.spec.name.is_empty() {
             record.spec.name = default_name(&record.id);

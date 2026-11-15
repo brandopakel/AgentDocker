@@ -176,6 +176,35 @@ class PruneSelection(unittest.TestCase):
         self.assertEqual(self.roots(prunable), [inside, parent, free])
         self.assertEqual({root: reason for root, _, reason in kept}[branch], "lease branch:feature/d is live")
 
+    def test_a_checkout_inside_the_main_one_is_a_worktree_of_its_own(self):
+        """A project keeps its agents' worktrees inside it. One of them is
+        judged as any other: what runs or is held in the main checkout
+        around it does not keep it, what runs or is held in it does, and a
+        lease on a folder above it covers it as it covers everything there."""
+        home = "main/.agentdocker/worktrees"
+        done = self.worktree(f"{home}/agent-done", "agent/done")
+        busy = self.worktree(f"{home}/agent-busy", "agent/busy")
+        held = self.worktree(f"{home}/agent-held", "agent/held")
+        main = self.base / "main"
+        (main / "target").mkdir(parents=True)
+        self.caches[main / "target"] = STORAGE.GIB
+        processes = [
+            (20, "cargo build", (main, Path("/usr/bin/cargo"))),
+            (21, "cargo test", (busy / "crates/core", Path("/usr/bin/cargo"))),
+        ]
+        leases = {f"path:{main / 'src/lib.rs'}", f"path:{held / 'src/lib.rs'}"}
+        prunable, kept = self.plan(leases=leases, processes=processes)
+        self.assertEqual(self.roots(prunable), [done])
+        self.assertEqual([cache for cache, _ in prunable[0][1]], [done / "target"])
+        reasons = {root: reason for root, _, reason in kept}
+        self.assertEqual(reasons[main], "the project's main checkout")
+        self.assertEqual(reasons[busy], "process 21 (cargo) runs in it")
+        self.assertEqual(reasons[held], f"lease path:{held / 'src/lib.rs'} is live")
+        # A lease on the project's root covers the worktrees inside it.
+        prunable, kept = self.plan(leases={f"path:{main}"})
+        self.assertEqual(prunable, [])
+        self.assertEqual({reason for root, _, reason in kept if root != main}, {f"lease path:{main} is live"})
+
     def test_no_daemon_or_no_process_table_means_nothing_is_prunable(self):
         self.worktree("merged", "feature/done")
         prunable, kept = self.plan(leases=None)

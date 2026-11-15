@@ -122,6 +122,11 @@ impl Daemon {
             if let Some(refused) = refusal(&state, &record) {
                 return refused;
             }
+            // Before admission and the checkout are looked at: a session
+            // is not relaunched into a worktree on its way out.
+            if let Some(refused) = state.removal_refuses_record(&record) {
+                return refused;
+            }
             record
         };
         let session = ended
@@ -188,6 +193,11 @@ impl Daemon {
                 return Response::error(ErrorCode::Conflict, "the session changed; look again");
             }
             if let Some(refused) = refusal(&state, &current) {
+                return refused;
+            }
+            // Nor back into a worktree on its way out: refused here, with
+            // the ended record as it was.
+            if let Some(refused) = state.removal_refuses_record(&record) {
                 return refused;
             }
             let now = Utc::now();
