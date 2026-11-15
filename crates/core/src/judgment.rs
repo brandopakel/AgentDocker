@@ -505,6 +505,35 @@ impl ScreenJudgment {
     }
 }
 
+/// A record as a daemon loads it, written before
+/// [`AgentRecord::first_hand_at`] was kept. Its newest first-hand word was
+/// its reported observation where that is strong, so `first_hand_at` is
+/// seeded from it, and a judgment of a screen read before that word is
+/// taken off now, as the report would have taken it off had the field
+/// been kept. Returns whether a judgment was taken off. A record whose
+/// reported observation is weak keeps its judgment: whether a first-hand
+/// word came between the screen and that observation was not kept and is
+/// not guessed; the judge's own pass takes the judgment off once the
+/// screen moves, and the next first-hand word does at once.
+pub fn settle_loaded(record: &mut AgentRecord) -> bool {
+    if record.first_hand_at.is_none()
+        && let Some(observation) = record
+            .reported_activity
+            .as_ref()
+            .filter(|observation| observation.evidence() == Evidence::Strong)
+    {
+        record.first_hand_at = Some(observation.observed_at);
+    }
+    let superseded = record
+        .judged
+        .as_ref()
+        .is_some_and(|judged| judged.superseded_on(record));
+    if superseded {
+        record.judged = None;
+    }
+    superseded
+}
+
 /// Why a judgment came off an agent's record, as
 /// `agent_judgment_cleared` says it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1002,6 +1031,59 @@ mod tests {
         record.process_started_at = Some(at(-60));
         record.status = AgentStatus::Exited { code: Some(0) };
         assert!(!judged.stands_for(&record), "an ended agent");
+    }
+
+    /// A record stored before `first_hand_at` was kept, as it is loaded:
+    /// a strong report after the judged screen seeds the field and takes
+    /// the judgment off, so a weak word that later replaces the report
+    /// cannot bring it back; a strong report before the screen seeds the
+    /// field and leaves it; a weak report after it leaves it, since
+    /// whether a first-hand word came between was not kept.
+    #[test]
+    fn a_record_stored_before_first_hand_at_is_settled_as_it_is_loaded() {
+        let observed = |activity: &str, secs: i64, evidence: Option<&str>| {
+            let mut json = json!({"activity": activity, "observed_at": at(secs)});
+            if let Some(evidence) = evidence {
+                json["evidence"] = evidence.into();
+            }
+            serde_json::from_value::<ActivityObservation>(json).unwrap()
+        };
+        let stored = |report: ActivityObservation| {
+            let mut record = AgentRecord::new(AgentSpec::default(), false, at(-60));
+            record.status = AgentStatus::Running;
+            record.process_started_at = Some(at(-60));
+            record.judged = Some(judgment(WaitReason::Permission, 960));
+            record.reported_activity = Some(report);
+            // As the older daemon wrote it: no `first_hand_at` at all.
+            let json = serde_json::to_value(&record).unwrap();
+            assert!(json.get("first_hand_at").is_none());
+            serde_json::from_value::<AgentRecord>(json).unwrap()
+        };
+
+        let mut after = stored(observed("working", 21, None));
+        assert!(settle_loaded(&mut after), "taken off as it is loaded");
+        assert_eq!(
+            (after.judged.as_ref(), after.first_hand_at),
+            (None, Some(at(21)))
+        );
+        after.reported_activity = Some(observed("idle", 400, Some("weak")));
+        assert!(!settle_loaded(&mut after), "nothing to take off again");
+        assert_eq!(after.first_hand_at, Some(at(21)), "kept");
+
+        let mut before = stored(observed("working", 10, None));
+        assert!(!settle_loaded(&mut before));
+        assert_eq!(before.first_hand_at, Some(at(10)));
+        assert!(
+            before
+                .judged
+                .as_ref()
+                .is_some_and(|j| j.stands_for(&before))
+        );
+
+        let mut weak = stored(observed("idle", 21, Some("weak")));
+        assert!(!settle_loaded(&mut weak));
+        assert_eq!(weak.first_hand_at, None);
+        assert!(weak.judged.as_ref().is_some_and(|j| j.stands_for(&weak)));
     }
 
     #[test]

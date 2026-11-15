@@ -1552,6 +1552,32 @@ impl Daemon {
                     next_seq += 1;
                 }
             }
+            // A record written before `first_hand_at` was kept: a judgment
+            // its stored first-hand report superseded comes off now, said
+            // and written as that report would have taken it off.
+            if record.status.is_live() && agentdocker_core::judgment::settle_loaded(&mut record) {
+                let mut event = Event::new(
+                    EventKind::AgentJudgmentCleared {
+                        agent: record.id.clone(),
+                        reason: agentdocker_core::judgment::ClearReason::Superseded
+                            .as_str()
+                            .to_owned(),
+                    },
+                    now,
+                );
+                if fenced {
+                    let record = record.clone();
+                    deferred.push(Box::new(move |store, seq| {
+                        event.seq = seq;
+                        store.agent_transition(&record, &event)?;
+                        Ok(1)
+                    }));
+                } else {
+                    event.seq = next_seq;
+                    store.agent_transition(&record, &event)?;
+                    next_seq += 1;
+                }
+            }
             let stored = registry.get_mut(&record.id).expect("record was validated");
             *stored = record;
         }
