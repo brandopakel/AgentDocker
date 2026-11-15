@@ -120,10 +120,7 @@ fn launcher_target(executable: &Path, home: Option<&Path>) -> io::Result<Option<
             return Err(io::Error::other("unknown managed launcher record format"));
         }
         let root = root.canonicalize()?;
-        let target = root
-            .join("current/payload/Contents/MacOS")
-            .join(binary)
-            .canonicalize()?;
+        let target = resolve_current(&root, &Path::new("payload/Contents/MacOS").join(binary))?;
         let Some((target_root, version, id)) = managed(&target) else {
             return Err(io::Error::other("launcher target escaped its installation"));
         };
@@ -338,6 +335,50 @@ fn managed(executable: &Path) -> Option<(PathBuf, PathBuf, &str)> {
     windows::managed(executable)
 }
 
+/// How many times a path through the pointer is resolved again when the
+/// pointer moved under the resolution.
+#[cfg(not(windows))]
+const POINTER_ATTEMPTS: usize = 8;
+
+/// The real path of `within` under the installation's `current` pointer.
+///
+/// The pointer names a generation, and a generation is removed once the
+/// pointer has left it. A path is resolved link by link, so a resolution
+/// that read the pointer just before an activation moved it can find its
+/// generation gone by the time it looks inside. That says nothing of the
+/// installation: when the pointer names something else afterwards, the
+/// path is resolved again. A failure under a pointer that did not move
+/// is the installation's own, and stands.
+#[cfg(not(windows))]
+pub fn resolve_current(root: &Path, within: &Path) -> io::Result<PathBuf> {
+    resolve_current_with(root, within, |path| path.canonicalize())
+}
+
+/// `resolve_current` with the resolver given, so a test can move the
+/// pointer under one resolution.
+#[cfg(not(windows))]
+fn resolve_current_with(
+    root: &Path,
+    within: &Path,
+    mut resolve: impl FnMut(&Path) -> io::Result<PathBuf>,
+) -> io::Result<PathBuf> {
+    let current = root.join("current");
+    let path = current.join(within);
+    let mut attempts = 0;
+    loop {
+        let before = std::fs::read_link(&current).ok();
+        match resolve(&path) {
+            Ok(resolved) => return Ok(resolved),
+            Err(error) => {
+                attempts += 1;
+                if attempts >= POINTER_ATTEMPTS || std::fs::read_link(&current).ok() == before {
+                    return Err(error);
+                }
+            }
+        }
+    }
+}
+
 /// The `agentd` of the release the managed installation currently
 /// activates, when `executable` belongs to a managed installation and
 /// that release differs from the executable's own. This is what a daemon
@@ -347,20 +388,18 @@ fn managed(executable: &Path) -> Option<(PathBuf, PathBuf, &str)> {
 #[cfg(not(windows))]
 pub fn activated_daemon(executable: &Path) -> Option<PathBuf> {
     let (root, version, _) = managed(executable)?;
-    let payload = root.join("current").join("payload");
     // Where this platform's payload keeps its binaries: an application
     // bundle on macOS, a plain tree elsewhere. Never the other one, even
     // if a payload carries both.
     let inside = if cfg!(target_os = "macos") {
-        "Contents/MacOS/agentd"
+        "payload/Contents/MacOS/agentd"
     } else {
-        "bin/agentd"
+        "payload/bin/agentd"
     };
-    let candidate = payload.join(inside);
-    if !candidate.is_file() {
+    let resolved = resolve_current(&root, Path::new(inside)).ok()?;
+    if !resolved.is_file() {
         return None;
     }
-    let resolved = std::fs::canonicalize(&candidate).ok()?;
     // Under the same versions directory, and not the release already
     // running: an activation is only a reload target when it is new.
     // Everything is compared resolved, since a home may itself sit behind
@@ -596,6 +635,63 @@ mod tests {
         assert!(lock::try_exclusive(&path).unwrap().is_none());
         drop(second_pin);
         assert!(lock::try_exclusive(&path).unwrap().is_some());
+    }
+
+    /// A resolution that read the pointer before an activation moved it
+    /// finds its generation gone once that generation is swept. It is
+    /// resolved again, and gives the release the pointer names now; under
+    /// a pointer that has not moved the failure stands, at once.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_through_the_pointer_is_resolved_again_when_the_pointer_moved() {
+        use std::os::unix::fs::symlink;
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        let generations = root.join("generations");
+        let release = |name: &str| {
+            let payload = root.join("versions").join(name).join("payload");
+            std::fs::create_dir_all(payload.join("bin")).unwrap();
+            std::fs::write(payload.join("bin/agentd"), name).unwrap();
+            let generation = generations.join(name);
+            std::fs::create_dir_all(&generation).unwrap();
+            symlink(&payload, generation.join("payload")).unwrap();
+            generation
+        };
+        let first = release("first");
+        let second = release("second");
+        symlink(&first, root.join("current")).unwrap();
+        let within = Path::new("payload/bin/agentd");
+
+        // The pointer moves and the first generation is swept while the
+        // first resolution is under way: it fails as a real one would.
+        let mut resolutions = 0;
+        let resolved = resolve_current_with(&root, within, |path| {
+            resolutions += 1;
+            if resolutions == 1 {
+                std::fs::remove_file(root.join("current")).unwrap();
+                symlink(&second, root.join("current")).unwrap();
+                std::fs::remove_dir_all(&first).unwrap();
+                return Err(io::ErrorKind::NotFound.into());
+            }
+            path.canonicalize()
+        })
+        .unwrap();
+        assert_eq!(resolutions, 2);
+        assert_eq!(resolved, root.join("versions/second/payload/bin/agentd"));
+        assert_eq!(resolve_current(&root, within).unwrap(), resolved);
+
+        // The pointer has not moved: the failure is the installation's.
+        std::fs::remove_file(root.join("versions/second/payload/bin/agentd")).unwrap();
+        let mut resolutions = 0;
+        let failed = resolve_current_with(&root, within, |path| {
+            resolutions += 1;
+            path.canonicalize()
+        });
+        assert_eq!(failed.unwrap_err().kind(), io::ErrorKind::NotFound);
+        assert_eq!(resolutions, 1, "not tried again");
+        // No pointer at all is the same: nothing moved.
+        std::fs::remove_file(root.join("current")).unwrap();
+        assert!(resolve_current(&root, within).is_err());
     }
 
     /// A daemon running from release A reloads to the release the

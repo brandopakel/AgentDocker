@@ -99,44 +99,80 @@ fn listing(directory: &Path) -> Option<Result<Vec<PathBuf>, &'static str>> {
     })
 }
 
-/// Whether `directory` is a real directory holding nothing but what
-/// `allowed` names, by name and kind, links not followed.
-fn holds_only(directory: &Path, allowed: impl Fn(&str, &FileType) -> bool) -> Result<bool> {
-    if !directory.symlink_metadata()?.is_dir() {
-        return Ok(false);
-    }
-    for (at, entry) in std::fs::read_dir(directory)?.enumerate() {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        if at >= MAX
-            || !entry
-                .file_name()
-                .to_str()
-                .is_some_and(|name| allowed(name, &kind))
-        {
-            return Ok(false);
+/// What one entry of a swept folder has to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kind {
+    File,
+    Link,
+    Folder,
+}
+
+impl Kind {
+    fn is(self, found: &FileType) -> bool {
+        match self {
+            Kind::File => found.is_file(),
+            Kind::Link => found.is_symlink(),
+            Kind::Folder => found.is_dir(),
         }
     }
-    Ok(true)
+}
+
+/// Everything a swept folder may hold: each name, with what it has to
+/// be. The names are the ones the command that made the folder writes,
+/// and no others: a folder holding anything else is not its leftover.
+type Shape = Vec<(String, Kind)>;
+
+fn shape(entries: &[(&str, Kind)]) -> Shape {
+    entries
+        .iter()
+        .map(|(name, kind)| ((*name).to_owned(), *kind))
+        .collect()
 }
 
 /// What a generation holds, and so what an activation's staging folder
 /// in `generations/` may hold when the activation stopped: the record and
 /// the link to the release.
-fn generation_shape(name: &str, kind: &FileType) -> bool {
-    (name == "activation.json" && kind.is_file()) || (name == "payload" && kind.is_symlink())
+fn generation_shape() -> Shape {
+    shape(&[("activation.json", Kind::File), ("payload", Kind::Link)])
 }
 
 /// What the pointer's staging folder holds: the new pointer before it is
 /// renamed into place, or the old one being put back.
-fn pointer_shape(name: &str, kind: &FileType) -> bool {
-    matches!(name, "current" | "restore") && kind.is_symlink()
+fn pointer_shape() -> Shape {
+    shape(&[("current", Kind::Link), ("restore", Kind::Link)])
 }
 
-/// What an update leaves in its version's folder: the archive, a partial
-/// one, and the extraction.
-fn download_shape(name: &str, kind: &FileType) -> bool {
-    kind.is_file() || (name == "payload" && kind.is_dir())
+/// What an update leaves in its version's folder, by the names the
+/// update writes: the extraction, the archive being fetched, and the
+/// archive. The extraction goes first, so that what is left of a removal
+/// that stopped still has this shape.
+fn download_shape() -> Shape {
+    let archive = update::archive_name(update::host_target());
+    vec![
+        ("payload".to_owned(), Kind::Folder),
+        (format!("{archive}.part"), Kind::File),
+        (archive, Kind::File),
+    ]
+}
+
+/// Whether `directory` is a real directory holding nothing but what
+/// `shape` names, each as the kind it has to be, links not followed.
+fn holds_only(directory: &Path, shape: &Shape) -> Result<bool> {
+    if !directory.symlink_metadata()?.is_dir() {
+        return Ok(false);
+    }
+    for (at, entry) in std::fs::read_dir(directory)?.enumerate() {
+        let entry = entry?;
+        let found = entry.file_type()?;
+        let name = entry.file_name();
+        let allowed = shape
+            .iter()
+            .any(|(allowed, kind)| name.to_str() == Some(allowed) && kind.is(&found));
+        if at >= MAX || !allowed {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 /// A stage under `retired/`, as found.
@@ -220,7 +256,7 @@ pub(super) fn found(
     let mut leftover = |path: PathBuf, kind| remove.push(Leftover { path, kind });
     // Whether a folder holds only what `shape` allows; `None` when it
     // cannot be read.
-    let shaped = |path: &Path, shape: fn(&str, &FileType) -> bool| holds_only(path, shape).ok();
+    let shaped = |path: &Path, shape: Shape| holds_only(path, &shape).ok();
 
     let retired = root.join("retired");
     match listing(&retired) {
@@ -254,7 +290,7 @@ pub(super) fn found(
                     // The generation in use, and the one a reader may
                     // still be in: not leftovers.
                 } else {
-                    match shaped(&path, generation_shape) {
+                    match shaped(&path, generation_shape()) {
                         Some(true) if staging => leftover(path, "staging"),
                         Some(true) => leftover(path, "generation"),
                         Some(false) => keep(path, CONTENTS),
@@ -269,7 +305,7 @@ pub(super) fn found(
     // the rest is the installation's.
     if let Some(Ok(entries)) = listing(root) {
         for path in entries {
-            if name_of(&path).starts_with(STAGE) && shaped(&path, pointer_shape) == Some(true) {
+            if name_of(&path).starts_with(STAGE) && shaped(&path, pointer_shape()) == Some(true) {
                 leftover(path, "staging");
             }
         }
@@ -292,7 +328,7 @@ pub(super) fn found(
                     None => keep(path, UNRECOGNIZED),
                     Some(version)
                         if version.cmp_precedence(&installed) == std::cmp::Ordering::Greater => {}
-                    Some(_) => match shaped(&path, download_shape) {
+                    Some(_) => match shaped(&path, download_shape()) {
                         Some(true) => leftover(path, "download"),
                         Some(false) => keep(path, CONTENTS),
                         None => keep(path, UNREADABLE),
@@ -308,6 +344,13 @@ pub(super) fn found(
 /// Remove one leftover a plan lists, after reading it again: what it is
 /// now decides, not what it was when the plan was made.
 pub(super) fn remove(layout: &Layout, leftover: &Leftover) -> Result<()> {
+    remove_held(layout, leftover, &mut || {})
+}
+
+/// `remove`, calling `validated` once the leftover has been read again
+/// and before anything of it is removed, so that a test can change it in
+/// between.
+fn remove_held(layout: &Layout, leftover: &Leftover, validated: &mut dyn FnMut()) -> Result<()> {
     let path = &leftover.path;
     let root = &layout.root;
     let changed = || {
@@ -320,35 +363,39 @@ pub(super) fn remove(layout: &Layout, leftover: &Leftover) -> Result<()> {
     match leftover.kind {
         "retired" => match stage(root, path)? {
             Stage::Ours(release) if parent == root.join("retired") => {
+                validated();
                 discard(path, release.as_deref())?;
             }
             _ => bail!(changed()),
         },
         "generation" | "staging" => {
-            let shape: fn(&str, &FileType) -> bool = if parent == root {
-                pointer_shape
+            let shape = if parent == root {
+                pointer_shape()
             } else {
-                generation_shape
+                generation_shape()
             };
             ensure!(
                 (parent == root || parent == root.join("generations"))
                     && root.join("current").read_link().ok().as_deref() != Some(path.as_path())
-                    && holds_only(path, shape)?,
+                    && holds_only(path, &shape)?,
                 changed()
             );
-            empty(path)?;
+            validated();
+            empty(path, &shape)?;
         }
         "download" => {
+            let shape = download_shape();
             ensure!(
-                parent == root.join("downloads") && holds_only(path, download_shape)?,
+                parent == root.join("downloads") && holds_only(path, &shape)?,
                 changed()
             );
+            validated();
             let bundle = path.join("payload").join("AgentDocker.app");
             if bundle.symlink_metadata().is_ok_and(|found| found.is_dir()) {
                 // A no-op wherever bundles are not registered.
                 layout.forget_stored(&bundle);
             }
-            empty(path)?;
+            empty(path, &shape)?;
         }
         kind => bail!("unknown leftover kind {kind}"),
     }
@@ -356,20 +403,36 @@ pub(super) fn remove(layout: &Layout, leftover: &Leftover) -> Result<()> {
     Ok(())
 }
 
-/// Remove what a recognised folder holds, then the folder. Not
-/// `remove_dir_all` on the folder: something put in it meanwhile is not
-/// ours, and keeps the folder.
-fn empty(directory: &Path) -> Result<()> {
-    for entry in std::fs::read_dir(directory)? {
-        let entry = entry?;
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(entry.path())?;
+/// Remove from a recognised folder what its shape names, then the folder.
+/// Only those names are touched, each checked for its kind as it is
+/// acted on: nothing is listed again, so whatever else is in the folder
+/// by now, put there after it was read, is not removed, and the folder,
+/// which is then not empty, stays with it.
+fn empty(directory: &Path, shape: &Shape) -> Result<()> {
+    for (name, kind) in shape {
+        let path = directory.join(name);
+        let found = match path.symlink_metadata() {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+            Ok(found) => found.file_type(),
+        };
+        ensure!(
+            kind.is(&found),
+            "{} changed since it was reviewed; preserved",
+            path.display()
+        );
+        if *kind == Kind::Folder {
+            std::fs::remove_dir_all(&path)?;
         } else {
-            std::fs::remove_file(entry.path())?;
+            std::fs::remove_file(&path)?;
         }
     }
-    std::fs::remove_dir(directory)?;
-    Ok(())
+    std::fs::remove_dir(directory).with_context(|| {
+        format!(
+            "{} is kept: it cannot be removed, or it holds something that is not the installer's",
+            directory.display()
+        )
+    })
 }
 
 // The fixtures are made of symbolic links and permission bits.
@@ -380,7 +443,7 @@ mod tests {
 
     use agentdocker_host::dirs;
 
-    use super::super::super::Release;
+    use super::super::super::{Reading, Release};
     use super::super::tests::{fixture, retained};
     use super::super::{Plan, apply, clean_up, plan, plan_keeping};
     use super::*;
@@ -733,15 +796,20 @@ mod tests {
         assert!(beside.join("data").is_file());
     }
 
-    /// What an update leaves for a version: the archive, a partial one
-    /// and the extraction.
+    /// The archive's name, as the feed has to name it on this machine.
+    fn archive() -> String {
+        update::archive_name(update::host_target())
+    }
+
+    /// What an update leaves for a version, by the names it writes: the
+    /// archive, a partial one and the extraction.
     fn download(layout: &Layout, version: &str) -> PathBuf {
         let folder = layout.root.join("downloads").join(version);
         let bundle = folder.join("payload").join("AgentDocker.app");
         std::fs::create_dir_all(&bundle).unwrap();
         std::fs::write(bundle.join("file"), version).unwrap();
-        std::fs::write(folder.join("agentdocker.tar.gz"), version).unwrap();
-        std::fs::write(folder.join("agentdocker.tar.gz.part"), version).unwrap();
+        std::fs::write(folder.join(archive()), version).unwrap();
+        std::fs::write(folder.join(format!("{}.part", archive())), version).unwrap();
         folder
     }
 
@@ -767,15 +835,32 @@ mod tests {
         // before its folder went.
         let half = download(&layout, "0.0.8");
         std::fs::remove_dir_all(half.join("payload")).unwrap();
-        std::fs::remove_file(half.join("agentdocker.tar.gz")).unwrap();
+        std::fs::remove_file(half.join(archive())).unwrap();
         let emptied = layout.root.join("downloads").join("0.0.7");
         std::fs::create_dir(&emptied).unwrap();
-        // Not what an update leaves: a link, a second folder, a name
-        // that is no version.
+        // Not what an update leaves: a link, a second folder, a file an
+        // update does not write (beside the archive, or alone), a file
+        // where the extraction goes, a name that is no version.
         let linked = download(&layout, "0.0.6");
         symlink(&newer, linked.join("link")).unwrap();
         let nested = download(&layout, "0.0.5");
         std::fs::create_dir(nested.join("other")).unwrap();
+        let noted = download(&layout, "0.0.4");
+        std::fs::write(noted.join("notes.txt"), "somebody's").unwrap();
+        let only_notes = layout.root.join("downloads").join("0.0.3");
+        std::fs::create_dir(&only_notes).unwrap();
+        std::fs::write(only_notes.join("notes.txt"), "somebody's").unwrap();
+        let filed = layout.root.join("downloads").join("0.0.2");
+        std::fs::create_dir(&filed).unwrap();
+        std::fs::write(filed.join("payload"), "a file, not an extraction").unwrap();
+        // Another machine's archive is not this installer's either.
+        let foreign = layout.root.join("downloads").join("0.0.1");
+        std::fs::create_dir(&foreign).unwrap();
+        std::fs::write(
+            foreign.join("agentdocker.tar.gz"),
+            "not a name the feed has",
+        )
+        .unwrap();
         let unnamed = layout.root.join("downloads").join("notes");
         std::fs::create_dir(&unnamed).unwrap();
         let partial = layout.root.join("downloads").join("0.1");
@@ -794,6 +879,10 @@ mod tests {
             BTreeSet::from([
                 (linked.clone(), CONTENTS),
                 (nested.clone(), CONTENTS),
+                (noted.clone(), CONTENTS),
+                (only_notes.clone(), CONTENTS),
+                (filed.clone(), CONTENTS),
+                (foreign.clone(), CONTENTS),
                 (unnamed.clone(), UNRECOGNIZED),
                 (partial.clone(), UNRECOGNIZED),
             ])
@@ -802,9 +891,30 @@ mod tests {
         for gone in [&applied, &superseded, &candidate, &half, &emptied] {
             assert!(!gone.exists(), "{}", gone.display());
         }
-        for stays in [&newer, &preview, &linked, &nested, &unnamed, &partial] {
+        for stays in [
+            &newer,
+            &preview,
+            &linked,
+            &nested,
+            &noted,
+            &only_notes,
+            &filed,
+            &foreign,
+            &unnamed,
+            &partial,
+        ] {
             assert!(stays.is_dir(), "{}", stays.display());
         }
+        // Whole, with what was beside the installer's files in them.
+        assert!(noted.join(archive()).is_file() && noted.join("payload").is_dir());
+        assert_eq!(
+            std::fs::read_to_string(noted.join("notes.txt")).unwrap(),
+            "somebody's"
+        );
+        assert_eq!(
+            std::fs::read_to_string(only_notes.join("notes.txt")).unwrap(),
+            "somebody's"
+        );
         assert!(newer.join("payload/AgentDocker.app/file").is_file());
         assert!(review(&layout).sweep.is_empty());
     }
@@ -850,5 +960,147 @@ mod tests {
         apply(&layout, &found).unwrap();
         assert!(!done_with.exists());
         assert!(layout.active().unwrap().is_some());
+    }
+
+    /// Something put into a leftover after it was read again and before
+    /// it is removed is not the installer's, and is not removed: only
+    /// the names the leftover's shape has are touched, so a file and a
+    /// folder that appear in between are there afterwards, byte for
+    /// byte, in the folder that now stays for them.
+    #[test]
+    fn what_appears_in_a_leftover_after_it_was_read_is_not_removed() {
+        let (_temp, layout) = fixture();
+        let a = retained(&layout, "a", 1);
+        let b = retained(&layout, "b", 1);
+        let old = retained(&layout, "old", 1);
+        layout.activate(a.clone(), None).unwrap();
+        let stale = named(&layout);
+        layout.activate(b, Some(a)).unwrap();
+        let done_with = download(&layout, "0.1.0");
+        let (stage, moved) = retire(&layout, &old);
+        let beside = stage_in(&layout.root);
+        symlink(&stale, beside.join("restore")).unwrap();
+
+        for (path, kind) in [
+            (&stale, "generation"),
+            (&beside, "staging"),
+            (&done_with, "download"),
+            (&stage, "retired"),
+        ] {
+            let leftover = Leftover {
+                path: path.clone(),
+                kind,
+            };
+            let refused = remove_held(&layout, &leftover, &mut || {
+                std::fs::write(path.join("notes.txt"), "somebody's").unwrap();
+                std::fs::create_dir(path.join("kept")).unwrap();
+                std::fs::write(path.join("kept").join("inside"), "theirs too").unwrap();
+            });
+            assert!(refused.is_err(), "{kind}: the folder cannot go");
+            assert_eq!(
+                std::fs::read_to_string(path.join("notes.txt")).unwrap(),
+                "somebody's",
+                "{kind}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(path.join("kept").join("inside")).unwrap(),
+                "theirs too",
+                "{kind}"
+            );
+            // What was the installer's in it went; the rest is all that
+            // is left, and from now on the folder is not a leftover.
+            let left: BTreeSet<_> = std::fs::read_dir(path)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect();
+            assert_eq!(
+                left,
+                BTreeSet::from(["kept".to_owned(), "notes.txt".to_owned()]),
+                "{kind}"
+            );
+        }
+        assert!(!moved.exists(), "the verified release went");
+        let found = review(&layout);
+        assert!(found.sweep.is_empty(), "{:?}", found.sweep);
+        // The folder beside the pointer is none of the sweep's business
+        // once it holds something else; the others are listed as kept.
+        assert_eq!(
+            kept(&found),
+            BTreeSet::from([
+                (stale.clone(), CONTENTS),
+                (done_with.clone(), CONTENTS),
+                (stage.clone(), CONTENTS),
+            ])
+        );
+    }
+
+    /// A read of the active installation is held where the schedule
+    /// needs it: after it followed the pointer to a generation, or after
+    /// it read that generation's record. Meanwhile another release is
+    /// activated and a later prune sweeps the generation the read is in.
+    /// The read finds its generation gone, sees that the pointer names
+    /// another, and reads that one: it answers with the release that is
+    /// active now, and does not fail.
+    #[test]
+    fn a_read_whose_generation_was_swept_reads_the_pointer_again() {
+        for held_at in [Reading::Followed, Reading::Recorded] {
+            let (_temp, layout) = fixture();
+            let first = retained(&layout, "first", 1);
+            let second = retained(&layout, "second", 1);
+            layout.activate(first.clone(), None).unwrap();
+            let stale = named(&layout);
+            let mut held = false;
+            let read = layout
+                .active_held(&mut |at| {
+                    if at == held_at && !held {
+                        held = true;
+                        // An install, which keeps the generation it
+                        // replaced, and then a prune, which does not.
+                        let replaced = named(&layout);
+                        layout
+                            .activate(second.clone(), Some(first.clone()))
+                            .unwrap();
+                        clean_up(&layout, Some(&replaced), || Ok(false)).unwrap();
+                        assert!(stale.is_dir(), "{held_at:?}: kept by the command");
+                        clean_up(&layout, None, || Ok(false)).unwrap();
+                        assert!(!stale.exists(), "{held_at:?}: swept by the next");
+                    }
+                })
+                .unwrap()
+                .unwrap();
+            assert!(held, "{held_at:?}");
+            assert_eq!(read.current.id, second.id, "{held_at:?}");
+            assert_eq!(read.previous.map(|release| release.id), Some(first.id));
+        }
+    }
+
+    /// The retry is for a generation the pointer has left. One it still
+    /// names that cannot be read is the installation's own damage, and
+    /// is reported at once, as it was.
+    #[test]
+    fn a_damaged_generation_the_pointer_still_names_is_an_error() {
+        let (_temp, layout) = fixture();
+        let current = retained(&layout, "current", 1);
+        layout.activate(current, None).unwrap();
+        let in_use = named(&layout);
+        let mut reads = 0;
+        let payload = in_use.join("payload");
+        let target = payload.read_link().unwrap();
+        std::fs::remove_file(&payload).unwrap();
+        let failed = layout.active_held(&mut |at| reads += usize::from(at == Reading::Followed));
+        assert!(
+            format!("{:#}", failed.unwrap_err()).contains("cannot read"),
+            "the link is gone"
+        );
+        assert_eq!(reads, 1, "not read again");
+        symlink(&target, &payload).unwrap();
+        std::fs::remove_file(in_use.join("activation.json")).unwrap();
+        let mut reads = 0;
+        let failed = layout.active_held(&mut |at| reads += usize::from(at == Reading::Followed));
+        assert!(
+            format!("{:#}", failed.unwrap_err()).contains("cannot open"),
+            "the record is gone"
+        );
+        assert_eq!(reads, 1, "not read again");
     }
 }

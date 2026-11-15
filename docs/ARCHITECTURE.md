@@ -960,13 +960,23 @@ one that stopped is finished from the mark; a release moved and not yet marked i
 verified again, and one that does not verify is kept); the generations no pointer
 names, with the staging folders an activation that stopped left in `generations/`
 and beside the pointer (the generation the pointer named when the command began is
-kept by that command, for a reader that followed the pointer just before it moved,
-and goes with the next); and `downloads/<version>` once that version is not newer
-than the active release's, since an update installs only what is newer (none while
-nothing is active). Each is recognised by what it holds, never by its place alone:
-the plan lists what goes under `sweep` and whatever else is in those places, which
-is kept, under `unswept` with the reason, both absent when empty. A removal goes in
-steps that each leave something the next sweep recognises. CLI and GUI previews carry a
+kept by that command, and goes with the next; a reader does not depend on that: one
+that followed the pointer before it moved and finds its generation gone reads the
+pointer again, in `Layout::active` and in `installation::resolve_current`, which the
+launcher and the daemon's reload target go through, while an error in the
+generation the pointer still names stands); and `downloads/<version>` once that
+version is not newer than the active release's, since an update installs only what
+is newer (none while nothing is active). Each is recognised by what it holds, never
+by its place alone, and by the names the command that made it writes and no others:
+a download's folder holds that release's archive under the one name the feed may
+give it, the same with `.part`, and the extraction, and a folder with any other file
+in it is kept whole. The plan lists what goes under `sweep` and whatever else is in
+those places, which is kept, under `unswept` with the reason, both absent when
+empty. A removal reads its leftover again, then touches only the names it
+recognised, each checked as it is acted on: what appears in the folder meanwhile is
+not removed, and the folder stays with it. It goes in steps that each leave
+something the next sweep recognises; one that fails stops the sweep there, is
+reported, and is finished by the next. CLI and GUI previews carry a
 plan hash rechecked at apply. Host installation helpers give each managed
 binary a shared lifetime pin; cleanup holds the exclusive pin through deletion
 and rechecks content identity. Pins outlive deleted versions to prevent inode

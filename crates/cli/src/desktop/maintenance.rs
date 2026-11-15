@@ -376,6 +376,19 @@ fn clean_up<T: Into<services::References>>(
     Ok(plan)
 }
 
+/// The sweep alone, as a prune after the last activation makes it: every
+/// generation the pointer does not name goes. For the tests that read
+/// the installation while it is activated over and over.
+#[cfg(test)]
+pub(super) fn sweep_now(layout: &Layout) -> Result<usize> {
+    let active = layout.active()?;
+    let found = sweep::found(layout, active.as_ref(), None);
+    for leftover in &found.remove {
+        sweep::remove(layout, leftover)?;
+    }
+    Ok(found.remove.len())
+}
+
 /// The releases a cleanup removed and kept, for the tests that count them.
 #[cfg(test)]
 fn prune_activated<T: Into<services::References>>(
