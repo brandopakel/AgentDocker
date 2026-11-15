@@ -67,8 +67,37 @@ pub(crate) enum Start {
 
 /// The gates and the process lock a failed start keeps through its report.
 pub(crate) struct Exclusion {
-    _gates: Vec<lock::Lock>,
-    _process: lock::Lock,
+    process: Option<lock::Lock>,
+    gates: Vec<lock::Lock>,
+    /// Run between letting the process lock go and letting the gates go.
+    #[cfg(test)]
+    between: Option<Box<dyn FnOnce() + Send>>,
+}
+
+impl Exclusion {
+    fn new(gates: Vec<lock::Lock>, process: lock::Lock) -> Self {
+        Self {
+            process: Some(process),
+            gates,
+            #[cfg(test)]
+            between: None,
+        }
+    }
+}
+
+impl Drop for Exclusion {
+    /// The process lock first, the gates after, whether the report was made
+    /// or its task was cancelled: a successor waiting on the gates finds the
+    /// failed start's process lock already free, and never takes it for a
+    /// serving owner.
+    fn drop(&mut self) {
+        drop(self.process.take());
+        #[cfg(test)]
+        if let Some(between) = self.between.take() {
+            between();
+        }
+        self.gates.clear();
+    }
 }
 
 /// How many delivery gates there are. A key falls on one of them by its
@@ -203,10 +232,7 @@ async fn acquire_for(home: &std::path::Path, identity: &Identity) -> Start {
     };
     let failed = |cause: anyhow::Error, gates, process| Start::Failed {
         cause,
-        held: Exclusion {
-            _gates: gates,
-            _process: process,
-        },
+        held: Exclusion::new(gates, process),
     };
     let Some(agent_key) = agent_key else {
         return failed(
@@ -1031,6 +1057,33 @@ mod tests {
         assert!(!successor.is_finished(), "held through the report");
         drop(held);
         assert!(matches!(successor.await.unwrap(), Start::Owned(_)));
+    }
+
+    /// A failed start lets its process lock go before its gates: at the
+    /// moment between, the lock is free while the gates are still held, so
+    /// a successor that was waiting on the gates never finds the lock held.
+    #[tokio::test]
+    async fn a_failed_start_lets_its_process_lock_go_before_its_gates() {
+        let home = tempfile::tempdir().unwrap();
+        let born = chrono::Utc::now();
+        let invalid = identity("../not-an-id", 98, born);
+        let Start::Failed { mut held, .. } = acquire_for(home.path(), &invalid).await else {
+            panic!("failed under the process lock");
+        };
+        let directory = home.path().join("channel-input");
+        let key = process_key(98, born);
+        let gate = gate_path(&directory, &key);
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None));
+        held.between = Some(Box::new({
+            let seen = seen.clone();
+            move || {
+                let process_free = take_owner(&directory, &key).unwrap().is_some();
+                let gate_held = lock::try_exclusive_existing(&gate).unwrap().is_none();
+                *seen.lock().unwrap() = Some((process_free, gate_held));
+            }
+        }));
+        drop(held);
+        assert_eq!(*seen.lock().unwrap(), Some((true, true)));
     }
 
     /// An owner file that fails its checks while an owner serves: the
