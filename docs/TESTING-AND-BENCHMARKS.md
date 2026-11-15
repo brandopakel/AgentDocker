@@ -250,6 +250,40 @@ the reason, and what stays and why, and holds no slot. `verify.sh`
 prints that report at the end of every run that started a step — the cache
 totals and the prunable candidates — and never prunes on its own; a report that
 cannot be produced is noted and does not fail the run.
+
+`python3 scripts/build_storage.py --seed-from <worktree>`, run in a checkout
+that has built nothing, starts its debug cache from that of another checkout of
+the repository (a worktree or the main checkout, named by its folder), so that
+its first build compiles the workspace and not everything the workspace depends
+on. It brings the build folders (`target/debug/build/<package>/`) of the
+packages this checkout's `Cargo.lock` takes from a registry or a git
+repository, and of those none that either checkout's lock builds from the
+checkout's own files (a workspace member, a path dependency). Nothing else
+comes: no incremental state, no binary, no folder the lock does not name. The
+reason is how Cargo tells that a unit is fresh: by file times alone, in folders
+whose names do not depend on where the checkout is. A copy of a whole `target`
+carries the other checkout's compiled workspace crates, and whenever that
+output is newer than the new checkout's files (a worktree made before the warm
+one last built) Cargo takes them as this checkout's own and links another
+branch's code without a word. So a `target` is never copied by hand. Times and
+modes are kept, which is what lets Cargo take the units brought as fresh; the
+copy is copy-on-write where `cp` and the filesystem have it and an ordinary
+copy elsewhere, and it is refused when less than the preflight's minimum is
+free where it would go. Cargo's own lock (`target/debug/.cargo-lock`) is held
+on both checkouts while the copy is made: the seed is refused while a build
+runs in either, and a build that starts meanwhile waits for it. Also refused,
+with nothing made: a checkout that already holds build output, a `target` or a
+folder on the way to its `build` that is a symbolic link, a source that is not
+a checkout of this repository, and a `Cargo.lock` that cannot be read; a copy
+that fails removes what it had made. A target directory the seed makes gets
+the cache tag and, on macOS, the mark that keeps backups off it, as one Cargo
+makes has. The command prints what it brought and what is left for the
+checkout to build. The release profile and `fuzz/target` are not seeded. It is
+for a cache brought from another worktree, or after the checkout was made;
+`agentdocker worktree-create --seed-build target` clones the asking agent's own
+`target` whole as the checkout is made, when every file of the new checkout is
+newer than what is copied.
+
 Workspace development builds disable incremental compilation, while keeping
 line-table debug information. Release builds optimize the complete linked
 dependency graph for size, use one codegen unit with full LTO and strip symbols.

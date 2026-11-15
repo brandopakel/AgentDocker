@@ -7,6 +7,7 @@ import os
 import shutil
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -784,6 +785,365 @@ class PruneRun(unittest.TestCase):
         with patch.object(STORAGE.sys, "argv", ["build_storage.py", "--dry-run"]), redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 STORAGE.main()
+
+
+LOCK = """version = 4
+
+[[package]]
+name = "app"
+version = "0.1.0"
+dependencies = ["helper", "serde"]
+
+[[package]]
+name = "helper"
+version = "0.1.0"
+
+[[package]]
+name = "serde"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00"
+
+[[package]]
+name = "syn"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00"
+"""
+
+
+class SeedCache(unittest.TestCase):
+    """`--seed-from`: a checkout's cache is started from another's with the
+    builds of the packages that come from elsewhere, and with nothing built
+    from a checkout's own files."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name).resolve()
+        self.warm, self.new = self.base / "warm", self.base / "new"
+        for root in (self.warm, self.new):
+            root.mkdir()
+            (root / "Cargo.lock").write_text(LOCK)
+        # A cache as Cargo leaves it: a folder a package, the lock, the
+        # incremental state and a binary; beside them a folder an older
+        # Cargo left and one of a package the lock no longer names.
+        self.profile = self.warm / "target/debug"
+        for name in ("app", "helper", "serde", "syn", "serde-0123456789abcdef", "dropped"):
+            unit = self.profile / "build" / name / "1a2b3c4d5e6f7a8b"
+            (unit / "fingerprint").mkdir(parents=True)
+            (unit / "out").mkdir()
+            (unit / "fingerprint/invoked.timestamp").write_text("built for " + name)
+            (unit / "out/lib.rlib").write_text(name)
+        (self.profile / "incremental/app-1").mkdir(parents=True)
+        (self.profile / ".cargo-lock").write_text("")
+        (self.profile / "app").write_text("a binary")
+        (self.warm / "target/CACHEDIR.TAG").write_text("Signature: 8a477f597d28d172789f06886806bc55\n")
+
+    def seed(self, **more):
+        return STORAGE.seed_cache(self.warm, self.warm / "target", self.new, self.new / "target", **more)
+
+    def refused(self, **more):
+        with self.assertRaises(STORAGE.SeedRefused) as raised:
+            self.seed(**more)
+        return str(raised.exception)
+
+    def test_a_seed_brings_what_comes_from_elsewhere_and_nothing_a_checkout_builds_itself(self):
+        stamp = self.profile / "build/serde/1a2b3c4d5e6f7a8b/fingerprint/invoked.timestamp"
+        os.utime(stamp, (1_700_000_000, 1_700_000_000))
+        (self.profile / "build/syn/1a2b3c4d5e6f7a8b/out/link").symlink_to("lib.rlib")
+
+        brought, own, others = self.seed()
+
+        self.assertEqual((brought, own, others), (["serde", "syn"], ["app", "helper"], 2))
+        made = self.new / "target/debug"
+        self.assertEqual(sorted(entry.name for entry in (made / "build").iterdir()), ["serde", "syn"])
+        self.assertEqual((made / "build/serde/1a2b3c4d5e6f7a8b/out/lib.rlib").read_text(), "serde")
+        # Times are kept: Cargo tells a fresh unit by them.
+        self.assertEqual((made / "build/serde/1a2b3c4d5e6f7a8b/fingerprint/invoked.timestamp").stat().st_mtime, 1_700_000_000)
+        self.assertTrue((made / "build/syn/1a2b3c4d5e6f7a8b/out/link").is_symlink())
+        # Nothing else of the profile comes: no incremental state, no binary.
+        self.assertEqual(sorted(entry.name for entry in made.iterdir()), [".cargo-lock", "build"])
+        self.assertEqual((self.new / "target/CACHEDIR.TAG").read_text(), (self.warm / "target/CACHEDIR.TAG").read_text())
+        # The source is as it was.
+        self.assertEqual(len(list((self.profile / "build").iterdir())), 6)
+
+    def test_a_package_either_checkout_builds_from_its_own_files_is_left_out(self):
+        # Here `serde` is a path dependency of the warm checkout: its build
+        # there came from that checkout's files, whatever this one's lock says.
+        (self.warm / "Cargo.lock").write_text(LOCK.replace(
+            'name = "serde"\nversion = "1.0.0"\nsource = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "00"\n',
+            'name = "serde"\nversion = "1.0.0"\n'))
+        self.assertEqual(self.seed(), (["syn"], ["app", "helper", "serde"], 2))
+
+        # And a package this checkout's lock does not take from elsewhere is
+        # not brought on the warm one's word.
+        shutil.rmtree(self.new / "target")
+        (self.warm / "Cargo.lock").write_text(LOCK)
+        (self.new / "Cargo.lock").write_text(LOCK.split('[[package]]\nname = "syn"')[0])
+        self.assertEqual(self.seed(), (["serde"], ["app", "helper"], 3))
+
+    def test_a_build_running_in_either_checkout_refuses_the_seed(self):
+        import fcntl
+        # Cargo holds the lock shared while it builds.
+        with open(self.profile / ".cargo-lock", "rb") as held:
+            fcntl.flock(held, fcntl.LOCK_SH)
+            self.assertIn("a Cargo build is running", self.refused())
+            # Refused before anything is made.
+            self.assertFalse((self.new / "target").exists())
+        (self.new / "target/debug").mkdir(parents=True)
+        (self.new / "target/debug/.cargo-lock").write_text("")
+        with open(self.new / "target/debug/.cargo-lock", "rb") as held:
+            fcntl.flock(held, fcntl.LOCK_SH)
+            self.assertIn("a Cargo build is running", self.refused())
+            self.assertFalse((self.new / "target/debug/build").exists())
+        self.assertEqual(self.seed()[0], ["serde", "syn"])
+
+    def test_no_build_starts_in_either_checkout_while_the_copy_is_made(self):
+        import fcntl
+        locks = [self.profile / ".cargo-lock", self.new / "target/debug/.cargo-lock"]
+
+        def free(lock):
+            # What a starting Cargo asks for: the lock, shared.
+            with open(lock, "rb") as handle:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return False
+                fcntl.flock(handle, fcntl.LOCK_UN)
+                return True
+
+        seen = []
+
+        def copy(sources, into):
+            seen.append([free(lock) for lock in locks])
+            STORAGE.copy_units(sources, into)
+
+        self.seed(copy=copy)
+        self.assertEqual(seen, [[False, False]])
+        self.assertEqual([free(lock) for lock in locks], [True, True])
+
+    def test_a_checkout_that_has_built_is_not_seeded(self):
+        unit = self.new / "target/debug/build/app/9f"
+        unit.mkdir(parents=True)
+        self.assertIn("holds build output already", self.refused())
+        self.assertEqual([entry.name for entry in (self.new / "target/debug/build").iterdir()], ["app"])
+        # An empty build folder is no build.
+        shutil.rmtree(self.new / "target/debug/build/app")
+        self.assertEqual(self.seed()[0], ["serde", "syn"])
+
+    def test_what_cannot_be_told_or_trusted_is_refused_and_nothing_is_made(self):
+        cases = []
+        (self.new / "Cargo.lock").unlink()
+        cases.append(("cannot be read", self.refused()))
+        (self.new / "Cargo.lock").write_text("[[package]\n")
+        cases.append(("cannot be read", self.refused()))
+        (self.new / "Cargo.lock").write_text('[[package]]\nversion = "1"\n')
+        cases.append(("cannot be read", self.refused()))
+        (self.new / "Cargo.lock").write_text('[[package]]\nname = "app"\nversion = "1"\n')
+        cases.append(("no build of a package this checkout takes from elsewhere", self.refused()))
+        (self.new / "Cargo.lock").write_text(LOCK)
+        (self.new / "target").symlink_to(self.base)
+        cases.append(("is a symbolic link", self.refused()))
+        (self.new / "target").unlink()
+        shutil.move(self.profile / "build", self.base / "elsewhere")
+        cases.append(("has no debug build to seed from", self.refused()))
+        (self.profile / "build").symlink_to(self.base / "elsewhere")
+        cases.append(("is a symbolic link", self.refused()))
+        (self.profile / "build").unlink()
+        shutil.move(self.base / "elsewhere", self.profile / "build")
+        (self.profile / ".cargo-lock").unlink()
+        cases.append(("has no Cargo lock to hold", self.refused()))
+        for expected, message in cases:
+            self.assertIn(expected, message)
+        self.assertFalse((self.new / "target").exists())
+
+    def test_a_folder_that_is_a_link_is_not_followed(self):
+        shutil.move(self.profile / "build/syn", self.base / "syn-elsewhere")
+        (self.profile / "build/syn").symlink_to(self.base / "syn-elsewhere")
+        self.assertEqual(self.seed()[0], ["serde"])
+        self.assertFalse((self.new / "target/debug/build/syn").exists())
+
+    def test_a_copy_that_fails_leaves_nothing_of_itself(self):
+        def copy(sources, into):
+            (into / "serde").mkdir()
+            raise OSError(28, "No space left on device", str(into))
+
+        message = self.refused(copy=copy)
+        self.assertIn("the copy failed (OSError)", message)
+        self.assertNotIn(str(self.base), message)
+        self.assertFalse((self.new / "target/debug/build").exists())
+        # And the lock it held is let go: the next seed goes through.
+        self.assertEqual(self.seed()[0], ["serde", "syn"])
+
+    def test_a_cp_that_cannot_clone_is_followed_by_a_plain_copy(self):
+        into = self.base / "into"
+        into.mkdir()
+        sources = [self.profile / "build/serde", self.profile / "build/syn"]
+        calls = []
+
+        def cp(command, **_):
+            calls.append(command[0])
+            # It had begun before it failed.
+            (into / "serde").mkdir()
+            (into / "serde/half").write_text("")
+            return SimpleNamespace(returncode=1)
+
+        with patch.object(STORAGE.sys, "platform", "linux"), patch.object(STORAGE.subprocess, "run", cp):
+            STORAGE.copy_units(sources, into)
+        self.assertEqual(calls, ["cp"])
+        self.assertEqual(sorted(entry.name for entry in into.iterdir()), ["serde", "syn"])
+        self.assertFalse((into / "serde/half").exists())
+        self.assertEqual((into / "syn/1a2b3c4d5e6f7a8b/out/lib.rlib").read_text(), "syn")
+        # A system with neither flavour of cp copies plainly from the start.
+        shutil.rmtree(into)
+        into.mkdir()
+        with patch.object(STORAGE.sys, "platform", "sunos5"), \
+                patch.object(STORAGE.subprocess, "run", side_effect=AssertionError("no cp is asked")):
+            STORAGE.copy_units(sources, into)
+        self.assertEqual(sorted(entry.name for entry in into.iterdir()), ["serde", "syn"])
+
+    @unittest.skipUnless(sys.platform == "darwin" and shutil.which("xattr"), "the backup mark is macOS's")
+    def test_a_target_the_seed_makes_is_kept_out_of_backups_as_cargos_own_is(self):
+        mark = STORAGE.BACKUP_EXCLUSION
+        subprocess.run(["xattr", "-w", mark, "com.apple.backupd", str(self.warm / "target")], check=True)
+        self.seed()
+        self.assertEqual(subprocess.run(["xattr", "-p", mark, str(self.new / "target")],
+                                        capture_output=True, text=True).stdout.strip(), "com.apple.backupd")
+
+    def run_main(self, argv, *, target=None, free=100, worktrees=None):
+        out, err = io.StringIO(), io.StringIO()
+        records = [record(root) for root in (worktrees if worktrees is not None else [self.base / "main", self.warm, self.new])]
+        with patch.object(STORAGE.sys, "argv", ["build_storage.py", *argv]), \
+                patch.object(STORAGE, "ROOT", self.new), \
+                patch.object(STORAGE, "registered_worktrees", return_value=records), \
+                patch.object(STORAGE, "cargo_target_directory", return_value=target or self.new / "target"), \
+                patch.object(STORAGE.shutil, "disk_usage", return_value=SimpleNamespace(free=free * STORAGE.GIB)), \
+                redirect_stdout(out), redirect_stderr(err):
+            code = STORAGE.main()
+        return code, out.getvalue(), err.getvalue()
+
+    def test_the_command_seeds_this_checkout_from_the_worktree_named_and_says_what_it_brought(self):
+        code, out, err = self.run_main(["--seed-from", str(self.warm)])
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(f"seeded {self.new / 'target/debug'} from {self.warm / 'target/debug'}", out)
+        self.assertIn("the builds of 2 packages that come from elsewhere", out)
+        self.assertIn("the checkouts' own packages (app, helper)", out)
+        self.assertIn("and 2 folders this checkout's Cargo.lock does not name", out)
+        self.assertTrue((self.new / "target/debug/build/serde").is_dir())
+
+    def test_the_command_reads_a_relative_name_where_it_is_run(self):
+        before = os.getcwd()
+        os.chdir(self.new)
+        try:
+            code, out, _ = self.run_main(["--seed-from", "../warm"])
+        finally:
+            os.chdir(before)
+        self.assertEqual(code, 0, out)
+
+    def test_the_command_refuses_what_is_no_other_checkout_of_the_repository_or_has_no_room(self):
+        for argv, more, expected in (
+                (["--seed-from", str(self.base / "stranger")], {}, "is not a checkout of this repository"),
+                (["--seed-from", str(self.new)], {}, "that is this checkout"),
+                (["--seed-from", str(self.warm)], {"target": self.warm / "target"}, "both checkouts build in one target directory"),
+                (["--seed-from", str(self.warm), "--minimum-free-gib", "20"], {"free": 19}, "less than 20 GiB is free"),
+        ):
+            with self.subTest(expected=expected):
+                code, out, err = self.run_main(argv, **more)
+                self.assertEqual((code, out), (1, ""))
+                self.assertIn(expected, err)
+                self.assertIn("nothing was seeded", err)
+                self.assertFalse((self.new / "target").exists())
+
+    def test_a_failure_nobody_foresaw_says_nothing_was_seeded_and_names_no_path(self):
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(STORAGE.sys, "argv", ["build_storage.py", "--seed-from", str(self.warm)]), \
+                patch.object(STORAGE, "registered_worktrees", side_effect=OSError(13, "permission denied", str(self.base))), \
+                redirect_stdout(out), redirect_stderr(err):
+            self.assertEqual(STORAGE.main(), 1)
+        self.assertIn("cannot seed the cache (PermissionError); nothing was seeded", err.getvalue())
+        self.assertNotIn(str(self.base), err.getvalue())
+
+    def test_seeding_and_pruning_are_separate_runs(self):
+        with patch.object(STORAGE.sys, "argv", ["build_storage.py", "--seed-from", "x", "--prune"]), redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                STORAGE.main()
+
+
+@unittest.skipUnless(os.name == "posix" and shutil.which("cargo") and shutil.which("git"), "needs Cargo and git")
+class SeedUnderCargo(unittest.TestCase):
+    """The seed as Cargo takes it: a real build of a small workspace, with a
+    dependency from a git repository standing for everything that comes from
+    elsewhere."""
+
+    def cargo(self, root, *args):
+        env = {key: value for key, value in os.environ.items()
+               if not key.startswith(("AGENTDOCKER_", "CARGO_BUILD_", "CARGO_TARGET_")) and key not in ("CARGO_NET_OFFLINE", "RUSTC_WRAPPER")}
+        env["CARGO_HOME"] = str(self.base / "cargo-home")
+        return subprocess.run(["cargo", *args], cwd=root, env=env, capture_output=True, text=True, timeout=600)
+
+    def checkout(self, name, says):
+        root = self.base / name
+        (root / "app/src").mkdir(parents=True)
+        (root / "Cargo.toml").write_text('[workspace]\nmembers = ["app"]\nresolver = "2"\n')
+        (root / "app/Cargo.toml").write_text(
+            '[package]\nname = "seed-app"\nversion = "0.1.0"\nedition = "2021"\n\n'
+            f'[dependencies]\nseed-dep = {{ git = "{(self.base / "dep").as_uri()}" }}\n')
+        (root / "app/src/main.rs").write_text(f'fn main() {{ println!("{says} says {{}}", seed_dep::word()); }}\n')
+        # The toolchain this repository builds with, whose layout the seed reads.
+        shutil.copy2(ROOT / "rust-toolchain.toml", root / "rust-toolchain.toml")
+        return root
+
+    def test_cargo_builds_a_seeded_checkouts_own_crates_and_nothing_else(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.base = Path(folder.name).resolve()
+        dep = self.base / "dep"
+        (dep / "src").mkdir(parents=True)
+        (dep / "Cargo.toml").write_text('[package]\nname = "seed-dep"\nversion = "0.1.0"\nedition = "2021"\n')
+        # Its build script writes into its own output folder, which a seed
+        # moves: Cargo has to find it again from the new place.
+        (dep / "build.rs").write_text(
+            'fn main() {\n    let out = std::env::var("OUT_DIR").unwrap();\n'
+            '    std::fs::write(format!("{out}/made.rs"), "pub const MADE: &str = \\"the dependency\\";").unwrap();\n'
+            '    println!("cargo:rerun-if-changed=build.rs");\n}\n')
+        (dep / "src/lib.rs").write_text(
+            'include!(concat!(env!("OUT_DIR"), "/made.rs"));\npub fn word() -> &\'static str { MADE }\n')
+        git = ["git", "-c", "user.name=T", "-c", "user.email=t@example.com", "-c", "commit.gpgsign=false"]
+        for command in (["init", "-q", "-b", "main"], ["add", "."], ["commit", "-q", "-m", "a dependency"]):
+            subprocess.run([*git, *command], cwd=dep, check=True, capture_output=True, timeout=60)
+
+        warm = self.checkout("warm", "warm")
+        built = self.cargo(warm, "build")
+        self.assertEqual(built.returncode, 0, built.stderr)
+        # The new checkout's files are older than the warm one's output, as
+        # those of a worktree made before the warm one last built are: the
+        # case in which Cargo takes a copied unit of the other checkout's own
+        # crate as fresh.
+        new = self.checkout("new", "new")
+        shutil.copy2(warm / "Cargo.lock", new / "Cargo.lock")
+        for path in [new, *new.rglob("*")]:
+            os.utime(path, (1_700_000_000, 1_700_000_000))
+
+        brought, own, others = STORAGE.seed_cache(warm, warm / "target", new, new / "target")
+        self.assertEqual((brought, own, others), (["seed-dep"], ["seed-app"], 0))
+
+        rebuilt = self.cargo(new, "build", "--message-format=json")
+        self.assertEqual(rebuilt.returncode, 0, rebuilt.stderr)
+        fresh = {"own": set(), "elsewhere": set()}
+        for line in rebuilt.stdout.splitlines():
+            try:
+                message = json.loads(line)
+            except ValueError:
+                continue
+            if message.get("reason") == "compiler-artifact":
+                whose = "own" if Path(message["manifest_path"]).resolve().is_relative_to(new) else "elsewhere"
+                fresh[whose].add(message["fresh"])
+        # Everything from elsewhere was taken from the seed; everything of
+        # the checkout's own was built from its own files.
+        self.assertEqual(fresh, {"own": {False}, "elsewhere": {True}})
+        said = subprocess.run([str(new / "target/debug/seed-app")], capture_output=True, text=True, timeout=60)
+        self.assertEqual(said.stdout.strip(), "new says the dependency")
 
 
 class VerifyReport(unittest.TestCase):
