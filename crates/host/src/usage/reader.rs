@@ -6,8 +6,10 @@
 //! durable ingestion belong to the collector, not this file-reading primitive.
 
 use super::{Codex, Sample};
+use agentdocker_core::usage::context::Reading;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::{
     fs::File,
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom},
@@ -321,6 +323,12 @@ pub struct Gap {
 pub struct Batch {
     pub cursor: Cursor,
     pub samples: Vec<Sample>,
+    /// Each session's newest context reading among this batch's records
+    /// that speak for it, by the time the provider wrote them (a tie goes
+    /// to the later record, as the store keeps it): a figure, or none from
+    /// a newer record that cannot give one. A record that does not speak
+    /// for the session (a sidechain's) leaves the reading standing.
+    pub contexts: BTreeMap<String, Reading>,
     pub gaps: Vec<Gap>,
     pub bytes_read: u64,
     /// Complete-prefix rechecks, separate from parser reads: at most 32 MiB
@@ -445,6 +453,7 @@ fn scan_checked(
     let allowance = (budget.bytes - boundary_bytes).min(generation.length - cursor.offset);
     let mut reader = BufReader::with_capacity(8192, file.take(allowance));
     let mut samples = Vec::new();
+    let mut contexts = BTreeMap::new();
     let mut gaps = Vec::new();
     let mut line = Vec::new();
     let mut records = 0;
@@ -493,13 +502,24 @@ fn scan_checked(
         } else {
             serde_json::from_slice(&line)
                 .map_err(|_| "invalid JSON record".to_owned())
-                .and_then(|record| match runtime {
-                    Runtime::Codex => cursor.codex.feed(&record, cursor.offset == 0),
-                    Runtime::Claude => super::claude(&record),
+                .and_then(|record| {
+                    let sample = match runtime {
+                        Runtime::Codex => cursor.codex.feed(&record, cursor.offset == 0),
+                        Runtime::Claude => super::claude(&record),
+                    }?;
+                    Ok(sample.map(|sample| {
+                        let context = super::context(&record, &sample);
+                        (sample, context)
+                    }))
                 })
         };
         match parsed {
-            Ok(Some(sample)) => samples.push(sample),
+            Ok(Some((sample, reading))) => {
+                if let Some(reading) = reading {
+                    keep_newest(&mut contexts, &sample.session_id, reading);
+                }
+                samples.push(sample);
+            }
             Ok(None) => {}
             Err(reason) => {
                 gaps.push(Gap {
@@ -542,11 +562,25 @@ fn scan_checked(
     Ok(Batch {
         cursor,
         samples,
+        contexts,
         gaps,
         bytes_read,
         validation_bytes_read,
         stop,
     })
+}
+
+/// Keep a session's newest reading: one no older than the reading kept
+/// takes its place, the rule the store applies across batches, so records
+/// out of time order in one batch cannot lose the newest.
+fn keep_newest(contexts: &mut BTreeMap<String, Reading>, session: &str, reading: Reading) {
+    match contexts.get_mut(session) {
+        Some(kept) if kept.replaced_by(&reading) => *kept = reading,
+        Some(_) => {}
+        None => {
+            contexts.insert(session.to_owned(), reading);
+        }
+    }
 }
 
 /// Ignore large prompt/tool bodies only after validating the complete JSON

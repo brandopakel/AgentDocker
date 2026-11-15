@@ -349,6 +349,7 @@ mod tests {
                 key: "source",
                 progress: &file,
                 samples: &samples,
+                contexts: &BTreeMap::new(),
                 gaps: &[],
                 collection: &collection,
                 retained_since: usage::hour(now - chrono::Duration::days(1)),

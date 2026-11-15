@@ -2,6 +2,7 @@
 //! prompt, response and tool-result text is never part of a sample or cursor.
 
 use agentdocker_core::usage::Counters;
+use agentdocker_core::usage::context::{self, Context, Reading};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -387,10 +388,150 @@ pub fn claude(record: &Value) -> Result<Option<Sample>, String> {
     }))
 }
 
+/// What the record that gave `sample` says of the session's context: the
+/// latest request's size as the provider counted it, against its model's
+/// window. Nothing when the record does not speak for the session's own
+/// context (a sidechain's: a sub-agent's request is not the session's), so
+/// it leaves the reading it has standing. A reading with no figure when it
+/// does but cannot give one (it counts no input, or the window is unknown:
+/// a Codex rollout states its window in the record; a Claude Code
+/// transcript names the model only, and the table in core,
+/// `usage::context::window_tokens`, must list it), which clears an older
+/// figure.
+pub fn context(record: &Value, sample: &Sample) -> Option<Reading> {
+    let figure = match sample.runtime.as_str() {
+        "codex" => {
+            let info = &record["payload"]["info"];
+            info["last_token_usage"]["input_tokens"]
+                .as_u64()
+                .zip(
+                    info["model_context_window"]
+                        .as_u64()
+                        .filter(|window| *window > 0)
+                        .or_else(|| context::window_tokens(sample.model.as_deref()?)),
+                )
+                .map(|(used, window)| {
+                    (
+                        used,
+                        window,
+                        format!("token_count@{}", sample.at.to_rfc3339()),
+                    )
+                })
+        }
+        "claude-code" => {
+            if record["isSidechain"] == true || !record["agentId"].is_null() {
+                return None;
+            }
+            sample.counters.input_tokens.and_then(|used| {
+                let window = context::window_tokens(sample.model.as_deref()?)?;
+                Some((used, window, label(&record["message"]["id"])?))
+            })
+        }
+        _ => return None,
+    };
+    Some(Reading {
+        runtime: sample.runtime.clone(),
+        at: sample.at,
+        context: figure
+            .filter(|(used, _, _)| *used > 0)
+            .map(|(used, window, identity)| Context {
+                used_tokens: used,
+                window_tokens: window,
+                model: sample.model.clone(),
+                runtime: sample.runtime.clone(),
+                format: sample.format.clone(),
+                record: identity,
+                at: sample.at,
+            }),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn claude_context_is_the_latest_request_against_the_table_window() {
+        // Made-up records in the checked transcript shape: a listed
+        // 200,000-token model, a listed one-million one, an unlisted model,
+        // one that counts no input and a sidechain's. The first two give a
+        // figure; the next two speak for the session but give none, which
+        // clears an older one; the sidechain's says nothing of the session.
+        let records = include_str!("usage/fixtures/claude-context.jsonl");
+        let expected = [
+            Some(Some((124_000, 200_000, 62, "resp-known"))),
+            Some(Some((620_000, 1_000_000, 62, "resp-wide"))),
+            Some(None),
+            Some(None),
+            None,
+        ];
+        assert_eq!(records.lines().count(), expected.len());
+        for (line, expected) in records.lines().zip(expected) {
+            let record: Value = serde_json::from_str(line).unwrap();
+            let sample = claude(&record).unwrap().expect("every record is a sample");
+            let found = context(&record, &sample);
+            let Some(expected) = expected else {
+                assert!(found.is_none(), "{line}");
+                continue;
+            };
+            let reading = found.expect(line);
+            assert_eq!(
+                (reading.runtime.as_str(), reading.at),
+                ("claude-code", sample.at)
+            );
+            match expected {
+                None => assert!(reading.context.is_none(), "{line}"),
+                Some((used, window, percent, id)) => {
+                    let found = reading.context.expect(line);
+                    assert_eq!(
+                        (found.used_tokens, found.window_tokens, found.percent()),
+                        (used, window, Some(percent))
+                    );
+                    assert_eq!(found.record, id);
+                    assert_eq!(found.runtime, "claude-code");
+                    assert_eq!(found.format, sample.format);
+                    assert_eq!(found.at, sample.at);
+                    assert_eq!(found.model.as_deref(), sample.model.as_deref());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_context_takes_the_window_the_rollout_states_and_nothing_without_one() {
+        let records: Vec<Value> = include_str!("usage/fixtures/codex-context.jsonl")
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let mut parser = Codex::default();
+        assert!(parser.feed(&records[0], true).unwrap().is_none());
+        let figure = |record: &Value, sample: &Sample| {
+            let reading = context(record, sample).expect("a rollout speaks for its session");
+            assert_eq!(reading.at, sample.at);
+            reading.context
+        };
+        // Cumulative totals grow; the latest request is what counts.
+        let first = parser.feed(&records[1], false).unwrap().unwrap();
+        let found = figure(&records[1], &first).unwrap();
+        assert_eq!(
+            (found.used_tokens, found.window_tokens, found.percent()),
+            (16_000, 258_400, Some(6))
+        );
+        assert_eq!(
+            found.record,
+            format!("token_count@{}", first.at.to_rfc3339())
+        );
+        let second = parser.feed(&records[2], false).unwrap().unwrap();
+        let found = figure(&records[2], &second).unwrap();
+        assert_eq!((found.used_tokens, found.percent()), (160_208, Some(62)));
+        // No stated window and no model the table lists: a reading with no
+        // figure, which clears the 62 %.
+        let third = parser.feed(&records[3], false).unwrap().unwrap();
+        assert!(figure(&records[3], &third).is_none());
+        // A null info record is not a sample at all.
+        assert!(parser.feed(&records[4], false).unwrap().is_none());
+    }
 
     #[test]
     fn observed_historical_claude_patches_preserve_accounting_identity_and_totals() {

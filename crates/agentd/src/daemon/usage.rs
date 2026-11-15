@@ -237,8 +237,34 @@ impl Daemon {
             },
             None => None,
         };
+        // The sessions in scope whose context a provider record may state:
+        // each record by its own id, with the runtime and session its
+        // transcript or rollout is read under.
+        let sessions: Vec<(String, String, String)> = state
+            .registry
+            .all()
+            .filter(|a| {
+                project.as_deref().is_none_or(|project| {
+                    a.project
+                        .as_ref()
+                        .is_some_and(|p| p.id().to_string() == project)
+                })
+            })
+            .filter(|a| agent.as_deref().is_none_or(|agent| a.id.as_str() == agent))
+            .filter_map(|a| {
+                let session = a.spec.labels.get("session_id")?;
+                Some((a.id.to_string(), a.spec.runtime.clone(), session.clone()))
+            })
+            .collect();
         match state.store_read("usage query", |store| {
-            store.usage_report(range, query.by, project.as_deref(), agent.as_deref())
+            let mut report =
+                store.usage_report(range, query.by, project.as_deref(), agent.as_deref())?;
+            if let Some(report) = &mut report
+                && config.enabled
+            {
+                report.context = store.usage_contexts(&sessions, retained_since)?;
+            }
+            Ok(report)
         }) {
             Some(Some(mut report)) => {
                 let effective_roots = match roots(&config) {
@@ -251,6 +277,7 @@ impl Daemon {
                     .collect();
                 if !config.enabled || report.coverage.collection.scope.roots != expected_roots {
                     report.coverage.collection = Collection::default();
+                    report.context.clear();
                     for row in &mut report.rows {
                         for counter in [
                             &mut row.counters.input_tokens,
@@ -348,6 +375,7 @@ impl Daemon {
                     key,
                     progress: &progress,
                     samples: &samples,
+                    contexts: &batch.contexts,
                     gaps: &batch.gaps,
                     collection,
                     retained_since: retained(now, config),
@@ -2644,6 +2672,202 @@ mod tests {
                 .count(),
             events
         );
+    }
+
+    /// A made-up Claude Code request of `session`, `minutes` ago, carrying
+    /// `read` cached tokens beside 4,000 uncached; a sidechain's when said.
+    fn context_request(
+        session: &str,
+        id: &str,
+        model: &str,
+        read: u64,
+        minutes: i64,
+        sidechain: bool,
+    ) -> String {
+        let mut record = serde_json::json!({"type":"assistant","version":"2.1.287","sessionId":session,
+            "timestamp":(Utc::now()-Duration::minutes(minutes)).to_rfc3339(),
+            "message":{"id":id,"model":model,
+                "usage":{"input_tokens":4000,"cache_read_input_tokens":read,"cache_creation_input_tokens":0,"output_tokens":2}}});
+        if sidechain {
+            record["isSidechain"] = true.into();
+            record["agentId"] = "fixture-subagent".into();
+        }
+        record.to_string() + "\n"
+    }
+
+    /// A session's context is the newest record that speaks for it, against
+    /// its model's window: on the usage answer by agent id, only while
+    /// collection is on, and absent for a session no record speaks for and
+    /// while the newest record gives no figure. A sidechain's record does
+    /// not speak for the session.
+    #[tokio::test]
+    async fn usage_answers_each_sessions_latest_context_only_with_collection_on() {
+        const MODEL: &str = "claude-haiku-4-5-20251001";
+        let (temp, daemon, config, root) = fixture();
+        let register = |name: &str, session: &str| {
+            daemon.handle(Request::Register {
+                spec: AgentSpec {
+                    name: name.into(),
+                    runtime: "claude-code".into(),
+                    labels: BTreeMap::from([("session_id".into(), session.into())]),
+                    ..AgentSpec::default()
+                },
+                pid: None,
+                session: None,
+            })
+        };
+        let Response::Agent { agent } = register("context-agent", "fixture-session").await else {
+            panic!("fixture registration failed")
+        };
+        let Response::Agent { agent: silent } = register("silent-agent", "other-session").await
+        else {
+            panic!("fixture registration failed")
+        };
+        let request = |id: &str, model: &str, read: u64, minutes: i64, sidechain: bool| {
+            context_request("fixture-session", id, model, read, minutes, sidechain)
+        };
+        let path = root.join("session.jsonl");
+        std::fs::write(&path, request("first", MODEL, 120_000, 30, false)).unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        let context = report
+            .context
+            .get(agent.id.as_str())
+            .expect("the record's context");
+        assert_eq!(
+            (context.percent(), context.used_tokens),
+            (Some(62), 124_000)
+        );
+        assert_eq!(context.record, "first");
+        assert_eq!(context.model.as_deref(), Some(MODEL));
+        assert!(
+            !report.context.contains_key(silent.id.as_str()),
+            "no record, no figure"
+        );
+        // A later request replaces it; a sidechain's later one does not.
+        append(&path, &request("second", MODEL, 40_000, 20, false));
+        append(&path, &request("sub-agent", MODEL, 180_000, 15, true));
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let context = query(&daemon)
+            .await
+            .context
+            .remove(agent.id.as_str())
+            .unwrap();
+        assert_eq!(
+            (context.percent(), context.record.as_str()),
+            (Some(22), "second")
+        );
+        // A newer one the table cannot place leaves no figure, rather than
+        // the older model's standing as if it were the session's now.
+        append(
+            &path,
+            &request("third", "fixture-model", 180_000, 10, false),
+        );
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        assert!(!query(&daemon).await.context.contains_key(agent.id.as_str()));
+        append(&path, &request("fourth", MODEL, 80_000, 5, false));
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let context = query(&daemon)
+            .await
+            .context
+            .remove(agent.id.as_str())
+            .unwrap();
+        assert_eq!(
+            (context.percent(), context.record.as_str()),
+            (Some(42), "fourth")
+        );
+        // Off, the answer carries no figure, as it carries no coverage.
+        let config_path = temp.path().join("agentd.toml");
+        let original = std::fs::read_to_string(&config_path).unwrap();
+        std::fs::write(
+            &config_path,
+            original.replace("enabled=true", "enabled=false"),
+        )
+        .unwrap();
+        assert!(query(&daemon).await.context.is_empty());
+        std::fs::write(&config_path, &original).unwrap();
+        assert_eq!(query(&daemon).await.context.len(), 1);
+        // The figure is per session: an agent filter keeps only its own.
+        let response = daemon
+            .handle(Request::Usage {
+                project: None,
+                agent: Some(silent.id.to_string()),
+                since: Some("24h".into()),
+                until: None,
+                by: Group::Agent,
+            })
+            .await;
+        let Response::Usage { report } = response else {
+            panic!("{response:?}")
+        };
+        assert!(report.context.is_empty());
+    }
+
+    /// One batch whose records are out of time order keeps the newest by
+    /// when the provider wrote it, whatever the store already holds: an
+    /// empty store and one holding a reading between the two both answer
+    /// the newest.
+    #[tokio::test]
+    async fn a_batch_out_of_time_order_keeps_its_newest_context() {
+        const MODEL: &str = "claude-haiku-4-5-20251001";
+        let (_temp, daemon, config, root) = fixture();
+        let mut agents = Vec::new();
+        for (name, session) in [
+            ("fresh-agent", "fresh-session"),
+            ("kept-agent", "kept-session"),
+        ] {
+            let Response::Agent { agent } = daemon
+                .handle(Request::Register {
+                    spec: AgentSpec {
+                        name: name.into(),
+                        runtime: "claude-code".into(),
+                        labels: BTreeMap::from([("session_id".into(), session.into())]),
+                        ..AgentSpec::default()
+                    },
+                    pid: None,
+                    session: None,
+                })
+                .await
+            else {
+                panic!("fixture registration failed")
+            };
+            agents.push(agent);
+        }
+        // The kept session's store holds 50 %, from 15 minutes ago.
+        let kept = root.join("kept.jsonl");
+        std::fs::write(
+            &kept,
+            context_request("kept-session", "middle", MODEL, 96_000, 15, false),
+        )
+        .unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        assert_eq!(
+            report
+                .context
+                .get(agents[1].id.as_str())
+                .and_then(|c| c.percent()),
+            Some(50)
+        );
+        // Then each file gets 80 % from 10 minutes ago followed by 20 %
+        // from 20 minutes ago, read in one batch.
+        let newer_then_older = |session: &str| {
+            context_request(session, "newer", MODEL, 156_000, 10, false)
+                + &context_request(session, "older", MODEL, 36_000, 20, false)
+        };
+        std::fs::write(root.join("fresh.jsonl"), newer_then_older("fresh-session")).unwrap();
+        append(&kept, &newer_then_older("kept-session"));
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        for agent in &agents {
+            let context = report.context.get(agent.id.as_str()).expect("a figure");
+            assert_eq!(
+                (context.percent(), context.record.as_str()),
+                (Some(80), "newer"),
+                "{}",
+                agent.id
+            );
+        }
     }
 
     /// A Codex rollout of a thread another spawned, two hours ago: its
