@@ -240,9 +240,10 @@ enum Cmd {
     },
     /// Every project's open cards, for To-do.
     Todo,
-    /// A plan written; its answer opens it.
+    /// A plan written; its answer opens it. `save` is the number the
+    /// draft it was written from knows it by.
     PlanSave {
-        project: String,
+        save: u64,
         request: Box<Request>,
     },
     /// One plan in full.
@@ -457,6 +458,12 @@ enum Msg {
     BoardActed(String, Result<(), String>),
     Todo(Result<Vec<agentdocker_core::Task>, String>),
     Plan(Result<Box<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>, String>),
+    /// What became of a save of the plan in the editor: the plan as the
+    /// daemon kept it with its cards, or why it was not kept.
+    PlanSaved(
+        u64,
+        Result<Box<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>, String>,
+    ),
     /// A project's boards, or why they could not be read.
     Boards(String, Result<Vec<agentdocker_core::Board>, String>),
     Pauses(Vec<agentdocker_core::Pause>),
@@ -658,6 +665,8 @@ pub struct App {
     board_asks: BTreeMap<u64, (String, usize)>,
     /// Filings so far, numbering each so its reply is told apart.
     task_requests: u64,
+    /// The last number given to a save of the plan in the editor.
+    plan_saves: u64,
     /// A card whose acceptance text is open.
     task_open: Option<agentdocker_core::TaskId>,
     /// The open card in full: its board, comments and history.
@@ -830,6 +839,7 @@ impl App {
             usage_requests: 0,
             usage_pending: None,
             task_requests: 0,
+            plan_saves: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
             card: None,
@@ -924,6 +934,7 @@ impl App {
             usage_requests: 0,
             usage_pending: None,
             task_requests: 0,
+            plan_saves: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
             card: None,
@@ -1077,6 +1088,15 @@ impl App {
                 Cmd::Palette(project) => {
                     self.palettes_asked.remove(&project);
                 }
+                // A save that could not be queued never reaches the daemon
+                // and no answer to it will come: the draft that sent it is
+                // told so, or it would wait for one for good, with Save off.
+                // What the person wrote and its revision stay, unsaved.
+                Cmd::PlanSave { save, .. } => {
+                    if self.shell.plan_draft.saving == Some(save) {
+                        self.shell.plan_draft.refused();
+                    }
+                }
                 // Not sent: the draft stays, and Keep is offered again.
                 Cmd::MemoryAdd { project, .. } => {
                     if let Some(form) = self.shell.memory.get_mut(&project) {
@@ -1100,7 +1120,6 @@ impl App {
                 | Cmd::BoardCreate { .. }
                 | Cmd::TaskArchiveLane { .. }
                 | Cmd::BoardAct { .. }
-                | Cmd::PlanSave { .. }
                 | Cmd::FileOpen(_)
                 | Cmd::FileUpload { .. }
                 | Cmd::AdoptAll
@@ -1549,6 +1568,37 @@ impl App {
                     Ok(cards) => self.todo = Some(cards),
                     Err(error) => self.say(error),
                 },
+                Msg::PlanSaved(save, result) => {
+                    // Only the draft that sent a save takes its answer. A
+                    // draft that has taken its place since (a new plan
+                    // begun, another plan opened, this one opened anew) is
+                    // a different one: a late answer must not give it
+                    // another plan's id and revision, under which its next
+                    // save would overwrite that plan, nor free it from a
+                    // save of its own that is still out.
+                    let its_draft = self.shell.plan_draft.saving == Some(save);
+                    match result {
+                        Ok(plan) if its_draft => {
+                            let (plan, tasks) = *plan;
+                            self.shell.plan_draft.saved(&plan);
+                            self.plan_open = Some((plan, tasks));
+                        }
+                        // Kept by the daemon for a draft that is no longer
+                        // in the editor: what is there now is left alone.
+                        Ok(_) => {}
+                        // Said, and nothing read in its place: what the
+                        // person wrote stays in the editor, on the revision
+                        // it was written from, until they save it again or
+                        // open the plan anew. A refusal of a draft that is
+                        // gone is said too, and touches nothing.
+                        Err(error) => {
+                            if its_draft {
+                                self.shell.plan_draft.refused();
+                            }
+                            self.say(error);
+                        }
+                    }
+                }
                 Msg::Plan(result) => match result {
                     Ok(plan) => {
                         let (plan, tasks) = *plan;
@@ -3836,15 +3886,37 @@ fn run(client: &Client, cmd: Cmd) -> anyhow::Result<Option<Msg>> {
             };
             Some(Msg::MemoryAdded(project, text, result))
         }
-        Cmd::PlanSave { project, request } => match client.call(&request) {
-            Ok(Response::Plan { plan, tasks }) => Some(Msg::Plan(Ok(Box::new((plan, tasks))))),
-            Ok(Response::Error { message, .. }) => Some(Msg::BoardActed(
-                project,
-                Err(crate::client::explain(&message)),
-            )),
-            Ok(other) => Some(Msg::BoardActed(project, Err(unexpected_reply(&other)))),
-            Err(error) => Some(Msg::BoardActed(project, Err(format!("{error:#}")))),
-        },
+        Cmd::PlanSave { save, request } => {
+            // An edit of an existing plan's text goes only to a daemon
+            // that holds it to its revision: an older one would take it
+            // and write it over whatever is there. Asked first.
+            let replaces_text = matches!(
+                &*request,
+                Request::PlanSave {
+                    plan: Some(_),
+                    body: Some(_),
+                    ..
+                }
+            );
+            let held = !replaces_text
+                || matches!(
+                    client.call(&Request::Ping),
+                    Ok(Response::Pong { features, .. }) if features
+                        .iter()
+                        .any(|f| f == agentdocker_core::protocol::FEATURE_PLAN_REVISION)
+                );
+            let result = if !held {
+                Err(agentdocker_core::protocol::PLAN_REVISION_UNKNOWN.to_owned())
+            } else {
+                match client.call(&request) {
+                    Ok(Response::Plan { plan, tasks }) => Ok(Box::new((plan, tasks))),
+                    Ok(Response::Error { message, .. }) => Err(crate::client::explain(&message)),
+                    Ok(other) => Err(unexpected_reply(&other)),
+                    Err(error) => Err(format!("{error:#}")),
+                }
+            };
+            Some(Msg::PlanSaved(save, result))
+        }
         Cmd::PlanGet(plan) => {
             let result = match client.call(&Request::PlanGet { plan }) {
                 Ok(Response::Plan { plan, tasks }) => Ok(Box::new((plan, tasks))),

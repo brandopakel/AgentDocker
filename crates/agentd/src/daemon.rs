@@ -2879,8 +2879,9 @@ impl Daemon {
                 title,
                 body,
                 status,
+                revision,
             } => {
-                self.plan_save(&from, project, plan, title, body, status)
+                self.plan_save(&from, project, plan, (title, body, status), revision)
                     .await
             }
             Request::MemoryAdd {
