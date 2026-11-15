@@ -138,6 +138,7 @@ def pin_trial(args, root, prefix, source, controller, environment, cli, result):
             candidate_id = cli("install", "--from", candidate, "--preview")["candidate"]["id"]
             report = cli("install", "--from", candidate, "--expect-release", candidate_id)
             assert report["daemon"]["reloaded"] is True, report["daemon"]
+            assert report["daemon"]["outcome"] == "reloaded", report["daemon"]
             assert report["daemon"]["serving"]["pid"] != serving_pid
             predecessor = serving_pid
             serving_pid = report["daemon"]["serving"]["pid"]
@@ -292,6 +293,7 @@ def trial(args):
         first_id = cli("install", "--from", source, "--preview")["candidate"]["id"]
         installed = cli("install", "--from", source, "--expect-release", first_id, "--expect-current", "none")
         assert installed["daemon"]["answered"] is False, installed["daemon"]
+        assert installed["daemon"]["outcome"] == "no_daemon", installed["daemon"]
         result["scenarios"].append("with no daemon running, activation says so and asks nothing")
 
         # The daemon serves from the first release, through the launcher

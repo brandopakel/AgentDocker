@@ -412,12 +412,49 @@ fn mark_letters(label: &str) -> String {
 }
 
 /// The state of one step in a short sequence.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Step {
     Done,
     /// The step that is next, or under way.
     Next,
     Waiting,
+    /// The step was taken and what came of it is not known, or is not
+    /// what was asked: to look at, not to wait for.
+    Unsure,
+}
+
+/// The last stage of an installation: the running service switching to
+/// the release that was installed. A preview has not asked yet. After an
+/// apply the report's word decides, and only a service that reloaded and
+/// answers is done: one that accepted the reload and went silent, and one
+/// whose answer was lost, are said as that, since "done" for them was
+/// false and "next launch" may be. A report with no word is read by its
+/// `reloaded` key, as before.
+fn switch_over(
+    preview: bool,
+    handover: Option<agentdocker_core::desktop_report::Handover>,
+    reloaded: bool,
+) -> (Step, Option<&'static str>) {
+    use agentdocker_core::desktop_report::Handover;
+    if preview {
+        return (Step::Waiting, Some("next launch"));
+    }
+    match handover {
+        Some(Handover::Reloaded) => (Step::Done, None),
+        Some(Handover::Unchanged) => (Step::Done, Some("this release was already active")),
+        Some(Handover::NoDaemon) => (Step::Next, Some("next launch")),
+        Some(Handover::Refused) => (
+            Step::Next,
+            Some("the service keeps the earlier release until it is restarted"),
+        ),
+        Some(Handover::ReloadedSilent) => (
+            Step::Unsure,
+            Some("the service reloaded and has not answered since"),
+        ),
+        Some(Handover::Unknown) => (Step::Unsure, Some("what the service did is not known")),
+        None if reloaded => (Step::Done, None),
+        None => (Step::Next, Some("next launch")),
+    }
 }
 
 /// A tool that declares its MCP servers in each agent's own file (Docker
@@ -2043,7 +2080,7 @@ impl App {
                 let actions = row![check(filled)].align_y(Center);
                 match update {
                     // Nothing on either channel yet: an answer, not a failure.
-                    Some(u) if u["published"] == false => (
+                    Some(u) if crate::desktop::unpublished(u) => (
                         Icon::Check,
                         c.faint,
                         Some(Tone::Neutral),
@@ -2319,7 +2356,11 @@ impl App {
             // by the time there is a preview; Apply installs; the switch
             // to the new release is the daemon's to report.
             let downloaded = report["update"]["downloaded"].is_string();
-            let reloaded = report["daemon"]["reloaded"] == true;
+            let (switched, switch_said) = switch_over(
+                preview,
+                crate::desktop::handover(report),
+                report["daemon"]["reloaded"] == true,
+            );
             let candidate = &report["candidate"];
             let mut stages: Vec<(Step, &str, Option<String>)> = Vec::new();
             if downloaded {
@@ -2339,17 +2380,7 @@ impl App {
                 },
                 None,
             ));
-            stages.push((
-                if preview {
-                    Step::Waiting
-                } else if reloaded {
-                    Step::Done
-                } else {
-                    Step::Next
-                },
-                "Switch over",
-                (!reloaded).then(|| "next launch".to_owned()),
-            ));
+            stages.push((switched, "Switch over", switch_said.map(str::to_owned)));
             body = body.push(stage_list(stages, c));
             let mut facts: Vec<(String, Element<'a, Message>)> = vec![(
                 "Release".into(),
@@ -2377,10 +2408,12 @@ impl App {
                     ));
                 }
             }
-            if let Some(daemon) = report["update"]["daemon"].as_str() {
-                facts.push(("Daemon".into(), text(daemon.to_owned()).size(13).into()));
-            } else if let Some(summary) = report["daemon"]["summary"].as_str() {
+            // What the daemon did, once it has been asked; before that,
+            // what the update says it will be asked.
+            if let Some(summary) = report["daemon"]["summary"].as_str() {
                 facts.push(("Daemon".into(), text(summary.to_owned()).size(13).into()));
+            } else if let Some(daemon) = report["update"]["daemon"].as_str() {
+                facts.push(("Daemon".into(), text(daemon.to_owned()).size(13).into()));
             }
             body = body.push(kv_list(facts, c));
         }
@@ -2528,11 +2561,13 @@ fn stage_list<'a>(stages: Vec<(Step, &str, Option<String>)>, c: Colors) -> Eleme
             Step::Done => c.green,
             Step::Next => c.accent,
             Step::Waiting => c.faint,
+            Step::Unsure => c.amber,
         };
         let glyph: Element<'a, Message> = match step {
             Step::Done => icon(Icon::Check, tone, 11.0),
             Step::Next => dot(tone, 6.0, c),
             Step::Waiting => Space::new().width(0).height(0).into(),
+            Step::Unsure => icon(Icon::Alert, tone, 11.0),
         };
         let node = container(glyph)
             .center(20)
@@ -2573,8 +2608,8 @@ fn stage_list<'a>(stages: Vec<(Step, &str, Option<String>)>, c: Colors) -> Eleme
                 .font(if step == Step::Next { MEDIUM } else { UI })
                 .color(match step {
                     Step::Done => c.muted,
-                    Step::Next => c.text,
-                    _ => c.faint,
+                    Step::Next | Step::Unsure => c.text,
+                    Step::Waiting => c.faint,
                 })
                 .width(Fill)
         ]
@@ -2592,6 +2627,42 @@ fn stage_list<'a>(stages: Vec<(Step, &str, Option<String>)>, c: Colors) -> Eleme
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The last stage of an installation, for each thing the report can
+    /// say of the handover. Only a service that reloaded and answers is
+    /// done. One that accepted the reload and has not answered since was
+    /// shown as done, since its report says `reloaded: true` like the
+    /// other; it and a lost answer are now their own state, to look at.
+    #[test]
+    fn the_switch_over_stage_is_done_only_for_a_service_that_reloaded_and_answers() {
+        use agentdocker_core::desktop_report::Handover::*;
+        // A preview has not asked the service yet, whatever it carries.
+        for handover in [None, Some(Reloaded), Some(ReloadedSilent)] {
+            assert_eq!(
+                switch_over(true, handover, true),
+                (Step::Waiting, Some("next launch"))
+            );
+        }
+        let after = |handover| switch_over(false, Some(handover), true);
+        assert_eq!(after(Reloaded), (Step::Done, None));
+        assert_eq!(after(ReloadedSilent).0, Step::Unsure);
+        assert_eq!(after(Unknown).0, Step::Unsure);
+        assert_eq!(after(Refused).0, Step::Next);
+        assert_eq!(after(NoDaemon), (Step::Next, Some("next launch")));
+        assert_eq!(after(Unchanged).0, Step::Done);
+        // Each of them but a plain reload says what it is.
+        for handover in [NoDaemon, Unchanged, ReloadedSilent, Refused, Unknown] {
+            assert!(after(handover).1.is_some(), "{handover}");
+        }
+        // The word is read, not the key beside it: `reloaded` is true in
+        // every row above, and only one of them is done for it.
+        // A report with no word is read by that key, as it was.
+        assert_eq!(switch_over(false, None, true), (Step::Done, None));
+        assert_eq!(
+            switch_over(false, None, false),
+            (Step::Next, Some("next launch"))
+        );
+    }
 
     #[test]
     fn a_tool_mark_reads_as_its_name() {

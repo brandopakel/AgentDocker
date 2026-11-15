@@ -68,6 +68,17 @@ previous version. Updates apply on the next launch; running sessions keep their
 current binaries. Windows uses its own preview channel, separate from the stable
 and Mac/Linux feeds. It is unsigned and requires explicit preview consent.
 
+On macOS and Linux, `desktop update`, `install` and `rollback` each print one
+JSON report, and the report says what happened as a word beside its other keys.
+`update.outcome` is `not_published`, `up_to_date`, `available`, `needs_consent`
+(the newer release is a preview build: pass `--local-preview`), `previewed` or
+`applied`. After an install, `daemon.outcome` says what became of the running
+daemon: `no_daemon`, `unchanged` (the release was already active), `reloaded`,
+`reloaded_silent` (it accepted the reload and nothing answers since: check
+`agentdocker daemon status`), `refused` (it keeps serving the earlier release
+until it is restarted) or `unknown`. `--check` only looks and `--apply`
+installs: the two together are refused.
+
 `desktop status` says what is installed without starting the daemon: the active
 and the previous release, and under `condition` what the installation's files
 say of it. `installation` is `absent`, `active`, `deactivated` (releases are

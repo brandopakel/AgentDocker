@@ -1,5 +1,6 @@
 //! Native installation controls backed by the sibling CLI's checked operations.
 
+use agentdocker_core::desktop_report::{Handover, UpdateOutcome};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -185,7 +186,10 @@ impl Panel {
                 .update
                 .as_ref()
                 .or_else(|| self.report.as_ref()?.get("update"))
-                .is_some_and(|update| update["preview_consent_required"] == true)
+                .is_some_and(|update| match update_outcome(update) {
+                    Some(outcome) => outcome == UpdateOutcome::NeedsConsent,
+                    None => update["preview_consent_required"] == true,
+                })
     }
 
     /// The newer version the last check or preview found, if any.
@@ -194,10 +198,36 @@ impl Panel {
             .update
             .as_ref()
             .or_else(|| self.report.as_ref()?.get("update"))?;
-        (update["update_available"] == true)
+        let offered = match update_outcome(update) {
+            Some(outcome) => outcome.offers(),
+            None => update["update_available"] == true,
+        };
+        offered
             .then(|| update["available"]["version"].as_str())
             .flatten()
     }
+}
+
+/// What an update report says happened, by its word (`update.outcome`).
+/// `None` for a report that says none, which is then read by the keys it
+/// has, as every report was: a build that prints no word, and a word this
+/// build does not know.
+pub fn update_outcome(update: &Value) -> Option<UpdateOutcome> {
+    update["outcome"].as_str()?.parse().ok()
+}
+
+/// Whether an update report says nothing has been published yet.
+pub fn unpublished(update: &Value) -> bool {
+    match update_outcome(update) {
+        Some(outcome) => outcome == UpdateOutcome::NotPublished,
+        None => update["published"] == false,
+    }
+}
+
+/// How the handover to the running daemon went after an activation, by
+/// the report's word (`daemon.outcome`); `None` as for `update_outcome`.
+pub fn handover(report: &Value) -> Option<Handover> {
+    report["daemon"]["outcome"].as_str()?.parse().ok()
 }
 
 /// What an apply has to pin: the package that was checked and the
@@ -472,6 +502,69 @@ mod tests {
         p.receive(Ok(json!({"preview": false})));
         assert!(p.error.is_none());
         assert!(p.report.is_some());
+    }
+
+    /// A report is read by its outcome word. Here the word and the keys
+    /// are made to disagree, which a real report's never do, to show
+    /// which one is read; and a report with no word, or with one this
+    /// build does not know, is read by its keys as every report was.
+    #[test]
+    fn a_report_is_read_by_its_word_and_by_its_keys_without_one() {
+        let offered = |update: Value| {
+            let mut panel = Panel::default();
+            panel.receive_update(Ok(json!({ "update": update })));
+            (
+                panel.update_available().map(str::to_owned),
+                panel.preview_consent_needed(),
+            )
+        };
+        let keys = |available: bool, consent: bool| {
+            json!({"update_available": available, "preview_consent_required": consent,
+                "available": {"version": "0.3.0"}})
+        };
+        let worded = |word: &str, available: bool, consent: bool| {
+            let mut update = keys(available, consent);
+            update["outcome"] = json!(word);
+            update
+        };
+        let newer = Some("0.3.0".to_owned());
+        // The word, whatever the keys say.
+        assert_eq!(offered(worded("up_to_date", true, true)), (None, false));
+        assert_eq!(offered(worded("not_published", true, false)), (None, false));
+        assert_eq!(offered(worded("applied", true, false)), (None, false));
+        assert_eq!(
+            offered(worded("available", false, true)),
+            (newer.clone(), false)
+        );
+        assert_eq!(
+            offered(worded("needs_consent", false, false)),
+            (newer.clone(), true)
+        );
+        assert_eq!(
+            offered(worded("previewed", false, false)),
+            (newer.clone(), false)
+        );
+        // No word, or one this build does not know: the keys.
+        assert_eq!(offered(keys(true, true)), (newer.clone(), true));
+        assert_eq!(offered(keys(false, false)), (None, false));
+        assert_eq!(offered(worded("installed", true, false)), (newer, false));
+
+        assert!(unpublished(
+            &json!({"outcome": "not_published", "published": true})
+        ));
+        assert!(!unpublished(
+            &json!({"outcome": "up_to_date", "published": false})
+        ));
+        assert!(unpublished(&json!({"published": false})));
+        assert!(!unpublished(&json!({"published": true})));
+
+        assert_eq!(
+            handover(&json!({"daemon": {"outcome": "reloaded_silent", "reloaded": true}})),
+            Some(Handover::ReloadedSilent)
+        );
+        assert_eq!(handover(&json!({"daemon": {"reloaded": true}})), None);
+        assert_eq!(handover(&json!({"daemon": {"outcome": "restarted"}})), None);
+        assert_eq!(handover(&json!({"preview": true})), None);
     }
 
     #[test]
