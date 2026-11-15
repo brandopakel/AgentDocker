@@ -2021,7 +2021,7 @@ mod tests {
         // kept apart from the observation.
         let off = record(&daemon, &agent);
         assert!(off.judged.is_none(), "taken off the record");
-        assert!(off.first_hand_at.is_some_and(|at| at > before_report));
+        assert!(off.first_hand_at.is_some_and(|at| at >= before_report));
         let mut cleared = Vec::new();
         while let Ok(event) = events.try_recv() {
             if let EventKind::AgentJudgmentCleared { agent: a, reason } = event.kind

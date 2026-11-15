@@ -325,6 +325,10 @@ impl Daemon {
             .into_iter()
             .cloned()
             .collect();
-        Response::Tasks { tasks, more: false }
+        Response::Tasks {
+            tasks,
+            more: false,
+            times: Vec::new(),
+        }
     }
 }

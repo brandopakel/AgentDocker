@@ -9,7 +9,7 @@ use agentdocker_core::protocol::{BatchCard, TASKS_LIMIT, TASKS_LIMIT_MAX, TASKS_
 use agentdocker_core::task::{
     Comment, NewTask, Task, TaskAction, TaskEdit, TaskEntry, TaskError, TaskId,
 };
-use agentdocker_core::{Column, HUMAN, LeaseMode, ResourceKey};
+use agentdocker_core::{CardTimes, Column, HUMAN, LeaseMode, ResourceKey};
 use chrono::DateTime;
 
 #[cfg(test)]
@@ -30,6 +30,10 @@ const DOCUMENT: &str = crate::store::TASK_DOCUMENT;
 const BOARD: &str = "board";
 const COMMENT: &str = "task_comment";
 const ENTRY: &str = "task_entry";
+/// The most lines of a card's history its timing is folded from: its
+/// newest that say where it was. A card with more is said to be
+/// incomplete rather than folded from a part as if it were all.
+const TIMING_LINES: usize = 10_000;
 /// The history a card's detail carries: its last hundred lines.
 const HISTORY_SHOWN: usize = 100;
 /// At most this many cards of one project are read at once, for a pull
@@ -304,6 +308,56 @@ impl State {
         entries.split_off(skip)
     }
 
+    /// Each card's time in its lanes, folded from the lines of its history
+    /// that say where it was: the newest [`TIMING_LINES`] of them, a card
+    /// with more said to be incomplete. A history that cannot be read is
+    /// the request's failure, never a card with no history.
+    fn card_times(
+        &mut self,
+        cards: &[Task],
+        now: DateTime<Utc>,
+    ) -> Result<Vec<CardTimes>, Box<Response>> {
+        cards
+            .iter()
+            .map(|task| {
+                let (history, more) = self.read_store("card history", |store| {
+                    store.card_moves(task.id.as_str(), TIMING_LINES)
+                })?;
+                Ok(agentdocker_core::timing::card_times(
+                    task, &history, !more, now,
+                ))
+            })
+            .collect()
+    }
+
+    /// The cards of a page with their timing summaries, as many as fit in
+    /// `budget` bytes of cards and summaries together; whether any were
+    /// left for the next page.
+    fn timed_page(
+        &mut self,
+        mut tasks: Vec<Task>,
+        now: DateTime<Utc>,
+        budget: usize,
+    ) -> Result<(Vec<Task>, Vec<CardTimes>, bool), Box<Response>> {
+        let times = self.card_times(&tasks, now)?;
+        let mut size = 0usize;
+        let mut kept = Vec::with_capacity(times.len());
+        for (task, times) in tasks.iter().zip(times) {
+            let summary = times.summary();
+            let bytes = serde_json::to_vec(task).map_or(0, |b| b.len())
+                + serde_json::to_vec(&summary).map_or(0, |b| b.len());
+            // A page always holds its first card.
+            if !kept.is_empty() && size + bytes > budget {
+                break;
+            }
+            size += bytes;
+            kept.push(summary);
+        }
+        let cut = kept.len() < tasks.len();
+        tasks.truncate(kept.len());
+        Ok((tasks, kept, cut))
+    }
+
     /// A card in full, with the lease a pull took.
     fn card_detail(&mut self, task: Task, lease: Option<Lease>) -> Response {
         let board = match self.board_of(&task) {
@@ -329,6 +383,12 @@ impl State {
             .and_then(|id| self.plan_by_id(id).ok())
             .map(|p| p.summary());
         let files = self.card_files(&task.id);
+        let times = match self.card_times(std::slice::from_ref(&task), Utc::now()) {
+            Ok(mut times) => times
+                .pop()
+                .map(|t| t.newest(agentdocker_core::timing::DETAIL_STAYS)),
+            Err(response) => return *response,
+        };
         let usage = self
             .store_read("card usage", |store| store.usage_card_row(task.id.as_str()))
             .flatten();
@@ -342,6 +402,7 @@ impl State {
             lease,
             plan,
             files,
+            times,
             usage,
         }
     }
@@ -2221,7 +2282,16 @@ impl Daemon {
                 )
             });
             return match page {
-                Some((tasks, more)) => Response::Tasks { tasks, more },
+                Some((tasks, more)) => {
+                    match state.timed_page(tasks, Utc::now(), TASKS_PAGE_BYTES) {
+                        Ok((tasks, times, cut)) => Response::Tasks {
+                            tasks,
+                            more: more || cut,
+                            times,
+                        },
+                        Err(response) => *response,
+                    }
+                }
                 None => state.storage_failure().unwrap_or_else(|| {
                     Response::error(ErrorCode::StorageUnavailable, "the board could not be read")
                 }),
@@ -2345,7 +2415,14 @@ impl Daemon {
             size += bytes;
             page.push(task);
         }
-        Response::Tasks { tasks: page, more }
+        match state.timed_page(page, Utc::now(), TASKS_PAGE_BYTES) {
+            Ok((tasks, times, cut)) => Response::Tasks {
+                tasks,
+                more: more || cut,
+                times,
+            },
+            Err(response) => *response,
+        }
     }
 }
 
@@ -2430,6 +2507,161 @@ mod tests {
             Response::Agent { agent } => agent,
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A card's timing is folded from its newest [`TIMING_LINES`] lines that
+    /// say where it was: one with more is said incomplete, with no first
+    /// pull. A list carries a summary of one stay, a card's detail its
+    /// newest [`agentdocker_core::timing::DETAIL_STAYS`], so a long history never outgrows a
+    /// frame; a page of cards and summaries is cut at its byte budget; and
+    /// a history that cannot be read fails the request, never answered
+    /// with times made up for a card with no history.
+    #[tokio::test]
+    async fn a_cards_timing_is_bounded_and_says_what_it_does_not_show() {
+        let dir = TempDir::new().unwrap();
+        let daemon = open(&dir);
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let create = |title: &str| {
+            let daemon = daemon.clone();
+            let request = Request::TaskCreate {
+                from: HUMAN.to_owned(),
+                project: Some(work.display().to_string()),
+                title: title.to_owned(),
+                acceptance: String::new(),
+                column: Some(Column::Ready),
+                links: Vec::new(),
+                board: None,
+                lane: None,
+                description: String::new(),
+                priority: None,
+                size: None,
+                due: None,
+                external_blocker: String::new(),
+                parent: None,
+                blocked_by: Vec::new(),
+                tags: Vec::new(),
+                plan: None,
+            };
+            async move {
+                match daemon.handle(request).await {
+                    Response::Task { task } => task,
+                    other => panic!("{other:?}"),
+                }
+            }
+        };
+        let long = create("Moved a great deal").await;
+        let short = create("Moved once").await;
+        // More lines than are read, back and forth, all before now.
+        let start = Utc::now() - chrono::Duration::days(30);
+        let lines: Vec<Doc> = (0..=TIMING_LINES)
+            .map(|n| {
+                let (from, to) = if n % 2 == 0 {
+                    ("ready", "backlog")
+                } else {
+                    ("backlog", "ready")
+                };
+                entry_doc(&TaskEntry::new(
+                    &long,
+                    HUMAN,
+                    TaskAction::Moved {
+                        from: from.to_owned(),
+                        to: to.to_owned(),
+                    },
+                    start + chrono::Duration::seconds(n as i64),
+                ))
+            })
+            .collect();
+        lock(&daemon.state)
+            .store
+            .documents_change(&lines, &[], &[])
+            .unwrap();
+
+        let list = || {
+            daemon.handle(Request::Tasks {
+                project: Some(work.display().to_string()),
+                column: None,
+                archived: false,
+                offset: 0,
+                limit: 0,
+                board: None,
+                lane: None,
+                assignee: None,
+                agent: None,
+                open: false,
+                query: None,
+                tag: None,
+            })
+        };
+        let response = list().await;
+        let size = serde_json::to_vec(&response).unwrap().len();
+        let Response::Tasks { tasks, times, .. } = response else {
+            panic!("{response:?}");
+        };
+        assert_eq!(tasks.len(), 2);
+        assert!(size < 64 * 1024, "a summary each: {size} bytes");
+        let of = |id: &TaskId| times.iter().find(|t| &t.task == id).unwrap().clone();
+        let folded = of(&long.id);
+        assert!(folded.incomplete, "more lines than were read");
+        assert_eq!(folded.pulled_at, None);
+        assert_eq!(folded.stays.len(), 1);
+        assert!(folded.stays_omitted > 1000, "{}", folded.stays_omitted);
+        assert!(!of(&short.id).incomplete, "its whole history was read");
+
+        let Response::TaskDetail { times, .. } = daemon
+            .handle(Request::TaskGet {
+                task: long.id.to_string(),
+            })
+            .await
+        else {
+            panic!("no detail");
+        };
+        let times = times.unwrap();
+        assert_eq!(times.stays.len(), agentdocker_core::timing::DETAIL_STAYS);
+        assert!(times.incomplete && times.stays_omitted > 0);
+
+        // A page is cut where its cards and their summaries reach the
+        // budget, and says the board goes on; its first card always fits.
+        {
+            let mut state = lock(&daemon.state);
+            let cards = vec![short.clone(), long.clone()];
+            let first = serde_json::to_vec(&short).unwrap().len();
+            let (kept, summaries, cut) =
+                state.timed_page(cards.clone(), Utc::now(), first).unwrap();
+            assert_eq!((kept.len(), summaries.len(), cut), (1, 1, true));
+            let (kept, _, cut) = state
+                .timed_page(cards, Utc::now(), TASKS_PAGE_BYTES)
+                .unwrap();
+            assert_eq!((kept.len(), cut), (2, false));
+        }
+
+        // A history line that cannot be read fails the list.
+        let broken = serde_json::json!({
+            "id": format!("{}-broken", short.id),
+            "task": short.id,
+            "project": short.project,
+            "at": Utc::now(),
+            "by": HUMAN,
+            "action": {"kind": "moved"},
+        });
+        lock(&daemon.state)
+            .store
+            .documents_change(
+                &[(ENTRY, format!("{}-broken", short.id), broken.to_string())],
+                &[],
+                &[],
+            )
+            .unwrap();
+        assert!(
+            matches!(
+                list().await,
+                Response::Error {
+                    code: ErrorCode::StorageUnavailable,
+                    ..
+                }
+            ),
+            "never an answer with times made up"
+        );
     }
 
     /// A card nobody holds is taken by an agent that names it, wherever it
@@ -3028,7 +3260,9 @@ mod tests {
                     })
                     .await
                 {
-                    Response::Tasks { tasks, more: false } => tasks,
+                    Response::Tasks {
+                        tasks, more: false, ..
+                    } => tasks,
                     other => panic!("{other:?}"),
                 }
             }
@@ -4054,7 +4288,7 @@ mod tests {
             }
         };
         match list(0, 2, None).await {
-            Response::Tasks { tasks, more } => {
+            Response::Tasks { tasks, more, .. } => {
                 assert!(more, "the board goes on");
                 assert_eq!(
                     tasks.iter().map(|t| t.column).collect::<Vec<_>>(),
@@ -4066,7 +4300,7 @@ mod tests {
         }
         // The next page starts where the last said it went on.
         match list(2, 2, None).await {
-            Response::Tasks { tasks, more } => {
+            Response::Tasks { tasks, more, .. } => {
                 assert_eq!(
                     (tasks.iter().map(|t| t.column).collect::<Vec<_>>(), more),
                     (vec![Column::Done], false)
@@ -4075,7 +4309,7 @@ mod tests {
             other => panic!("{other:?}"),
         }
         match list(0, 2, Some(Column::Done)).await {
-            Response::Tasks { tasks, more } => {
+            Response::Tasks { tasks, more, .. } => {
                 assert_eq!((tasks.len(), more), (1, false));
             }
             other => panic!("{other:?}"),

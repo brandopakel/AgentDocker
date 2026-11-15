@@ -2345,6 +2345,9 @@ pub enum Response {
         /// The project's files linked to it.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         files: Vec<crate::ProjectFile>,
+        /// Its stays and time in each lane, from its whole history.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        times: Option<crate::CardTimes>,
         /// What the card has cost to date: the retained usage recorded
         /// while an agent held it, as one usage row keyed by the card
         /// (tokens with coverage, the provider-reported estimated cost where it said one).
@@ -2465,6 +2468,10 @@ pub enum Response {
         /// `offset + tasks.len()`.
         #[serde(default)]
         more: bool,
+        /// Each card's time in its lanes (`timing::card_times`), by card;
+        /// none from a search.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        times: Vec<crate::CardTimes>,
     },
     Pause {
         pause: crate::Pause,

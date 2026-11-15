@@ -3237,7 +3237,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "list_tasks",
-            "description": "The project's board of work: cards in lanes, each with a key (APP-12), a title and what done means; each lane stands for a category (backlog, ready, in_progress, review, done, blocked, cancelled). Cards in the board's pull source are there to be pulled. Narrow it by lane, by whose it is (assignee: an agent, me, mine or none), to open cards, by words or by tag.",
+            "description": "The project's board of work: cards in lanes, each with a key (APP-12), a title and what done means; each lane stands for a category (backlog, ready, in_progress, review, done, blocked, cancelled). Cards in the board's pull source are there to be pulled. Narrow it by lane, by whose it is (assignee: an agent, me, mine or none), to open cards, by words or by tag. `times` gives each card's time in each lane (seconds, stays, which lane has it now), its first pull and when it reached Done.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -3305,7 +3305,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_task",
-            "description": "One card in full: its words and fields, the board's lanes, its comments, its last hundred history lines, the cards it waits on and the cards that are part of it.",
+            "description": "One card in full: its words and fields, the board's lanes, its comments, its last hundred history lines, its stays and time in each lane (`times`: its newest 200 stays and each lane's total, from the history lines that say where it was; `incomplete` when the history does not show all its time, which is then left out rather than guessed), the cards it waits on and the cards that are part of it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -4132,6 +4132,7 @@ mod tests {
         let s = server(vec![Response::Tasks {
             tasks: Vec::new(),
             more: false,
+            times: Vec::new(),
         }]);
         let reply = s
             .handle(rpc(
@@ -4330,6 +4331,7 @@ mod tests {
             Response::Tasks {
                 tasks: Vec::new(),
                 more: false,
+                times: Vec::new(),
             },
         ])
         .remote("/p/orchard".into());

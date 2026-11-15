@@ -850,6 +850,35 @@ impl Store {
         rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
     }
 
+    /// The lines of a card's history that say where it was (created,
+    /// pulled, moved, archived, unarchived: `timing::moves`), at most
+    /// `limit` of them, the newest; and whether it has more. Oldest first.
+    pub fn card_moves(
+        &self,
+        task: &str,
+        limit: usize,
+    ) -> Result<(Vec<agentdocker_core::task::TaskEntry>, bool)> {
+        let mut stmt = self.conn.prepare(
+            "SELECT json FROM documents WHERE kind='task_entry' AND json_extract(json,'$.task') = ?1 \
+             AND json_extract(json,'$.action.kind') IN ('created','pulled','moved','archived','unarchived') \
+             ORDER BY json_extract(json,'$.at') DESC, id DESC LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                task,
+                i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX)
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        let mut entries: Vec<agentdocker_core::task::TaskEntry> = rows
+            .map(|row| Ok(serde_json::from_str(&row?)?))
+            .collect::<Result<_>>()?;
+        let more = entries.len() > limit;
+        entries.truncate(limit);
+        entries.reverse();
+        Ok((entries, more))
+    }
+
     /// Atomically persist a typed recovery document before publishing its event.
     pub fn put_document<T: serde::Serialize + ?Sized>(
         &self,

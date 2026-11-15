@@ -41,6 +41,7 @@ pub mod protocol;
 pub mod provider;
 pub mod task;
 pub mod team;
+pub mod timing;
 pub use provider::{
     ProviderAvailability, ProviderIssue, ProviderIssueKind, ProviderReport, provider_block,
 };
@@ -91,6 +92,7 @@ pub use tag::{Tag, TagColor};
 pub use task::{
     Column, Comment, CommentId, NewTask, Priority, Size, Task, TaskAction, TaskEntry, TaskId,
 };
+pub use timing::{CardTimes, LaneTime, Stay};
 pub use topic::{TopicCursor, TopicPost};
 
 pub mod policy;
