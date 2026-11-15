@@ -965,18 +965,23 @@ impl Store {
     }
 
     /// The context figure of each named session (runtime, session id)
-    /// whose newest reading gives one, keyed as the caller keys them.
+    /// whose newest reading gives one, keyed as the caller keys them. Only
+    /// a reading written at or after `retained_since`, the effective
+    /// retention cutoff, counts: one older is out of the retained window
+    /// whether or not a prune has removed its row yet.
     pub(crate) fn usage_contexts(
         &self,
         sessions: &[(String, String, String)],
+        retained_since: DateTime<Utc>,
     ) -> Result<BTreeMap<String, SessionContext>> {
         let mut statement = self
             .conn
-            .prepare("SELECT json FROM usage_context WHERE runtime=?1 AND session=?2")?;
+            .prepare("SELECT json FROM usage_context WHERE runtime=?1 AND session=?2 AND at>=?3")?;
+        let since = text(retained_since);
         let mut found = BTreeMap::new();
         for (key, runtime, session) in sessions {
             let json: Option<String> = statement
-                .query_row(params![runtime, session], |r| r.get(0))
+                .query_row(params![runtime, session, since], |r| r.get(0))
                 .optional()?;
             let figure = json
                 .map(|json| serde_json::from_str::<ContextReading>(&json))
@@ -2691,8 +2696,19 @@ mod tests {
     }
 
     fn context_percent(store: &Store) -> Option<u64> {
+        context_percent_since(store, "session", at(0))
+    }
+
+    fn context_percent_since(
+        store: &Store,
+        session: &str,
+        retained_since: DateTime<Utc>,
+    ) -> Option<u64> {
         store
-            .usage_contexts(&[("agent".into(), "claude-code".into(), "session".into())])
+            .usage_contexts(
+                &[("agent".into(), "claude-code".into(), session.into())],
+                retained_since,
+            )
             .unwrap()
             .get("agent")
             .and_then(SessionContext::percent)
@@ -2776,13 +2792,33 @@ mod tests {
         keep(large, at(0)).unwrap();
         assert_eq!(context_percent(&store), Some(90));
 
+        // A shorter retention hides the reading at once, before any prune.
+        assert_eq!(context_percent_since(&store, "session", at(7)), None);
+        // A prune removes at most 1,000 rows; whichever it leaves is still
+        // there, and still out of the answer.
+        set_tracking_capacity(&store, 100_000_000);
+        let expired = serde_json::to_string(&reading(1, Some((50, 100)))).unwrap();
+        for n in 0..1000 {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO usage_context VALUES ('claude-code',?1,?2,?3)",
+                    params![format!("other-{n}"), text(at(1)), expired],
+                )
+                .unwrap();
+        }
         ingest(&store, &progress, "source", Vec::new(), at(7)).unwrap();
-        assert_eq!(
-            rows(&store, "usage_context"),
-            0,
-            "out of the retained window"
-        );
-        assert_eq!(context_percent(&store), None);
+        let left: Vec<String> = store
+            .conn
+            .prepare("SELECT session FROM usage_context")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(left.len(), 1, "one prune removes at most 1,000");
+        assert!(context_percent_since(&store, &left[0], at(0)).is_some());
+        assert_eq!(context_percent_since(&store, &left[0], at(7)), None);
     }
 
     #[test]

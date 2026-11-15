@@ -262,7 +262,7 @@ impl Daemon {
             if let Some(report) = &mut report
                 && config.enabled
             {
-                report.context = store.usage_contexts(&sessions)?;
+                report.context = store.usage_contexts(&sessions, retained_since)?;
             }
             Ok(report)
         }) {
