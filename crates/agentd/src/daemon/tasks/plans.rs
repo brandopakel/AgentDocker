@@ -170,6 +170,58 @@ pub(in crate::daemon) struct FilePutArgs {
     pub task: Option<String>,
 }
 
+/// The refusal for an edit of a plan's text written from a revision the
+/// plan has moved on from: the revision it is at, and who changed which
+/// sections since, as far back as the plan remembers. Nothing is written.
+fn stale_edit(state: &State, plan: &Plan, read: u64) -> Response {
+    let who = |id: &str| {
+        state
+            .registry
+            .resolve(id)
+            .ok()
+            .and_then(|id| state.registry.get(&id).map(|agent| agent.spec.name.clone()))
+            .unwrap_or_else(|| id.to_owned())
+    };
+    let since = plan.edits_since(read);
+    let told: Vec<String> = since
+        .iter()
+        .map(|edit| {
+            let sections = if edit.sections.is_empty() {
+                "its text".to_owned()
+            } else {
+                edit.sections
+                    .iter()
+                    .map(|section| format!("`{section}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!(
+                "{} changed {sections} (revision {})",
+                who(&edit.by),
+                edit.revision
+            )
+        })
+        .collect();
+    let changed = if told.is_empty() {
+        "it was changed since".to_owned()
+    } else {
+        format!("since then {}", told.join("; "))
+    };
+    Response::Error {
+        code: ErrorCode::Conflict,
+        message: format!(
+            "this edit was written from revision {read} of the plan, which is now at revision {}: {changed}. Nothing was written. Read the plan again and make the edit on that",
+            plan.revision
+        ),
+        details: Some(json!({
+            "plan": plan.id,
+            "read": read,
+            "revision": plan.revision,
+            "since": since,
+        })),
+    }
+}
+
 impl Daemon {
     pub(in crate::daemon) async fn plans(
         self: &Arc<Self>,
@@ -207,14 +259,18 @@ impl Daemon {
         Response::Plan { plan, tasks }
     }
 
+    /// Write a plan. `read` is the revision a change to an existing
+    /// plan's body was written from: the plan is written only when that
+    /// is the revision it is at, under the lock that commits it, so of
+    /// two writers who read the same revision the second is told what the
+    /// first changed instead of putting its own reading back over it.
     pub(in crate::daemon) async fn plan_save(
         self: &Arc<Self>,
         from: &str,
         project: Option<String>,
         id: Option<String>,
-        title: Option<String>,
-        body: Option<String>,
-        status: Option<PlanStatus>,
+        (title, body, status): (Option<String>, Option<String>, Option<PlanStatus>),
+        read: Option<u64>,
     ) -> Response {
         let named = match &project {
             Some(selector) => match self.resolve_project(selector).await {
@@ -232,6 +288,7 @@ impl Daemon {
             return error;
         }
         let now = Utc::now();
+        let existing = id.is_some();
         let mut plan = match id {
             Some(id) => match state.plan_by_id(&id) {
                 Ok(plan) => plan,
@@ -259,16 +316,30 @@ impl Daemon {
                 }
             }
         };
+        if existing && body.is_some() {
+            match read {
+                None => {
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        format!(
+                            "an edit of a plan's text names the revision it was written from, so it cannot overwrite what somebody else wrote meanwhile: this plan is at revision {} (read it, then name that revision)",
+                            plan.revision
+                        ),
+                    );
+                }
+                Some(read) if !plan.is_current(read) => return stale_edit(&state, &plan, read),
+                Some(_) => {}
+            }
+        }
         if let Some(title) = title {
             plan.title = title.trim().to_owned();
-        }
-        if let Some(body) = body {
-            plan.body = body;
         }
         if let Some(status) = status {
             plan.status = status;
         }
-        plan.updated_at = now;
+        if existing {
+            plan = plan.edited(body, &actor.id, now);
+        }
         if let Err(reason) = plan.check() {
             return Response::error(ErrorCode::Invalid, reason);
         }

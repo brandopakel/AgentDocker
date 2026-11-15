@@ -1240,7 +1240,11 @@ pub enum Request {
         plan: String,
     },
     /// Write a plan: a new one when `plan` is absent, else a change to
-    /// it. Answers `plan`.
+    /// it. A change to an existing plan's body names the `revision` it
+    /// was written from: without one it is refused, and written from an
+    /// older one it is refused with what changed since, so no writer
+    /// overwrites what another wrote meanwhile without being told.
+    /// Answers `plan`.
     PlanSave {
         from: String,
         #[serde(default)]
@@ -1253,6 +1257,10 @@ pub enum Request {
         body: Option<String>,
         #[serde(default)]
         status: Option<crate::PlanStatus>,
+        /// The revision of the plan the body was written from
+        /// ([`crate::Plan::revision`], as `plan_get` gave it).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<u64>,
     },
     /// A project's files, or one card's. Answers `files`.
     Files {

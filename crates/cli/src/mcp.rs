@@ -3486,13 +3486,14 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "save_plan",
-            "description": "Write a plan (a spec in Markdown, at most 512 KiB): a new one when `plan` is absent, else a change to that one. Cards name it with their `plan` field.",
+            "description": "Write a plan (a spec in Markdown, at most 512 KiB): a new one when `plan` is absent, else a change to that one. Cards name it with their `plan` field. A change to an existing plan's `body` replaces the whole text, so it names the `revision` it was written from (get_plan gives it): if somebody edited the plan since, nothing is written and the answer says who changed which sections; read it again and make your change on that.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "plan": { "type": "string", "description": "The plan to change; absent for a new one." },
                     "title": { "type": "string" },
                     "body": { "type": "string", "description": "The spec, in Markdown." },
+                    "revision": { "type": "integer", "minimum": 0, "description": "The plan's `revision` when you read it; needed with `body` for an existing plan." },
                     "status": { "type": "string", "enum": ["draft", "active", "done", "archived"] },
                     "project": { "type": "string", "description": "Project id or path, for a new plan; your own when absent." }
                 },
@@ -4019,6 +4020,38 @@ mod tests {
                     None
                 ),
             ]
+        );
+    }
+
+    /// `save_plan` passes on the revision an edit of a plan's text was
+    /// written from, as the caller: the daemon refuses one written from
+    /// an older reading.
+    #[tokio::test]
+    async fn save_plan_names_the_revision_it_read() {
+        let s = server(vec![Response::Error {
+            code: agentdocker_core::ErrorCode::Conflict,
+            message:
+                "this edit was written from revision 4 of the plan, which is now at revision 5"
+                    .into(),
+            details: None,
+        }]);
+        let reply = s
+            .handle(rpc(
+                1,
+                "tools/call",
+                json!({"name": "save_plan", "arguments": {"plan": "abc123def456", "body": "## Lead\nmerged\n", "revision": 4}}),
+            ))
+            .await
+            .unwrap();
+        assert!(reply.to_string().contains("now at revision 5"), "{reply}");
+        assert!(
+            s.backend.requests().iter().any(|request| matches!(
+                request,
+                Request::PlanSave { from, plan: Some(plan), body: Some(_), revision: Some(4), .. }
+                    if from == "abc123" && plan == "abc123def456"
+            )),
+            "{:?}",
+            s.backend.requests()
         );
     }
 

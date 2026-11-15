@@ -43,6 +43,9 @@ pub(super) struct PlanDraft {
     pub title: String,
     pub body: iced::widget::text_editor::Content,
     pub status: agentdocker_core::PlanStatus,
+    /// The revision of the plan the text in the editor was read at: what
+    /// a save names, so it cannot overwrite an edit made meanwhile.
+    pub revision: Option<u64>,
     /// Edited since it was read or saved.
     pub dirty: bool,
 }
@@ -54,6 +57,7 @@ impl Default for PlanDraft {
             title: String::new(),
             body: iced::widget::text_editor::Content::new(),
             status: agentdocker_core::PlanStatus::Draft,
+            revision: None,
             dirty: false,
         }
     }
@@ -69,6 +73,7 @@ impl PlanDraft {
         self.title = plan.title.clone();
         self.body = iced::widget::text_editor::Content::with_text(&plan.body);
         self.status = plan.status;
+        self.revision = Some(plan.revision);
         self.dirty = false;
     }
 }
@@ -2752,6 +2757,9 @@ impl App {
                         title: Some(draft.title.trim().to_owned()),
                         body: Some(draft.body.text()),
                         status: Some(draft.status),
+                        // An existing plan's text is saved from the
+                        // revision it was read at; a new plan has none.
+                        revision: draft.id.as_ref().and(draft.revision),
                     };
                     // Its answer is the plan, which opens: a new one has
                     // its id from then on.
