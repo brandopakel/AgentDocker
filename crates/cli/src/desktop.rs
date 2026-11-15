@@ -75,6 +75,15 @@ const BINARIES: &[&str] = agentdocker_host::installation::windows::BINARIES;
 /// How many times to re-follow the `current` pointer when a read of it
 /// loses the race with the `rename` that moves it. See [`Layout::follow`].
 const POINTER_ATTEMPTS: usize = 8;
+
+/// Where a read of the active installation stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reading {
+    /// The pointer has been followed to a generation.
+    Followed,
+    /// That generation's record has been read; its link has not.
+    Recorded,
+}
 const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 /// Use the managed command link for provider setup so registrations survive
@@ -788,21 +797,53 @@ impl Layout {
     }
 
     fn active(&self) -> Result<Option<Activation>> {
+        self.active_held(&mut |_| {})
+    }
+
+    /// `active`, saying where it stands as it goes, so that a test can
+    /// hold a read between two of its steps.
+    ///
+    /// A generation is removed once the pointer has left it
+    /// (`maintenance::sweep`), and a read may have followed the pointer
+    /// just before an activation moved it: its generation can be gone,
+    /// whole or in part, by the time it opens the files. What a
+    /// generation the pointer no longer names says is not about the
+    /// installation, so the read starts again from the pointer. An error
+    /// in the generation the pointer still names is the installation's
+    /// own, and stands.
+    fn active_held(&self, at: &mut dyn FnMut(Reading)) -> Result<Option<Activation>> {
         let current = self.root.join("current");
-        match current.symlink_metadata() {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.into()),
-            Ok(metadata) => ensure!(
-                metadata.file_type().is_symlink(),
-                "installation current pointer is not a symlink"
-            ),
+        let mut lost = None;
+        for _ in 0..POINTER_ATTEMPTS {
+            match current.symlink_metadata() {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) => return Err(error.into()),
+                Ok(metadata) => ensure!(
+                    metadata.file_type().is_symlink(),
+                    "installation current pointer is not a symlink"
+                ),
+            }
+            let generation = Self::follow(&current)?;
+            at(Reading::Followed);
+            match self.generation(&generation, at) {
+                Ok(activation) => return Ok(Some(activation)),
+                Err(error) if current.read_link().ok().as_deref() != Some(&*generation) => {
+                    lost = Some(error);
+                }
+                Err(error) => return Err(error),
+            }
         }
+        Err(lost.expect("the loop either returns or records what it lost"))
+            .context("the installation was activated again under each read of it")
+    }
+
+    /// What one generation says is active.
+    fn generation(&self, generation: &Path, at: &mut dyn FnMut(Reading)) -> Result<Activation> {
         // Each step says which file it was reading. A reader runs while
         // an activation is renaming things into place, so when one of
         // these does fail it is the interleaving that matters, and a
         // bare "Invalid argument" from an unknown call is not evidence
         // of anything.
-        let generation = Self::follow(&current)?;
         ensure!(
             generation.parent() == Some(self.root.join("generations").as_path()),
             "current pointer escapes managed generations"
@@ -817,6 +858,7 @@ impl Layout {
         if let Some(previous) = &activation.previous {
             validate_release(previous)?;
         }
+        at(Reading::Recorded);
         let payload = generation.join("payload");
         ensure!(
             payload
@@ -825,7 +867,7 @@ impl Layout {
                 == self.payload(&activation.current),
             "activation payload is inconsistent"
         );
-        Ok(Some(activation))
+        Ok(activation)
     }
 
     fn activate(&self, current: Release, previous: Option<Release>) -> Result<()> {
@@ -1540,6 +1582,9 @@ fn perform(layout: &Layout, install: Install) -> Result<serde_json::Value> {
     let changed = current
         .as_ref()
         .is_none_or(|active| active.current.id != candidate.id);
+    // The generation the pointer names before it moves: the cleanup
+    // after this activation keeps it, for a reader already following it.
+    let replaced = layout.root.join("current").read_link().ok();
     if changed {
         layout.activate(candidate, current.map(|active| active.current))?;
     } else if cfg!(target_os = "macos") && candidate.launcher_redirect == 1 {
@@ -1575,7 +1620,7 @@ fn perform(layout: &Layout, install: Install) -> Result<serde_json::Value> {
     report["activation"] = json!(daemon["summary"]);
     report["daemon"] = daemon;
     if changed {
-        report["retention"] = maintenance::after_activation(layout, &_held);
+        report["retention"] = maintenance::after_activation(layout, &_held, replaced.as_deref());
     }
     // Last, still under the installation lock: only the launcher and the
     // active release may answer for the app's name, never a retained one.
@@ -2471,9 +2516,13 @@ mod tests {
                 layout
                     .activate(second.clone(), Some(first.clone()))
                     .unwrap();
+                // Every generation the pointer has left goes at once, as
+                // after a prune: a reader still in one reads again.
+                assert!(maintenance::sweep_now(&layout).unwrap() >= 1);
                 layout
                     .activate(first.clone(), Some(second.clone()))
                     .unwrap();
+                assert!(maintenance::sweep_now(&layout).unwrap() >= 1);
             }
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
             for reader in readers {
@@ -2508,9 +2557,13 @@ mod tests {
                 layout
                     .activate(second.clone(), Some(first.clone()))
                     .unwrap();
+                // The generation the pointer just left is swept under
+                // the reader, which reads again if it was in it.
+                assert_eq!(maintenance::sweep_now(&layout).unwrap(), 1);
                 layout
                     .activate(first.clone(), Some(second.clone()))
                     .unwrap();
+                assert_eq!(maintenance::sweep_now(&layout).unwrap(), 1);
             }
             reader.join().unwrap();
         });

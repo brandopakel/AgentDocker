@@ -493,12 +493,11 @@ impl Layout {
 
     /// The uninstall of this installation, typed with `program` (the one
     /// running now) rather than with the command in the bin folder, which
-    /// runs nothing once no release is active. A program whose path
-    /// cannot be written falls back to the command's name.
-    pub(super) fn uninstall_with(&self, program: Option<&Path>) -> String {
-        let program = program
-            .and_then(Path::to_str)
-            .map_or_else(|| "agentdocker".to_owned(), quoted);
+    /// runs nothing once no release is active. With no program it is the
+    /// command by its bare name, for a caller that then says where a
+    /// program that runs is: there is no silent fallback here.
+    pub(super) fn uninstall_with(&self, program: Option<&str>) -> String {
+        let program = program.map_or_else(|| "agentdocker".to_owned(), quoted);
         command(&self.prefix_to_name(), &program, "uninstall")
     }
 }

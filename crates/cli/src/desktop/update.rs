@@ -97,8 +97,23 @@ struct Archive {
     url: String,
 }
 
+/// The one name a release's archive has for `target`: the feed is
+/// refused when it names another, so this, and this with `.part` while it
+/// is being fetched, are the only files an update writes in a download's
+/// folder.
+pub(super) fn archive_name(target: &str) -> String {
+    format!(
+        "agentdocker-desktop-{target}.{}",
+        if target.ends_with("apple-darwin") || target.ends_with("pc-windows-msvc") {
+            "zip"
+        } else {
+            "tar.gz"
+        }
+    )
+}
+
 /// The Rust target triple the installer accepts on this machine.
-fn host_target() -> &'static str {
+pub(super) fn host_target() -> &'static str {
     if cfg!(windows) {
         return "x86_64-pc-windows-msvc";
     }
@@ -116,7 +131,7 @@ fn compare_versions(a: &str, b: &str) -> Result<Ordering> {
     Ok(parse_version(a)?.cmp_precedence(&parse_version(b)?))
 }
 
-fn parse_version(value: &str) -> Result<Version> {
+pub(super) fn parse_version(value: &str) -> Result<Version> {
     ensure!(value.len() <= 64, "update version exceeds 64 bytes");
     Version::parse(value).context("update version is not a semantic version")
 }
@@ -377,17 +392,8 @@ fn select(
         "feed archive size {} is outside the download budget",
         release.archive.bytes
     );
-    let expected_name = format!(
-        "agentdocker-desktop-{}.{}",
-        release.target,
-        if release.target.ends_with("apple-darwin") || release.target.ends_with("pc-windows-msvc") {
-            "zip"
-        } else {
-            "tar.gz"
-        }
-    );
     ensure!(
-        release.archive.name == expected_name,
+        release.archive.name == archive_name(&release.target),
         "feed names an unexpected archive {}",
         release.archive.name
     );

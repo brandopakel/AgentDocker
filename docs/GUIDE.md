@@ -98,7 +98,17 @@ before it made anything outside its own folder, since nothing on disk records
 either, and it does not say whether another command is running now.
 
 `desktop prune --preview` reports removable old builds; omit `--preview` to remove
-them. `desktop uninstall --preview` reports launcher removal; omit `--preview` to
+them. A prune also sweeps what earlier commands left in the installation's
+folder: what a prune that stopped left in `retired`, the activation records in
+`generations` that nothing points at, and an update's download once its version
+is installed or passed over (a download newer than the active release is still
+to be applied, and stays). The preview lists these under `sweep`, and under
+`unswept` whatever is in those folders and is not recognisably the installer's,
+which is never removed: a download's folder that holds any file but the ones an
+update writes is kept whole, and so is anything put into one of these folders
+while it is being removed. An install, an update and a rollback make the same
+sweep when they finish and report its count as `retention.swept`; the record
+the pointer just left stays until the next one. `desktop uninstall --preview` reports launcher removal; omit `--preview` to
 apply. Both preserve settings, running versions and unrecognized files. An
 uninstall deactivates first and removes the commands and the launcher after.
 One that fails part-way says where it stopped and prints the command that

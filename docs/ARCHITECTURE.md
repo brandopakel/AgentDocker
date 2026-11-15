@@ -944,14 +944,39 @@ first, then the links and the launcher, so one that stops has deactivated the
 installation and never leaves an active one with pieces missing. One that fails
 says where it stopped: on the pointer nothing was removed, and after it the
 message gives the uninstall to run again, typed with the running program (or
-says where one is, when that program was in what was being removed), since the
+says where one is, when that program was in what was being removed or its path
+cannot be written in a command), since the
 command links lead through the pointer and run nothing without it. The
 pointer alone still does not say the installation is whole: `desktop status` reads the rest (`condition`: the retained releases,
 each command link, the launcher against the active release) and derives one
 answer from those facts by a pure function, with the way out of each state an
 interrupted command leaves; it changes nothing and takes no lock. Its output
 keeps every key it had and adds that one. `desktop uninstall` removes owned launchers and deactivates the prefix;
-`desktop prune` removes verified unused payloads. CLI and GUI previews carry a
+`desktop prune` removes verified unused payloads. A prune, and the cleanup after
+every activation, also sweep what commands left in the installation's own folder,
+under the installation lock: the stages in `retired/` (a prune moves a release
+there before it deletes it, and marks it verified before the deletion begins, so
+one that stopped is finished from the mark; a release moved and not yet marked is
+verified again, and one that does not verify is kept); the generations no pointer
+names, with the staging folders an activation that stopped left in `generations/`
+and beside the pointer (the generation the pointer named when the command began is
+kept by that command, and goes with the next; a reader does not depend on that: one
+that followed the pointer before it moved and finds its generation gone reads the
+pointer again, in `Layout::active` and in `installation::resolve_current`, which the
+launcher and the daemon's reload target go through, while an error in the
+generation the pointer still names stands); and `downloads/<version>` once that
+version is not newer than the active release's, since an update installs only what
+is newer (none while nothing is active). Each is recognised by what it holds, never
+by its place alone, and by the names the command that made it writes and no others:
+a download's folder holds that release's archive under the one name the feed may
+give it, the same with `.part`, and the extraction, and a folder with any other file
+in it is kept whole. The plan lists what goes under `sweep` and whatever else is in
+those places, which is kept, under `unswept` with the reason, both absent when
+empty. A removal reads its leftover again, then touches only the names it
+recognised, each checked as it is acted on: what appears in the folder meanwhile is
+not removed, and the folder stays with it. It goes in steps that each leave
+something the next sweep recognises; one that fails stops the sweep there, is
+reported, and is finished by the next. CLI and GUI previews carry a
 plan hash rechecked at apply. Host installation helpers give each managed
 binary a shared lifetime pin; cleanup holds the exclusive pin through deletion
 and rechecks content identity. Pins outlive deleted versions to prevent inode
