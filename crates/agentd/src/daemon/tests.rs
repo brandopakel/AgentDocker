@@ -12488,6 +12488,230 @@ async fn a_second_checkout_touching_a_path_opens_a_channel_by_itself() {
     assert_eq!(closed.resolution.as_deref(), Some("everyone left"));
 }
 
+/// Work that git brings into a checkout is not that checkout's change. A
+/// pull, a merge or a branch switch writes every file of it, and each
+/// equals the checkout's HEAD once git is done. So merging a branch into
+/// the main checkout while its author's worktree is still there opens no
+/// room between the two, though the ledger has both checkouts changing
+/// those paths. Not in the middle of the merge either, when the files
+/// git has already written differ from a HEAD it has not yet moved. The
+/// merge here is held twice, each time with the watcher recording what
+/// git has written so far: once after its first file, the index locked;
+/// and once after the index is written and unlocked, in the reference
+/// transaction that moves HEAD. Each time the change waits until git has
+/// finished and then does not count. An edit neither has committed, of
+/// one path in both, still opens a room.
+#[cfg(unix)]
+#[tokio::test]
+async fn work_git_brings_into_a_checkout_opens_no_room_with_its_author() {
+    use std::os::unix::fs::PermissionsExt;
+    if !have_git() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+    std::fs::write(repo.join("src/b.rs"), "b\n").unwrap();
+    let script = |name: &str, text: String| {
+        let path = dir.path().join(name);
+        std::fs::write(&path, text).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    // Checking out `src/b.rs` waits for as long as this flag is there:
+    // what holds a merge after it has written `src/a.rs`, the index locked.
+    let in_checkout = dir.path().join("hold-checkout");
+    let smudge = script(
+        "smudge.sh",
+        format!(
+            "#!/bin/sh\ncat\nwhile [ -e '{}' ]; do sleep 0.05; done\n",
+            in_checkout.display()
+        ),
+    );
+    // Moving `main` waits for as long as this one is there: what holds a
+    // merge after the files and the index are written, HEAD still old.
+    let in_ref_update = dir.path().join("hold-ref");
+    let reference_hook = format!(
+        "#!/bin/sh\nmoved=$(cat)\nif [ \"$1\" = prepared ]; then\n  case \"$moved\" in *refs/heads/main*)\n    while [ -e '{}' ]; do sleep 0.05; done;;\n  esac\nfi\n",
+        in_ref_update.display()
+    );
+    std::fs::write(repo.join(".gitattributes"), "src/b.rs filter=hold\n").unwrap();
+    assert!(git(dir.path(), &repo, &["init", "-q"]));
+    assert!(git(
+        dir.path(),
+        &repo,
+        &["config", "filter.hold.clean", "cat"]
+    ));
+    assert!(git(
+        dir.path(),
+        &repo,
+        &["config", "filter.hold.smudge", smudge.to_str().unwrap()]
+    ));
+    assert!(git(dir.path(), &repo, &["add", "."]));
+    assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
+    let hooks = repo.join(".git/hooks");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::write(hooks.join("reference-transaction"), reference_hook).unwrap();
+    std::fs::set_permissions(
+        hooks.join("reference-transaction"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let daemon = open(&dir);
+    daemon.expect_watcher();
+    tokio::spawn(crate::watcher::run(
+        daemon.clone(),
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_millis(50),
+    ));
+    let home = register_in(&daemon, "home", &repo).await;
+    let project = home.project.as_ref().unwrap().id();
+    let Response::Worktree { path: side, .. } = daemon
+        .handle(Request::WorktreeCreate {
+            agent: "home".into(),
+            path: None,
+            branch: "side".into(),
+            from: None,
+            seed_build: Vec::new(),
+        })
+        .await
+    else {
+        panic!("no worktree")
+    };
+    register_in(&daemon, "author", &side).await;
+    let main = project::canonical(&repo);
+    let rooms = async || match daemon
+        .handle(Request::Channels {
+            project: String::new(),
+            all: true,
+            agent: Some("home".into()),
+        })
+        .await
+    {
+        Response::Channels { channels } => channels,
+        other => panic!("{other:?}"),
+    };
+    let newest = async || {
+        ledger(&daemon, &repo, None)
+            .await
+            .iter()
+            .map(|change| change.seq)
+            .max()
+            .unwrap_or(0)
+    };
+    let recorded = async |checkout: &Path, path: &str, after: u64| {
+        eventually(async || {
+            ledger(&daemon, &repo, None)
+                .await
+                .into_iter()
+                .find(|change| {
+                    change.seq > after
+                        && change.checkout.as_deref() == Some(checkout)
+                        && change.path == Path::new(path)
+                })
+        })
+        .await
+    };
+    // Whether a change in `checkout` still waits for git to finish there.
+    let waits = |checkout: &Path| lock(&daemon.state).contest_waiting.contains_key(checkout);
+    let judged = async |checkout: &Path| {
+        eventually(async || (!waits(checkout)).then_some(())).await;
+        tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+        eventually(async || (!waits(checkout)).then_some(())).await;
+    };
+    let text = |path: PathBuf| std::fs::read_to_string(path).unwrap_or_default();
+
+    type Held = Box<dyn Fn(&Path) -> bool>;
+    let barriers: [(&str, &Path, Held); 2] = [
+        (
+            "the index is being written",
+            &in_checkout,
+            Box::new(|repo: &Path| repo.join(".git/index.lock").exists()),
+        ),
+        (
+            "HEAD is being moved",
+            &in_ref_update,
+            Box::new(|repo: &Path| {
+                !repo.join(".git/index.lock").exists()
+                    && repo.join(".git/refs/heads/main.lock").exists()
+            }),
+        ),
+    ];
+    for (round, (barrier, flag, held)) in barriers.iter().enumerate() {
+        // The author's work: edits in its own worktree, counted as its
+        // own once git is seen to be at rest there, and then committed.
+        let (a, b) = (
+            format!("a from the author, {round}\n"),
+            format!("b from the author, {round}\n"),
+        );
+        let before = newest().await;
+        std::fs::write(side.join("src/a.rs"), &a).unwrap();
+        std::fs::write(side.join("src/b.rs"), &b).unwrap();
+        recorded(&side, "src/a.rs", before).await;
+        recorded(&side, "src/b.rs", before).await;
+        judged(&side).await;
+        {
+            let state = lock(&daemon.state);
+            for path in ["src/a.rs", "src/b.rs"] {
+                assert!(
+                    state
+                        .contested
+                        .get(&(project.clone(), PathBuf::from(path)))
+                        .is_some_and(|checkouts| checkouts.contains(&side)),
+                    "{barrier}: the author's edit of {path} counts as its own"
+                );
+            }
+        }
+        assert!(git(dir.path(), &side, &["add", "."]));
+        assert!(git(
+            dir.path(),
+            &side,
+            &["commit", "-q", "-m", "the author's work"]
+        ));
+
+        // Brought into the main checkout by git, and held on the way.
+        let before = newest().await;
+        std::fs::write(flag, "").unwrap();
+        let merging = tokio::task::spawn_blocking({
+            let (home, repo) = (dir.path().to_path_buf(), repo.clone());
+            move || git(&home, &repo, &["merge", "-q", "side"])
+        });
+        eventually(async || (text(repo.join("src/a.rs")) == a && held(&repo)).then_some(())).await;
+        recorded(&main, "src/a.rs", before).await;
+        // Well past the looks a checkout at rest needs: git is still at
+        // work, so the change still waits, and no room has opened.
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert!(held(&repo), "{barrier}: the merge is held");
+        assert!(waits(&main), "{barrier}: the change waits for git");
+        assert_eq!(rooms().await.len(), 0, "{barrier}: no room meanwhile");
+
+        // The merge completes: the files equal HEAD, and nothing counted.
+        std::fs::remove_file(flag).unwrap();
+        assert!(merging.await.unwrap(), "{barrier}: the merge");
+        assert_eq!(text(repo.join("src/b.rs")), b);
+        recorded(&main, "src/b.rs", before).await;
+        judged(&main).await;
+        assert_eq!(
+            rooms().await.len(),
+            0,
+            "{barrier}: the main checkout only took in what the author had made"
+        );
+    }
+
+    // An edit neither has committed, of one path in both, is a collision.
+    std::fs::write(repo.join("src/a.rs"), "a from main\n").unwrap();
+    std::fs::write(side.join("src/a.rs"), "a from the author, again\n").unwrap();
+    let opened = eventually(async || {
+        let found = rooms().await;
+        (!found.is_empty()).then_some(found)
+    })
+    .await;
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert_eq!(opened[0].members.len(), 2, "both agents are in it");
+    assert_eq!(opened[0].paths(), [PathBuf::from("src/a.rs")]);
+}
+
 #[tokio::test]
 async fn a_managed_agent_with_a_tty_gets_a_terminal_and_a_session() {
     let dir = TempDir::new().unwrap();

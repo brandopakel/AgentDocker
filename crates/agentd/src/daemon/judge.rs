@@ -2850,6 +2850,38 @@ mod tests {
         path
     }
 
+    /// A process of the test's own, ended and reaped however the test
+    /// ends, so a failed test leaves nothing holding its output open.
+    #[cfg(unix)]
+    struct Owned(std::process::Child);
+
+    #[cfg(unix)]
+    impl Owned {
+        fn sleeping() -> Self {
+            Self(
+                std::process::Command::new("sleep")
+                    .arg("60")
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn()
+                    .unwrap(),
+            )
+        }
+
+        fn id(&self) -> u32 {
+            self.0.id()
+        }
+    }
+
+    #[cfg(unix)]
+    impl Drop for Owned {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
     /// Let the stand-in `pid` go from `gate`, where it waits to read. A
     /// fifo opens to write without blocking only while a reader has it
     /// open, and closing it then ends the read. With no reader yet the
@@ -4025,7 +4057,15 @@ mod tests {
     /// tmux: a tmux that runs past its deadline clears the judgment only
     /// after [`judgment::OUTAGE_PASSES`] passes in a row; a pane tmux says
     /// is not there, or one that no longer holds the agent's process,
-    /// clears it in the pass that finds it so, one event each.
+    /// clears it in the pass that finds it so, one event each. The
+    /// hanging stand-in blocks on a gate nothing ever opens, so only the
+    /// capture's deadline ends it. The outage is counted at a short
+    /// deadline, whether or not a stand-in started in time to reach its
+    /// gate; that the deadline ends and reaps one is checked apart, on a
+    /// pass whose stand-in is seen to have reached its gate, the deadline
+    /// doubled from half a second up to the suite's bound until one is.
+    /// The agent's process and the stranger's are the test's own, ended
+    /// with it however it ends.
     #[cfg(unix)]
     #[tokio::test]
     async fn an_unreadable_tmux_pane_clears_its_judgment() {
@@ -4035,20 +4075,17 @@ mod tests {
         configure(&dir, &url, "");
         let daemon = open(&dir);
         let mut events = daemon.subscribe_events();
-        let mut guest = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
-        let mut stranger = std::process::Command::new("sleep")
-            .arg("60")
-            .spawn()
-            .unwrap();
+        let guest = Owned::sleeping();
+        let stranger = Owned::sleeping();
         // How the stand-in answers: `ok`, `hang` (past its deadline),
         // `gone` (tmux says the pane is not there) or `replaced` (the pane
-        // holds a process that is not the agent's).
+        // holds a process that is not the agent's). A hanging stand-in
+        // leaves its pid in `hung` before it blocks.
         let mode = dir.path().join("mode");
         let set = |how: &str| std::fs::write(&mode, how).unwrap();
         set("ok");
+        let gate = fifo(&dir, "gate");
+        let hung = dir.path().join("hung");
         let stand_in = dir.path().join("tmux");
         std::fs::write(
             &stand_in,
@@ -4056,7 +4093,7 @@ mod tests {
                 "#!/bin/sh\n\
                  mode=$(cat '{mode}')\n\
                  case \"$mode\" in\n\
-                 hang) exec sleep 30;;\n\
+                 hang) echo $$ >> '{hung}'; read line < '{gate}'; exit 1;;\n\
                  gone) echo \"can't find pane: %0\" >&2; exit 1;;\n\
                  esac\n\
                  case \"$3\" in\n\
@@ -4064,6 +4101,8 @@ mod tests {
                  capture-pane) printf 'Bash command\\n\\n  rm -rf build\\n\\nDo you want to proceed?\\n> 1. Yes\\n  2. No\\n';;\n\
                  esac\n",
                 mode = mode.display(),
+                hung = hung.display(),
+                gate = gate.display(),
                 stranger = stranger.id(),
                 guest = guest.id(),
             ),
@@ -4104,7 +4143,9 @@ mod tests {
             "judged from the pane"
         );
 
-        // tmux runs past its deadline: its server, not the pane.
+        // tmux runs past its deadline: its server, not the pane. The
+        // stand-in waits at a gate nobody opens, so the deadline is all
+        // that ends it, whatever the machine is doing meanwhile.
         set("hang");
         bound(StdDuration::from_millis(300));
         for _ in 1..judgment::OUTAGE_PASSES {
@@ -4118,8 +4159,47 @@ mod tests {
             clearings(&mut events),
             [(agent.clone(), UNREADABLE.to_owned())]
         );
-
+        // A stand-in that reached its gate in those passes was ended at
+        // the deadline and reaped before its pass went on. On a loaded
+        // machine none may reach it in 300 ms; the passes' counting does
+        // not depend on it, and what follows does not either.
+        let gated = || -> Vec<u32> {
+            std::fs::read_to_string(&hung)
+                .unwrap_or_default()
+                .lines()
+                .map(|line| line.trim().parse().unwrap())
+                .collect()
+        };
+        for pid in gated() {
+            assert!(!agentdocker_host::procinfo::alive(pid), "{pid} reaped");
+        }
+        // And one seen to reach its gate is ended by the deadline alone. A
+        // pass whose stand-in wrote its pid had it at the gate before the
+        // deadline; nothing opens the gate, so the deadline is what ended
+        // it. A pass whose stand-in had not started by then proves
+        // nothing, and is run again with twice the deadline, up to the
+        // suite's bound to start in: half a second on a machine at rest,
+        // never a race on a loaded one.
+        let mut deadline = StdDuration::from_millis(500);
+        let at_gate = loop {
+            let before = gated().len();
+            bound(deadline);
+            daemon.judge_once().await;
+            if let Some(pid) = gated().get(before).copied() {
+                break pid;
+            }
+            assert!(
+                deadline < TMUX_BOUND,
+                "no stand-in reached its gate within {TMUX_BOUND:?}"
+            );
+            deadline = (deadline * 2).min(TMUX_BOUND);
+        };
+        assert!(
+            !agentdocker_host::procinfo::alive(at_gate),
+            "{at_gate} ended at the deadline and reaped"
+        );
         bound(TMUX_BOUND);
+
         for (how, calls_before) in [("gone", 2), ("replaced", 3)] {
             set("ok");
             daemon.judge_once().await;
@@ -4137,10 +4217,7 @@ mod tests {
             );
         }
         assert_eq!(calls(&fake), 3, "nothing sent of an unreadable pane");
-        for child in [&mut guest, &mut stranger] {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+        drop((guest, stranger));
     }
 
     /// A judged agent whose screen there is no longer any source for — its

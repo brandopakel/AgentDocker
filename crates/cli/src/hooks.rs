@@ -2088,7 +2088,7 @@ async fn journal_within<B: Backend>(
 
 /// Whether the daemon says, in `pong.features`, that it honours `feature`.
 /// A daemon older than the list, or one that does not answer, does not.
-async fn daemon_lists<B: Backend>(backend: &B, feature: &str) -> bool {
+pub(crate) async fn daemon_lists<B: Backend>(backend: &B, feature: &str) -> bool {
     matches!(
         backend.call(Request::Ping).await,
         Ok(Response::Pong { features, .. }) if features.iter().any(|f| f == feature)

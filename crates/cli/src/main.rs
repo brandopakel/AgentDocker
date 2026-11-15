@@ -1205,6 +1205,12 @@ enum PlanAction {
         title: Option<String>,
         #[arg(long, value_name = "FILE")]
         body: Option<PathBuf>,
+        /// The revision of the plan the new text was written from, as
+        /// `plan show` printed it: needed with `--body`. If the plan has
+        /// been edited since, nothing is written and the answer says who
+        /// changed which sections.
+        #[arg(long, value_name = "N")]
+        revision: Option<u64>,
         #[arg(long)]
         status: Option<String>,
         #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
@@ -3588,7 +3594,13 @@ async fn run() -> Result<()> {
                 .transpose()
             };
             let show = |plan: &agentdocker_core::Plan, tasks: &[agentdocker_core::Task]| {
-                println!("{}  {}  {}", plan.id, plan.status.as_str(), plan.title);
+                println!(
+                    "{}  {}  revision {}  {}",
+                    plan.id,
+                    plan.status.as_str(),
+                    plan.revision,
+                    plan.title
+                );
                 for task in tasks {
                     println!("  {}  {}", task.handle(), task.title);
                 }
@@ -3636,6 +3648,7 @@ async fn run() -> Result<()> {
                         title: Some(title),
                         body: read_body(body)?,
                         status: None,
+                        revision: None,
                     };
                     if let Response::Plan { plan, .. } = client.call(&request).await? {
                         println!("{}", plan.id);
@@ -3645,6 +3658,7 @@ async fn run() -> Result<()> {
                     plan,
                     title,
                     body,
+                    revision,
                     status,
                     from,
                 } => {
@@ -3655,6 +3669,21 @@ async fn run() -> Result<()> {
                             })
                         })
                         .transpose()?;
+                    let body = read_body(body)?;
+                    if body.is_some() {
+                        // A daemon that does not know the word takes the
+                        // edit and writes it whatever revision it names.
+                        // Asked first, where nothing is changed by asking.
+                        let holds = matches!(
+                            client.call(&Request::Ping).await?,
+                            Response::Pong { features, .. } if features
+                                .iter()
+                                .any(|f| f == agentdocker_core::protocol::FEATURE_PLAN_REVISION)
+                        );
+                        if !holds {
+                            bail!("{}", agentdocker_core::protocol::PLAN_REVISION_UNKNOWN);
+                        }
+                    }
                     let request = Request::PlanSave {
                         from: sender::resolve(&client, from)
                             .await?
@@ -3662,8 +3691,9 @@ async fn run() -> Result<()> {
                         project: None,
                         plan: Some(plan),
                         title,
-                        body: read_body(body)?,
+                        body,
                         status,
+                        revision,
                     };
                     if let Response::Plan { plan, tasks } = client.call(&request).await? {
                         show(&plan.summary(), &tasks);
@@ -7327,6 +7357,39 @@ mod tests {
             .expect("a parsing thread")
             .join()
             .expect("parsing does not panic")
+    }
+
+    /// `plan edit --body` takes the revision the new text was written
+    /// from; a change of title or status takes none.
+    #[test]
+    fn a_plan_edit_names_the_revision_it_read() {
+        let revision_of = |parsed: super::Cli| match parsed.command {
+            super::Command::Plan(args) => match args.action {
+                super::PlanAction::Edit { revision, body, .. } => (revision, body.is_some()),
+                _ => panic!("not plan edit"),
+            },
+            _ => panic!("not plan"),
+        };
+        let parsed = parse_cli([
+            "agentdocker",
+            "plan",
+            "edit",
+            "abc123def456",
+            "--body",
+            "plan.md",
+            "--revision",
+            "7",
+        ]);
+        assert_eq!(revision_of(parsed.unwrap()), (Some(7), true));
+        let parsed = parse_cli([
+            "agentdocker",
+            "plan",
+            "edit",
+            "abc123def456",
+            "--status",
+            "done",
+        ]);
+        assert_eq!(revision_of(parsed.unwrap()), (None, false));
     }
 
     /// `worktree-create` needs a branch and no path: the daemon then puts

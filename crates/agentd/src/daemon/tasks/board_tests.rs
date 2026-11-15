@@ -266,6 +266,7 @@ async fn plans_are_written_and_carried_out_by_cards() {
             title: Some("Auth rewrite".into()),
             body: Some("# Auth\n\nTokens, then sessions.".into()),
             status: None,
+            revision: None,
         })
         .await
     else {
@@ -316,6 +317,7 @@ async fn plans_are_written_and_carried_out_by_cards() {
             title: None,
             body: None,
             status: Some(PlanStatus::Archived),
+            revision: None,
         })
         .await,
         Response::Plan { .. }
@@ -330,6 +332,143 @@ async fn plans_are_written_and_carried_out_by_cards() {
         panic!()
     };
     assert!(plans.is_empty());
+}
+
+/// Two writers of one plan: an edit of its text names the revision it
+/// was written from. Written from the revision the plan is at, it is
+/// kept and the revision moves on. Written from an older reading, it is
+/// refused with who changed which sections since, and the plan keeps
+/// what the other writer wrote: neither loses a section without being
+/// told. A text with no revision named is refused; a change of status
+/// needs none and puts nobody's reading of the text out of date.
+#[tokio::test]
+async fn a_plan_edit_written_from_an_older_reading_is_refused_with_what_changed() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let lead = f.agent.id.to_string();
+    let peer = f.peer.id.to_string();
+    let save = |from: &str, plan: Option<&str>, body: Option<&str>, revision: Option<u64>| {
+        Request::PlanSave {
+            from: from.to_owned(),
+            project: None,
+            plan: plan.map(str::to_owned),
+            title: plan.is_none().then(|| "Where the work stands".to_owned()),
+            body: body.map(str::to_owned),
+            status: None,
+            revision,
+        }
+    };
+    let first = "Opening.\n\n## Lead\nnothing yet\n\n## Reviewer\nnothing yet\n";
+    let Response::Plan { plan, .. } = d.handle(save(&lead, None, Some(first), None)).await else {
+        panic!("no plan")
+    };
+    assert_eq!(plan.revision, 1, "a new plan is at revision one");
+    let id = plan.id.as_str();
+
+    // Both read revision 1. The reviewer writes its section first.
+    let reviewers = first.replace("## Reviewer\nnothing yet", "## Reviewer\nPASS at abc123");
+    let Response::Plan { plan: second, .. } = d
+        .handle(save(&peer, Some(id), Some(&reviewers), Some(1)))
+        .await
+    else {
+        panic!("the reviewer's edit")
+    };
+    assert_eq!(second.revision, 2);
+
+    // The lead's edit, written from revision 1, would put the old
+    // Reviewer section back.
+    let leads = first.replace("## Lead\nnothing yet", "## Lead\nmerged");
+    let refused = d.handle(save(&lead, Some(id), Some(&leads), Some(1))).await;
+    let Response::Error {
+        code: ErrorCode::Conflict,
+        message,
+        details: Some(details),
+    } = &refused
+    else {
+        panic!("not refused: {refused:?}")
+    };
+    assert!(
+        message.contains("revision 1") && message.contains("now at revision 2"),
+        "{message}"
+    );
+    assert!(
+        message.contains(&format!(
+            "{} changed `Reviewer` (revision 2)",
+            f.peer.spec.name
+        )),
+        "{message}"
+    );
+    assert!(message.contains("Nothing was written"), "{message}");
+    assert_eq!(details["revision"], 2);
+    assert_eq!(details["since"][0]["sections"][0], "Reviewer");
+    let read = |d: Arc<Daemon>, id: String| async move {
+        match d.handle(Request::PlanGet { plan: id }).await {
+            Response::Plan { plan, .. } => plan,
+            other => panic!("{other:?}"),
+        }
+    };
+    let kept = read(d.clone(), id.to_owned()).await;
+    assert_eq!(kept.body, reviewers, "the reviewer's text is still there");
+    assert_eq!(kept.revision, 2);
+
+    // Told, the lead reads it again and makes its edit on that.
+    let both = kept.body.replace("## Lead\nnothing yet", "## Lead\nmerged");
+    let Response::Plan { plan: third, .. } = d
+        .handle(save(&lead, Some(id), Some(&both), Some(kept.revision)))
+        .await
+    else {
+        panic!("the lead's second try")
+    };
+    assert_eq!(third.revision, 3);
+    assert!(third.body.contains("PASS at abc123") && third.body.contains("## Lead\nmerged"));
+    assert_eq!(
+        third
+            .edits
+            .iter()
+            .map(|edit| (edit.revision, edit.sections.join(",")))
+            .collect::<Vec<_>>(),
+        [(2, "Reviewer".to_owned()), (3, "Lead".to_owned())]
+    );
+
+    // A text with no revision named is refused, and says which to name.
+    let unnamed = d.handle(save(&lead, Some(id), Some("gone"), None)).await;
+    assert!(
+        matches!(&unnamed, Response::Error { code: ErrorCode::Invalid, message, .. }
+            if message.contains("revision 3")),
+        "{unnamed:?}"
+    );
+    // A change of status names none and leaves the text's revision.
+    let Response::Plan { plan: archived, .. } = d
+        .handle(Request::PlanSave {
+            from: HUMAN.into(),
+            project: None,
+            plan: Some(id.to_owned()),
+            title: None,
+            body: None,
+            status: Some(PlanStatus::Active),
+            revision: None,
+        })
+        .await
+    else {
+        panic!("a status change")
+    };
+    assert_eq!(
+        (archived.revision, archived.status),
+        (3, PlanStatus::Active)
+    );
+    assert_eq!(read(d.clone(), id.to_owned()).await.body, both);
+    // Lists carry the revision and neither the text nor its edits.
+    let Response::Plans { plans } = d
+        .handle(Request::Plans {
+            project: Some(f.work.clone()),
+            archived: false,
+        })
+        .await
+    else {
+        panic!()
+    };
+    assert_eq!(plans[0].revision, 3);
+    assert!(plans[0].body.is_empty() && plans[0].edits.is_empty());
 }
 
 /// A file is kept, linked to a card, read back as text or bytes, a new
