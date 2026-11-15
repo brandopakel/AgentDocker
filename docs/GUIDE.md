@@ -893,6 +893,16 @@ about us:
 `ask_human` · `open_questions` · `answer_question` · `report_activity` ·
 `report_provider_status`
 
+Which of the inbox tools an agent has follows how its messages reach it. An
+agent that reads its own queue has all three. Under the Claude channel it has
+only `acknowledge_messages`; where a Codex receiver or bridge delivers its
+messages as input it has none. A call of one that is not offered is refused
+with who delivers instead and what to do. `read_inbox`, `wait_for_messages` or
+`acknowledge_messages` on a queue a receiver has taken over since the session
+started answers an error that says the same: who delivers, that the messages
+arrive as input, and that they are answered with `send_message` and
+`reply_to`.
+
 `ask_human` takes `kind`, `options` (labels, or `{label, description}`),
 `multi_select`, `allow_other`, `stale_after_secs` and `stale_action` beside the
 question; `answer_question` takes `choices` (labels or numbers), `other`

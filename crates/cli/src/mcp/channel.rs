@@ -1184,7 +1184,7 @@ mod tests {
                 host_started_at: Some(chrono::Utc::now()),
             },
         );
-        server.claude_channel = true;
+        server.mode = crate::mcp::Mode::ClaudeChannel;
         server
     }
 
@@ -1248,7 +1248,7 @@ mod tests {
                 },
                 old.identity,
             );
-            server.claude_channel = true;
+            server.mode = crate::mcp::Mode::ClaudeChannel;
             let ids: Vec<_> = server
                 .backend
                 .queue
@@ -1412,7 +1412,7 @@ mod tests {
             },
             old.identity,
         );
-        server.claude_channel = true;
+        server.mode = crate::mcp::Mode::ClaudeChannel;
         let ids: Vec<_> = server
             .backend
             .queue
@@ -1616,7 +1616,7 @@ mod tests {
                     ..old.identity
                 },
             );
-            server.claude_channel = true;
+            server.mode = crate::mcp::Mode::ClaudeChannel;
             server.resume_vouch = Some(crate::mcp::ResumeVouch {
                 requested: Some("requested-session".into()),
                 wait: Duration::from_secs(10),
@@ -1773,7 +1773,7 @@ mod tests {
             },
             fixture.identity,
         );
-        server.claude_channel = true;
+        server.mode = crate::mcp::Mode::ClaudeChannel;
         let head = server.backend.queue.0.borrow()[0].id.clone();
         let (transport, client) = tokio::io::duplex(8192);
         let (input, output) = tokio::io::split(transport);
