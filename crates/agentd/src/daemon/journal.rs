@@ -40,11 +40,45 @@ fn uncommitted(dir: &Path) -> Option<HashSet<PathBuf>> {
         .map(|paths| paths.into_iter().map(PathBuf::from).collect())
 }
 
-/// Whether git is in the middle of writing the checkout `dir`: a pull, a
-/// merge, a rebase, a branch switch and a reset each hold the index's
-/// lock from before the first file is written until the index is.
-fn git_is_writing(dir: &Path) -> bool {
-    vcs::git_dirs(dir).is_some_and(|(gitdir, _)| gitdir.join("index.lock").exists())
+/// What a look at the checkout `dir` finds: whether git is in the middle
+/// of changing it, and where its HEAD is.
+///
+/// Git is in the middle of it while it holds a lock or has an operation
+/// open. The locks: the index's, from before a pull, merge, rebase,
+/// branch switch or reset writes its first file until the index is
+/// written; then HEAD's and the branch's, while the reference is moved
+/// (a `reference-transaction` hook can hold git there, the files and
+/// the index new and HEAD still old); and the packed references'. An
+/// open operation: a merge, a cherry-pick or a revert that has not made
+/// its commit, a rebase or a sequence under way. Those last also stand
+/// while git waits for a person to settle a conflict, which is why a
+/// checkout is not waited for without end ([`SETTLE_LIMIT`]).
+fn look(dir: &Path) -> (bool, Option<String>) {
+    const HELD_OR_OPEN: [&str; 8] = [
+        "index.lock",
+        "HEAD.lock",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "rebase-merge",
+        "rebase-apply",
+        "sequencer",
+    ];
+    let state = vcs::state(dir);
+    let writing = vcs::git_dirs(dir).is_some_and(|(gitdir, common)| {
+        HELD_OR_OPEN.iter().any(|name| gitdir.join(name).exists())
+            || common.join("packed-refs.lock").exists()
+            || state
+                .as_ref()
+                .and_then(|state| state.branch.as_ref())
+                .is_some_and(|branch| {
+                    common
+                        .join("refs/heads")
+                        .join(format!("{branch}.lock"))
+                        .exists()
+                })
+    });
+    (writing, state.and_then(|state| state.head))
 }
 
 /// Count toward a contested room the changes waiting for the checkout
@@ -52,60 +86,88 @@ fn git_is_writing(dir: &Path) -> bool {
 ///
 /// What differs from HEAD at the moment a change is seen proves nothing
 /// yet: in the middle of a merge the files git has already written
-/// differ from a HEAD it has not moved, and there is a moment after the
-/// index's lock is gone and before HEAD moves when they still do. So the
-/// checkout is looked at until the lock is gone and HEAD is where it was
-/// at the look before, and only then is git asked what differs: a change
-/// whose path still does is somebody's, and one git brought in is by
-/// then equal to HEAD. Waited for [`SETTLE_LIMIT`] at most, after which
-/// the checkout is judged as it stands.
+/// differ from a HEAD it has not moved. So the checkout is looked at
+/// ([`look`]) until git is not in the middle of anything and HEAD is
+/// where it was at the look before; git is then asked what differs; and
+/// the answer is used only if a look after it finds the same: nothing
+/// held or open, HEAD unmoved. An answer read while git was at work, or
+/// across a move of HEAD, is thrown away and the wait goes on. A change
+/// whose path still differs is somebody's, and one git brought in is by
+/// then equal to HEAD.
+///
+/// A change that arrives while git is being asked is left for the next
+/// round, never judged by an answer older than itself. After
+/// [`SETTLE_LIMIT`] the checkout is judged as it stands: a lock left
+/// behind by a git that died, or a conflict nobody settles, does not
+/// keep real edits from ever counting.
 ///
 /// It holds the daemon weakly: a wait must not be what keeps one alive.
 async fn settle_contest(daemon: std::sync::Weak<Daemon>, dir: PathBuf) {
+    let look_at = |dir: &Path| {
+        let dir = dir.to_path_buf();
+        tokio::task::spawn_blocking(move || look(&dir))
+    };
+    // A look that cannot be made ends the wait, and what waited with it: a
+    // list left behind would keep a later change from starting a wait.
+    let give_up = |daemon: &std::sync::Weak<Daemon>, dir: &Path| {
+        if let Some(daemon) = daemon.upgrade() {
+            lock(&daemon.state).contest_waiting.remove(dir);
+        }
+    };
     let started = std::time::Instant::now();
     let mut seen: Option<Option<String>> = None;
     loop {
         tokio::time::sleep(SETTLE_LOOK).await;
-        let looked = dir.clone();
-        let look = tokio::task::spawn_blocking(move || {
-            (
-                git_is_writing(&looked),
-                vcs::state(&looked).and_then(|state| state.head),
-            )
-        });
-        let Ok((writing, head)) = look.await else {
-            break;
+        let Ok((writing, head)) = look_at(&dir).await else {
+            return give_up(&daemon, &dir);
         };
+        let overdue = started.elapsed() >= SETTLE_LIMIT;
         let moved = seen.as_ref() != Some(&head);
-        seen = Some(head);
-        if (!writing && !moved) || started.elapsed() >= SETTLE_LIMIT {
-            break;
+        seen = Some(head.clone());
+        if (writing || moved) && !overdue {
+            continue;
         }
-    }
-    // Taken before git is asked: a change that arrives after this is
-    // judged by a wait of its own, never by an answer older than it.
-    let Some(waiting) = daemon
-        .upgrade()
-        .and_then(|daemon| lock(&daemon.state).contest_waiting.remove(&dir))
-    else {
-        return;
-    };
-    let read = dir.clone();
-    let differing = tokio::task::spawn_blocking(move || uncommitted(&read))
-        .await
-        .ok()
-        .flatten();
-    let Some(daemon) = daemon.upgrade() else {
-        return;
-    };
-    let mut state = lock(&daemon.state);
-    for change in waiting {
-        if differing
-            .as_ref()
-            .is_none_or(|differs| differs.contains(&change.path))
-        {
-            state.note_contested(&change);
+        // The changes there are now; a later one waits for the next round.
+        let Some(upto) = daemon.upgrade().and_then(|daemon| {
+            lock(&daemon.state)
+                .contest_waiting
+                .get(&dir)
+                .and_then(|waiting| waiting.iter().map(|change| change.seq).max())
+        }) else {
+            return;
+        };
+        let read = dir.clone();
+        let differing = tokio::task::spawn_blocking(move || uncommitted(&read))
+            .await
+            .ok()
+            .flatten();
+        // The answer counts only if git was at rest around it.
+        let Ok((writing, after)) = look_at(&dir).await else {
+            return give_up(&daemon, &dir);
+        };
+        if (writing || after != head) && !overdue {
+            seen = Some(after);
+            continue;
         }
+        let Some(daemon) = daemon.upgrade() else {
+            return;
+        };
+        let mut state = lock(&daemon.state);
+        let waiting = state.contest_waiting.remove(&dir).unwrap_or_default();
+        let (judged, later): (Vec<Change>, Vec<Change>) =
+            waiting.into_iter().partition(|change| change.seq <= upto);
+        for change in judged {
+            if differing
+                .as_ref()
+                .is_none_or(|differs| differs.contains(&change.path))
+            {
+                state.note_contested(&change);
+            }
+        }
+        if later.is_empty() {
+            return;
+        }
+        state.contest_waiting.insert(dir.clone(), later);
     }
 }
 
