@@ -430,10 +430,17 @@ enum Step {
 /// whose answer was lost, are said as that, since "done" for them was
 /// false and "next launch" may be. A report with no word is read by its
 /// `reloaded` key, as before.
+///
+/// An activation that changed nothing asked the service nothing, and so
+/// proves nothing about it: the service may be the one an earlier,
+/// refused reload left serving the release before. There the stage is
+/// done only on the report's own evidence that the service answering is
+/// this release's (`serves`), and otherwise says what is outstanding.
 fn switch_over(
     preview: bool,
     handover: Option<agentdocker_core::desktop_report::Handover>,
     reloaded: bool,
+    serves: Option<bool>,
 ) -> (Step, Option<&'static str>) {
     use agentdocker_core::desktop_report::Handover;
     if preview {
@@ -441,7 +448,14 @@ fn switch_over(
     }
     match handover {
         Some(Handover::Reloaded) => (Step::Done, None),
-        Some(Handover::Unchanged) => (Step::Done, Some("this release was already active")),
+        Some(Handover::Unchanged) => match serves {
+            Some(true) => (Step::Done, Some("the service already runs this release")),
+            Some(false) => (
+                Step::Next,
+                Some("the service runs another release until it is restarted"),
+            ),
+            None => (Step::Next, Some("next launch")),
+        },
         Some(Handover::NoDaemon) => (Step::Next, Some("next launch")),
         Some(Handover::Refused) => (
             Step::Next,
@@ -455,6 +469,16 @@ fn switch_over(
         None if reloaded => (Step::Done, None),
         None => (Step::Next, Some("next launch")),
     }
+}
+
+/// The Switch over stage of an install, update or rollback report.
+fn switch_stage(report: &serde_json::Value) -> (Step, Option<&'static str>) {
+    switch_over(
+        report["preview"] == true,
+        crate::desktop::handover(report),
+        report["daemon"]["reloaded"] == true,
+        crate::desktop::serves_candidate(report),
+    )
 }
 
 /// A tool that declares its MCP servers in each agent's own file (Docker
@@ -2356,11 +2380,7 @@ impl App {
             // by the time there is a preview; Apply installs; the switch
             // to the new release is the daemon's to report.
             let downloaded = report["update"]["downloaded"].is_string();
-            let (switched, switch_said) = switch_over(
-                preview,
-                crate::desktop::handover(report),
-                report["daemon"]["reloaded"] == true,
-            );
+            let (switched, switch_said) = switch_stage(report);
             let candidate = &report["candidate"];
             let mut stages: Vec<(Step, &str, Option<String>)> = Vec::new();
             if downloaded {
@@ -2627,6 +2647,7 @@ fn stage_list<'a>(stages: Vec<(Step, &str, Option<String>)>, c: Colors) -> Eleme
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// The last stage of an installation, for each thing the report can
     /// say of the handover. Only a service that reloaded and answers is
@@ -2637,31 +2658,83 @@ mod tests {
     fn the_switch_over_stage_is_done_only_for_a_service_that_reloaded_and_answers() {
         use agentdocker_core::desktop_report::Handover::*;
         // A preview has not asked the service yet, whatever it carries.
-        for handover in [None, Some(Reloaded), Some(ReloadedSilent)] {
+        for handover in [None, Some(Reloaded), Some(ReloadedSilent), Some(Unchanged)] {
             assert_eq!(
-                switch_over(true, handover, true),
+                switch_over(true, handover, true, Some(true)),
                 (Step::Waiting, Some("next launch"))
             );
         }
-        let after = |handover| switch_over(false, Some(handover), true);
+        let after = |handover| switch_over(false, Some(handover), true, None);
         assert_eq!(after(Reloaded), (Step::Done, None));
         assert_eq!(after(ReloadedSilent).0, Step::Unsure);
         assert_eq!(after(Unknown).0, Step::Unsure);
         assert_eq!(after(Refused).0, Step::Next);
         assert_eq!(after(NoDaemon), (Step::Next, Some("next launch")));
-        assert_eq!(after(Unchanged).0, Step::Done);
         // Each of them but a plain reload says what it is.
         for handover in [NoDaemon, Unchanged, ReloadedSilent, Refused, Unknown] {
             assert!(after(handover).1.is_some(), "{handover}");
         }
+        // An unchanged activation asked the service nothing: it is done
+        // only when the service answering is this release's own.
+        let unchanged = |serves| switch_over(false, Some(Unchanged), false, serves);
+        assert_eq!(unchanged(Some(true)).0, Step::Done);
+        assert_eq!(unchanged(Some(false)).0, Step::Next);
+        assert_eq!(unchanged(None), (Step::Next, Some("next launch")));
         // The word is read, not the key beside it: `reloaded` is true in
-        // every row above, and only one of them is done for it.
+        // the rows above, and only one of them is done for it.
         // A report with no word is read by that key, as it was.
-        assert_eq!(switch_over(false, None, true), (Step::Done, None));
+        assert_eq!(switch_over(false, None, true, None), (Step::Done, None));
         assert_eq!(
-            switch_over(false, None, false),
+            switch_over(false, None, false, Some(true)),
             (Step::Next, Some("next launch"))
         );
+    }
+
+    /// The sequence that was shown as a finished switch and was not.
+    /// Daemon A serves. Release B is installed and A refuses to reload,
+    /// so A keeps serving. B is then installed again: it is already
+    /// active, no reload is asked, and the report says `unchanged`, with
+    /// A still the daemon it saw. The stage is not done: the restart
+    /// that the refusal left outstanding is still outstanding. Nor is it
+    /// done when no daemon answers. It is done when the daemon answering
+    /// is B's own.
+    #[test]
+    fn an_unchanged_activation_is_not_a_finished_switch_while_another_release_serves() {
+        let store = "/home/.local/share/agentdocker/desktop/versions";
+        let daemon_of = |release: &str| {
+            json!({"version": "1", "pid": 7,
+                "executable": format!("{store}/{release}/payload/bin/agentd")})
+        };
+        // The first install of B: refused, A keeps serving.
+        let refused = json!({"preview": false, "candidate": {"id": "bbbb"}, "daemon": {
+            "answered": true, "reloaded": false, "serving": daemon_of("aaaa"),
+            "refusal": {"code": "unavailable", "message": "reload is off"},
+            "summary": "not reloaded", "outcome": "refused"}});
+        assert_eq!(switch_stage(&refused).0, Step::Next);
+        // B again, as `perform` reports an activation that changed nothing.
+        let again = |serving: serde_json::Value| {
+            json!({"preview": false, "candidate": {"id": "bbbb"}, "daemon": {
+                "answered": !serving.is_null(), "reloaded": false, "serving": serving,
+                "summary": "unchanged: this release was already active", "outcome": "unchanged"}})
+        };
+        let still_a = switch_stage(&again(daemon_of("aaaa")));
+        assert_eq!(
+            still_a,
+            (
+                Step::Next,
+                Some("the service runs another release until it is restarted")
+            )
+        );
+        assert_eq!(
+            switch_stage(&again(serde_json::Value::Null)),
+            (Step::Next, Some("next launch")),
+            "no daemon answers"
+        );
+        assert_eq!(switch_stage(&again(daemon_of("bbbb"))).0, Step::Done);
+        // And the preview of that second install has asked nothing yet.
+        let mut preview = again(daemon_of("bbbb"));
+        preview["preview"] = json!(true);
+        assert_eq!(switch_stage(&preview).0, Step::Waiting);
     }
 
     #[test]

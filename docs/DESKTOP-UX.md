@@ -1085,8 +1085,11 @@ is done only when the service reloaded to the release and answers. When it
 reloaded and has not answered since, or what it did is not known, the stage
 says so and is marked as one to look at, not as done; when it refused, the
 stage says the service keeps the earlier release until it is restarted; with no
-service running it reads *next launch*, and when the release was already active
-it says that. Running versions and agents remain protected by
+service running it reads *next launch*. Installing a release that is already
+active asks the service nothing, so the stage is done there only when the
+service answering runs from that release's own files; when another release's
+service answers, as after a reload that was refused, it says that service runs
+until it is restarted. Running versions and agents remain protected by
 the existing installer rules. Public macOS downloads require Developer ID signing
 and notarization; locally signed builds are explicit previews.
 

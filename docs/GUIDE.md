@@ -73,7 +73,8 @@ JSON report, and the report says what happened as a word beside its other keys.
 `update.outcome` is `not_published`, `up_to_date`, `available`, `needs_consent`
 (the newer release is a preview build: pass `--local-preview`), `previewed` or
 `applied`. After an install, `daemon.outcome` says what became of the running
-daemon: `no_daemon`, `unchanged` (the release was already active), `reloaded`,
+daemon: `no_daemon`, `unchanged` (the release was already active, so the daemon was asked nothing;
+it may still be an earlier release's, and `daemon.serving` says which), `reloaded`,
 `reloaded_silent` (it accepted the reload and nothing answers since: check
 `agentdocker daemon status`), `refused` (it keeps serving the earlier release
 until it is restarted) or `unknown`. `--check` only looks and `--apply`

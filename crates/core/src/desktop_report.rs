@@ -12,9 +12,10 @@
 //! `update.outcome` for the update, and `daemon.outcome` for the handover
 //! to a running daemon after an activation. Each is computed from the
 //! same facts the keys carry, by one function, so the word and the keys
-//! cannot disagree. A reader that does not know a word shows it as
-//! printed; a report without one (an earlier build's) is read by its
-//! keys, as before.
+//! cannot disagree. A reader that finds no word in a report (an earlier
+//! build's, or a platform's that prints none), or a word it does not
+//! know, reads the keys, as every reader did before: it does not guess at
+//! the word, and does not show it.
 use std::fmt;
 use std::str::FromStr;
 
@@ -118,8 +119,10 @@ pub enum Handover {
     /// No daemon answered: none needed reloading, and the next launch
     /// starts the activated release.
     NoDaemon,
-    /// The activation left the active release as it was, so there was
-    /// nothing to hand over to.
+    /// The activation left the active release as it was, so no daemon was
+    /// asked to reload. That says nothing of which release the running
+    /// daemon serves: an earlier reload may have been refused, and the
+    /// daemon of the release before may still be the one answering.
     Unchanged,
     /// The daemon reloaded, and the activated release's daemon answers.
     Reloaded,
