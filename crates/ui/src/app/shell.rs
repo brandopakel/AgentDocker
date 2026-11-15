@@ -584,8 +584,6 @@ pub(super) struct State {
     pub confirm_daemon_restart: bool,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
-    /// An archived message now on view that the next tick scrolls to.
-    pub reveal_archived_next: Option<MessageId>,
     pub generation: u64,
     pub saved_generation: u64,
     pub saving: bool,
@@ -602,8 +600,10 @@ pub(super) struct State {
     pub closing: bool,
     pub checked_project: Option<PathBuf>,
     pub project_available: Option<bool>,
-    pub notification_message: Option<MessageId>,
-    pending_notification: Option<(agentdocker_host::notify::Action, Instant)>,
+    /// The notification being followed: waiting for its data, or shown,
+    /// with the search for its row. One value, ended whole
+    /// (`super::route`).
+    pub route: super::route::Route,
     /// Replies typed into notifications that did not go: each waits for
     /// its conversation to open so the words become its draft, and stays
     /// — shown beside the composer to copy or dismiss — while the draft
@@ -953,15 +953,11 @@ impl State {
     /// — and which no route is still on its way to. They are
     /// shown where the person can always reach them, whatever is on view.
     pub fn orphan_reply_recoveries(&self) -> Vec<&ReplyRecovery> {
-        let routing: Option<&MessageId> = self
-            .pending_notification
-            .as_ref()
-            .map(|(action, _)| &action.target.message);
         self.reply_recoveries
             .iter()
             .filter(|r| r.conversation.is_none())
-            .filter(|r| routing != Some(&r.message))
-            .filter(|r| self.notification_message.as_ref() != Some(&r.message))
+            .filter(|r| self.route.target() != Some(&r.message))
+            .filter(|r| self.route.message() != Some(&r.message))
             .collect()
     }
 }
@@ -1695,7 +1691,7 @@ impl App {
         let Some(conversation) = self.shell.conversation.clone() else {
             return;
         };
-        let Some(message) = self.shell.notification_message.clone() else {
+        let Some(message) = self.shell.route.message().cloned() else {
             return;
         };
         let Some(index) = self
@@ -1753,7 +1749,7 @@ impl App {
     fn take_answer_reveal(&mut self) -> Option<MessageId> {
         if std::mem::take(&mut self.shell.reveal_next_question)
             && self.screen == Screen::Questions
-            && self.shell.pending_notification.is_none()
+            && !self.shell.route.is_routing()
         {
             let next = self
                 .questions
@@ -1854,12 +1850,30 @@ impl App {
     /// are recorded, Back and Forward keep the history their own way, and
     /// the window's own updates refine the place on view
     /// (`navigation::moved`).
+    ///
+    /// A notification being followed ends when the person goes somewhere
+    /// else, whatever control took them there: the place before and after
+    /// their move are compared here, so no handler has to remember to end
+    /// it, and a move that changes nothing ends nothing. A notification
+    /// is the one move that begins a route or answers for one, and what
+    /// an update runs inside itself belongs to it.
     pub fn update(&mut self, message: Message) -> Task<Message> {
-        match super::navigation::moved(&message) {
-            super::navigation::Moved::ByPerson => self.navigating(true, |app| app.apply(message)),
-            super::navigation::Moved::Travel => self.navigating(false, |app| app.apply(message)),
-            super::navigation::Moved::ByWindow => self.apply(message),
+        use super::navigation::Moved;
+        let moved = super::navigation::moved(&message);
+        let left = (moved != Moved::ByWindow
+            && !self.shell.history.in_hand()
+            && self.shell.route != super::route::Route::Idle
+            && !matches!(message, Message::Notification(_)))
+        .then(|| self.place());
+        let task = match moved {
+            Moved::ByPerson => self.navigating(true, |app| app.apply(message)),
+            Moved::Travel => self.navigating(false, |app| app.apply(message)),
+            Moved::ByWindow => self.apply(message),
+        };
+        if left.is_some_and(|left| left != self.place()) {
+            self.shell.route.end();
         }
+        task
     }
 
     fn apply(&mut self, message: Message) -> Task<Message> {
@@ -1902,28 +1916,6 @@ impl App {
         }
         if matches!(
             &message,
-            Message::Navigate(_)
-                | Message::GoBack
-                | Message::GoForward
-                | Message::SelectThread(_)
-                | Message::InboxList
-                | Message::SelectProject(_)
-                | Message::Unassigned
-                | Message::AllProjects
-                | Message::OpenSession(_)
-                | Message::OpenQuestion(_)
-                | Message::SelectSession(_)
-                | Message::Search(_)
-        ) {
-            self.shell.pending_notification = None;
-            self.shell.notification_message = None;
-            // The search for a notification's archived message, and the
-            // scroll to it, are its conversation's: the person moving on
-            // ends them, so a late page moves nothing.
-            self.cancel_reveal();
-        }
-        if matches!(
-            &message,
             Message::Event(iced::Event::Window(
                 window::Event::Moved(_) | window::Event::Resized(_) | window::Event::Rescaled(_)
             ))
@@ -1951,7 +1943,7 @@ impl App {
                 }
                 // The scroll is for the Messages screen the page arrived
                 // on; anywhere else the row is not on view.
-                if let Some(id) = self.shell.reveal_archived_next.take()
+                if let Some(id) = self.shell.route.take_scroll()
                     && self.screen == Screen::Questions
                     && self.shell.conversation.is_some()
                 {
@@ -2002,8 +1994,7 @@ impl App {
                                 .as_ref()
                                 .is_some_and(|c| c.socket() == action.socket) =>
                     {
-                        self.cancel_reveal();
-                        self.shell.pending_notification = Some((action, Instant::now()));
+                        self.shell.route.begin(action, Instant::now());
                         for cmd in [Cmd::Agents, Cmd::Questions, Cmd::Inbox] {
                             self.send(cmd);
                         }
@@ -2044,8 +2035,7 @@ impl App {
                                 certain,
                                 conversation: None,
                             });
-                            self.cancel_reveal();
-                            self.shell.pending_notification = Some((action, Instant::now()));
+                            self.shell.route.begin(action, Instant::now());
                             for cmd in [Cmd::Agents, Cmd::Questions, Cmd::Inbox] {
                                 self.send(cmd);
                             }
@@ -2059,8 +2049,7 @@ impl App {
                     }
                     crate::notification_route::Activation::Focus => {}
                     crate::notification_route::Activation::Inbox => {
-                        self.shell.pending_notification = None;
-                        self.shell.notification_message = None;
+                        self.shell.route.end();
                         self.screen = Screen::Questions;
                     }
                 }
@@ -2080,8 +2069,6 @@ impl App {
                 }
             }
             Message::Navigate(screen) => {
-                self.shell.pending_notification = None;
-                self.shell.notification_message = None;
                 self.screen = screen;
                 self.shell.more = false;
                 self.shell.launch_menu = false;
@@ -2265,7 +2252,6 @@ impl App {
                 if self.shell.conversation.as_deref() != Some(id.as_str()) {
                     self.shell.thread = None;
                     self.thread = None;
-                    self.cancel_reveal();
                 }
                 self.shell.conversation = Some(id.clone());
                 self.shell.inbox_open = true;
@@ -4536,8 +4522,9 @@ impl App {
                             .chain(crate::accessibility::collect()),
                     ),
                     Key::Named(Named::Escape) => {
-                        self.shell.pending_notification = None;
-                        self.shell.notification_message = None;
+                        // Not a place, and the one key that ends a
+                        // route outright: the wait, the mark, the search.
+                        self.shell.route.end();
                         self.shell.project_menu = None;
                         self.shell.project_rename = None;
                         self.shell.selected = None;
@@ -5380,7 +5367,12 @@ impl App {
     /// an agent, else Messages, and the status line says where the message
     /// itself is read.
     fn advance_notification(&mut self) -> Task<Message> {
-        let Some((action, started)) = self.shell.pending_notification.clone() else {
+        let Some((action, started)) = self
+            .shell
+            .route
+            .waiting()
+            .map(|(action, started)| (action.clone(), started))
+        else {
             return Task::none();
         };
         let target = &action.target;
@@ -5408,8 +5400,7 @@ impl App {
         let found = question.is_some() || envelope.is_some() || archived;
         if !found {
             if started.elapsed() >= Duration::from_secs(10) {
-                self.shell.pending_notification = None;
-                self.shell.notification_message = None;
+                self.shell.route.end();
                 self.screen = Screen::Questions;
                 self.say(if self.connected.is_ok() {
                     "This notification's message is no longer available."
@@ -5441,17 +5432,14 @@ impl App {
             } else if started.elapsed() < Duration::from_secs(10) {
                 return Task::none();
             } else {
-                self.shell.pending_notification = None;
-                self.shell.notification_message = None;
+                self.shell.route.end();
                 self.screen = Screen::Questions;
                 self.say("This notification's project is no longer available.");
                 return Task::none();
             }
         }
-        self.shell.pending_notification = None;
-        self.shell.notification_message = Some(target.message.clone());
+        self.shell.route.resolve(target.message.clone());
         self.shell.message_detail = Some(target.message.clone());
-        self.cancel_reveal();
         self.shell.selected = Some(self.canonical_agent(target.agent.as_str()).to_owned());
         self.shell.more = false;
         self.confirm_stop = None;
@@ -5484,7 +5472,7 @@ impl App {
                 // Nothing on view is the message's: a reply that did not go
                 // stays at the top of Messages to copy, never in whatever
                 // conversation happens to be open.
-                self.shell.notification_message = None;
+                self.shell.route.end();
             }
         }
         if hidden.is_none() || from_agent {
@@ -10468,7 +10456,7 @@ mod tests {
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::Open(action),
         ));
-        assert!(app.shell.pending_notification.is_some());
+        assert!(app.shell.route.is_routing());
         assert_eq!(app.screen, Screen::Agents);
         app.conversations_supported = Some(true);
         let conversation = agentdocker_core::ConversationId::dm("user", "sender-1").to_string();
@@ -10481,8 +10469,8 @@ mod tests {
         assert_eq!(app.screen, Screen::Questions);
         assert_eq!(app.shell.inbox_thread.as_deref(), Some("sender-1"));
         assert_eq!(app.shell.catalog.selected.as_ref(), Some(&project.root));
-        assert_eq!(app.shell.notification_message.as_ref(), Some(&question.id));
-        assert!(app.shell.pending_notification.is_none());
+        assert_eq!(app.shell.route.message(), Some(&question.id));
+        assert!(!app.shell.route.is_routing());
         assert_eq!(app.shell.answers[&question.id], "unfinished answer");
         assert_eq!(
             app.shell.conversation_drafts["everyone:another-project"].text,
@@ -10490,7 +10478,7 @@ mod tests {
         );
         assert!(app.sending.is_empty());
         assert!(
-            app.reveal_archived.is_none(),
+            app.shell.route.seek().is_none(),
             "a live question is not an archive lookup"
         );
         assert!(app.status.is_empty(), "no false missing-archive warning");
@@ -10691,13 +10679,12 @@ mod tests {
             certain: true,
             conversation: None,
         });
-        app.shell.pending_notification = Some((action.clone(), Instant::now()));
+        app.shell.route.begin(action.clone(), Instant::now());
         assert!(
             app.shell.orphan_reply_recoveries().is_empty(),
             "still on its way to its conversation"
         );
-        app.shell.pending_notification = None;
-        app.shell.notification_message = None;
+        app.shell.route.end();
         let orphans = app.shell.orphan_reply_recoveries();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].text, "orphaned words");
@@ -10716,7 +10703,7 @@ mod tests {
             crate::notification_route::Activation::Open(action),
         ));
         let _ = app.update(Message::Tick);
-        assert!(app.shell.pending_notification.is_none(), "routed at once");
+        assert!(!app.shell.route.is_routing(), "routed at once");
         assert_eq!(app.screen, Screen::Questions);
         assert!(app.shell.inbox_open);
         assert_eq!(
@@ -10770,7 +10757,7 @@ mod tests {
             crate::notification_route::Activation::Open(action),
         ));
         let _ = app.update(Message::Tick);
-        assert!(app.shell.pending_notification.is_none(), "routed at once");
+        assert!(!app.shell.route.is_routing(), "routed at once");
         assert_eq!(app.screen, Screen::Questions);
         let direct = agentdocker_core::ConversationId::dm("user", "sender-1").to_string();
         assert_eq!(app.shell.conversation.as_deref(), Some(direct.as_str()));
@@ -10780,7 +10767,10 @@ mod tests {
             "{}",
             app.status
         );
-        assert!(app.reveal_archived.is_none(), "nothing to look for there");
+        assert!(
+            app.shell.route.seek().is_none(),
+            "nothing to look for there"
+        );
         assert!(!commands.try_iter().any(|cmd| matches!(
             cmd,
             Cmd::History(ref c, _) | Cmd::HistoryBefore(ref c, ..) if c.starts_with("channel:")
@@ -10890,10 +10880,7 @@ mod tests {
         assert_eq!(app.screen, Screen::Questions);
         assert_eq!(app.shell.selected.as_deref(), Some("canonical"));
         assert_eq!(app.name_of(action.target.agent.as_str()), "one-session");
-        assert_eq!(
-            app.shell.notification_message.as_ref(),
-            Some(&action.target.message)
-        );
+        assert_eq!(app.shell.route.message(), Some(&action.target.message));
         assert_eq!(app.shell.answers[&action.target.message], "unfinished");
         assert!(app.sending.is_empty());
     }
@@ -11769,25 +11756,27 @@ mod tests {
         let conversation = "dm:previous:user".to_owned();
         app.shell.conversation = Some(conversation.clone());
         let old = MessageId::from("previous-message".to_owned());
-        app.reveal_archived = Some(super::Seek {
+        app.shell.route.start_seek(super::Seek {
             conversation: conversation.clone(),
             message: old.clone(),
             pages: 1,
             before: Some(801),
             refresh_pending: false,
         });
-        app.shell.reveal_archived_next = Some(old.clone());
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::Focus,
         ));
-        assert!(app.reveal_archived.is_some(), "focusing is not navigation");
+        assert!(
+            app.shell.route.seek().is_some(),
+            "focusing is not navigation"
+        );
         let mut foreign = action.clone();
         foreign.socket = foreign.socket.with_file_name("another-daemon.sock");
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::Open(foreign),
         ));
         assert!(
-            app.reveal_archived.is_some(),
+            app.shell.route.seek().is_some(),
             "a different workspace is not navigation"
         );
         // The new target must wait for a project snapshot. It still ends
@@ -11796,9 +11785,9 @@ mod tests {
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::Open(action),
         ));
-        assert!(app.shell.pending_notification.is_some());
-        assert!(app.reveal_archived.is_none());
-        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(app.shell.route.is_routing());
+        assert!(app.shell.route.seek().is_none());
+        assert!(app.shell.route.scroll().is_none());
         let mut envelope = agentdocker_core::Envelope::new(
             "sender",
             agentdocker_core::Destination::Broadcast,
@@ -11821,9 +11810,9 @@ mod tests {
             ))
             .unwrap();
         app.drain();
-        assert!(app.shell.pending_notification.is_some());
-        assert!(app.reveal_archived.is_none());
-        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(app.shell.route.is_routing());
+        assert!(app.shell.route.seek().is_none());
+        assert!(app.shell.route.scroll().is_none());
         assert!(
             !commands
                 .try_iter()
@@ -11831,42 +11820,199 @@ mod tests {
         );
     }
 
+    /// The sequence the route was losing. A notification is clicked and
+    /// waits for its data. The person, meanwhile, opens a conversation
+    /// of their own choosing. The data then arrives, and the tick that
+    /// would have opened the notification's destination moves nothing:
+    /// the window stays where the person went. Choosing a conversation
+    /// was not among the moves that ended a waiting route.
+    #[test]
+    fn a_waiting_notification_does_not_pull_the_window_back_from_another_conversation() {
+        use super::super::route::Route;
+        let (mut app, _commands, messages, _home, action) = notification_app();
+        app.screen = Screen::Questions;
+        let question = Question {
+            presentation: None,
+            id: action.target.message.clone(),
+            from: action.target.agent.to_string(),
+            to: agentdocker_core::Destination::Agent(agentdocker_core::AgentId::from("user")),
+            text: "which option?".into(),
+            asked_at: Utc::now(),
+            expires_at: Utc::now() + chrono::Duration::minutes(5),
+            form: Default::default(),
+            stale_since: None,
+        };
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action.clone()),
+        ));
+        assert!(app.shell.route.is_routing(), "no data yet: it waits");
+
+        let _ = app.update(Message::SelectConversation("dm:someone-else:user".into()));
+        assert_eq!(app.shell.route, Route::Idle, "the person moved on");
+        let chosen = app.place();
+        assert_eq!(chosen.conversation.as_deref(), Some("dm:someone-else:user"));
+
+        messages
+            .send(Msg::Questions(vec![question.clone()]))
+            .unwrap();
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.place(), chosen, "the late data moves nothing");
+        assert_eq!(app.shell.route, Route::Idle);
+        assert!(app.shell.message_detail.is_none());
+
+        // The same click with nobody moving on: the data opens it.
+        let _ = app.update(Message::Notification(
+            crate::notification_route::Activation::Open(action),
+        ));
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.route.message(), Some(&question.id));
+        assert_ne!(app.place(), chosen, "the destination opened");
+    }
+
+    /// A route in each of its states against the person's moves: any
+    /// move that changes the place ends all of it, the wait or the mark
+    /// with its search; a move that changes nothing ends nothing; and
+    /// the window's own updates, which are no move of the person's, end
+    /// nothing whatever they change.
+    #[test]
+    fn a_route_ends_with_any_move_that_changes_the_place_and_no_other() {
+        use super::super::route::Route;
+        let (mut app, _commands, _messages, _home, action) = notification_app();
+        let seek = super::Seek {
+            conversation: "dm:sender-1:user".to_owned(),
+            message: action.target.message.clone(),
+            pages: 1,
+            before: Some(801),
+            refresh_pending: false,
+        };
+        let moves: &[fn() -> Message] = &[
+            || Message::SelectConversation("dm:someone-else:user".into()),
+            || Message::Navigate(Screen::Board),
+            || Message::Navigate(Screen::Runtimes),
+            || Message::InboxList,
+            || Message::Unassigned,
+            || Message::AllProjects,
+        ];
+        for routing in [true, false] {
+            for (at, make) in moves.iter().enumerate() {
+                app.screen = Screen::Questions;
+                app.shell.conversation = Some("dm:sender-1:user".to_owned());
+                app.shell.inbox_open = true;
+                if routing {
+                    app.shell.route.begin(action.clone(), Instant::now());
+                } else {
+                    app.shell.route.start_seek(seek.clone());
+                }
+                let before = app.place();
+                let _ = app.update(make());
+                let moved = before != app.place();
+                assert_eq!(
+                    app.shell.route == Route::Idle,
+                    moved,
+                    "move {at}, routing {routing}: {before:?} to {:?}",
+                    app.place()
+                );
+                // The same move again goes nowhere, and ends nothing.
+                if routing {
+                    app.shell.route.begin(action.clone(), Instant::now());
+                } else {
+                    app.shell.route.start_seek(seek.clone());
+                }
+                let before = app.place();
+                let _ = app.update(make());
+                if before == app.place() {
+                    assert_ne!(app.shell.route, Route::Idle, "move {at} repeated");
+                }
+                app.shell.route.end();
+            }
+        }
+        // At least the conversation, a screen and the list are moves
+        // here, or the table above proved nothing.
+        app.screen = Screen::Questions;
+        app.shell.conversation = Some("dm:sender-1:user".to_owned());
+        app.shell.inbox_open = true;
+        app.shell.route.start_seek(seek.clone());
+        let _ = app.update(Message::SelectConversation("dm:someone-else:user".into()));
+        assert_eq!(app.shell.route, Route::Idle, "another conversation");
+        app.shell.route.start_seek(seek.clone());
+        let _ = app.update(Message::Navigate(Screen::Board));
+        assert_eq!(app.shell.route, Route::Idle, "another screen");
+
+        // The window keeping up changes the place without the person:
+        // a tick is not a move, and the route stands.
+        app.screen = Screen::Questions;
+        app.shell.route.start_seek(seek.clone());
+        app.screen = Screen::Agents;
+        let _ = app.update(Message::Tick);
+        assert_eq!(app.shell.route.seek(), Some(&seek), "not the person's move");
+    }
+
     #[test]
     fn notification_cannot_hijack_manual_navigation_or_a_different_daemon() {
+        use super::super::route::Route;
         let (mut app, _, _, _home, action) = notification_app();
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::Open(action.clone()),
         ));
-        assert!(app.shell.pending_notification.is_some());
+        assert!(app.shell.route.is_routing());
         let _ = app.update(Message::Navigate(Screen::Settings));
-        assert!(app.shell.pending_notification.is_none());
+        assert_eq!(app.shell.route, Route::Idle, "going to another screen");
+        // The same screen chosen again is not going anywhere: the click
+        // on the notification still stands.
+        app.shell.route.begin(action.clone(), Instant::now());
+        let _ = app.update(Message::Navigate(Screen::Settings));
+        assert!(app.shell.route.is_routing(), "nothing moved");
+        // Whatever the control, the route ends exactly when the place
+        // changes, and a control that goes nowhere (a session or a
+        // question that is gone) ends nothing.
         for navigation in [
             Message::AllProjects,
             Message::OpenSession("removed".into()),
             Message::OpenQuestion(MessageId::from("removed".to_owned())),
+            Message::Navigate(Screen::Agents),
+            Message::Search("nothing here".into()),
         ] {
-            app.shell.pending_notification = Some((action.clone(), Instant::now()));
+            app.shell.route.begin(action.clone(), Instant::now());
+            let before = app.place();
+            let said = format!("{navigation:?}");
             let _ = app.update(navigation);
-            assert!(app.shell.pending_notification.is_none());
+            assert_eq!(
+                app.shell.route.is_routing(),
+                before == app.place(),
+                "{said}: from {before:?} to {:?}",
+                app.place()
+            );
         }
-        app.shell.pending_notification = Some((action.clone(), Instant::now()));
-        app.shell.notification_message = Some(MessageId::from("cancelled".to_owned()));
-        let key = keyboard::Key::Named(keyboard::key::Named::Escape);
-        let _ = app.update(Message::Event(iced::Event::Keyboard(
-            keyboard::Event::KeyPressed {
-                modified_key: key.clone(),
-                key,
-                physical_key: keyboard::key::Physical::Unidentified(
-                    keyboard::key::NativeCode::Unidentified,
-                ),
-                location: keyboard::Location::Standard,
-                modifiers: keyboard::Modifiers::empty(),
-                text: None,
-                repeat: false,
-            },
-        )));
-        assert!(app.shell.pending_notification.is_none());
-        assert!(app.shell.notification_message.is_none());
+        // Escape is no place, and ends a route outright: one that waits,
+        // and one that is shown, with the search for its row.
+        let escape = |app: &mut App| {
+            let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+            let _ = app.update(Message::Event(iced::Event::Keyboard(
+                keyboard::Event::KeyPressed {
+                    modified_key: key.clone(),
+                    key,
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::empty(),
+                    text: None,
+                    repeat: false,
+                },
+            )));
+        };
+        app.shell.route.begin(action.clone(), Instant::now());
+        escape(&mut app);
+        assert_eq!(app.shell.route, Route::Idle);
+        app.shell.route.start_seek(super::Seek {
+            conversation: "dm:sender-1:user".to_owned(),
+            message: action.target.message.clone(),
+            pages: 1,
+            before: Some(801),
+            refresh_pending: false,
+        });
+        escape(&mut app);
+        assert_eq!(app.shell.route, Route::Idle, "the search ends with it");
         let _ = app.update(Message::Navigate(Screen::Settings));
         let mut foreign = action.clone();
         foreign.socket = foreign.socket.with_file_name("another-daemon.sock");
@@ -11875,11 +12021,13 @@ mod tests {
         ));
         assert_eq!(app.screen, Screen::Settings);
         assert!(app.status.contains("another local workspace"));
-        app.shell.pending_notification = Some((action, Instant::now() - Duration::from_secs(11)));
+        app.shell
+            .route
+            .begin(action, Instant::now() - Duration::from_secs(11));
         let _ = app.advance_notification();
         assert_eq!(app.screen, Screen::Questions);
         assert!(app.status.contains("no longer available"));
-        assert!(app.shell.notification_message.is_none());
+        assert!(app.shell.route.message().is_none());
     }
     #[test]
     fn adding_an_existing_folder_only_pins_and_reads_context() {

@@ -75,6 +75,12 @@ pub struct History {
 }
 
 impl History {
+    /// Whether an update is in hand already: what runs inside it is part
+    /// of it, and is not a move of its own.
+    pub(super) fn in_hand(&self) -> bool {
+        self.busy
+    }
+
     /// The person went from `before` to `after`: a different place keeps
     /// `before` behind and drops what was ahead.
     pub fn visit(&mut self, before: Place, after: &Place) {
