@@ -56,9 +56,23 @@ impl Daemon {
                 return;
             }
             let record = record.clone();
-            if !state.pending_restarts.insert(id.clone()) {
+            if state.pending_restarts.contains_key(id) {
                 return;
             }
+            // Installed and said in one hold, before its task exists, so
+            // nothing the task does can be said first. While fenced it is
+            // installed all the same, for an aborted handover to resume,
+            // and the view says it waits on the fence.
+            // Installed for this attempt: it speaks of no other.
+            let (attempt, due) = match agentdocker_core::restart::due(&record) {
+                Some(agentdocker_core::restart::Due::Restart { attempt, at }) => (attempt, at),
+                _ => (record.restarts.saturating_add(1), None),
+            };
+            state.pending_restarts.insert(
+                id.clone(),
+                agentdocker_core::restart::Phase::Delay { attempt, due },
+            );
+            state.publish_restart(id);
             record
         };
         let elapsed = record
@@ -87,6 +101,7 @@ impl Daemon {
                         let status = {
                             let mut state = lock(&daemon.state);
                             state.pending_restarts.remove(&id);
+                            state.publish_restart(&id);
                             state.registry.get(&id).map(|record| record.status.clone())
                         };
                         pending.released();
@@ -125,7 +140,7 @@ impl Daemon {
                             .spec
                             .restart
                             .restarts(&record.status, record.restarts)
-                        && !state.pending_restarts.contains(&record.id)
+                        && !state.pending_restarts.contains_key(&record.id)
                 })
                 .map(|record| (record.id.clone(), record.status.clone()))
                 .collect()
@@ -138,7 +153,7 @@ impl Daemon {
     /// Start it again, under the same id. False means a transfer refused
     /// admission and the pending task must retry; true finishes this attempt.
     async fn restart_now(self: &Arc<Self>, id: &AgentId, waited: std::time::Duration) -> bool {
-        let _admitted = match self.admit_background() {
+        let _admitted = match self.admit_restart(id) {
             Ok(admitted) => admitted,
             Err(error) => {
                 return !matches!(
@@ -268,19 +283,25 @@ impl Daemon {
                     // before is not how this one ended.
                     failed.end_run(status.clone(), None);
                     failed.finished_at = Some(Utc::now());
-                    let event = Event::new(
+                    let now = Utc::now();
+                    let mut events = vec![Event::new(
                         EventKind::AgentExited {
                             agent: id.clone(),
                             status: status.clone(),
                             ending: None,
                         },
-                        Utc::now(),
+                        now,
+                    )];
+                    // The failed attempt that spends the policy says so with
+                    // its ending.
+                    events.extend(
+                        super::restarts_exhausted(&failed).map(|kind| Event::new(kind, now)),
                     );
-                    let committed = state.transition(
+                    let committed = state.commit(
                         "failed restart",
-                        event,
-                        |store, event| store.agent_transition(&failed, event),
-                        |state| {
+                        events,
+                        |store, events| store.agent_exit(&failed, &[], &[], &[], events),
+                        |state, _, ()| {
                             *state
                                 .registry
                                 .get_mut(id)
@@ -313,10 +334,14 @@ impl Daemon {
         // Disk first, memory on commit: a write that did not land leaves
         // the policy as it was, in both places.
         let mut record = record.clone();
+        // What it was is kept beside the `No` an older daemon reads.
+        let previous = record.spec.restart;
         record.spec.restart = agentdocker_core::RestartPolicy::No;
+        record.restart_before_stop = Some(previous);
         let event = Event::new(
             EventKind::AgentRestartCleared {
                 agent: record.id.clone(),
+                previous: Some(previous),
             },
             Utc::now(),
         );
@@ -327,6 +352,11 @@ impl Daemon {
             |state| {
                 if let Some(stored) = state.registry.get_mut(id) {
                     stored.spec.restart = agentdocker_core::RestartPolicy::No;
+                    stored.restart_before_stop = Some(previous);
+                }
+                // A restart waiting for this agent no longer applies.
+                if state.pending_restarts.contains_key(id) {
+                    state.publish_restart(id);
                 }
             },
         ) == Persisted::Committed
@@ -378,7 +408,7 @@ mod tests {
             assert!(
                 lock(&predecessor.state)
                     .pending_restarts
-                    .contains(&record.id)
+                    .contains_key(&record.id)
             );
             let serving = if takeover {
                 let successor =
@@ -595,5 +625,395 @@ mod tests {
             "failed persistence must not expose Running"
         );
         assert_eq!(durable.restarts, previous.restarts);
+    }
+
+    fn ended_record(name: &str, policy: agentdocker_core::RestartPolicy) -> AgentRecord {
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: name.into(),
+                command: vec!["sleep".into(), "30".into()],
+                restart: policy,
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        record.status = AgentStatus::Exited { code: Some(1) };
+        // Long over: the restart is due at once.
+        record.finished_at = Some(Utc::now() - chrono::Duration::hours(1));
+        record
+    }
+
+    /// The views said for one agent, in order, up to and including its
+    /// restart, and the one after it.
+    fn said(
+        events: &mut tokio::sync::broadcast::Receiver<Event>,
+        id: &AgentId,
+    ) -> Vec<Option<agentdocker_core::restart::RestartView>> {
+        let mut said = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            match event.kind {
+                EventKind::AgentRestartChanged { agent, view, .. } if agent == *id => {
+                    said.push(view)
+                }
+                EventKind::AgentRestarted { agent, .. } if agent == *id => {
+                    said.push(Some(agentdocker_core::restart::RestartView::Unknown))
+                }
+                _ => {}
+            }
+        }
+        said
+    }
+
+    async fn until_restarted(daemon: &Arc<Daemon>, id: &AgentId) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                // Restarted, and its task has let its entry go (which is
+                // what says it cleared): both, not the first alone.
+                let restarted = {
+                    let state = lock(&daemon.state);
+                    state
+                        .registry
+                        .get(id)
+                        .is_some_and(|a| a.status == AgentStatus::Running && a.restarts == 1)
+                        && !state.pending_restarts.contains_key(id)
+                };
+                if restarted {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("the restart ran");
+    }
+
+    /// Where a restart stands is said from the hold that moves it, so the
+    /// order is the scheduler's: installed under a fence it waits on the
+    /// handover, refused it still waits, the fence lifted before the retry
+    /// it waits to retry, admitted it is starting, restarted it is cleared.
+    /// Unfenced, an overdue job is said scheduled before it is starting.
+    /// (An `AgentRestarted` is marked `Unknown` in the lists below.)
+    #[tokio::test]
+    async fn a_restart_is_said_where_it_stands_in_the_order_it_moves() {
+        use agentdocker_core::restart::{RestartView, Waiting};
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+        let policy = agentdocker_core::RestartPolicy::OnFailure { max: 3 };
+        let fenced = ended_record("fenced-restart", policy);
+        let free = ended_record("free-restart", policy);
+        for record in [&fenced, &free] {
+            assert!(matches!(
+                lock(&daemon.state).insert_record(record.clone()),
+                Response::Agent { .. }
+            ));
+        }
+        let due = agentdocker_core::restart::due(&fenced).and_then(|due| match due {
+            agentdocker_core::restart::Due::Restart { at, .. } => at,
+            agentdocker_core::restart::Due::GivenUp { .. } => None,
+        });
+        // Due by its policy, and nothing installed.
+        assert_eq!(
+            lock(&daemon.state).restart_view(&fenced.id),
+            Some(RestartView::Waiting {
+                attempt: 1,
+                why: Waiting::NotScheduled,
+                at: due
+            })
+        );
+        let mut events = daemon.subscribe_events();
+        daemon.offer_transfer(4242).unwrap();
+        daemon.consider_restart(&fenced.id, &fenced.status);
+        // Overdue, so it tries at once and the fence refuses it: waited
+        // for, not slept for. The retry backs off a quarter of a second
+        // from that refusal, so the abort below comes before it.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                let refused = matches!(
+                    lock(&daemon.state).pending_restarts.get(&fenced.id),
+                    Some(agentdocker_core::restart::Phase::Refused { .. })
+                );
+                if refused {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            }
+        })
+        .await
+        .expect("the fence refused the attempt");
+        let handing_over = Some(RestartView::Waiting {
+            attempt: 1,
+            why: Waiting::HandingOver,
+            at: due,
+        });
+        assert_eq!(lock(&daemon.state).restart_view(&fenced.id), handing_over);
+        assert!(daemon.abort_transfer("candidate refused"));
+        // The fence lifted, the retry not yet admitted: not a handover.
+        assert_eq!(
+            lock(&daemon.state).restart_view(&fenced.id),
+            Some(RestartView::Waiting {
+                attempt: 1,
+                why: Waiting::RetryAfterTransfer,
+                at: due
+            })
+        );
+        until_restarted(&daemon, &fenced.id).await;
+        let fenced_said = said(&mut events, &fenced.id);
+
+        let mut events = daemon.subscribe_events();
+        daemon.consider_restart(&free.id, &free.status);
+        until_restarted(&daemon, &free.id).await;
+        let free_said = said(&mut events, &free.id);
+        daemon.clear_restart(&fenced.id);
+        daemon.clear_restart(&free.id);
+        daemon.stop_all().await;
+
+        assert_eq!(fenced_said.first(), Some(&handing_over), "{fenced_said:?}");
+        let at = |view: &Option<RestartView>| fenced_said.iter().position(|v| v == view);
+        let retry = at(&Some(RestartView::Waiting {
+            attempt: 1,
+            why: Waiting::RetryAfterTransfer,
+            at: due,
+        }))
+        .expect("the lifted fence is said");
+        let starting = at(&Some(RestartView::Starting { attempt: 1 })).expect("starting");
+        let restarted = at(&Some(RestartView::Unknown)).expect("restarted");
+        assert!(retry < starting && starting < restarted, "{fenced_said:?}");
+        assert_eq!(
+            fenced_said.get(restarted + 1),
+            Some(&None),
+            "cleared after: {fenced_said:?}"
+        );
+        assert!(
+            !fenced_said
+                .iter()
+                .any(|v| matches!(v, Some(RestartView::Scheduled { .. }))),
+            "nothing announced a schedule the fence held: {fenced_said:?}"
+        );
+        let free_due = agentdocker_core::restart::due(&free).and_then(|due| match due {
+            agentdocker_core::restart::Due::Restart { at, .. } => at,
+            agentdocker_core::restart::Due::GivenUp { .. } => None,
+        });
+        assert_eq!(
+            free_said,
+            vec![
+                Some(RestartView::Scheduled {
+                    attempt: 1,
+                    of: Some(3),
+                    at: free_due
+                }),
+                Some(RestartView::Starting { attempt: 1 }),
+                Some(RestartView::Unknown),
+                None,
+            ]
+        );
+    }
+
+    /// An entry speaks only of its own attempt. Attempt 1 is admitted, its
+    /// spawn fails and is counted, and its entry is not yet removed (the
+    /// task removes it in a later hold): read through the daemon, attempt 2
+    /// is not scheduled, never starting. Only its own install says it is
+    /// scheduled.
+    #[tokio::test]
+    async fn an_old_attempts_entry_never_speaks_for_the_next() {
+        use agentdocker_core::restart::{Known, Outlook, Phase, RestartView, Waiting};
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+        let policy = agentdocker_core::RestartPolicy::OnFailure { max: 3 };
+        let record = ended_record("next-attempt", policy);
+        assert!(matches!(
+            lock(&daemon.state).insert_record(record.clone()),
+            Response::Agent { .. }
+        ));
+        // Attempt 1 admitted, as its task holds it.
+        lock(&daemon.state)
+            .pending_restarts
+            .insert(record.id.clone(), Phase::Starting { attempt: 1 });
+        // Its spawn is refused by a new rule: a failed attempt, counted.
+        std::fs::write(
+            daemon.home.join("policy.toml"),
+            "[[rule]]\ndeny = [\"run:**\"]\n",
+        )
+        .unwrap();
+        daemon
+            .restart_now(&record.id, std::time::Duration::ZERO)
+            .await;
+        let (current, answer) = {
+            let mut state = lock(&daemon.state);
+            let current = state.registry.get(&record.id).unwrap().clone();
+            (current, state.restarts(Some(record.id.as_str())))
+        };
+        assert_eq!(current.restarts, 1);
+        assert!(matches!(current.status, AgentStatus::Failed { .. }));
+        assert!(
+            lock(&daemon.state)
+                .pending_restarts
+                .contains_key(&record.id),
+            "between the commit and the removal"
+        );
+        let Response::Restarts { outlooks } = answer else {
+            panic!("{answer:?}")
+        };
+        assert!(
+            matches!(
+                Outlook::known_for(outlooks.get(&record.id), &current),
+                Known::Known(Some(RestartView::Waiting {
+                    attempt: 2,
+                    why: Waiting::NotScheduled,
+                    ..
+                }))
+            ),
+            "{outlooks:?}"
+        );
+        // Its own install: the old entry let go, attempt 2 installed.
+        lock(&daemon.state).pending_restarts.remove(&record.id);
+        daemon.consider_restart(&record.id, &current.status);
+        assert!(matches!(
+            lock(&daemon.state).restart_view(&record.id),
+            Some(RestartView::Scheduled { attempt: 2, .. })
+        ));
+        daemon.clear_restart(&record.id);
+        daemon.stop_all().await;
+    }
+
+    /// The ending that spends an `on-failure` policy commits its give-up
+    /// with it, right after its `agent_exited`, once: never again from
+    /// `consider_restart`, and not at all when the store keeps nothing.
+    #[tokio::test]
+    async fn a_policy_that_gives_up_says_so_once_with_its_ending() {
+        for store_fails in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let daemon =
+                Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+            let mut record = ended_record(
+                "spent",
+                agentdocker_core::RestartPolicy::OnFailure { max: 2 },
+            );
+            record.status = AgentStatus::Running;
+            record.finished_at = None;
+            record.restarts = 2;
+            assert!(matches!(
+                lock(&daemon.state).insert_record(record.clone()),
+                Response::Agent { .. }
+            ));
+            let before = lock(&daemon.state).store.max_event_seq().unwrap();
+            if store_fails {
+                lock(&daemon.state).store.reject_writes_for_test();
+            }
+            let status = AgentStatus::Exited { code: Some(1) };
+            lock(&daemon.state).mark_exited(&record.id, status.clone());
+            daemon.consider_restart(&record.id, &status);
+            daemon.consider_restart(&record.id, &status);
+            if store_fails {
+                assert!(daemon.is_live(&record.id), "nothing was kept");
+                continue;
+            }
+            let events: Vec<_> = lock(&daemon.state)
+                .store
+                .recent_events(50)
+                .unwrap()
+                .into_iter()
+                .filter(|event| event.seq > before)
+                .collect();
+            let exit = events
+                .iter()
+                .find(|e| matches!(e.kind, EventKind::AgentExited { .. }))
+                .unwrap();
+            let gave_up: Vec<_> = events
+                .iter()
+                .filter(|e| matches!(e.kind, EventKind::AgentRestartsExhausted { .. }))
+                .collect();
+            assert_eq!(gave_up.len(), 1, "{events:?}");
+            assert_eq!(gave_up[0].seq, exit.seq + 1, "in the ending's transaction");
+            assert!(matches!(
+                &gave_up[0].kind,
+                EventKind::AgentRestartsExhausted { attempts: 2, policy, .. }
+                    if *policy == agentdocker_core::RestartPolicy::OnFailure { max: 2 }
+            ));
+            let answer = lock(&daemon.state).restarts(None);
+            let current = lock(&daemon.state)
+                .registry
+                .get(&record.id)
+                .unwrap()
+                .clone();
+            let Response::Restarts { outlooks } = answer else {
+                panic!("{answer:?}")
+            };
+            assert!(matches!(
+                agentdocker_core::restart::Outlook::known_for(outlooks.get(&record.id), &current),
+                agentdocker_core::restart::Known::Known(Some(
+                    agentdocker_core::restart::RestartView::GivenUp { attempts: 2, .. }
+                ))
+            ));
+        }
+    }
+
+    /// A stop keeps the policy it cleared beside the `No` an older daemon
+    /// reads, in one commit with its event; a second stop does not replace
+    /// it, and the daemon's own shutdown clears nothing.
+    #[tokio::test]
+    async fn a_stop_keeps_the_policy_it_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+        let policy = agentdocker_core::RestartPolicy::OnFailure { max: 3 };
+        let mut record = ended_record("kept-policy", policy);
+        record.status = AgentStatus::Running;
+        assert!(matches!(
+            lock(&daemon.state).insert_record(record.clone()),
+            Response::Agent { .. }
+        ));
+        let mut events = daemon.subscribe_events();
+        assert!(daemon.clear_restart(&record.id));
+        assert!(
+            daemon.clear_restart(&record.id),
+            "a second stop finds it cleared"
+        );
+        let (current, durable) = {
+            let state = lock(&daemon.state);
+            (
+                state.registry.get(&record.id).unwrap().clone(),
+                state.store.load_agents().unwrap()[0].clone(),
+            )
+        };
+        for kept in [&current, &durable] {
+            assert!(kept.spec.restart.is_no(), "the No an older daemon reads");
+            assert_eq!(kept.restart_before_stop, Some(policy));
+        }
+        assert_eq!(
+            current.restart_cleared_words().as_deref(),
+            Some("restart cleared by a stop (was on-failure:3)")
+        );
+        let mut cleared = Vec::new();
+        while let Ok(event) = events.try_recv() {
+            if let EventKind::AgentRestartCleared { previous, .. } = event.kind {
+                cleared.push(previous);
+            }
+        }
+        assert_eq!(
+            cleared,
+            vec![Some(policy)],
+            "one clearing, with what it was"
+        );
+        // Rearmed, the clearing is history and not said.
+        let mut rearmed = current.clone();
+        rearmed.spec.restart = agentdocker_core::RestartPolicy::Always;
+        assert_eq!(rearmed.restart_cleared_words(), None);
+
+        let other = {
+            let mut other = ended_record("shut-down", policy);
+            other.status = AgentStatus::Running;
+            assert!(matches!(
+                lock(&daemon.state).insert_record(other.clone()),
+                Response::Agent { .. }
+            ));
+            other
+        };
+        daemon.stop_all().await;
+        let after = lock(&daemon.state).registry.get(&other.id).unwrap().clone();
+        assert_eq!(after.spec.restart, policy, "a shutdown keeps the policy");
+        assert_eq!(after.restart_before_stop, None);
     }
 }

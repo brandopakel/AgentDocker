@@ -840,6 +840,34 @@ pub enum EventKind {
     /// come back on its own.
     AgentRestartCleared {
         agent: AgentId,
+        /// The policy it cleared, kept on the record as
+        /// `restart_before_stop`; absent from an older daemon's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        previous: Option<crate::RestartPolicy>,
+    },
+    /// Its restart policy has used up its restarts: committed in the same
+    /// transaction as the ending that used the last one, so it is said
+    /// once per such ending and survives a crash with it.
+    AgentRestartsExhausted {
+        agent: AgentId,
+        attempts: u32,
+        policy: crate::RestartPolicy,
+    },
+    /// Live only (`seq: 0`, never replayed): where an ended agent's
+    /// restart stands now, sent in the same hold as the change in the
+    /// daemon's scheduler that moved it. `view: None` clears it: nothing
+    /// applies any more (it runs again, its policy was cleared, it is
+    /// gone).
+    AgentRestartChanged {
+        agent: AgentId,
+        #[serde(default)]
+        view: Option<crate::restart::RestartView>,
+        /// The run the view was read against; none once the record is
+        /// gone. A reader that keeps views takes this event as a sign to
+        /// read again, never as a view to install: it is not ordered
+        /// against a `restarts` answer.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<crate::restart::RunEvidence>,
     },
     /// An explicit stop cleared the agent's restore intent: a daemon
     /// restart will not bring it back.
@@ -1248,6 +1276,8 @@ impl EventKind {
         "policy_updated",
         "agent_restarted",
         "agent_restart_cleared",
+        "agent_restarts_exhausted",
+        "agent_restart_changed",
         "agent_restore_cleared",
         "agent_restoring",
         "agent_restored",

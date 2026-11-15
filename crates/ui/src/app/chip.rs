@@ -184,6 +184,27 @@ pub(super) fn dead_end(
     )
 }
 
+/// Whether an ended agent comes back, the same on every view that shows
+/// it: the daemon's restart view in words (*Restart 2 of 3 in 4s*, *Restart
+/// waiting: daemon handing over*, *Gave up restarting (on-failure:3, 3
+/// restarts)*), alert only for a policy that gave up. It stands beside the
+/// standing chip, which still says the run ended.
+pub(super) fn restart(
+    id: impl Into<String>,
+    view: &agentdocker_core::restart::RestartView,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Chip {
+    use agentdocker_core::restart::RestartView;
+    let (icon, tone) = match view {
+        RestartView::GivenUp { .. } => (Icon::Alert, Tone::Alert),
+        RestartView::Starting { .. } => (Icon::Ring, Tone::Neutral),
+        RestartView::Scheduled { .. } | RestartView::Waiting { .. } | RestartView::Unknown => {
+            (Icon::Hourglass, Tone::Neutral)
+        }
+    };
+    Chip::new(id, Some(icon), sentence(&view.words(now)), tone)
+}
+
 /// The daemon's three-part answer as chips, in one order on every screen:
 /// where the agent stands with its task, what it is doing this moment and,
 /// when it waits on the person, what for — each its own chip, so idle and

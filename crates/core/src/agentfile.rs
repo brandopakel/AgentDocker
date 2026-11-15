@@ -679,7 +679,7 @@ pub fn lifecycle_agent(kind: &EventKind) -> Option<&AgentId> {
         EventKind::AgentStopping { agent, .. }
         | EventKind::AgentExited { agent, .. }
         | EventKind::AgentRestarted { agent, .. }
-        | EventKind::AgentRestartCleared { agent } => Some(agent),
+        | EventKind::AgentRestartCleared { agent, .. } => Some(agent),
         _ => None,
     }
 }
@@ -1427,7 +1427,10 @@ mod tests {
             pid: None,
             attempt: 1,
         });
-        seen.event(&EventKind::AgentRestartCleared { agent: id.clone() });
+        seen.event(&EventKind::AgentRestartCleared {
+            agent: id.clone(),
+            previous: None,
+        });
         seen.event(&EventKind::AgentStopping {
             agent: id.clone(),
             force: false,

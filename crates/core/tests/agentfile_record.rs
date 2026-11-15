@@ -67,7 +67,10 @@ proptest! {
                     // `stopping` with its event.
                     if !record.spec.restart.is_no() {
                         record.spec.restart = RestartPolicy::No;
-                        published.push(EventKind::AgentRestartCleared { agent: id.clone() });
+                        published.push(EventKind::AgentRestartCleared {
+                            agent: id.clone(),
+                            previous: None,
+                        });
                     }
                     if keeps {
                         record.mark_stopping();

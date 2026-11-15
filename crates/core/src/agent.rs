@@ -179,6 +179,17 @@ impl RestartPolicy {
     pub fn is_no(&self) -> bool {
         matches!(self, Self::No)
     }
+
+    /// Whether this policy would restart an ending like this but has used
+    /// up its restarts: `on-failure`, a failure, the limit reached.
+    /// `always` never runs out, and an ending the policy would not
+    /// restart anyway (an exit 0 under `on-failure`) is not giving up.
+    pub fn exhausted(&self, status: &AgentStatus, already: u32) -> bool {
+        match self {
+            Self::OnFailure { max } => already >= *max && failed(status),
+            Self::No | Self::Always => false,
+        }
+    }
 }
 
 /// Whether an ending was a failure. A clean zero is the only success.
@@ -408,6 +419,14 @@ pub struct AgentRecord {
     /// this was kept: unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ending: Option<RunEnd>,
+    /// The restart policy a stop cleared, kept beside the `No` the stop
+    /// writes into `spec.restart` (which an older daemon reads, so it is
+    /// written as before). Written in the same commit as that `No` and
+    /// its `agent_restart_cleared`; a later stop, finding the policy
+    /// already `No`, leaves it. It is history: a reader says the policy
+    /// is cleared only while `spec.restart` is still `No`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_before_stop: Option<RestartPolicy>,
     /// Engine identity and intent for a managed container; never a host PID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<crate::container::ManagedContainer>,
@@ -888,6 +907,17 @@ impl AgentRecord {
         self.ending = ending;
     }
 
+    /// What a reader says of a restart policy a stop cleared: only while
+    /// `spec.restart` is still the `No` the stop wrote. Once a policy is
+    /// set again, the earlier clearing is history and is not said.
+    pub fn restart_cleared_words(&self) -> Option<String> {
+        let previous = self.restart_before_stop?;
+        self.spec
+            .restart
+            .is_no()
+            .then(|| format!("restart cleared by a stop (was {})", previous.describe()))
+    }
+
     /// What its status says, or, for a run that exited with evidence of
     /// how, that: `ended by signal 15` rather than `exited (code
     /// unknown)`. A live record says its status, whatever an earlier run
@@ -917,6 +947,7 @@ impl AgentRecord {
             restarts: 0,
             stop_requested: Some(false),
             ending: None,
+            restart_before_stop: None,
             host: "local".to_owned(),
             pid: None,
             process_started_at: None,

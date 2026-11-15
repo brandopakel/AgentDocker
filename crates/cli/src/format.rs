@@ -1216,9 +1216,31 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentOwnerReattached { agent, owner_pid } => {
             format!("owner reattached {} (owner pid {owner_pid})", agent.short())
         }
-        EventKind::AgentRestartCleared { agent } => {
-            format!("restart cleared  {}", agent.short())
-        }
+        EventKind::AgentRestartCleared { agent, previous } => match previous {
+            Some(previous) => format!(
+                "restart cleared  {} (was {})",
+                agent.short(),
+                previous.describe()
+            ),
+            None => format!("restart cleared  {}", agent.short()),
+        },
+        EventKind::AgentRestartsExhausted {
+            agent,
+            attempts,
+            policy,
+        } => format!(
+            "restarts given up {} ({}, {attempts} restarts)",
+            agent.short(),
+            policy.describe()
+        ),
+        EventKind::AgentRestartChanged { agent, view, .. } => match view {
+            Some(view) => format!(
+                "restart          {} {}",
+                agent.short(),
+                view.words(chrono::Utc::now())
+            ),
+            None => format!("restart          {} none pending", agent.short()),
+        },
         EventKind::AgentRestoreCleared { agent } => {
             format!("restore cleared  {}", agent.short())
         }

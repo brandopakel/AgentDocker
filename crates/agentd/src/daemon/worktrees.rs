@@ -1008,7 +1008,7 @@ impl Daemon {
             // before it is, so it is counted here rather than met later.
             let working = state.registry.all().find(|record| {
                 record.id != agent
-                    && (record.status.is_live() || state.pending_restarts.contains(&record.id))
+                    && (record.status.is_live() || state.pending_restarts.contains_key(&record.id))
                     && record.project.as_ref().is_some_and(|project| {
                         project::canonical(project.dir()).starts_with(&target)
                     })

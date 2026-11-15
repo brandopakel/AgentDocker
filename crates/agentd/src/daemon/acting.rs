@@ -271,6 +271,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::Runtimes
         | R::List { .. }
         | R::Inspect { .. }
+        | R::Restarts { .. }
         | R::Changes { .. }
         | R::Shutdown
         | R::Reload

@@ -134,6 +134,7 @@ control does, its id or its accessible label:
   evidence (`Evidence`) is the status chip's detail, where a weak word says
   so. Nothing is drawn for a daemon that gave no answer. The standing chip
   stays the one-word summary on every row.
+- **Whether an ended run comes back.** `chip::restart` draws the daemon's restart view (`RestartView::words`, from the last `restarts` answer of the current generation, joined to the record by its run; an `agent_restart_changed` only drops the agent's answer and asks again) beside an ended agent's standing chip, in the session row (`session-restart-<agent>`) and the inspector's header (`inspector-restart`): alert tone for a policy that gave up, neutral otherwise. Nothing is drawn for a live agent, for an answer read against another run of the record, or where the daemon could not say.
 - **A launch at a dead end.** A managed container the daemon refused to go on
   launching (`AgentRecord::container_dead_end`) is drawn by `chip::dead_end`
   beside the standing chip, in the session row (`session-dead-end-<agent>`)

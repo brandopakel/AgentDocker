@@ -284,6 +284,9 @@ enum Cmd {
     /// words for its Other, sent as written.
     AnswerChoices(MessageId, Vec<String>, Option<String>),
     SecretReviews,
+    /// Where each agent's restart stands, read for this generation of the
+    /// app's restart views.
+    Restarts(u64),
     SecretAnswer(String, agentdocker_core::secret::SecretAnswers),
     SecretCancel(String),
     DismissMessages(Vec<MessageId>),
@@ -482,6 +485,13 @@ enum Msg {
     SessionLog(String, Result<String, String>),
     Questions(Vec<Question>),
     SecretReviews(Vec<agentdocker_core::secret::SecretReview>),
+    /// The daemon's restart outlooks for the generation that asked, or
+    /// `None` where it could not say (an older daemon, a refused read),
+    /// which shows nothing rather than "none pending".
+    Restarts(
+        u64,
+        Option<BTreeMap<agentdocker_core::AgentId, agentdocker_core::restart::Outlook>>,
+    ),
     SecretCompleted,
     /// An answer came back: `Ok` means it was delivered, `Err` carries
     /// why it was not, so what the person typed is not thrown away.
@@ -650,6 +660,21 @@ pub struct App {
     /// Open questions put to the human; saved answer text lives in the shell.
     questions: Vec<Question>,
     secrets: secret_reviews::State,
+    /// Each agent's restart outlook, keyed by id, from the last `restarts`
+    /// answer of the current generation, joined to a record by its run.
+    /// An `agent_restart_changed` never installs a view here: it is not
+    /// ordered against an answer, so it only drops the agent's outlook
+    /// (unknown) and owes a fresh read.
+    restarts: BTreeMap<String, agentdocker_core::restart::Outlook>,
+    /// Bumped by every invalidation and connection change: an answer is
+    /// installed only for the generation still current.
+    restarts_generation: u64,
+    /// A read is owed for the current generation, not yet sent: kept
+    /// through a refused enqueue and a read already in flight.
+    restarts_owed: bool,
+    /// The generation of the read in flight, if one is: one at a time, so
+    /// invalidations coalesce.
+    restarts_in_flight: Option<u64>,
     /// What each agent is doing, keyed by id. Derived by the daemon, so
     /// it is read rather than computed here.
     activity: BTreeMap<String, Activity>,
@@ -774,6 +799,7 @@ impl App {
             Cmd::Connector,
             Cmd::Questions,
             Cmd::SecretReviews,
+            Cmd::Restarts(0),
             Cmd::Activity,
         ] {
             let _ = cmd_tx.send(cmd);
@@ -849,6 +875,10 @@ impl App {
             home,
             questions: Vec::new(),
             secrets: secret_reviews::State::default(),
+            restarts: BTreeMap::new(),
+            restarts_generation: 0,
+            restarts_owed: false,
+            restarts_in_flight: Some(0),
             sending: std::collections::BTreeSet::new(),
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
@@ -943,6 +973,10 @@ impl App {
             home: std::path::PathBuf::new(),
             questions: Vec::new(),
             secrets: secret_reviews::State::default(),
+            restarts: BTreeMap::new(),
+            restarts_generation: 0,
+            restarts_owed: false,
+            restarts_in_flight: None,
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             identity: BTreeMap::new(),
@@ -999,6 +1033,55 @@ impl App {
         }
     }
 
+    /// An agent's restart outlook (or every one) is no longer known: drop
+    /// it, end the generation every earlier answer belongs to, and owe a
+    /// fresh read, sent now unless one is already in flight.
+    pub(super) fn invalidate_restarts(&mut self, agent: Option<&str>) {
+        match agent {
+            Some(agent) => {
+                self.restarts.remove(agent);
+            }
+            None => self.restarts.clear(),
+        }
+        self.restarts_generation += 1;
+        self.restarts_owed = true;
+        self.ask_restarts();
+    }
+
+    /// Send the owed read, one at a time: a read in flight is answered
+    /// first, and its answer, of an older generation, asks again.
+    pub(super) fn ask_restarts(&mut self) {
+        if !self.restarts_owed || self.restarts_in_flight.is_some() || !self.link.is_up() {
+            return;
+        }
+        self.restarts_owed = false;
+        self.restarts_in_flight = Some(self.restarts_generation);
+        self.send(Cmd::Restarts(self.restarts_generation));
+    }
+
+    /// An answer to a read: installed whole only for the generation still
+    /// current; an older one is dropped and the owed read sent.
+    fn restarts_answered(
+        &mut self,
+        generation: u64,
+        outlooks: Option<BTreeMap<agentdocker_core::AgentId, agentdocker_core::restart::Outlook>>,
+    ) {
+        if self.restarts_in_flight == Some(generation) {
+            self.restarts_in_flight = None;
+        }
+        // An older answer is dropped. The invalidation that ended its
+        // generation already owes the read that replaces it, sent once
+        // nothing is in flight.
+        if generation == self.restarts_generation {
+            self.restarts = outlooks
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(id, outlook)| (id.to_string(), outlook))
+                .collect();
+        }
+        self.ask_restarts();
+    }
+
     /// A command the worker queue would not take. It never reaches the
     /// daemon and no answer to it will come, so whatever was waiting for
     /// one is told here, or it would wait for good.
@@ -1013,6 +1096,12 @@ impl App {
     /// the status line.
     fn rejected(&mut self, command: Cmd, reason: &'static str) {
         match command {
+            // Refused, the read is still owed: the next tick sends it.
+            Cmd::Restarts(_) => {
+                self.restarts_in_flight = None;
+                self.restarts_owed = true;
+                return;
+            }
             Cmd::SecretAnswer(..) | Cmd::SecretCancel(_) => {
                 self.say("Temporary input action was not queued. Edits were cleared; cancel this request rather than submitting it again.");
                 return;
@@ -1805,6 +1894,9 @@ impl App {
                 Msg::SecretCompleted => {
                     self.send(Cmd::SecretReviews);
                 }
+                Msg::Restarts(generation, outlooks) => {
+                    self.restarts_answered(generation, outlooks);
+                }
                 Msg::Questions(questions) => {
                     if self
                         .shell
@@ -1950,6 +2042,11 @@ impl App {
                         // asks the new one, and leaves the legacy Inbox
                         // when it answers.
                         self.send(Cmd::Conversations(self.conversation_scope()));
+                        // Another daemon, perhaps: whatever the last one said
+                        // is dropped and asked again, and a read still in
+                        // flight on the old connection is not waited for.
+                        self.restarts_in_flight = None;
+                        self.invalidate_restarts(None);
                         if let Some(project) = &self.journal_project {
                             self.request_journal(project.clone());
                         }
@@ -1965,6 +2062,13 @@ impl App {
                 Msg::Disconnected(from, reason) => {
                     if self.link.lost(from, reason) {
                         self.secrets.disconnect();
+                        // Nothing the lost connection said, or still owes,
+                        // is installed after it: every generation in flight
+                        // ends.
+                        self.restarts.clear();
+                        self.restarts_generation += 1;
+                        self.restarts_owed = false;
+                        self.restarts_in_flight = None;
                         // A page asked for will not come: a notification's
                         // search ends rather than wait on it, and a usage
                         // read on its way is not waited for either — the
@@ -2314,7 +2418,13 @@ impl App {
             | EventKind::HumanLocationChanged { .. }
             | EventKind::AgentVcsChanged { .. }
             | EventKind::AgentTeamChanged { .. }
-            | EventKind::AdapterContactReported { .. } => self.send(Cmd::Agents),
+            | EventKind::AdapterContactReported { .. } => {
+                self.send(Cmd::Agents);
+                if let EventKind::AgentExited { agent, .. } = &event.kind {
+                    let agent = agent.to_string();
+                    self.invalidate_restarts(Some(&agent));
+                }
+            }
             EventKind::InputDeliveryReported { .. }
             | EventKind::InputHeldForTyping { .. }
             | EventKind::InputBound { .. }
@@ -2492,6 +2602,16 @@ impl App {
                 self.on_conversation_activity();
             }
             EventKind::SecretReviewChanged { .. } => self.send(Cmd::SecretReviews),
+            // Where a restart stands moved: its outlook is unknown until
+            // read again. The event's own view is not installed; it is not
+            // ordered against an answer, and could roll one back.
+            EventKind::AgentRestartChanged { agent, .. }
+            | EventKind::AgentRestartsExhausted { agent, .. }
+            | EventKind::AgentRestartCleared { agent, .. }
+            | EventKind::AgentRestarted { agent, .. } => {
+                let agent = agent.to_string();
+                self.invalidate_restarts(Some(&agent));
+            }
             EventKind::QuestionClosed { .. }
             | EventKind::QuestionCancelled { .. }
             | EventKind::QuestionStale { .. } => self.send(Cmd::Questions),
@@ -4331,6 +4451,18 @@ fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Opt
         })? {
             Response::Questions { questions } => Some(Msg::Questions(questions)),
             _ => None,
+        },
+        Cmd::Restarts(generation) => match client.call(&Request::Restarts { agent: None }) {
+            Ok(Response::Restarts { outlooks }) => Some(Msg::Restarts(generation, Some(outlooks))),
+            // A daemon that answered and cannot say (an older one refuses
+            // the request): unknown, nothing shown, never "none".
+            Ok(_) => Some(Msg::Restarts(generation, None)),
+            Err(error) if error.downcast_ref::<RemoteError>().is_some() => {
+                Some(Msg::Restarts(generation, None))
+            }
+            // No daemon answered: that is the link's to say, through the
+            // worker's Disconnected; the read in flight ends with it.
+            Err(error) => return Err(error),
         },
         Cmd::SecretReviews => {
             match client.call(&Request::SecretReviews {
@@ -6584,6 +6716,69 @@ pub(crate) mod tests {
         results.try_iter().collect()
     }
 
+    /// A restart read through the real worker: an answer; an older
+    /// daemon's refusal, which is unknown and leaves the connection up; and
+    /// a socket that closes without an answer, which brings no Connected,
+    /// a Disconnected, and no restart answer, so the app has no read left
+    /// in flight once it is told of the loss.
+    #[cfg(unix)]
+    #[test]
+    fn a_restart_read_tells_a_refusal_from_a_lost_connection() {
+        use serde_json::json;
+        let request = json!({"op": "restarts"});
+        let answered = command_with_replies(
+            Cmd::Restarts(3),
+            vec![(
+                request.clone(),
+                Some(json!({"type": "restarts", "outlooks": {}})),
+            )],
+        );
+        assert!(
+            answered
+                .iter()
+                .any(|m| matches!(m, Msg::Restarts(3, Some(o)) if o.is_empty()))
+        );
+        let refused = command_with_replies(
+            Cmd::Restarts(4),
+            vec![(
+                request.clone(),
+                Some(json!({"type": "error", "code": "invalid",
+                    "message": "malformed request: unknown variant `restarts`"})),
+            )],
+        );
+        assert!(refused.iter().any(|m| matches!(m, Msg::Restarts(4, None))));
+        assert!(
+            !refused.iter().any(|m| matches!(m, Msg::Disconnected(..))),
+            "a refusal is an answer, not a lost connection"
+        );
+        let lost = command_with_replies(Cmd::Restarts(5), vec![(request, None)]);
+        assert!(
+            !lost.iter().any(|m| matches!(m, Msg::Connected(_))),
+            "no daemon answered"
+        );
+        assert!(!lost.iter().any(|m| matches!(m, Msg::Restarts(..))));
+        let disconnected = lost
+            .into_iter()
+            .find(|m| matches!(m, Msg::Disconnected(..)))
+            .expect("the loss is said");
+        // The app, told of it, waits on no restart read.
+        let (commands, _requests) = queue::channel();
+        let (messages, results) = sync_channel(MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.link.open();
+        app.invalidate_restarts(None);
+        assert!(app.restarts_in_flight.is_some());
+        let Msg::Disconnected(_, reason) = disconnected else {
+            unreachable!()
+        };
+        messages
+            .send(Msg::Disconnected(link::Report::Stream, reason))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.restarts_in_flight, None);
+        assert!(!app.restarts_owed);
+    }
+
     /// A palette read through the real client: roles, an older daemon
     /// that cannot read the request (no roles there), and any other error
     /// (asked again later).
@@ -7821,6 +8016,137 @@ pub(crate) mod tests {
         assert_eq!(app.pause_states.len(), PAUSE_CONTROLS);
     }
 
+    /// The app never installs a superseded restart answer, through its
+    /// real message handler. A change event only drops the agent's answer
+    /// and owes a read: an older event delivered after a newer answer
+    /// never rolls it back; an older answer delivered after a newer event,
+    /// or after a clear, is dropped; a refused read stays owed until a
+    /// tick sends it; and a lost connection ends every read in flight.
+    #[test]
+    fn restart_answers_are_installed_only_for_the_current_generation() {
+        use agentdocker_core::restart::{Outlook, RestartView, RunEvidence};
+        use agentdocker_core::{AgentSpec, AgentStatus, Event, EventKind};
+        let (tx, requests) = queue::channel();
+        let (messages, rx) = sync_channel::<Msg>(MESSAGE_CAPACITY);
+        let mut app = App::bare(tx, rx);
+        app.link.open();
+        let mut agent = AgentRecord::new(AgentSpec::default(), true, Utc::now());
+        agent.end_run(AgentStatus::Exited { code: Some(1) }, None);
+        let id = agent.id.to_string();
+        let answer = |view| {
+            let mut outlooks = BTreeMap::new();
+            outlooks.insert(
+                agent.id.clone(),
+                Outlook {
+                    run: RunEvidence::of(&agent),
+                    view: Some(view),
+                },
+            );
+            Some(outlooks)
+        };
+        let scheduled = RestartView::Scheduled {
+            attempt: 1,
+            of: Some(3),
+            at: None,
+        };
+        let starting = RestartView::Starting { attempt: 1 };
+        let changed = |view| {
+            Msg::Event(Box::new(Event::new(
+                EventKind::AgentRestartChanged {
+                    agent: agent.id.clone(),
+                    view,
+                    run: Some(RunEvidence::of(&agent)),
+                },
+                Utc::now(),
+            )))
+        };
+        let asked = |requests: &queue::Receiver| -> Vec<u64> {
+            requests
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::Restarts(generation) => Some(generation),
+                    _ => None,
+                })
+                .collect()
+        };
+        let view = |app: &App| app.restarts.get(&id).and_then(|o| o.view);
+
+        // A read for the current generation, and its answer installed.
+        app.invalidate_restarts(None);
+        let first = app.restarts_generation;
+        assert_eq!(asked(&requests), vec![first]);
+        messages
+            .send(Msg::Restarts(first, answer(starting)))
+            .unwrap();
+        app.drain();
+        assert_eq!(view(&app), Some(starting));
+        // An older Changed(Scheduled), delivered after the newer answer,
+        // never reinstalls Scheduled: it drops the answer and asks again.
+        messages.send(changed(Some(scheduled))).unwrap();
+        app.drain();
+        assert_eq!(view(&app), None, "unknown, never rolled back");
+        let second = app.restarts_generation;
+        assert_eq!(asked(&requests), vec![second]);
+        // An older answer held behind that change is dropped.
+        messages
+            .send(Msg::Restarts(first, answer(scheduled)))
+            .unwrap();
+        app.drain();
+        assert_eq!(view(&app), None, "a superseded answer is not installed");
+        messages
+            .send(Msg::Restarts(second, answer(starting)))
+            .unwrap();
+        app.drain();
+        assert_eq!(view(&app), Some(starting));
+        // Behind a clear: the old answer still in flight installs nothing,
+        // and the read owed meanwhile goes out once it is answered.
+        messages.send(changed(None)).unwrap();
+        app.drain();
+        let third = app.restarts_generation;
+        assert_eq!(asked(&requests), vec![third]);
+        messages.send(changed(None)).unwrap();
+        app.drain();
+        assert_eq!(
+            asked(&requests),
+            Vec::<u64>::new(),
+            "coalesced behind the read in flight"
+        );
+        messages
+            .send(Msg::Restarts(third, answer(scheduled)))
+            .unwrap();
+        app.drain();
+        assert_eq!(view(&app), None, "behind a later clear: dropped");
+        let fourth = app.restarts_generation;
+        assert_eq!(asked(&requests), vec![fourth], "the owed read follows");
+        // Refused by the queue, the read stays owed until a tick sends it.
+        app.rejected(Cmd::Restarts(fourth), "queue full");
+        assert!(app.restarts_owed);
+        let _ = app.update(Message::Tick);
+        assert_eq!(asked(&requests), vec![fourth]);
+        // A lost connection ends every read in flight: its reply, late,
+        // installs nothing in the next connection.
+        messages
+            .send(Msg::Disconnected(link::Report::Stream, "gone".into()))
+            .unwrap();
+        app.drain();
+        assert!(app.restarts.is_empty());
+        messages
+            .send(Msg::Restarts(fourth, answer(starting)))
+            .unwrap();
+        app.drain();
+        assert_eq!(view(&app), None, "the old connection's reply");
+        messages.send(Msg::Connected(link::Report::Stream)).unwrap();
+        app.drain();
+        let fresh = app.restarts_generation;
+        assert!(fresh > fourth);
+        assert!(asked(&requests).contains(&fresh));
+        messages
+            .send(Msg::Restarts(fresh, answer(scheduled)))
+            .unwrap();
+        app.drain();
+        assert_eq!(view(&app), Some(scheduled));
+    }
+
     #[test]
     fn reconnect_refreshes_all_snapshots_including_the_selected_journal() {
         let (tx, requests) = queue::channel();
@@ -7835,7 +8161,11 @@ pub(crate) mod tests {
         app.drain();
         let received: Vec<_> = requests.try_iter().collect();
         assert!(app.link.is_up());
-        assert_eq!(received.len(), 14);
+        assert_eq!(received.len(), 15);
+        assert!(
+            received.iter().any(|cmd| matches!(cmd, Cmd::Restarts(_))),
+            "restart views are read again for the new connection"
+        );
         assert!(
             received.iter().any(|cmd| matches!(cmd, Cmd::Ping)),
             "which daemon serves is asked on every connection"

@@ -1035,7 +1035,10 @@ fn a_record_read_ahead_of_the_events_cannot_let_what_waits_start() {
             pid: None,
             attempt: 1,
         },
-        EventKind::AgentRestartCleared { agent: id.clone() },
+        EventKind::AgentRestartCleared {
+            agent: id.clone(),
+            previous: None,
+        },
         EventKind::AgentStopping {
             agent: id.clone(),
             force: false,
