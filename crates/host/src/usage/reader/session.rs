@@ -140,7 +140,23 @@ impl Session {
         bytes: u64,
         elapsed: Duration,
     ) -> Result<Preparation, Error> {
-        if bytes == 0 || bytes > MAX_BATCH || elapsed.is_zero() {
+        if elapsed.is_zero() {
+            return Err(Error::Budget);
+        }
+        self.prepare_while(path, bytes, |start| start.elapsed() < elapsed)
+    }
+
+    /// [`Self::prepare_next`], reading on while `more` says so: asked, with
+    /// the time the pass started, before each read of the file. The
+    /// deadline is one such answer; a test gives another, to end a pass at
+    /// a chosen point with no clock involved.
+    fn prepare_while(
+        &mut self,
+        path: &Path,
+        bytes: u64,
+        mut more: impl FnMut(Instant) -> bool,
+    ) -> Result<Preparation, Error> {
+        if bytes == 0 || bytes > MAX_BATCH {
             return Err(Error::Budget);
         }
         let mut file = crate::files::open_regular(path)?;
@@ -152,7 +168,7 @@ impl Session {
         file.seek(SeekFrom::Start(from))?;
         let allowance = bytes.min(self.cursor.offset - from);
         let mut reader = BufReader::with_capacity(8192, file.take(allowance));
-        while self.checked < self.cursor.offset && start.elapsed() < elapsed {
+        while self.checked < self.cursor.offset && more(start) {
             let available = reader.fill_buf()?;
             if available.is_empty() {
                 break;
@@ -711,47 +727,41 @@ mod tests {
     }
 
     /// A proof's passes add up to its prefix however the deadline cuts
-    /// them. A pass its deadline ends stops at a record boundary with up
-    /// to a buffer's worth taken from the file but not hashed; those bytes
-    /// are the next pass's, counted once. A deadline of a fraction of a
-    /// millisecond ends nearly every pass that way, at whatever point in
-    /// a buffer it is reached, which is where a loaded runner ends a 100 ms
-    /// pass over a megabyte.
+    /// them. A pass the deadline ends stops at a record boundary with the
+    /// rest of its buffer taken from the file but not hashed; those bytes
+    /// are the next pass's, counted once. Each pass here is ended after
+    /// one read of the file, a record of about 5.8 KB out of an 8 KiB
+    /// buffer, so every pass stops mid-buffer, on any machine: counted as
+    /// taken, each would be 8,192 and the sum past the file.
     #[test]
-    fn passes_cut_by_their_deadline_count_each_byte_once() {
+    fn passes_cut_mid_buffer_count_each_byte_once() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("cut.jsonl");
-        let text: String = (0..400).map(row).collect();
+        let rows: Vec<String> = (0..40).map(row).collect();
+        let text = rows.concat();
+        assert!(rows.iter().all(|row| row.len() < 8192 && row.len() > 4096));
         std::fs::write(&path, &text).unwrap();
         let (cursor, _) = collect(&path, None);
         let captured = Cursor::capture(&path, Runtime::Claude).unwrap();
         let mut session = Session::at_snapshot(captured, Some(&cursor)).unwrap();
-        let started = Instant::now();
-        let (mut bytes, mut passes) = (0u64, 0u32);
+        let mut counted = Vec::new();
         loop {
+            let mut reads = 0;
             let progress = session
-                .prepare_next(&path, MAX_BATCH, Duration::from_micros(100))
+                .prepare_while(&path, MAX_BATCH, |_| {
+                    reads += 1;
+                    reads == 1
+                })
                 .unwrap();
-            bytes += progress.bytes_read;
-            passes += 1;
-            assert!(
-                bytes <= text.len() as u64,
-                "pass {passes} counted past the file: {bytes} of {}",
-                text.len()
-            );
+            counted.push(progress.bytes_read);
             if progress.ready {
                 break;
             }
-            assert!(
-                started.elapsed() < Duration::from_secs(60),
-                "the proof did not finish in {passes} passes"
-            );
+            assert!(counted.len() <= rows.len(), "{counted:?}");
         }
-        assert_eq!(bytes, text.len() as u64);
-        assert!(
-            passes > 1,
-            "a proof cut by its deadline takes several passes"
-        );
+        let lengths: Vec<u64> = rows.iter().map(|row| row.len() as u64).collect();
+        assert_eq!(counted, lengths, "a record a pass, each counted once");
+        assert_eq!(counted.iter().sum::<u64>(), text.len() as u64);
     }
 
     #[test]
