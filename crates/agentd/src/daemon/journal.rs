@@ -14,6 +14,26 @@ pub(super) struct JournalArgs {
     pub digest: Option<DigestRequest>,
 }
 
+/// How long git has to say what a checkout has uncommitted, for one
+/// batch of file changes.
+const UNCOMMITTED_READ: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The paths of the checkout `dir` that differ from its HEAD: what tells
+/// a change somebody made from one git made. `None` when that cannot be
+/// known, and every change there then counts as somebody's, as it did
+/// before this was asked: `dir` is not a git checkout's own root (git
+/// names paths from the root, so a watched folder inside one would be
+/// compared with nothing), or git did not answer in time.
+fn uncommitted(dir: &Path) -> Option<HashSet<PathBuf>> {
+    if !dir.join(".git").exists() {
+        return None;
+    }
+    let deadline = std::time::Instant::now() + UNCOMMITTED_READ;
+    vcs::dirty_paths(dir, deadline)
+        .ok()
+        .map(|paths| paths.into_iter().map(PathBuf::from).collect())
+}
+
 impl Daemon {
     pub(super) async fn journal(&self, project: &str, args: JournalArgs) -> Response {
         let JournalArgs {
@@ -128,16 +148,21 @@ impl Daemon {
             dirs.dedup();
             dirs
         };
-        let heads: HashMap<PathBuf, Option<String>> = tokio::task::spawn_blocking(move || {
-            dirs.into_iter()
-                .map(|dir| {
-                    let head = vcs::state(&dir).and_then(|s| s.head);
-                    (dir, head)
-                })
-                .collect()
-        })
-        .await
-        .unwrap_or_default();
+        // Where each touched checkout's HEAD is, and what it has that
+        // differs from it: read once per checkout for the batch, off the
+        // lock.
+        let (heads, differing): (HashMap<PathBuf, Option<String>>, HashMap<PathBuf, _>) =
+            tokio::task::spawn_blocking(move || {
+                dirs.into_iter()
+                    .map(|dir| {
+                        let head = vcs::state(&dir).and_then(|s| s.head);
+                        let differs = uncommitted(&dir);
+                        ((dir.clone(), head), (dir, differs))
+                    })
+                    .unzip()
+            })
+            .await
+            .unwrap_or_default();
         let observed = tokio::task::spawn_blocking(move || {
             observed
                 .into_iter()
@@ -250,8 +275,20 @@ impl Daemon {
                     }
                     state.warn_readers(&change, physical.as_deref());
                     // A second checkout on this path means two agents are in the
-                    // same work: give them a room.
-                    state.note_contested(&change);
+                    // same work: give them a room. Only for a change somebody
+                    // made, though. A pull, a merge or a branch switch writes
+                    // every file of the work it brings in, and each of them
+                    // then equals the checkout's HEAD: git put it there, and
+                    // whoever made that change made it elsewhere, already.
+                    let brought_by_git = change
+                        .checkout
+                        .as_ref()
+                        .and_then(|dir| differing.get(dir))
+                        .and_then(Option::as_ref)
+                        .is_some_and(|differs| !differs.contains(&change.path));
+                    if !brought_by_git {
+                        state.note_contested(&change);
+                    }
                     debug!(project = %change.project.short(), path = %change.path.display(), kind = %change.kind, "file changed");
                     let _ = state
                         .events

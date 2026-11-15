@@ -12180,6 +12180,107 @@ async fn a_second_checkout_touching_a_path_opens_a_channel_by_itself() {
     assert_eq!(closed.resolution.as_deref(), Some("everyone left"));
 }
 
+/// Work that git brings into a checkout is not that checkout's change. A
+/// pull, a merge or a branch switch writes every file of it, and each
+/// then equals the checkout's HEAD. So merging a branch into the main
+/// checkout while its author's worktree is still there opens no room
+/// between the two, though the ledger has both checkouts changing those
+/// paths; an edit neither has committed, of one path in both, still
+/// opens one.
+#[tokio::test]
+async fn work_git_brings_into_a_checkout_opens_no_room_with_its_author() {
+    if !have_git() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let repo = dir.path().join("repo");
+    std::fs::create_dir_all(repo.join("src")).unwrap();
+    std::fs::write(repo.join("src/a.rs"), "a\n").unwrap();
+    std::fs::write(repo.join("src/b.rs"), "b\n").unwrap();
+    assert!(git(dir.path(), &repo, &["init", "-q"]));
+    assert!(git(dir.path(), &repo, &["add", "."]));
+    assert!(git(dir.path(), &repo, &["commit", "-q", "-m", "root"]));
+    let daemon = open(&dir);
+    daemon.expect_watcher();
+    tokio::spawn(crate::watcher::run(
+        daemon.clone(),
+        std::time::Duration::from_secs(60),
+        std::time::Duration::from_millis(50),
+    ));
+    register_in(&daemon, "home", &repo).await;
+    let Response::Worktree { path: side, .. } = daemon
+        .handle(Request::WorktreeCreate {
+            agent: "home".into(),
+            path: None,
+            branch: "side".into(),
+            from: None,
+            seed_build: Vec::new(),
+        })
+        .await
+    else {
+        panic!("no worktree")
+    };
+    register_in(&daemon, "author", &side).await;
+    let main = project::canonical(&repo);
+    let rooms = async || match daemon
+        .handle(Request::Channels {
+            project: String::new(),
+            all: true,
+            agent: Some("home".into()),
+        })
+        .await
+    {
+        Response::Channels { channels } => channels,
+        other => panic!("{other:?}"),
+    };
+    let recorded = async |checkout: &Path, path: &str| {
+        eventually(async || {
+            ledger(&daemon, &repo, None)
+                .await
+                .into_iter()
+                .find(|change| {
+                    change.checkout.as_deref() == Some(checkout) && change.path == Path::new(path)
+                })
+        })
+        .await
+    };
+
+    // The author's work: an edit in its own worktree, then a commit.
+    std::fs::write(side.join("src/a.rs"), "a from the author\n").unwrap();
+    recorded(&side, "src/a.rs").await;
+    assert!(git(dir.path(), &side, &["add", "."]));
+    assert!(git(
+        dir.path(),
+        &side,
+        &["commit", "-q", "-m", "the author's work"]
+    ));
+    // Brought into the main checkout by git. The ledger has the row, and
+    // the room a row opens is opened in the step that records it.
+    assert!(git(dir.path(), &repo, &["merge", "-q", "side"]));
+    assert_eq!(
+        std::fs::read_to_string(repo.join("src/a.rs")).unwrap(),
+        "a from the author\n"
+    );
+    recorded(&main, "src/a.rs").await;
+    assert_eq!(
+        rooms().await.len(),
+        0,
+        "the main checkout only took in what the author had made"
+    );
+
+    // An edit neither has committed, of one path in both, is a collision.
+    std::fs::write(repo.join("src/b.rs"), "b from main\n").unwrap();
+    std::fs::write(side.join("src/b.rs"), "b from the author\n").unwrap();
+    let opened = eventually(async || {
+        let found = rooms().await;
+        (!found.is_empty()).then_some(found)
+    })
+    .await;
+    assert_eq!(opened.len(), 1, "{opened:?}");
+    assert_eq!(opened[0].members.len(), 2, "both agents are in it");
+    assert_eq!(opened[0].paths(), [PathBuf::from("src/b.rs")]);
+}
+
 #[tokio::test]
 async fn a_managed_agent_with_a_tty_gets_a_terminal_and_a_session() {
     let dir = TempDir::new().unwrap();
