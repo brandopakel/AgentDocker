@@ -276,12 +276,42 @@ human answer arrives through the normal channel queue with `reply_to` naming
 that question. Acknowledge its message ID after receiving its complete content.
 Other providers and ordinary MCP mode retain their blocking question tool.
 
-The parent input-mode variable suppresses hook inbox injection even while the
-channel reconnects. Hooks also detect a held channel ownership lock for their
-agent, preventing an active adapter from racing hook delivery when only the
-MCP child's environment carried the variable. Activity and lease operations
-continue through hooks. One private lock permits one channel adapter per agent
-and daemon home; a duplicate entry exits with an explicit error.
+Who reads the queue is decided under the delivery gates, a bounded set of
+lock files in the channel ownership folder. An adapter takes them before its
+owner locks and lets them go once it owns the session. A hook takes them before
+it looks at the owner locks and keeps them until its output is written and
+acknowledged. So no adapter can begin to serve, or read the queue, while a
+hook that found none is delivering, and a hook's look can never make a starting
+adapter fail. The hooks read the queue only on proof:
+
+- every owner lock is free while they hold the gates: they deliver everything,
+  whatever pause the record keeps;
+- the adapter instance that holds the lock wrote a receipt-missing pause (each
+  adapter writes a random token into its lock files, and its pause names it):
+  they deliver that one stalled message, and only while it heads the queue. A
+  receipt that removes it meanwhile can repeat it, never a message behind it,
+  and while an adapter keeps stalling the hooks take at most one
+  already-stalled message per eligible hook.
+
+An owner that has not said it stalled, a pause from an earlier adapter of the
+same provider process, and ownership that cannot be read all keep the queue for
+the channel. In the last case each hook says on stderr, and the session's
+context says at its start and on each prompt, that delivery cannot be decided;
+its messages stay queued until it can be. The parent's opt-in does not hold the
+hooks back by itself. Activity and lease operations continue through hooks.
+
+A start that finds its provider process's lock held under the gates is a
+duplicate MCP entry: it reports nothing and exits with an explicit error. Only
+a start that holds its provider generation's process lock may report a failure,
+`The Claude channel adapter could not start: <cause>. The session's hooks
+deliver its messages.`, and it holds that lock and the gates until the report
+is made. A start that cannot establish ownership (no provider process or
+generation, an unusable gate or lock file) reports nothing, since an owner may
+be serving behind the fault. These guarantees hold among adapters and hooks of
+this version. One from before it, still running across an upgrade, takes no
+gate and writes no token, so it is served on a best-effort basis, and a
+downgrade is not supported. On Windows a held lock cannot be read, so a held
+owner's state there counts as unknown.
 
 The channel transport permits eight concurrent ordinary RPC calls. Extra
 requests receive a visible retryable capacity error. A separate control path
@@ -313,7 +343,7 @@ disconnected window labels cached status. A receipt is not permission to act.
 Channel ownership uses both the agent ID and the provider process generation.
 If SessionStart folds an uninitialized registration before its channel starts
 input, a second MCP entry still cannot acquire another channel under the new
-canonical ID. Hooks check the process lock too. A channel that has already
+canonical ID. Hooks check the process lock too, under the same gates. A channel that has already
 initialized is not folded behind its offered head.
 `claude_channel_smoke.py --resume` checks this boundary and the
 initialized-receiver refusal using real daemon/MCP processes with fixture

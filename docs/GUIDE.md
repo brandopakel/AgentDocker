@@ -749,7 +749,7 @@ be set.
 | `AGENTDOCKER_SOCKET` | daemon, commands, app | The socket to serve or connect to (`<home>/agentd.sock`). |
 | `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` | commands, hooks, MCP | Who is speaking: the default for `--as` and `--from`. `run` sets both in a managed agent's environment. An agent speaks only as itself: a command acting as an agent is answered only from inside that agent's own session (its shell, hooks, MCP server, and what they start) or from yours (the app, your own terminal, outside every agent's session); from inside another agent's session it is refused `identity_mismatch` (exit 5), whatever `--as`, `--from` or this variable says. |
 | `AGENTDOCKER_NO_AUTOSTART=1` | commands, app | A client that cannot connect does not start a daemon. |
-| `AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1` | Claude Code hooks | On a session launched with the channel: hooks leave inbox delivery to the channel and only observe. The parent `claude`'s own flag wins where it can be read, and the hooks deliver again when the channel's queue has paused on an unconfirmed message. `run --claude-channel` sets it. |
+| `AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1` | `agentdocker mcp --claude-channel` | On a session launched with the channel: the MCP entry serves the channel. The parent `claude`'s own flag wins where it can be read. The hooks do not read it: they leave the queue to a channel adapter that holds the session, deliver it when none does, and take over the one message a holding adapter stalled on (see [Claude channel setup](CLAUDE-CHANNEL-INPUT.md)). `run --claude-channel` sets it. |
 | `AGENTDOCKER_CODEX_INPUT=1` | Codex hooks, bridge | On a Codex process AgentDocker launched with input: delivery goes through the bridge. `run --codex-input` and the app's **Idle messages: On** set it. |
 | `AGENTDOCKER_NO_NOTIFICATIONS=1` | daemon | Post no desktop notifications. |
 | `AGENTDOCKER_UPDATE_FEED` | `desktop update` | A feed other than the published one, as a URL or a file, for an offline trial. |
@@ -1408,8 +1408,9 @@ Current behaviour that the sections above do not already state, by area.
 
 - A Claude Code session survives Claude's own restart. Restarting in place
   re-executes `claude` without the channel flag; the flag on the running
-  `claude` decides whether the channel is used, and the hooks deliver whatever
-  a stalled channel holds at the session's next prompt or tool use.
+  `claude` decides whether the channel is used. With no channel adapter
+  holding the session, the hooks deliver its messages at its next prompt or
+  tool use; where an adapter stalled on a message, they deliver that message.
 
 - **A provider outage does not stop an agent for good.** When a provider's
   servers fail (overloaded, unreachable), the agent's queued messages wait a

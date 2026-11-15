@@ -34,11 +34,27 @@ pub(crate) mod native_identity;
 mod output;
 pub(crate) const CLAUDE_CHANNEL_INPUT: &str = "AGENTDOCKER_CLAUDE_CHANNEL_INPUT";
 
-pub(crate) fn channel_input_active(
+pub(crate) use channel::Probe as ChannelProbe;
+#[cfg(test)]
+pub(crate) use channel::{Start as ChannelStart, start_for as channel_start_for};
+
+/// Probe `agent`'s Claude channel ownership under the delivery gates,
+/// waiting for them until `deadline`; the probe holds them until dropped.
+pub(crate) async fn channel_probe(
     home: &std::path::Path,
     agent: &agentdocker_core::AgentRecord,
-) -> Result<bool> {
-    channel::active_for(home, agent)
+    deadline: tokio::time::Instant,
+) -> ChannelProbe {
+    channel::probe(home, agent, deadline).await
+}
+
+/// Whether a Claude channel adapter holds `agent`'s session.
+pub(crate) async fn channel_held(
+    home: &std::path::Path,
+    agent: &agentdocker_core::AgentRecord,
+    deadline: tokio::time::Instant,
+) -> bool {
+    channel::held(home, agent, deadline).await
 }
 
 const SUPPORTED_PROTOCOLS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
@@ -380,15 +396,14 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
     // only retires a registration whose owning process has ended.
     // Hold ownership through the final status write so a successor adapter's
     // ready report cannot be overwritten after this adapter releases its lock.
-    let _channel_owner = if server.claude_channel {
-        Some(channel::acquire(&server.identity)?)
+    let channel_owner = if server.claude_channel {
+        Some(settle_start(&server, channel::acquire(&server.identity).await).await?)
     } else {
         None
     };
-    let outcome = if server.claude_channel {
-        channel::serve(&server).await
-    } else {
-        pump(&server).await
+    let outcome = match &channel_owner {
+        Some(owner) => channel::serve(&server, &owner.token).await,
+        None => pump(&server).await,
     };
     if server.claude_channel
         && let Err(cause) = &outcome
@@ -406,6 +421,43 @@ pub async fn serve(client: Client, args: McpArgs) -> Result<()> {
     }
     server.shutdown().await;
     outcome
+}
+
+/// What a channel adapter does with its start: serve as the owner, or end,
+/// reporting a failure only from a start that holds its provider
+/// generation's lock (and keeps it through the report), so that no other
+/// adapter's word for this generation can be overwritten. A duplicate and
+/// a start that could not establish ownership report nothing: an owner may
+/// be serving.
+async fn settle_start<B: Backend>(
+    server: &McpServer<B>,
+    start: channel::Start,
+) -> Result<channel::Owner> {
+    match start {
+        channel::Start::Owned(owner) => Ok(owner),
+        channel::Start::Duplicate => bail!(
+            "another channel adapter already serves this session's provider process; close the duplicate MCP entry"
+        ),
+        channel::Start::Unknown(cause) => Err(cause.context(
+            "channel ownership could not be established; nothing was reported, and the session's messages stay queued until it can be",
+        )),
+        channel::Start::Failed { cause, held } => {
+            let reason =
+                agentdocker_core::input::channel_not_started_reason(&format!("{cause:#}"));
+            if let Err(error) = crate::input_status::report(
+                &server.backend,
+                &server.identity.id,
+                server.identity.host_started_at,
+                agentdocker_core::InputReport::Paused { reason },
+            )
+            .await
+            {
+                eprintln!("agentdocker channel: could not report the failed start: {error:#}");
+            }
+            drop(held);
+            Err(cause.context("the channel adapter could not start"))
+        }
+    }
 }
 
 /// Read requests until stdin closes or an I/O error ends the session.
@@ -3855,6 +3907,100 @@ mod tests {
             backend.requests().len(),
             1,
             "two sessions are not told apart"
+        );
+    }
+
+    /// A start reports only a failure it holds its provider generation's
+    /// lock for, and holds it, with the gates, through the report; a
+    /// duplicate of a serving owner and a start that cannot establish
+    /// ownership report nothing at all.
+    #[tokio::test]
+    async fn a_channel_start_reports_only_a_failure_it_holds_the_generation_for() {
+        use agentdocker_core::input::{PauseKind, channel::Ownership, pause_kind};
+        struct Watching {
+            home: std::path::PathBuf,
+            record: agentdocker_core::AgentRecord,
+            seen: std::sync::Mutex<Vec<(Request, Ownership)>>,
+        }
+        impl Backend for Watching {
+            async fn call(&self, request: Request) -> Result<Response> {
+                // What a hook would find at the moment of the report.
+                let found = channel::probe(&self.home, &self.record, tokio::time::Instant::now())
+                    .await
+                    .ownership;
+                self.seen.lock().unwrap().push((request, found));
+                Ok(Response::Ok)
+            }
+        }
+        let home = tempfile::tempdir().unwrap();
+        let born = chrono::Utc::now();
+        let serving = Identity {
+            id: "abc123".into(),
+            name: "tester".into(),
+            registered_here: true,
+            host_pid: Some(77),
+            host_started_at: Some(born),
+        };
+        let mut record = agentdocker_core::AgentRecord::new(Default::default(), false, born);
+        record.id = "abc123".into();
+        record.pid = Some(77);
+        record.process_started_at = Some(born);
+        let server = McpServer::new(
+            Watching {
+                home: home.path().to_path_buf(),
+                record,
+                seen: Default::default(),
+            },
+            serving.clone(),
+        );
+        let unknown = Identity {
+            host_started_at: None,
+            ..serving.clone()
+        };
+        let start = channel::start_for(home.path(), &unknown).await;
+        assert!(settle_start(&server, start).await.is_err());
+        let ChannelStart::Owned(owner) = channel::start_for(home.path(), &serving).await else {
+            panic!("owned");
+        };
+        let start = channel::start_for(home.path(), &serving).await;
+        assert!(matches!(start, ChannelStart::Duplicate));
+        assert!(settle_start(&server, start).await.is_err());
+        assert!(
+            server.backend.seen.lock().unwrap().is_empty(),
+            "nothing reported"
+        );
+        drop(owner);
+
+        let invalid = Identity {
+            id: "../not-an-id".into(),
+            ..serving
+        };
+        let start = channel::start_for(home.path(), &invalid).await;
+        assert!(matches!(start, ChannelStart::Failed { .. }));
+        assert!(settle_start(&server, start).await.is_err());
+        let seen = server.backend.seen.lock().unwrap().clone();
+        let [(Request::ReportInput { report, .. }, during)] = seen.as_slice() else {
+            panic!("one report: {seen:?}");
+        };
+        let agentdocker_core::InputReport::Paused { reason } = report else {
+            panic!("{report:?}");
+        };
+        assert_eq!(pause_kind(reason), PauseKind::ChannelNotStarted);
+        assert_eq!(
+            *during,
+            Ownership::Unknown,
+            "the gates were held through it"
+        );
+        assert_eq!(
+            channel::probe(
+                home.path(),
+                &server.backend.record,
+                tokio::time::Instant::now()
+            )
+            .await
+            .ownership,
+            Ownership::Absent,
+            "and let go after it"
         );
     }
 
