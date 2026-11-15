@@ -6,16 +6,20 @@ are over budget. With `--prune`: remove the Cargo caches of worktrees that
 are inactive — no live AgentDocker lease on them, a branch already merged
 into origin/main (or gone), and no build running in them. `--prune
 --dry-run` only says what would go, with sizes; verify.sh prints that at the
-end of every run and never prunes on its own.
+end of every run and never prunes on its own. With `--seed-from <worktree>`:
+start this checkout's cache from another's, bringing the builds of the
+packages that come from elsewhere and nothing built from a checkout's own
+files, which this checkout builds itself.
 """
 import argparse
 from collections import namedtuple
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import sys
 
@@ -42,6 +46,15 @@ class BudgetError(Exception):
 
 class PruneRefused(Exception):
     """A prune that cannot be made safe; nothing was removed."""
+
+
+class SeedRefused(Exception):
+    """A seed that cannot be made safe; nothing of it is left."""
+
+
+class SeedLeft(SeedRefused):
+    """A seed that failed and could not take back all it had made; the
+    message says what is left and what to do about it."""
 
 
 def positive(value):
@@ -95,6 +108,18 @@ def parse_worktrees(porcelain):
     return records
 
 
+def cargo_target_directory():
+    """Where Cargo puts this checkout's build output."""
+    metadata = json.loads(subprocess.check_output(
+        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], cwd=ROOT, text=True, stderr=subprocess.PIPE))
+    return Path(metadata["target_directory"]).resolve()
+
+
+def registered_worktrees():
+    """The repository's checkouts as git lists them, the main one first."""
+    return parse_worktrees(subprocess.check_output(["git", "worktree", "list", "--porcelain", "-z"], cwd=ROOT, stderr=subprocess.PIPE))
+
+
 def measure(minimum_free_gib=None):
     """The current target directory, the registered worktrees and every cache's size.
 
@@ -102,10 +127,8 @@ def measure(minimum_free_gib=None):
     """
     if minimum_free_gib is not None and shutil.disk_usage(ROOT).free < minimum_free_gib * GIB:
         raise BudgetError(f"less than {minimum_free_gib} GiB free; clean inactive build output before compiling")
-    metadata = json.loads(subprocess.check_output(
-        ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"], cwd=ROOT, text=True, stderr=subprocess.PIPE))
-    current = Path(metadata["target_directory"]).resolve()
-    records = parse_worktrees(subprocess.check_output(["git", "worktree", "list", "--porcelain", "-z"], cwd=ROOT, stderr=subprocess.PIPE))
+    current = cargo_target_directory()
+    records = registered_worktrees()
     candidates = {current, *(record["path"] / name for record in records for name in CACHE_NAMES)}
     caches, devices = {}, set()
     for candidate in sorted(candidates):
@@ -135,6 +158,42 @@ def inspect(args):
     return {"current_cache_gib": round(current_bytes / GIB, 2),
             "registered_cache_gib": round(total / GIB, 2), "minimum_free_gib": args.minimum_free_gib,
             "max_current_gib": args.max_current_gib, "max_total_gib": args.max_total_gib}
+
+
+@contextmanager
+def checkout_held(root):
+    """This script's own lock on a checkout, held for as long as its cache
+    is removed, copied from or copied into: an advisory lock on the
+    checkout's folder, which is there as long as the checkout is and is no
+    part of any cache. A prune and a seed that meet on one checkout never
+    work on its cache together: whichever comes second holds nothing and is
+    told why, in words that follow the checkout's name. Yields None when
+    the checkout is held. Cargo's own lock keeps a build out; this keeps
+    this script's two hands off each other. Where the system has no such
+    lock nothing is held and nothing is in the way."""
+    try:
+        import fcntl
+    except ImportError:
+        yield None
+        return
+    try:
+        folder = os.open(root, os.O_RDONLY)
+    except OSError as error:
+        yield f"cannot be held, its folder cannot be opened ({type(error).__name__})"
+        return
+    try:
+        try:
+            fcntl.flock(folder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield "has a prune or another seed at work on its cache"
+            return
+        except OSError as error:
+            yield f"cannot be held ({type(error).__name__})"
+            return
+        yield None
+    finally:
+        # Closing lets it go.
+        os.close(folder)
 
 
 # --- pruning -----------------------------------------------------------------
@@ -493,6 +552,223 @@ def plan_prune(records, caches, *, current_root, current_target, leases, process
     return prunable, kept
 
 
+# --- seeding -----------------------------------------------------------------
+
+# The profile directory the local gates build in: a seed brings that one's.
+SEED_PROFILE = "debug"
+# What Cargo puts on a target directory it makes so that backups pass it by.
+BACKUP_EXCLUSION = "com.apple.metadata:com_apple_backup_excludeItem"
+
+
+def lock_packages(root):
+    """What `root`'s Cargo.lock builds, by name: (own, foreign). A package
+    with no `source` is built from the checkout's own files, a workspace
+    member or a path dependency. Every other comes from a registry or a git
+    repository and is the same wherever it is built."""
+    lock = root / "Cargo.lock"
+    try:
+        import tomllib
+        with open(lock, "rb") as handle:
+            packages = tomllib.load(handle).get("package", [])
+        named = [(package["name"], "source" in package) for package in packages]
+    except ImportError:
+        raise SeedRefused("reading Cargo.lock needs Python 3.11 or later")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        raise SeedRefused(f"{lock} cannot be read ({type(error).__name__}), so which packages are a checkout's own cannot be told")
+    own = {name for name, foreign in named if not foreign}
+    return own, {name for name, foreign in named if foreign} - own
+
+
+@contextmanager
+def build_held_off(profile, *, make=False):
+    """Cargo's own lock on a profile directory, held so that no build runs
+    there meanwhile. Cargo holds `<profile>/.cargo-lock` for as long as it
+    builds (shared where it files output by package, exclusively before
+    that), so taking it exclusively is refused while a build runs, and a
+    build that starts while it is held waits for it. `make` is for a
+    directory Cargo has not built in yet."""
+    try:
+        import fcntl
+    except ImportError:
+        raise SeedRefused("this system has no file lock to hold a Cargo build off with")
+    try:
+        handle = open(profile / ".cargo-lock", "ab" if make else "rb")
+    except OSError as error:
+        raise SeedRefused(f"{profile} has no Cargo lock to hold ({type(error).__name__}): it is not a directory Cargo built in")
+    with handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SeedRefused(f"a Cargo build is running in {profile}; seed once it has ended")
+        except OSError as error:
+            raise SeedRefused(f"the Cargo lock of {profile} cannot be held ({type(error).__name__})")
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def copy_units(sources, into):
+    """Copy each directory into `into` under its own name, times and modes
+    kept: copy-on-write where `cp` and the filesystem have it (`-c` on
+    macOS, `--reflink=auto` with GNU cp), an ordinary copy otherwise."""
+    command = {"darwin": ["cp", "-c", "-R", "-p"], "linux": ["cp", "-R", "-p", "--reflink=auto"]}.get(sys.platform)
+    for chunk in chunked(sources, 50):
+        if command is not None:
+            try:
+                done = subprocess.run([*command, *(str(source) for source in chunk), str(into)],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            except OSError:
+                done = False
+            if done:
+                continue
+            # A cp without that option, or a filesystem that refuses it: what
+            # it left of these goes, and they and the rest are copied plainly.
+            command = None
+            for source in chunk:
+                remove_copied(into / source.name)
+        for source in chunk:
+            shutil.copytree(source, into / source.name, symlinks=True)
+
+
+def remove_copied(tree):
+    """Remove a tree a seed copied, and raise OSError when any of it stays.
+    A copy keeps modes, and a folder its owner may not write to keeps its
+    entries (one that may not be read cannot even be listed), so every
+    folder in it is given back to its owner first. Nothing is followed out
+    of the tree: a symbolic link in it is removed as a link."""
+    if not os.path.lexists(tree):
+        return
+    folders = [os.fspath(tree)]
+    while folders:
+        folder = folders.pop()
+        os.chmod(folder, stat.S_IRWXU)
+        with os.scandir(folder) as entries:
+            folders.extend(entry.path for entry in entries if entry.is_dir(follow_symlinks=False))
+    shutil.rmtree(tree)
+
+
+def mark_as_cache(made, like):
+    """Give a target directory the seed made what Cargo gives one it makes,
+    as `like` has them: the tag that says it is a cache, and on macOS the
+    mark that keeps backups off it. Cargo adds neither to a directory it
+    finds already there. Whatever cannot be given is left out."""
+    try:
+        if (like / "CACHEDIR.TAG").is_file() and not (made / "CACHEDIR.TAG").exists():
+            shutil.copy2(like / "CACHEDIR.TAG", made / "CACHEDIR.TAG")
+    except OSError:
+        pass
+    if sys.platform != "darwin" or not shutil.which("xattr"):
+        return
+    try:
+        value = subprocess.run(["xattr", "-px", BACKUP_EXCLUSION, str(like)], capture_output=True, text=True, timeout=30)
+        if value.returncode == 0 and value.stdout.split():
+            subprocess.run(["xattr", "-wx", BACKUP_EXCLUSION, "".join(value.stdout.split()), str(made)],
+                           capture_output=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def seed_cache(source_root, source_target, dest_root, dest_target, *, copy=None):
+    """Start the cache `dest_target` of the checkout `dest_root` from the
+    cache `source_target` of the checkout `source_root`.
+
+    Cargo files a profile's output by package (`<profile>/build/<package>/`)
+    and tells whether a unit is fresh by times alone, in folders whose names
+    do not depend on where the checkout is. A unit built from one checkout's
+    files, copied beside another checkout whose files are older than it, is
+    therefore taken as that checkout's own and never rebuilt. So a seed
+    brings only the folders of packages the new checkout's Cargo.lock takes
+    from elsewhere, and of those none that either checkout builds from its
+    own files; incremental state, binaries and everything else are left for
+    the new checkout to build. Cargo's lock is held on both profile
+    directories while the copy is made, so nothing is copied from under a
+    build and none starts on a cache half made; and both checkouts are held
+    (`checkout_held`) for the whole of it, so no prune removes a cache the
+    seed is reading or filling.
+
+    Returns (brought, own, others): the packages brought, the packages left
+    out as a checkout's own, and how many other folders were left out.
+    """
+    with checkout_held(source_root) as source_busy, checkout_held(dest_root) as dest_busy:
+        for root, busy in ((source_root, source_busy), (dest_root, dest_busy)):
+            if busy is not None:
+                raise SeedRefused(f"{root} {busy}")
+        return seed_held(source_root, source_target, dest_root, dest_target, copy or copy_units)
+
+
+def seed_held(source_root, source_target, dest_root, dest_target, copy):
+    """`seed_cache`, with both checkouts held."""
+    source_profile, dest_profile = source_target / SEED_PROFILE, dest_target / SEED_PROFILE
+    source_build, dest_build = source_profile / "build", dest_profile / "build"
+    for path in (source_target, source_profile, source_build, dest_target, dest_profile, dest_build):
+        if path.is_symlink():
+            raise SeedRefused(f"{path} is a symbolic link; what it names may be shared")
+    if not source_build.is_dir():
+        raise SeedRefused(f"{source_target} has no {SEED_PROFILE} build to seed from")
+    source_own, _ = lock_packages(source_root)
+    dest_own, foreign = lock_packages(dest_root)
+    own = source_own | dest_own
+    with build_held_off(source_profile):
+        names = sorted(entry.name for entry in source_build.iterdir() if entry.is_dir() and not entry.is_symlink())
+        brought = [name for name in names if name in foreign and name not in own]
+        left_own = [name for name in names if name in own]
+        if not brought:
+            raise SeedRefused(f"{source_build} holds no build of a package this checkout takes from elsewhere")
+        made_target = not dest_target.exists()
+        dest_profile.mkdir(parents=True, exist_ok=True)
+        if made_target:
+            mark_as_cache(dest_target, source_target)
+        with build_held_off(dest_profile, make=True):
+            # Looked at under the lock: a build that ended a moment ago has
+            # left its output, and nothing is copied in beside it.
+            if dest_build.exists() and (not dest_build.is_dir() or any(dest_build.iterdir())):
+                raise SeedRefused(f"{dest_target} holds build output already; a seed is for a checkout that has built nothing")
+            dest_build.mkdir(exist_ok=True)
+            try:
+                copy([source_build / name for name in brought], dest_build)
+            except (OSError, subprocess.SubprocessError, shutil.Error) as error:
+                # The folder was empty when the copy began, so all of it is
+                # the copy's; it goes, and is said to be gone only when it is.
+                try:
+                    remove_copied(dest_build)
+                except OSError as left:
+                    raise SeedLeft(f"the copy failed ({type(error).__name__}) and what it had made could not all be removed "
+                                   f"({type(left).__name__}): {dest_build} is left partly filled. Remove {dest_target} "
+                                   "before a build there or another seed")
+                raise SeedRefused(f"the copy failed ({type(error).__name__}), and what it had made is removed")
+    return brought, left_own, len(names) - len(brought) - len(left_own)
+
+
+def seed(args):
+    """`--seed-from`: this checkout's cache started from a registered worktree's."""
+    dest_root = ROOT.resolve()
+    named = Path(args.seed_from).expanduser()
+    source_root = (named if named.is_absolute() else Path.cwd() / named).resolve()
+    if source_root not in {record["path"].resolve() for record in registered_worktrees()}:
+        raise SeedRefused(f"{source_root} is not a checkout of this repository as `git worktree list` names them")
+    if source_root == dest_root:
+        raise SeedRefused("that is this checkout; name another, whose cache is warm")
+    source_target, dest_target = source_root / "target", cargo_target_directory()
+    if source_target.resolve() == dest_target:
+        raise SeedRefused("both checkouts build in one target directory; there is nothing to bring")
+    if shutil.disk_usage(existing_parent(dest_target)).free < args.minimum_free_gib * GIB:
+        raise SeedRefused(f"less than {args.minimum_free_gib} GiB is free where the cache would go")
+    brought, own, others = seed_cache(source_root, source_target, dest_root, dest_target)
+    try:
+        size = f" ({allocated(dest_target / SEED_PROFILE / 'build') / GIB:.2f} GiB)"
+    except (OSError, ValueError, subprocess.SubprocessError):
+        size = ""
+    print(f"build storage: seeded {dest_target / SEED_PROFILE} from {source_target / SEED_PROFILE}")
+    print(f"  brought: the builds of {len(brought)} packages that come from elsewhere{size}, times kept, "
+          "copy-on-write where the filesystem has it")
+    print("  left for this checkout to build: "
+          + (f"the checkouts' own packages ({', '.join(own)}), " if own else "")
+          + "incremental state, binaries"
+          + (f", and {others} folders this checkout's Cargo.lock does not name" if others else ""))
+    return 0
+
+
 class Campaign:
     """The build slot, held for a real prune as verify.sh holds it for a run:
     as the session when the daemon knows it, as a transient agent of this
@@ -585,25 +861,32 @@ def prune(args):
         # Nothing is held between the plan and the removals, so each worktree
         # is judged again, on fresh leases and processes, right before its
         # own caches go; a build slot is held meanwhile so no verify.sh run
-        # starts under a cache on its way out.
+        # starts under a cache on its way out, and each checkout is held
+        # while its own caches go so no seed copies from or into one.
         with (Campaign(f"build_storage.py --prune in {ROOT}") if prunable else nullcontext()):
             for root, owned, reason in prunable:
-                kept_now, _ = decide(by_root[root], owned, current_root=ROOT.resolve(), current_target=current, main_root=main_root,
-                                     leases=lease_resources(), processes=process_table(), branch_state=branches.state,
-                                     lock_held=build_lock_held)
-                if kept_now is not None:
-                    print(f"  skipped {sum(size for _, size in owned) / GIB:6.2f} GiB  {root}: {kept_now} (changed since the plan)")
-                    kept.append((root, owned, kept_now))
-                    continue
-                for cache, size in owned:
-                    try:
-                        shutil.rmtree(cache)
-                    except OSError as error:
-                        failed += 1
-                        print(f"  cannot remove {cache}: {type(error).__name__}", file=sys.stderr)
+                # The checkout is held from before it is judged the last time
+                # until its caches are gone: a seed that reads or fills one of
+                # them holds it too, so the two never meet on one cache.
+                with checkout_held(root) as busy:
+                    kept_now = None if busy is None else f"it {busy}"
+                    if kept_now is None:
+                        kept_now, _ = decide(by_root[root], owned, current_root=ROOT.resolve(), current_target=current,
+                                             main_root=main_root, leases=lease_resources(), processes=process_table(),
+                                             branch_state=branches.state, lock_held=build_lock_held)
+                    if kept_now is not None:
+                        print(f"  skipped {sum(size for _, size in owned) / GIB:6.2f} GiB  {root}: {kept_now} (changed since the plan)")
+                        kept.append((root, owned, kept_now))
                         continue
-                    freed += size
-                    print(f"  removed {size / GIB:6.2f} GiB  {cache}: {reason}")
+                    for cache, size in owned:
+                        try:
+                            shutil.rmtree(cache)
+                        except OSError as error:
+                            failed += 1
+                            print(f"  cannot remove {cache}: {type(error).__name__}", file=sys.stderr)
+                            continue
+                        freed += size
+                        print(f"  removed {size / GIB:6.2f} GiB  {cache}: {reason}")
         print(f"freed {freed / GIB:.1f} GiB" + (f"; {failed} cache(s) could not be removed" if failed else ""))
         if failed:
             return 1
@@ -622,10 +905,17 @@ def main():
     parser.add_argument("--prune", action="store_true",
                         help="remove the caches of inactive worktrees (not this one's): no live lease, branch merged into origin/main or gone, no build running")
     parser.add_argument("--dry-run", action="store_true", help="with --prune: list what would go, with sizes, and remove nothing")
+    parser.add_argument("--seed-from", metavar="WORKTREE",
+                        help="start this checkout's debug cache from that worktree's: the builds of the packages that come from "
+                             "elsewhere, never what is built from a checkout's own files; refused while a build runs in either")
     args = parser.parse_args()
     if args.dry_run and not args.prune:
         parser.error("--dry-run goes with --prune")
+    if args.seed_from is not None and args.prune:
+        parser.error("--seed-from and --prune are separate runs")
     try:
+        if args.seed_from is not None:
+            return seed(args)
         if args.prune:
             return prune(args)
         print(json.dumps(inspect(args), sort_keys=True))
@@ -635,7 +925,16 @@ def main():
     except PruneRefused as error:
         print(f"build storage: {error}", file=sys.stderr)
         return 1
+    except SeedLeft as error:
+        print(f"build storage: {error}", file=sys.stderr)
+        return 1
+    except SeedRefused as error:
+        print(f"build storage: {error}; nothing was seeded", file=sys.stderr)
+        return 1
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        if args.seed_from is not None:
+            print(f"build storage: cannot seed the cache ({type(error).__name__}); nothing was seeded", file=sys.stderr)
+            return 1
         # OS exceptions and subprocess diagnostics can contain private checkout
         # names. Raw verification logs remain private; the budget report is safe
         # to publish on its own.
