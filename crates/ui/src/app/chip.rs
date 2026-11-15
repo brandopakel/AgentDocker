@@ -161,6 +161,72 @@ pub(super) fn standing(id: impl Into<String>, standing: Standing) -> Chip {
     Chip::new(id, glyph, standing.label(), tone).detail(sentence(standing.word()))
 }
 
+/// The daemon's three-part answer as chips, in one order on every screen:
+/// where the agent stands with its task, what it is doing this moment and,
+/// when it waits on the person, what for — each its own chip, so idle and
+/// needs-input are never one word, never a colour. The words are
+/// `agentdocker_core::status`'s own labels; how good the evidence is goes
+/// in the status chip's detail, where a weak word says so.
+pub(super) fn identity(prefix: &str, status: agentdocker_core::IdentityStatus) -> Vec<Chip> {
+    use agentdocker_core::status::{Evidence, State, Status, WaitingFor};
+    let (state_icon, state_tone) = match status.state {
+        State::Working => (Icon::LaneHalf, Tone::Neutral),
+        State::Blocked => (Icon::Hourglass, Tone::Neutral),
+        State::Done => (Icon::LaneDone, Tone::Positive),
+        State::Failed => (Icon::Alert, Tone::Alert),
+        State::Stopped => (Icon::Pause, Tone::Neutral),
+    };
+    let state = Chip::new(
+        format!("{prefix}-state"),
+        Some(state_icon),
+        status.state.label(),
+        state_tone,
+    )
+    .detail(match status.state {
+        State::Working => "On its task",
+        State::Blocked => "Waiting on a lease another agent holds",
+        State::Done => "Its process ended",
+        State::Failed => "It failed, or its process ended with an error",
+        State::Stopped => "It was stopped",
+    });
+    let (status_icon, status_tone) = match (status.status, status.waiting_for) {
+        (Status::Busy, _) => (Some(Icon::Pulse), Tone::Neutral),
+        (Status::Waiting, WaitingFor::None) => (Some(Icon::Clock), Tone::Neutral),
+        (Status::Waiting, _) => (Some(Icon::Alert), Tone::Attention),
+        (Status::Idle, _) => (None, Tone::Neutral),
+    };
+    let moment = Chip::new(
+        format!("{prefix}-status"),
+        status_icon,
+        status.status.label(),
+        status_tone,
+    )
+    .detail(match status.evidence {
+        Evidence::Strong => "Reported by its tool, or known to AgentDocker".to_owned(),
+        Evidence::Weak => "Weak evidence: inferred, not reported".to_owned(),
+    });
+    let mut chips = vec![state, moment];
+    if status.waiting_for != WaitingFor::None {
+        let (icon, detail) = match status.waiting_for {
+            WaitingFor::Permission => (Icon::Shield, "A tool run it wants allowed"),
+            WaitingFor::Input => (Icon::Terminal, "Your input in its terminal"),
+            WaitingFor::Sandbox => (Icon::Code, "Something its sandbox will not allow"),
+            WaitingFor::Question => (Icon::Question, "A question it asked you here"),
+            WaitingFor::None => unreachable!("filtered above"),
+        };
+        chips.push(
+            Chip::new(
+                format!("{prefix}-waiting-for"),
+                Some(icon),
+                status.waiting_for.label(),
+                Tone::Attention,
+            )
+            .detail(detail),
+        );
+    }
+    chips
+}
+
 /// How a message stands with one recipient, toned by how much it asks of
 /// the person: a problem amber, a wait quiet, a delivery green, an answer
 /// the accent.

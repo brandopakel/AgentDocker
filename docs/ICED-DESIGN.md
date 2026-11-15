@@ -120,6 +120,20 @@ control does, its id or its accessible label:
   where it says more (which need, *finished since you looked*); attention for
   needs you, alert for failed, the accent for news, neutral for the rest,
   with an icon for each but running, idle and ended.
+- **State, status and what it waits for.** The daemon's three-part answer
+  (`agentdocker_core::status::IdentityStatus`, read from `activity`, never
+  computed in the app) is drawn by `chip::identity` as up to three chips in
+  one order — the state (`State::label`: *Working*, *Blocked*, *Done*,
+  *Failed*, *Stopped*), the status this moment (`Status::label`: *Busy*,
+  *Waiting*, *Idle*) and, only when something is waited for from the person,
+  what for (`WaitingFor::label`: *Wants permission*, *Needs input*, *Sandbox
+  request*, *Has a question*) — under the inspector's header
+  (`inspector-state`, `inspector-status`, `inspector-waiting-for`). Idle and
+  needs-input are therefore never one chip. Attention tone for a wait on the
+  person, alert for failed, positive for done, neutral for the rest; the
+  evidence (`Evidence`) is the status chip's detail, where a weak word says
+  so. Nothing is drawn for a daemon that gave no answer. The standing chip
+  stays the one-word summary on every row.
 - **Finished, not yet viewed.** When a session's activity goes from working
   or blocked to idle or finished while the user is not looking at its project
   in a focused window, the session is marked unviewed: its standing is

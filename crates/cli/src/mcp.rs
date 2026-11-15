@@ -1170,6 +1170,7 @@ impl<B: Backend> McpServer<B> {
                         reason: None,
                         detail: None,
                         source: None,
+                        evidence: None,
                     },
                 })
                 .await

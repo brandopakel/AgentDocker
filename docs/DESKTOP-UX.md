@@ -147,7 +147,19 @@ folder but no tty or process, and a folder is not an identity (an agent can work
 in another folder than its tab reports, and that folder can be another tab's). The
 standing chip beside the name in its details says in its detail what it is
 doing, its tool and where it runs (*in Terminal (ttys005)*, *in
-tmux:%3*), and its terminal action is named for it (**Go to Terminal**, **Go to
+tmux:%3*). Under the name, the daemon's three-part answer is three chips, one
+each, so idle and needs-input are never one word: its **state** — **Working**
+(on its task), **Blocked** (waiting on a lease another agent holds), **Done**,
+**Failed** (red) or **Stopped** — its **status** this moment — **Busy**,
+**Waiting** (amber when it waits on you; neutral, with a clock, when only on a
+lease) or **Idle** — and, when it waits on you, **what for**: **Wants
+permission**, **Needs input** (in its own terminal: a question dialog, a
+choice, an unsent draft), **Sandbox request** or **Has a question** (one it
+asked here). How good the word is lives in the status chip's detail: *Weak
+evidence: inferred, not reported* when it rests on an idle timer, a quiet
+terminal or no fresh report at all, which is also why **Idle** on weak
+evidence never claims more than that. A daemon predating the answer shows no
+such chips. Its terminal action is named for it (**Go to Terminal**, **Go to
 tmux pane**). Nothing is typed into the agent, and no second copy is started.
 An agent without a terminal to reach opens its details instead.
 
