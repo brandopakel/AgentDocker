@@ -24,8 +24,8 @@ the thing would be, as the amber mark and a line (*To-do could not be read*
 and why), above what was last read, which stays on view; it is not a toast.
 A read behind something already on view says nothing until it has an answer.
 And a place that was read and has nothing in it is the quiet mark or the one
-thing to do there, which is none of these. To-do, an open card's details, a
-session's changes and its log are shown this way.
+thing to do there, which is none of these. The board, To-do, an open card's
+details, a session's changes and its log, and usage are shown this way.
 
 After a send, **Queued · N sessions need attention** appears when recipients
 have missing or stale input receivers, paused delivery, ended sessions or provider
@@ -644,9 +644,12 @@ agent gone — carries a *Not being worked on* chip; nobody takes it by a
 plain pull, only by naming that holder (`pull_task` with `take_over_from`)
 or by **Hand to**, which ends the old hold and gives a running agent the
 card's lease in one step. A move back to a waiting lane, or to Done or
-Cancelled, ends the hold. The board reads again on every board, card or
-lease event; when it could not be read the last board stays and the status
-says why. The board is read a page at a time (100 cards, by lane, within a
+Cancelled, ends the hold. The board reads again on every board or card
+event, and when the service comes back while it is on view. Read for the
+first time it says *Reading…*; when it could not be read it says so (*The
+board could not be read* and why) above the board as last read, which stays,
+so a board that failed to load is not taken for one with no cards. The board
+is read a page at a time (100 cards, by lane, within a
 byte budget); when it goes on, **Show more** appends the next page where the
 board ends — every ask is numbered and only its own reply moves the board,
 so a late or unsolicited page is ignored; a refresh asks for as many cards

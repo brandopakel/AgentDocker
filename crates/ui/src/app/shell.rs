@@ -3102,7 +3102,7 @@ impl App {
                     // own lane with no card to sit before — it was a click.
                     let here = self.board_on_view().and_then(|board| {
                         self.tasks
-                            .as_ref()
+                            .value()
                             .and_then(|b| b.cards.iter().find(|t| t.id == task))
                             .map(|t| board.lane_of(t).slug.clone())
                     });
@@ -5339,7 +5339,7 @@ impl App {
             }
             // Another project's board, and a card open on the old one
             // is not open on this.
-            self.tasks = None;
+            self.tasks.forget();
             self.close_card();
             self.board_asks.clear();
             if self.screen == Screen::Board {
@@ -5929,7 +5929,7 @@ impl App {
     pub(super) fn move_cards_by_pull_request(&mut self) {
         use crate::pull_request::Status;
         use agentdocker_core::task::Column;
-        let Some(board) = self.tasks.as_ref() else {
+        let Some(board) = self.tasks.value() else {
             return;
         };
         let mut moves = Vec::new();
@@ -7992,7 +7992,7 @@ mod tests {
             ))
             .unwrap();
         app.drain();
-        assert_eq!(app.tasks.as_ref().map(|b| b.cards.len()), Some(1));
+        assert_eq!(app.tasks.value().map(|b| b.cards.len()), Some(1));
 
         let _ = app.update(Message::TaskTitle("Port the parser".into()));
         let _ = app.update(Message::TaskAcceptance("tests pass".into()));
@@ -8007,7 +8007,8 @@ mod tests {
             app.shell.task_drafts[&alpha_root].title, "Port the parser",
             "a move of some other card is not a filing"
         );
-        // A board that cannot be read is said so, and the last board stays.
+        // A board that cannot be read says so on the board, and the last
+        // board stays.
         app.request_tasks();
         let (ask, _, _) = board_asks(&requests).pop().expect("asked");
         messages
@@ -8017,9 +8018,11 @@ mod tests {
                 Err("storage failed".into()),
             ))
             .unwrap();
+        app.status.clear();
         app.drain();
-        assert_eq!(app.tasks.as_ref().map(|b| b.cards.len()), Some(1));
-        assert!(app.status.contains("storage failed"), "{}", app.status);
+        assert_eq!(app.tasks.value().map(|b| b.cards.len()), Some(1));
+        assert_eq!(app.tasks.seen().error(), Some("storage failed"));
+        assert!(app.status.is_empty(), "not a toast: {}", app.status);
 
         // Filed: typing waits; a reply to an *earlier* filing changes
         // nothing; the reply to this one clears the text.
@@ -8151,7 +8154,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let limit = agentdocker_core::protocol::TASKS_LIMIT;
-        let cards = |app: &App| app.tasks.as_ref().map_or(0, |b| b.cards.len());
+        let cards = |app: &App| app.tasks.value().map_or(0, |b| b.cards.len());
 
         // A reply to no ask moves nothing.
         messages
@@ -8162,7 +8165,7 @@ mod tests {
             ))
             .unwrap();
         app.drain();
-        assert!(app.tasks.is_none());
+        assert!(app.tasks.value().is_none());
 
         app.request_tasks();
         let (first, _, _) = board_asks(&requests).pop().expect("asked");
@@ -8176,7 +8179,7 @@ mod tests {
         app.drain();
         assert_eq!(cards(&app), limit);
         let _ = app.update(Message::TasksMore);
-        assert!(app.tasks.as_ref().unwrap().loading_more());
+        assert!(app.tasks.value().unwrap().loading_more());
         let (more_ask, offset, asked) = board_asks(&requests).pop().expect("asked for more");
         assert_eq!((offset, asked), (limit, limit));
         // A second click while a page is on its way asks for nothing;
@@ -8200,7 +8203,7 @@ mod tests {
             ))
             .unwrap();
         app.drain();
-        let board = app.tasks.as_ref().unwrap();
+        let board = app.tasks.value().unwrap();
         assert_eq!(
             (board.cards.len(), board.more, board.loading_more()),
             (2 * limit, true, false)
@@ -8214,7 +8217,7 @@ mod tests {
         app.request_tasks();
         let (refresh, _, asked) = board_asks(&requests).pop().unwrap();
         assert_eq!(asked, 2 * limit, "a refresh asks for what is on view");
-        assert!(!app.tasks.as_ref().unwrap().loading_more(), "superseded");
+        assert!(!app.tasks.value().unwrap().loading_more(), "superseded");
         messages
             .send(Msg::Tasks(
                 root.clone(),
@@ -8244,7 +8247,7 @@ mod tests {
             board_asks(&requests).is_empty(),
             "deferred behind the refresh"
         );
-        assert!(!app.tasks.as_ref().unwrap().loading_more());
+        assert!(!app.tasks.value().unwrap().loading_more());
         messages
             .send(Msg::Tasks(
                 root.clone(),
@@ -8293,7 +8296,7 @@ mod tests {
         let _ = app.update(Message::TasksMore);
         let (late, _, _) = board_asks(&requests).pop().unwrap();
         let _ = app.update(Message::SelectProject(beta.root.clone()));
-        assert!(app.tasks.is_none());
+        assert!(app.tasks.value().is_none());
         let _ = app.update(Message::SelectProject(alpha.root.clone()));
         messages
             .send(Msg::Tasks(
@@ -8304,7 +8307,7 @@ mod tests {
             .unwrap();
         app.drain();
         assert!(
-            app.tasks.is_none(),
+            app.tasks.value().is_none(),
             "a page for an ask made before the switch"
         );
 
@@ -9057,7 +9060,7 @@ mod tests {
         .unwrap();
         card.assignee = Some("worker".into());
         let task = card.id.clone();
-        app.tasks = Some(crate::app::Board {
+        app.tasks = crate::app::remote::Remote::ready(crate::app::Board {
             project: project.id().to_string(),
             cards: vec![card],
             times: Vec::new(),
@@ -10779,6 +10782,106 @@ mod tests {
             Seen::Ready(&diff("b's, newer"))
         );
         assert_eq!(app.branch_review.of("agent-1"), Seen::Unasked);
+    }
+
+    /// A board being read, and one that could not be read, were drawn as
+    /// a board with no cards, and the failure was a passing line at the
+    /// window's foot. Each is said on the board now, and a refresh that
+    /// fails leaves the board as last read under the failure.
+    #[test]
+    fn a_board_being_read_or_that_could_not_be_is_not_drawn_as_an_empty_board() {
+        use super::super::view::testing::seen;
+        use crate::app::link::Report;
+        let (mut app, alpha, _beta, kept) = travel();
+        app.link.open();
+        let c = crate::app::style::Colors::new(false);
+        let root = alpha.display().to_string();
+        let shows = |app: &App, id: &str| seen(app.board_view(c)).control(id).is_some();
+        let asked = |kept: &Kept| board_asks(&kept._commands).pop().map(|ask| ask.0);
+
+        let _ = app.update(Message::SelectProject(alpha.clone()));
+        let _ = app.update(Message::Navigate(Screen::Board));
+        let first = asked(&kept).expect("the board is asked for");
+        assert!(shows(&app, "board-reading"), "being read");
+        assert!(!shows(&app, "board-error-mark"));
+
+        // It could not be read: said on the board, and not at its foot.
+        app.status.clear();
+        kept.messages
+            .send(Msg::Tasks(
+                root.clone(),
+                first,
+                Err("storage unavailable".into()),
+            ))
+            .unwrap();
+        app.drain();
+        let board = seen(app.board_view(c));
+        assert_eq!(
+            board
+                .control("board-error-mark")
+                .map(|said| said.1.as_str()),
+            Some("The board could not be read: storage unavailable")
+        );
+        assert!(board.control("board-reading").is_none());
+        assert!(app.status.is_empty(), "not a toast: {}", app.status);
+
+        // Read: neither, and the card is there.
+        app.request_tasks();
+        let second = asked(&kept).unwrap();
+        let card = card_in("aaaaaaaaaaaa", &alpha, "Port the parser");
+        kept.messages
+            .send(Msg::Tasks(
+                root.clone(),
+                second,
+                Ok((vec![card], false, Vec::new())),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(!shows(&app, "board-reading") && !shows(&app, "board-error-mark"));
+        assert_eq!(app.tasks.value().map(|b| b.cards.len()), Some(1));
+
+        // A read behind the board says nothing; one that fails leaves the
+        // board as last read under the failure.
+        app.request_tasks();
+        let third = asked(&kept).unwrap();
+        assert!(!shows(&app, "board-reading"));
+        kept.messages
+            .send(Msg::Tasks(
+                root.clone(),
+                third,
+                Err("the service stopped answering".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert!(shows(&app, "board-error-mark"));
+        assert_eq!(
+            app.tasks.value().map(|b| b.cards.len()),
+            Some(1),
+            "the board as last read stays"
+        );
+
+        // A read the queue would not take is a read that failed.
+        fill_queue(&mut app);
+        app.request_tasks();
+        let _ = board_asks(&kept._commands);
+        let board = seen(app.board_view(c));
+        assert!(
+            board
+                .control("board-error-mark")
+                .is_some_and(|said| said.1.contains("queue is full")),
+            "the refusal is said on the board"
+        );
+        assert_eq!(app.tasks.value().map(|b| b.cards.len()), Some(1));
+
+        // The service comes back: the board, on view, is read from it.
+        for report in [
+            Msg::Disconnected(Report::Stream, "gone".into()),
+            Msg::Connected(Report::Stream),
+        ] {
+            kept.messages.send(report).unwrap();
+        }
+        app.drain();
+        assert!(asked(&kept).is_some(), "asked again on the new connection");
     }
 
     /// To-do drew one blank for four things: never asked for, being
@@ -12804,7 +12907,7 @@ mod tests {
         app.shell.card_draft.comment = "half a comment".into();
         app.shell.link_kind = Some(agentdocker_core::LinkKind::Url);
         app.shell.link_target = "https://example.com/half".into();
-        app.board_asks.insert(41, (project.clone(), 50));
+        app.board_asks.insert(41, (project.clone(), 50, None));
         let whole = |app: &App| {
             (
                 app.task_open.clone(),

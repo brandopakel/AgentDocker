@@ -400,7 +400,7 @@ impl App {
         let Some(Scope::Project(root)) = &place.scope else {
             return false;
         };
-        self.tasks.as_ref().is_some_and(|board| {
+        self.tasks.value().is_some_and(|board| {
             board.project == root.display().to_string()
                 && !board.more
                 && board.pending_more.is_none()
@@ -600,7 +600,7 @@ impl App {
             .filter(|t| &t.id == card)
             .or_else(|| {
                 self.tasks
-                    .as_ref()
+                    .value()
                     .and_then(|b| b.cards.iter().find(|t| &t.id == card))
             })
             .or_else(|| {

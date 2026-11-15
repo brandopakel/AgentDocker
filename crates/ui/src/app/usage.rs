@@ -8,7 +8,7 @@
 use super::chip::{Chip, Tone, chip};
 use super::icons::{Icon, icon};
 use super::style::{Colors, weight};
-use super::view::{empty, eyebrow, icon_tile, logo_tile, note, rule, segmented, small, tip};
+use super::view::{empty, eyebrow, icon_tile, logo_tile, rule, segmented, small, tip};
 use super::*;
 use crate::accessibility::Semantic;
 use crate::controls::{Control, Kind, custom};
@@ -377,11 +377,12 @@ impl App {
         );
         let width = self.panes.workspace_width();
         let compact = self.narrow() || width < 940.0;
-        let report = self
-            .usage
-            .as_ref()
-            .filter(|(p, _)| *p == project)
-            .map(|(_, r)| r);
+        // The project's usage as a read: the report as last read, with
+        // a failure beside it, or *Reading…* while a first read is out.
+        // A page that has asked nothing (opened while the service was
+        // away) says neither.
+        let read = self.usage.of(project.as_str());
+        let report = read.value();
         // No heading: the More tab names the screen. The window and the
         // grouping it is read by are the tracks, and where collection
         // stands is a chip beside them, its detail how far it has got and
@@ -401,11 +402,15 @@ impl App {
             header.into()
         };
         let mut page = column![header].spacing(16).width(Fill);
-        if let Some(error) = &self.usage_error {
-            page = page.push(note(format!("Could not read usage: {error}"), c).color(c.amber));
+        if let Some(error) = read.error() {
+            page = page.push(super::view::error_line(
+                "usage-error",
+                &format!("Usage could not be read: {error}"),
+                c,
+            ));
         }
         let Some(report) = report else {
-            if self.usage_error.is_none() {
+            if read.first_read() {
                 page = page.push(chip(
                     "usage-reading",
                     Some(Icon::Ring),
@@ -564,12 +569,16 @@ impl App {
             .into()
     }
 
+    /// How the report on view is grouped.
+    fn usage_group(&self) -> Option<Group> {
+        let project = self.selected_project_root()?;
+        self.usage.of(project.as_str()).value().map(|r| r.by)
+    }
+
     fn usage_key(&self, row_: &Row) -> String {
         match &row_.key {
-            Some(key) if matches!(self.usage.as_ref().map(|(_, r)| r.by), Some(Group::Agent)) => {
-                self.name_of(key)
-            }
-            Some(key) if matches!(self.usage.as_ref().map(|(_, r)| r.by), Some(Group::Hour)) => {
+            Some(key) if self.usage_group() == Some(Group::Agent) => self.name_of(key),
+            Some(key) if self.usage_group() == Some(Group::Hour) => {
                 chrono::DateTime::parse_from_rfc3339(key).map_or_else(
                     |_| key.clone(),
                     |at| {
@@ -907,29 +916,31 @@ mod tests {
             .send(Msg::Usage(root.clone(), *old, Err("old error".into())))
             .unwrap();
         app.drain();
-        assert!(app.usage_error.is_none());
+        assert!(app.usage.of(root.as_str()).error().is_none());
         let latest = report(Vec::new(), CollectionState::CaughtUp, Some(4));
         messages
             .send(Msg::Usage(root.clone(), current, Ok(latest.clone())))
             .unwrap();
         app.drain();
-        assert_eq!(app.usage.as_ref().unwrap().1, latest);
+        assert_eq!(app.usage.of(root.as_str()).value(), Some(&latest));
         messages
             .send(Msg::Usage(
-                root,
+                root.clone(),
                 *old,
                 Ok(report(Vec::new(), CollectionState::Unknown, None)),
             ))
             .unwrap();
         app.drain();
-        assert_eq!(app.usage.as_ref().unwrap().1, latest);
+        assert_eq!(app.usage.of(root.as_str()).value(), Some(&latest));
         for _ in 0..queue::CAPACITY {
             app.tx.send(Cmd::Stop("fixture".into())).unwrap();
         }
         app.request_usage();
-        assert!(app.usage_pending.is_none());
-        assert!(app.usage_error.is_some());
-        assert_eq!(app.usage.as_ref().unwrap().1, latest);
+        assert!(
+            app.usage.of(root.as_str()).error().is_some(),
+            "the refusal is said on the page"
+        );
+        assert_eq!(app.usage.of(root.as_str()).value(), Some(&latest));
     }
 
     /// The usage on view follows the project and the connection: another
@@ -979,7 +990,7 @@ mod tests {
             ))
             .unwrap();
         app.drain();
-        assert!(app.usage_pending.is_none());
+        assert!(app.usage_out.is_none(), "that read is not waited for");
         messages
             .send(Msg::Connected(crate::app::link::Report::Stream))
             .unwrap();
@@ -1223,6 +1234,11 @@ mod tests {
         app.shell.catalog.selected = Some(project.root.clone());
         let c = Colors::new(false);
 
+        // Nothing asked yet (a page opened while the service was away):
+        // it is not being read, and does not say so.
+        let view = seen(app.usage_view(c));
+        assert!(view.control("usage-reading").is_none(), "nothing is out");
+        app.request_usage();
         let view = seen(app.usage_view(c));
         assert_eq!(
             view.control("usage-reading").map(|c| c.1.as_str()),
@@ -1237,10 +1253,10 @@ mod tests {
         assert!(!view.reads("tokens the providers reported"));
         assert!(!view.reads("Last 24 hours ·"));
 
-        app.usage = Some((
+        app.usage = crate::app::remote::About::ready(
             root.clone(),
             report(Vec::new(), CollectionState::CaughtUp, Some(1)),
-        ));
+        );
         let view = seen(app.usage_view(c));
         assert!(view.texts.iter().any(|t| t == "No usage"));
         assert!(!view.reads("in this window"));
@@ -1276,7 +1292,7 @@ mod tests {
         let mut read = report(vec![row], CollectionState::CaughtUp, Some(1));
         read.by = Group::Model;
         read.coverage.source_gaps = 2;
-        app.usage = Some((root, read));
+        app.usage = crate::app::remote::About::ready(root.clone(), read);
         let view = seen(app.usage_view(c));
         assert!(view.texts.iter().any(|t| t == "900~"));
         assert!(view.texts.iter().any(|t| t == "—"));
@@ -1342,7 +1358,7 @@ mod tests {
         // row no price matched shows the dash), and on each cost what it
         // is — the person's own table, not a bill — after what its mark
         // means.
-        let (root, mut read) = app.usage.take().unwrap();
+        let mut read = app.usage.value_mut().unwrap().clone();
         let mut unpriced = read.rows[0].clone();
         unpriced.key = Some("model-b".into());
         read.rows[0].estimated_cost = Some(agentdocker_core::usage::price::CostReport {
@@ -1350,7 +1366,7 @@ mod tests {
             coverage: Coverage::Partial,
         });
         read.rows.push(unpriced);
-        app.usage = Some((root, read));
+        app.usage = crate::app::remote::About::ready(root, read);
         let (narrow, wide) = (at(&mut app, 800.0), at(&mut app, 1600.0));
         for view in [&narrow, &wide] {
             assert!(view.texts.iter().any(|t| t == ESTIMATE), "the column");
