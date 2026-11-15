@@ -483,9 +483,11 @@ and the filters, so narrowing the board narrows its numbers — as labelled
 numbers, never a mark to hover: *Done* (cards in a Done lane), *Pull to
 done* (the median from a card's first pull to its arrival in Done, over the
 done cards that were pulled), *In Review* (the median a card spent in Review
-lanes before leaving them, over the cards that have left Review), then each
-holder of a done card with their mark and name, how many they have done and
-their own median from pull to done, most done first.
+lanes before leaving them, over the cards that have left Review and whose
+history is whole), *History incomplete* (how many cards on view have a
+history that does not show all their time, shown only when there are any),
+then each holder of a done card with their mark and name, how many they
+have done and their own median from pull to done, most done first.
 **Table** lays every card of the project out as a row (key, its lane as a
 chip, title, then *High priority*, its due day and its tags as chips, and its
 holder; a row opens its card under it), and **Compact** drops a card's chips
@@ -538,8 +540,11 @@ copy, or unlinked), its links (a URL or a pull request in the browser, a
 path in its app, a card in place, anything else copied; each with copy and
 remove), the cards it waits on and those part of it, its comments with
 replies and a composer, its time lane by lane (each stay in order: the
-lane, when it came in and how long it lasted, the one it is in *so far*;
-then *Pull to done* for a card that was pulled and is done), and its
+lane, when it came in and how long it lasted, the one it is in *so far*,
+one whose leaving the history did not show *left unseen, within* the longest
+it can have lasted, and *N earlier stays not shown* above the newest two
+hundred; then *Pull to done* for a card that was pulled and is done, and
+*Its history does not show all its time* when it does not), and its
 history. A card an agent is started on
 moves into the pull target, held by that agent, and the agent is told to
 work on it.

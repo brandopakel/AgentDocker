@@ -596,6 +596,9 @@ impl App {
         if let Some(secs) = stats.in_review {
             strip = strip.push(stat("In Review", span_words(secs)));
         }
+        if stats.incomplete > 0 {
+            strip = strip.push(stat("History incomplete", stats.incomplete.to_string()));
+        }
         for holder in &stats.holders {
             let name = self.name_of(holder.holder.as_str());
             let value = match holder.pull_to_done {
@@ -1671,9 +1674,18 @@ impl App {
             if let Some(times) = &detail.times {
                 let now = chrono::Utc::now();
                 let mut timeline = column![].spacing(3);
+                if times.stays_omitted > 0 {
+                    timeline = timeline.push(
+                        text(format!("{} earlier stays not shown", times.stays_omitted))
+                            .size(11)
+                            .color(c.faint),
+                    );
+                }
                 for stay in &times.stays {
                     let span = span_words(stay.seconds(now));
-                    let length = if stay.to.is_none() {
+                    let length = if stay.unseen_end {
+                        format!("left unseen, within {span}")
+                    } else if stay.to.is_none() {
                         format!("{span} so far")
                     } else {
                         span
@@ -1701,6 +1713,13 @@ impl App {
                         ]
                         .spacing(6)
                         .align_y(Center),
+                    );
+                }
+                if times.incomplete {
+                    timeline = timeline.push(
+                        text("Its history does not show all its time")
+                            .size(11)
+                            .color(c.faint),
                     );
                 }
                 body = body.push(timeline);
@@ -2609,7 +2628,7 @@ mod tests {
                 },
             ),
         ];
-        let times = agentdocker_core::timing::card_times(&card, &history, now);
+        let times = agentdocker_core::timing::card_times(&card, &history, true, now);
         let c = Colors::new(false);
 
         // The face, from the card alone, then from its folded times.

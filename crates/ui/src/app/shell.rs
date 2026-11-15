@@ -11423,7 +11423,7 @@ mod tests {
             .send(Msg::Tasks(
                 alpha.display().to_string(),
                 request,
-                Ok((vec![first.clone(), second.clone()], false)),
+                Ok((vec![first.clone(), second.clone()], false, Vec::new())),
             ))
             .unwrap();
         app.drain();
@@ -11447,6 +11447,7 @@ mod tests {
             children: vec![],
             plan: None,
             files: vec![],
+            times: None,
         };
         kept.messages
             .send(Msg::TaskDetail(card.id.clone(), Ok(Box::new(detail))))

@@ -3871,6 +3871,11 @@ async fn run() -> Result<()> {
                             })
                             .collect();
                         println!("  time  {}", lanes.join(" · "));
+                        if times.incomplete {
+                            println!(
+                                "  (the card's history does not show all its time: what it does not show is in no lane)"
+                            );
+                        }
                         if let Some(secs) = times.pull_to_done() {
                             println!("  pull to done {}", format::span_secs(secs));
                         }

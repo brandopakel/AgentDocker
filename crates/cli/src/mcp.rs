@@ -3280,7 +3280,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "get_task",
-            "description": "One card in full: its words and fields, the board's lanes, its comments, its last hundred history lines, its stays and time in each lane (`times`, from its whole history), the cards it waits on and the cards that are part of it.",
+            "description": "One card in full: its words and fields, the board's lanes, its comments, its last hundred history lines, its stays and time in each lane (`times`: its newest 200 stays and each lane's total, from the history lines that say where it was; `incomplete` when the history does not show all its time, which is then left out rather than guessed), the cards it waits on and the cards that are part of it.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
