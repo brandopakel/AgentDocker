@@ -73,7 +73,10 @@ and the previous release, and under `condition` what the installation's files
 say of it. `installation` is `absent`, `active`, `deactivated` (releases are
 kept and none is active, as after an uninstall) or `interrupted` (launchers or
 commands are in place and no release is active: an install stopped before it
-was activated). For an active one, `launcher` says whether the application
+was activated, or an uninstall, which deactivates first, stopped before it had
+removed them; the `agentdocker` in `.local/bin` runs nothing then, so the
+commands `way_out` names are typed with the program that read the status, a
+package's or a kept release's). For an active one, `launcher` says whether the application
 people open is the active release's (`published`), another release's (`stale`,
 with `launcher_release`), an earlier release's kept because the active one
 supplies none (`kept`), an older form that follows the active release by itself
@@ -96,7 +99,12 @@ either, and it does not say whether another command is running now.
 
 `desktop prune --preview` reports removable old builds; omit `--preview` to remove
 them. `desktop uninstall --preview` reports launcher removal; omit `--preview` to
-apply. Both preserve settings, running versions and unrecognized files.
+apply. Both preserve settings, running versions and unrecognized files. An
+uninstall deactivates first and removes the commands and the launcher after.
+One that fails part-way says where it stopped and prints the command that
+finishes it; one that is stopped any other way leaves the same thing, nothing
+active and some of its pieces, which `desktop status` reports as `interrupted`
+and running the uninstall again removes.
 Uninstall leaves the tools' configuration alone: run `agentdocker setup --remove`
 first, or Claude Code, Codex and the rest keep MCP entries and hooks that point
 at the removed binary. Loaded

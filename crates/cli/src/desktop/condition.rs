@@ -2,7 +2,7 @@
 //!
 //! `Layout::active` reads the `current` pointer and nothing else, so an
 //! installation whose pointer was swung and whose application was never
-//! published, or whose command links are half removed, read as installed.
+//! published, or whose command links are gone, read as installed.
 //! This reads the rest: the retained releases, each command link, the
 //! launcher people open, and puts them together into one answer with the
 //! way out of whatever is wrong.
@@ -119,7 +119,8 @@ pub(super) struct Condition {
     /// whether the rest of it is in place.
     /// `deactivated`: releases are kept and nothing is active.
     /// `interrupted`: nothing is active, yet pieces of an installation
-    /// are in place: an install stopped before it was activated.
+    /// are in place: an install stopped before it was activated, or an
+    /// uninstall, which deactivates first, stopped before it finished.
     pub installation: &'static str,
     /// `published`, `kept` (an earlier release's launcher, kept because
     /// the active one supplies none), `stale` (another release's),
@@ -154,20 +155,25 @@ pub(super) struct Condition {
 /// such thing.
 pub(super) const PRESERVED: &str = "it is not replaced or removed. If an install or an uninstall of AgentDocker was interrupted, it can be what that left half written or half removed: remove it yourself and run the command again. If it is something else of yours, move it or install under another --prefix";
 
+/// A command of one installation, as it has to be typed with `program`:
+/// one that names no prefix acts on the default installation, whichever
+/// this is.
+fn command(prefix: &Prefix, program: &str, rest: &str) -> String {
+    match prefix {
+        Prefix::Default => format!("`{program} desktop {rest}`"),
+        Prefix::Named(prefix) => {
+            format!("`{program} desktop --prefix {} {rest}`", quoted(prefix))
+        }
+        Prefix::Unwritable => format!(
+            "`{program} desktop {rest}` with the same `--prefix` this was asked with (its path cannot be written here)"
+        ),
+    }
+}
+
 /// The conclusion the facts allow. Pure: every row of the table in the
 /// tests is a set of facts and the answer to it.
 pub(super) fn condition(facts: &Facts) -> Condition {
-    // A command of this installation, as it has to be typed: one that
-    // names no prefix acts on the default installation, whichever this is.
-    let desktop = |rest: &str| match &facts.prefix {
-        Prefix::Default => format!("`agentdocker desktop {rest}`"),
-        Prefix::Named(prefix) => {
-            format!("`agentdocker desktop --prefix {} {rest}`", quoted(prefix))
-        }
-        Prefix::Unwritable => format!(
-            "`agentdocker desktop {rest}` with the same `--prefix` this was asked with (its path cannot be written here)"
-        ),
-    };
+    let desktop = |rest: &str| command(&facts.prefix, "agentdocker", rest);
     let uninstall = format!(
         "{} removes what is left of it, and an install after that puts all of it back",
         desktop("uninstall")
@@ -267,14 +273,14 @@ pub(super) fn condition(facts: &Facts) -> Condition {
                     short(&active.release)
                 )),
                 "missing" => way_out.push(format!(
-                    "The launcher {} is missing, as an uninstall that stopped part-way leaves it. Installing the same package again does not write it: {uninstall}.",
+                    "The launcher {} is missing: something outside the installer removed it, or an uninstall by an earlier build stopped part-way. Installing the same package again does not write it: {uninstall}.",
                     facts.application
                 )),
                 _ => {}
             }
             if !missing_links.is_empty() {
                 way_out.push(format!(
-                    "Of the commands in {}, {} {} missing, as an uninstall that stopped part-way leaves them. Installing the same package again does not make them: {uninstall}; installing another release, or a rollback, also makes them.",
+                    "Of the commands in {}, {} {} missing: something outside the installer removed them, or an uninstall by an earlier build stopped part-way. Installing the same package again does not make them: {uninstall}; installing another release, or a rollback, also makes them.",
                     facts.bin,
                     missing_links.join(", "),
                     if missing_links.len() == 1 { "is" } else { "are" }
@@ -304,9 +310,24 @@ pub(super) fn condition(facts: &Facts) -> Condition {
                 )
                 || facts.legacy == Some(Piece::Ours);
             if pieces {
+                // The commands are links through the pointer: with none,
+                // the one a shell finds runs nothing, and the advice
+                // would be typed with it.
+                let dangling = facts
+                    .links
+                    .iter()
+                    .any(|(name, piece)| *name == "agentdocker" && *piece == Piece::Ours);
                 way_out.push(format!(
-                    "Launchers or commands of an installation are in place and no release is active: an install stopped before it was activated. Run the install again ({install}), which keeps what is there and finishes; or {}, which removes them.",
-                    desktop("uninstall")
+                    "Launchers or commands of an installation are in place and no release is active: an install stopped before it was activated, or an uninstall stopped before it had removed them. Run the install again ({install}), which keeps what is there and finishes; or {}, which removes them.{}",
+                    desktop("uninstall"),
+                    if dangling {
+                        format!(
+                            " The `agentdocker` in {} runs nothing while no release is active: type these with the program this was read with.",
+                            facts.bin
+                        )
+                    } else {
+                        String::new()
+                    }
                 ));
                 "interrupted"
             } else if facts.retained > 0 {
@@ -468,6 +489,17 @@ impl Layout {
     /// The installation as its files have it.
     pub(super) fn condition(&self, active: Option<&Activation>) -> Condition {
         condition(&self.facts(active))
+    }
+
+    /// The uninstall of this installation, typed with `program` (the one
+    /// running now) rather than with the command in the bin folder, which
+    /// runs nothing once no release is active. A program whose path
+    /// cannot be written falls back to the command's name.
+    pub(super) fn uninstall_with(&self, program: Option<&Path>) -> String {
+        let program = program
+            .and_then(Path::to_str)
+            .map_or_else(|| "agentdocker".to_owned(), quoted);
+        command(&self.prefix_to_name(), &program, "uninstall")
     }
 }
 
@@ -773,6 +805,29 @@ mod tests {
                 &["an install stopped before it was activated"],
             ),
             (
+                "an uninstall stopped after its first step: deactivated, every piece still there",
+                |f| f.active = None,
+                "interrupted",
+                "stale",
+                "complete",
+                &[
+                    "an uninstall stopped before it had removed them",
+                    "The `agentdocker` in /prefix/.local/bin runs nothing while no release is active",
+                ],
+            ),
+            (
+                "or after the commands, with the application left",
+                |f| {
+                    *f = nothing();
+                    f.retained = 2;
+                    f.launcher = copy_of(ACTIVE, true);
+                },
+                "interrupted",
+                "stale",
+                "none",
+                &["an uninstall stopped before it had removed them"],
+            ),
+            (
                 "nothing installed, and another program's launcher in the way",
                 |f| {
                     *f = nothing();
@@ -807,6 +862,14 @@ mod tests {
                 );
             }
         }
+        // Which program to type the advice with is said only while the
+        // command a shell would find is one of the pieces left.
+        let mut launcher_only = nothing();
+        launcher_only.launcher = copy_of(ACTIVE, true);
+        assert!(
+            !condition(&launcher_only).way_out[0].contains("runs nothing"),
+            "no command is left to mislead"
+        );
         // The release the application is a copy of is named when it is
         // not the active one's, and only then.
         let mut stale = whole();
@@ -853,11 +916,11 @@ mod tests {
             .unwrap();
         assert_eq!(String::from_utf8(read_back.stdout).unwrap(), awkward);
 
-        // Each state whose way out names a command: an uninstall that
-        // stopped (commands, or the launcher file), an activation that
-        // was not published, an older release without its application or
-        // its link, a release whose files are gone, and an install that
-        // stopped before it was activated.
+        // Each state whose way out names a command: a piece removed from
+        // under an active release (a command, or the launcher file), an
+        // activation that was not published, an older release without its
+        // application or its link, a release whose files are gone, and an
+        // install or an uninstall that stopped with nothing active.
         let states: &[fn(&mut Facts)] = &[
             |f| f.links[0].1 = Piece::Missing,
             |f| {
@@ -977,7 +1040,7 @@ mod tests {
         assert_eq!(found.launcher_release.as_deref(), Some(modern.id.as_str()));
         assert!(found.way_out.is_empty(), "{:?}", found.way_out);
 
-        // The application gone, as an uninstall that stopped leaves it.
+        // The application gone from under the active release.
         std::fs::remove_dir_all(&layout.application).unwrap();
         let found = layout.condition(active.as_ref());
         assert_eq!(found.launcher, "missing");
@@ -1058,8 +1121,8 @@ mod tests {
         );
         assert_eq!((found.retained, found.way_out.len()), (1, 0), "{found:?}");
 
-        // A command removed, as an uninstall that stopped after its first
-        // step leaves it.
+        // A command removed from under the active release, which no
+        // command of this build leaves: an uninstall deactivates first.
         let command = layout.bin.join("agentdocker");
         std::fs::remove_file(&command).unwrap();
         let found = layout.condition(active.as_ref());

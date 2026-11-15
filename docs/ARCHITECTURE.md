@@ -922,9 +922,14 @@ Discovery is continuous while anyone listens: the daemon scans every five second
 Local desktop installation uses immutable payload versions and one activation
 pointer. An activation makes the command links, and the launcher file where the
 launcher is a file, before it moves the pointer, and publishes the application
-bundle, where the launcher is one, after it; an uninstall removes the links
-first and the pointer last. So the pointer alone does not say the installation
-is whole: `desktop status` reads the rest (`condition`: the retained releases,
+bundle, where the launcher is one, after it; an uninstall removes the pointer
+first, then the links and the launcher, so one that stops has deactivated the
+installation and never leaves an active one with pieces missing. One that fails
+says where it stopped: on the pointer nothing was removed, and after it the
+message gives the uninstall to run again, typed with the running program (or
+says where one is, when that program was in what was being removed), since the
+command links lead through the pointer and run nothing without it. The
+pointer alone still does not say the installation is whole: `desktop status` reads the rest (`condition`: the retained releases,
 each command link, the launcher against the active release) and derives one
 answer from those facts by a pure function, with the way out of each state an
 interrupted command leaves; it changes nothing and takes no lock. Its output
