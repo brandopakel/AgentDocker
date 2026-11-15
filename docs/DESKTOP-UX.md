@@ -177,7 +177,10 @@ beside its standing, in the session list and in its panel, with the way out:
 **Start unknown: stop it before retrying** or **Preparation unfinished: stop
 it before retrying**, and why in its detail. Its standing still says
 **Starting**; stopping it, or the engine reporting it running or exited,
-removes the chip. The name is set
+removes the chip. An ended session's panel says how its run ended in its
+standing chip's detail where the daemon saw it — *Ended by signal 15*,
+*Ended, found gone*, *Never started*, *Deregistered* — and otherwise
+*Ended*; a failure keeps its reason. The name is set
 semibold when something there
 is new or waits on you, and is cut before the chip is. "Finished since you
 looked" means its turn ended, or the session did, while its project was not

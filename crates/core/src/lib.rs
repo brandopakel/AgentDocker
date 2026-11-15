@@ -54,7 +54,7 @@ pub mod setup;
 
 pub use agent::{
     AgentId, AgentRecord, AgentSpec, AgentStatus, DiscoveredProcess, ProviderThread, RestartPolicy,
-    SessionContact, SessionKey, ThreadRef, ThreadSource, VcsState, short,
+    RunEnd, SessionContact, SessionKey, ThreadRef, ThreadSource, VcsState, short,
 };
 pub mod codex_thread;
 pub use board::{Board, Lane};

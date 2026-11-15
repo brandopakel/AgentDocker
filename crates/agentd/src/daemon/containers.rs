@@ -252,9 +252,12 @@ impl Daemon {
                 // No create has been attempted; this is a failed preparation, not
                 // an assertion about an engine-managed writer's exit.
                 let _ = self.update_container(&record.id, |r| {
-                    r.status = AgentStatus::Failed {
-                        reason: reason.clone(),
-                    };
+                    r.end_run(
+                        AgentStatus::Failed {
+                            reason: reason.clone(),
+                        },
+                        None,
+                    );
                     r.container.as_mut().unwrap().last_error = Some(reason.clone());
                 });
                 self.cleanup_isolate(&record).await;
@@ -469,7 +472,12 @@ impl Daemon {
                 // Stopped before anything was created: nothing in the
                 // engine to stop.
                 ContainerPhase::Stopping => {
-                    self.update_container(id, |r| r.status = AgentStatus::Exited { code: None })?;
+                    self.update_container(id, |r| {
+                        r.end_run(
+                            AgentStatus::Exited { code: None },
+                            Some(agentdocker_core::RunEnd::NeverStarted),
+                        )
+                    })?;
                     self.retire_transport(id).await?;
                     return Ok(());
                 }
@@ -519,7 +527,13 @@ impl Daemon {
                 // A stopped never-started container is removed by exact verified ID;
                 // a delayed start cannot resurrect it after protection is released.
                 self.engine_call(record, |b, r| b.remove_created(r)).await?;
-                self.update_container(id, |r| r.status = AgentStatus::Exited { code: None })?;
+                // Removed never started: nothing of it ran.
+                self.update_container(id, |r| {
+                    r.end_run(
+                        AgentStatus::Exited { code: None },
+                        Some(agentdocker_core::RunEnd::NeverStarted),
+                    )
+                })?;
                 self.retire_transport(id).await?;
                 return Ok(());
             }
@@ -576,12 +590,16 @@ impl Daemon {
             if inspected.state != ContainerState::Created {
                 c.dead_end = None;
             }
-            record.status = match inspected.state {
-                ContainerState::Exited(code) => AgentStatus::Exited { code: Some(code) },
-                ContainerState::Running if c.intent == ContainerIntent::Run => AgentStatus::Running,
-                _ if c.intent != ContainerIntent::Run => AgentStatus::Stopping,
-                _ => AgentStatus::Created,
-            };
+            let run = c.intent == ContainerIntent::Run;
+            match inspected.state {
+                // The engine's code says how it ended.
+                ContainerState::Exited(code) => {
+                    record.end_run(AgentStatus::Exited { code: Some(code) }, None)
+                }
+                ContainerState::Running if run => record.status = AgentStatus::Running,
+                _ if !run => record.status = AgentStatus::Stopping,
+                _ => record.status = AgentStatus::Created,
+            }
         })
     }
 
@@ -655,6 +673,7 @@ impl State {
                 _ if exited => kinds.push(EventKind::AgentExited {
                     agent: record.id.clone(),
                     status: record.status.clone(),
+                    ending: record.ending,
                 }),
                 _ => {}
             }
@@ -1315,6 +1334,8 @@ mod tests {
             panic!()
         };
         assert!(!agent.status.is_live());
+        // Removed never started.
+        assert_eq!(agent.ending, Some(agentdocker_core::RunEnd::NeverStarted));
         assert_eq!(lock(&fake.actions).last(), Some(&"remove_created"));
         assert!(lock(&daemon.state).leases.all().is_empty());
     }
@@ -1718,6 +1739,8 @@ mod tests {
             panic!()
         };
         assert_eq!(agent.status, AgentStatus::Exited { code: None });
+        // Nothing was created, so nothing of it ran.
+        assert_eq!(agent.ending, Some(agentdocker_core::RunEnd::NeverStarted));
         assert_eq!(agent.container.unwrap().dead_end, None);
         assert!(lock(&fake.actions).is_empty());
     }

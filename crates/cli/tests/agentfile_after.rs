@@ -1016,6 +1016,7 @@ fn a_record_read_ahead_of_the_events_cannot_let_what_waits_start() {
     daemon.push(EventKind::AgentExited {
         agent: id.clone(),
         status: AgentStatus::Exited { code: Some(1) },
+        ending: None,
     });
     daemon.wait_until("read serve's record", |d| {
         d.inspects.load(Ordering::Relaxed) > read
@@ -1042,6 +1043,7 @@ fn a_record_read_ahead_of_the_events_cannot_let_what_waits_start() {
         EventKind::AgentExited {
             agent: id.clone(),
             status: AgentStatus::Exited { code: Some(0) },
+            ending: None,
         },
     ] {
         daemon.push(kind);

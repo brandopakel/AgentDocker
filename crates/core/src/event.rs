@@ -867,6 +867,11 @@ pub enum EventKind {
     AgentExited {
         agent: AgentId,
         status: AgentStatus,
+        /// How it ended, where the daemon held evidence of it
+        /// ([`crate::RunEnd`]), as its record keeps it; absent when nothing
+        /// proved how, and from an older daemon's event.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ending: Option<crate::RunEnd>,
     },
     /// Output capture failed; the separate exit event retains the actual
     /// process status. A successful exit does not imply the log is complete.

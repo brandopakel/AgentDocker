@@ -1167,8 +1167,10 @@ impl State {
         canonical.process_group = caller.process_group;
         canonical.status = caller.status;
         // The caller's run, now under the prior id, with its own stop
-        // evidence: a stop asked of the prior run is not this one's.
+        // evidence and ending: a stop asked of the prior run, or how it
+        // ended, is not this one's.
         canonical.stop_requested = caller.stop_requested;
+        canonical.ending = caller.ending;
         canonical.last_seen = now;
         canonical.vcs = caller.vcs.clone();
         for (key, value) in &caller.spec.labels {

@@ -191,7 +191,11 @@ impl Daemon {
             }) {
                 return;
             }
-            state.mark_exited_durably(&report.agent, supervisor::exit_status(&report))
+            state.mark_ended_durably(
+                &report.agent,
+                supervisor::exit_status(&report),
+                supervisor::exit_ending(&report),
+            )
         };
         if durable {
             tokio::spawn(supervisor::acknowledge_recovered_exit(
@@ -294,13 +298,15 @@ impl Daemon {
                     reason: format!("could not be restored: {error:#}"),
                 };
                 if let Some(mut record) = state.registry.get(&id).cloned() {
-                    record.status = status.clone();
+                    // The restore's own failure, not how its last run ended.
+                    record.end_run(status.clone(), None);
                     record.finished_at = Some(Utc::now());
                     record.last_seen = Utc::now();
                     let event = Event::new(
                         EventKind::AgentExited {
                             agent: id.clone(),
                             status: status.clone(),
+                            ending: None,
                         },
                         Utc::now(),
                     );
@@ -882,7 +888,26 @@ mod tests {
         recovered_exit(0, false, true).await;
     }
 
+    /// The owner's proof that the program never began survives the exit
+    /// file: recovered, the ending is NeverStarted beside the status the
+    /// report always gave; a write that fails keeps the proof in the file
+    /// for the daemon that can record it, and acknowledges nothing.
+    #[tokio::test]
+    async fn a_recovered_exit_keeps_the_owners_proof_that_nothing_ran() {
+        recovered_exit_proving(0, false, false, true).await;
+        recovered_exit_proving(1, false, false, true).await;
+    }
+
     async fn recovered_exit(storage_failure: u8, wrong_agent: bool, replace_report: bool) {
+        recovered_exit_proving(storage_failure, wrong_agent, replace_report, false).await
+    }
+
+    async fn recovered_exit_proving(
+        storage_failure: u8,
+        wrong_agent: bool,
+        replace_report: bool,
+        never_ran: bool,
+    ) {
         use agentdocker_core::session::{
             ChildIdentity, ExitReport, FORMAT, OwnerCommand, OwnerHello, SessionOwner, exit_path,
             socket_path,
@@ -934,10 +959,19 @@ mod tests {
             agent: agent.id.clone(),
             owner: owner.clone(),
             child: child.clone(),
-            code: Some(7),
+            code: (!never_ran).then_some(7),
             signal: None,
             log_flushed: true,
             at: Utc::now(),
+            never_ran: never_ran.then_some(true),
+        };
+        let (exited, ending) = if never_ran {
+            (
+                AgentStatus::Exited { code: None },
+                Some(agentdocker_core::RunEnd::NeverStarted),
+            )
+        } else {
+            (AgentStatus::Exited { code: Some(7) }, None)
         };
         let socket = socket_path(&daemon.home, &agent.id);
         let exit = exit_path(&daemon.home, &agent.id);
@@ -1003,10 +1037,11 @@ mod tests {
             serde_json::from_str::<OwnerCommand>(&received.unwrap()).unwrap(),
             OwnerCommand::Acknowledge
         );
+        let durable = lock(&daemon.state).store.load_agents().unwrap()[0].clone();
         assert_eq!(
-            lock(&daemon.state).store.load_agents().unwrap()[0].status,
-            AgentStatus::Exited { code: Some(7) },
-            "the exit is already durable at ACK"
+            (durable.status, durable.ending),
+            (exited, ending),
+            "the exit, and how it ended, are already durable at ACK"
         );
         let replacement = if replace_report {
             let mut changed = report.clone();
@@ -1156,6 +1191,7 @@ mod tests {
                     signal: None,
                     log_flushed: true,
                     at: Utc::now(),
+                    never_ran: None,
                 };
                 let text = serde_json::to_string(&OwnerReport::Exited { status: report }).unwrap();
                 writer.write_all(&framed(text)).await.unwrap();

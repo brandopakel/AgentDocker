@@ -6581,7 +6581,8 @@ fn status_cell(a: &AgentRecord, now: chrono::DateTime<chrono::Utc>) -> String {
         // Refused at a dead end, which 'created' would hide.
         dead_end.words().to_owned()
     } else {
-        a.status.to_string()
+        // How it ended where the daemon saw, else its status.
+        a.ended_words()
     }
 }
 
@@ -7214,6 +7215,42 @@ mod tests {
     /// A container refused at a dead end says so in `ps` where its status
     /// alone would say `created`; once stopping or seen to run, the status
     /// speaks again.
+    /// `ps` says how a run ended where the daemon saw it, and its status
+    /// otherwise: never a signal it did not see, never a failure's reason
+    /// lost, never an old ending on a live record.
+    #[test]
+    fn ps_says_how_a_run_ended_where_it_was_seen() {
+        use super::{AgentRecord, AgentSpec, status_cell};
+        use agentdocker_core::{AgentStatus, RunEnd};
+        let now = chrono::Utc::now();
+        let mut record = AgentRecord::new(AgentSpec::default(), true, now);
+        record.end_run(AgentStatus::Exited { code: None }, None);
+        assert_eq!(status_cell(&record, now), "exited (code unknown)");
+        for (ending, words) in [
+            (RunEnd::Signal { signal: 15 }, "ended by signal 15"),
+            (RunEnd::FoundGone, "ended, found gone"),
+            (RunEnd::NeverStarted, "never started"),
+            (RunEnd::Deregistered, "deregistered"),
+            (RunEnd::Unknown, "exited (code unknown)"),
+        ] {
+            record.end_run(AgentStatus::Exited { code: None }, Some(ending));
+            assert_eq!(status_cell(&record, now), words);
+        }
+        record.end_run(
+            AgentStatus::Failed {
+                reason: "it could not be executed".into(),
+            },
+            Some(RunEnd::NeverStarted),
+        );
+        assert_eq!(
+            status_cell(&record, now),
+            "failed: it could not be executed"
+        );
+        record.status = AgentStatus::Running;
+        record.ending = Some(RunEnd::Signal { signal: 9 });
+        assert_eq!(status_cell(&record, now), "running");
+    }
+
     #[test]
     fn ps_says_a_containers_dead_end_in_place_of_created() {
         use super::{AgentRecord, AgentSpec, status_cell};

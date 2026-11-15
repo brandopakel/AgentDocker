@@ -169,6 +169,9 @@ pub struct Spawned {
     link: OwnerLink,
     controller: Controller,
     launch_error: Option<String>,
+    /// How a launch that was not activated ended, where the owner's exit
+    /// report proves it (its program never began).
+    launch_ending: Option<agentdocker_core::RunEnd>,
     activated: bool,
     pub control: watch::Sender<Option<bool>>,
     stop: watch::Receiver<Option<bool>>,
@@ -350,6 +353,7 @@ pub async fn spawn(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<Spaw
         link,
         controller,
         launch_error: None,
+        launch_ending: None,
         activated: false,
         control,
         stop,
@@ -482,6 +486,7 @@ pub async fn reattach(daemon: &Daemon, record: &AgentRecord) -> anyhow::Result<R
         link: OwnerLink::Detached,
         controller,
         launch_error: None,
+        launch_ending: None,
         activated: false,
         control,
         stop,
@@ -613,6 +618,7 @@ impl Spawned {
             match self.controller.next().await? {
                 Some(OwnerReport::Activated) => break,
                 Some(OwnerReport::Exited { status }) => {
+                    self.launch_ending = exit_ending(&status);
                     return Err(NotActivated::Exited(describe_exit(&status)).into());
                 }
                 Some(_) => continue,
@@ -693,7 +699,8 @@ impl Spawned {
 /// How supervision ended: with the owner's exit report, or without one.
 enum Outcome {
     Exited(ExitReport),
-    Failed(String),
+    /// It failed, with the evidence of how where there is any.
+    Failed(String, Option<agentdocker_core::RunEnd>),
 }
 
 /// Relay until the owner reports the exit or is gone for good. A dropped
@@ -797,7 +804,7 @@ async fn relay_until_exit(
                 return Outcome::Exited(report);
             }
             if !owner_alive(&spawned.owner) {
-                return Outcome::Failed("session owner lost".into());
+                return Outcome::Failed("session owner lost".into(), None);
             }
             // A daemon that has offered coordination away does not compete
             // for the owner: the successor is attaching, and reconnecting
@@ -848,7 +855,7 @@ pub fn supervise(
             // path) is not answered "did not answer" meanwhile. An owner
             // whose command never ran ignores it.
             let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
-            Outcome::Failed(reason)
+            Outcome::Failed(reason, spawned.launch_ending.take())
         } else {
             let mut keystrokes = spawned.keystrokes.take();
             let mut resizes = spawned.resizes.take();
@@ -859,8 +866,9 @@ pub fn supervise(
             Outcome::Exited(report) => {
                 let status = exit_status(&report);
                 // Durable first, then acknowledged: an exit the store did not
-                // keep stays in the exit file for a daemon that can keep it.
-                if daemon.mark_exited_durably(&id, status.clone()) {
+                // keep stays in the exit file for a daemon that can keep it,
+                // and with it the evidence of how it ended.
+                if daemon.mark_ended_durably(&id, status.clone(), exit_ending(&report)) {
                     let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
                     let _ = std::fs::remove_file(exit_path(&daemon.home, &id));
                 } else {
@@ -868,9 +876,9 @@ pub fn supervise(
                 }
                 status
             }
-            Outcome::Failed(reason) => {
+            Outcome::Failed(reason, ending) => {
                 let status = AgentStatus::Failed { reason };
-                daemon.mark_exited(&id, status.clone());
+                daemon.mark_ended(&id, status.clone(), ending);
                 status
             }
         };
@@ -933,6 +941,21 @@ pub(crate) fn exit_status(report: &ExitReport) -> AgentStatus {
             reason: "the command could not be waited for".into(),
         },
         _ => AgentStatus::Exited { code: report.code },
+    }
+}
+
+/// How the run ended, where the report proves it: the signal its owner
+/// saw end it, or the owner's proof that the program never began. Nothing
+/// else in a report proves a cause (a report with neither code nor signal
+/// may be a wait that failed), so the rest is `None`, unknown.
+pub(crate) fn exit_ending(report: &ExitReport) -> Option<agentdocker_core::RunEnd> {
+    use agentdocker_core::RunEnd;
+    if report.never_ran == Some(true) {
+        return Some(RunEnd::NeverStarted);
+    }
+    match (report.code, report.signal) {
+        (None, Some(signal)) => Some(RunEnd::Signal { signal }),
+        _ => None,
     }
 }
 
@@ -1005,6 +1028,7 @@ mod tests {
                 partial: Vec::new(),
             },
             launch_error: None,
+            launch_ending: None,
             activated: true,
             control,
             stop,
@@ -1126,6 +1150,7 @@ mod tests {
                 signal: None,
                 log_flushed: true,
                 at: now,
+                never_ran: None,
             };
             let mut spawned = Spawned {
                 pid: std::process::id(),
@@ -1138,6 +1163,7 @@ mod tests {
                     partial: output,
                 },
                 launch_error: None,
+                launch_ending: None,
                 activated: true,
                 control,
                 stop,
@@ -1221,6 +1247,7 @@ mod tests {
             signal,
             log_flushed,
             at: now,
+            never_ran: None,
         };
         assert_eq!(
             describe_exit(&report(Some(127), None, true)),
@@ -1236,6 +1263,36 @@ mod tests {
         assert_eq!(
             describe_exit(&report(None, None, false)),
             "it could not be waited for"
+        );
+
+        // How it ended comes only from what proves it. A wait that failed
+        // after a flushed log and a command that never ran leave identical
+        // older fields; only the owner's mark tells them apart.
+        use agentdocker_core::RunEnd;
+        let waited = report(None, None, true);
+        let never = ExitReport {
+            never_ran: Some(true),
+            ..waited.clone()
+        };
+        assert_eq!(exit_ending(&waited), None);
+        assert_eq!(exit_ending(&never), Some(RunEnd::NeverStarted));
+        assert_eq!(
+            exit_status(&waited),
+            exit_status(&never),
+            "status unchanged"
+        );
+        assert_eq!(
+            exit_ending(&report(None, Some(15), true)),
+            Some(RunEnd::Signal { signal: 15 })
+        );
+        assert_eq!(exit_ending(&report(Some(1), None, true)), None);
+        assert_eq!(exit_ending(&report(None, None, false)), None);
+        assert_eq!(
+            exit_ending(&ExitReport {
+                never_ran: Some(false),
+                ..waited
+            }),
+            None
         );
     }
 

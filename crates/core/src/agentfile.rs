@@ -1325,6 +1325,7 @@ mod tests {
         EventKind::AgentExited {
             agent: id.clone(),
             status: AgentStatus::Exited { code },
+            ending: None,
         }
     }
 
@@ -1492,7 +1493,8 @@ mod tests {
         assert_eq!(
             lifecycle_agent(&EventKind::AgentExited {
                 agent: id.clone(),
-                status: AgentStatus::Exited { code: Some(0) }
+                status: AgentStatus::Exited { code: Some(0) },
+                ending: None,
             }),
             Some(&id)
         );

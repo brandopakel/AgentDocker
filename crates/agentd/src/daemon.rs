@@ -1146,8 +1146,22 @@ impl Daemon {
     /// already unavailable, or fails on this write, still retires the
     /// supervision in memory but answers false, so the caller keeps whatever
     /// external evidence of the exit it holds.
-    pub fn mark_exited_durably(&self, id: &AgentId, status: AgentStatus) -> bool {
-        lock(&self.state).mark_exited_durably(id, status)
+    pub fn mark_ended(
+        &self,
+        id: &AgentId,
+        status: AgentStatus,
+        ending: Option<agentdocker_core::RunEnd>,
+    ) -> Option<AgentRecord> {
+        lock(&self.state).mark_ended(id, status, ending)
+    }
+
+    pub fn mark_ended_durably(
+        &self,
+        id: &AgentId,
+        status: AgentStatus,
+        ending: Option<agentdocker_core::RunEnd>,
+    ) -> bool {
+        lock(&self.state).mark_ended_durably(id, status, ending)
     }
 
     /// Lift the transient provider blocks whose retry is due.
@@ -1217,7 +1231,13 @@ impl Daemon {
                         }
                     }
                 } else {
-                    state.mark_exited(&candidate.id, AgentStatus::Exited { code: None });
+                    // Its process and group are gone, and nothing saw them
+                    // end: found gone, cause unknown.
+                    state.mark_ended(
+                        &candidate.id,
+                        AgentStatus::Exited { code: None },
+                        Some(agentdocker_core::RunEnd::FoundGone),
+                    );
                 }
             }
         }
@@ -1300,7 +1320,12 @@ impl Daemon {
                 if record.managed {
                     return Response::error(ErrorCode::Invalid, "agent is still starting");
                 }
-                return match state.mark_exited(&id, AgentStatus::Exited { code: None }) {
+                // Nothing of its own to end: taken off the register.
+                return match state.mark_ended(
+                    &id,
+                    AgentStatus::Exited { code: None },
+                    Some(agentdocker_core::RunEnd::Deregistered),
+                ) {
                     Some(agent) => Response::Agent { agent },
                     None => Response::error(ErrorCode::NotFound, "agent vanished"),
                 };
@@ -1435,7 +1460,13 @@ impl Daemon {
                 agent: current.clone(),
             };
         }
-        match state.mark_exited(&record.id, AgentStatus::Exited { code: None }) {
+        // Its process and group were already gone: the stop did not end
+        // it, and nothing saw how it ended.
+        match state.mark_ended(
+            &record.id,
+            AgentStatus::Exited { code: None },
+            Some(agentdocker_core::RunEnd::FoundGone),
+        ) {
             Some(agent) => Response::Agent { agent },
             None => state
                 .write_failure()
@@ -1559,14 +1590,18 @@ impl Daemon {
                 // The previous daemon stopped between creating the record and
                 // spawning the process, so nothing is running for it.
                 warn!(agent = %record.id.short(), name = %record.spec.name, "agent never started; recording failure");
-                record.status = AgentStatus::Failed {
-                    reason: "daemon restarted before the process was spawned".to_owned(),
-                };
+                record.end_run(
+                    AgentStatus::Failed {
+                        reason: "daemon restarted before the process was spawned".to_owned(),
+                    },
+                    None,
+                );
                 record.finished_at = Some(now);
                 let mut event = Event::new(
                     EventKind::AgentExited {
                         agent: record.id.clone(),
                         status: record.status.clone(),
+                        ending: None,
                     },
                     now,
                 );
@@ -4664,7 +4699,11 @@ impl State {
                 "managed agents finish when their process exits; use stop",
             );
         }
-        match self.mark_exited(&id, AgentStatus::Exited { code: Some(0) }) {
+        match self.mark_ended(
+            &id,
+            AgentStatus::Exited { code: Some(0) },
+            Some(agentdocker_core::RunEnd::Deregistered),
+        ) {
             Some(agent) => Response::Agent { agent },
             None => Response::error(ErrorCode::NotFound, "agent vanished"),
         }
@@ -4768,15 +4807,33 @@ impl State {
         }
     }
 
-    fn mark_exited_durably(&mut self, id: &AgentId, status: AgentStatus) -> bool {
+    fn mark_ended_durably(
+        &mut self,
+        id: &AgentId,
+        status: AgentStatus,
+        ending: Option<agentdocker_core::RunEnd>,
+    ) -> bool {
         let was_available = self.storage_error.is_none();
-        let recorded = self.mark_exited(id, status);
+        let recorded = self.mark_ended(id, status, ending);
         was_available
             && self.storage_error.is_none()
             && recorded.is_some_and(|record| !record.status.is_live())
     }
 
+    /// Its run ended with no evidence of how ([`AgentRecord::ending`] is
+    /// cleared): a failure, or an exit whose code says it.
     pub fn mark_exited(&mut self, id: &AgentId, status: AgentStatus) -> Option<AgentRecord> {
+        self.mark_ended(id, status, None)
+    }
+
+    /// Its run ended, with the evidence of how where the caller holds it,
+    /// written with the status and published on its `agent_exited`.
+    pub fn mark_ended(
+        &mut self,
+        id: &AgentId,
+        status: AgentStatus,
+        ending: Option<agentdocker_core::RunEnd>,
+    ) -> Option<AgentRecord> {
         // Called only after the owned process group has drained. A cancellation
         // can have made the registry terminal already; still retire its owner.
         self.supervised.remove(id);
@@ -4788,7 +4845,7 @@ impl State {
         }
         let now = Utc::now();
         let mut record = self.registry.get(id)?.clone();
-        record.status = status.clone();
+        record.end_run(status.clone(), ending);
         record.finished_at.get_or_insert(now);
         record.last_seen = now;
         let released: Vec<_> = self.leases.by_holder(id).into_iter().cloned().collect();
@@ -4826,6 +4883,7 @@ impl State {
         kinds.push(EventKind::AgentExited {
             agent: id.clone(),
             status: status.clone(),
+            ending,
         });
         let events: Vec<_> = kinds
             .into_iter()
@@ -6729,6 +6787,7 @@ impl State {
         // own stop evidence: whatever stop the record's last run had is
         // not this one's.
         canonical.stop_requested = fresh.stop_requested;
+        canonical.ending = fresh.ending;
         canonical.started_at = fresh.started_at;
         canonical.finished_at = None;
         canonical.last_seen = now;

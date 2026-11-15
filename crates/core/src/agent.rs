@@ -311,6 +311,40 @@ impl fmt::Display for AgentStatus {
     }
 }
 
+/// How a run ended, where the daemon held evidence of it at the moment
+/// it ended; kept beside [`AgentStatus`], which it never changes. A run
+/// ended without such evidence has none, which reads as unknown: never
+/// as a signal, never as anything the status alone cannot say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RunEnd {
+    /// Its process was ended by this signal, as the owner that waited
+    /// for it saw.
+    Signal { signal: i32 },
+    /// Its process was found gone, by a look that did not see it end.
+    FoundGone,
+    /// Its program never began: the launch failed before exec.
+    NeverStarted,
+    /// It was taken off the register with no process of its own to end.
+    Deregistered,
+    /// One a newer daemon recorded.
+    #[serde(other)]
+    Unknown,
+}
+
+impl RunEnd {
+    /// What a reader says of it.
+    pub fn words(self) -> String {
+        match self {
+            Self::Signal { signal } => format!("ended by signal {signal}"),
+            Self::FoundGone => "ended, found gone".to_owned(),
+            Self::NeverStarted => "never started".to_owned(),
+            Self::Deregistered => "deregistered".to_owned(),
+            Self::Unknown => "ended".to_owned(),
+        }
+    }
+}
+
 /// Everything the daemon knows about one agent instance — the "container".
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentRecord {
@@ -365,6 +399,15 @@ pub struct AgentRecord {
     /// `false`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_requested: Option<bool>,
+    /// How its current run ended, where the daemon held evidence at the
+    /// moment it ended ([`RunEnd`]). Written with the ending status, in
+    /// the same transition ([`AgentRecord::end_run`]), and cleared when a
+    /// run begins ([`AgentRecord::begin_run`]); a fresh process folded
+    /// into this record brings its own. `None` when nothing proved how it
+    /// ended, on a run that has not ended, and on a record written before
+    /// this was kept: unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ending: Option<RunEnd>,
     /// Engine identity and intent for a managed container; never a host PID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<crate::container::ManagedContainer>,
@@ -830,9 +873,32 @@ impl AgentRecord {
     }
 
     /// A run begins under this id. Whatever stop was asked of the run
-    /// before belongs to that run, not to this one.
+    /// before, and however it ended, belongs to that run, not to this one.
     pub fn begin_run(&mut self) {
         self.stop_requested = Some(false);
+        self.ending = None;
+    }
+
+    /// Its current run ends in `status`, with the evidence of how, or
+    /// none: every write of an ending status goes through here, so an
+    /// ending from an earlier run is never left beside a later one. When
+    /// it ended (`finished_at`) is the caller's, as before.
+    pub fn end_run(&mut self, status: AgentStatus, ending: Option<RunEnd>) {
+        self.status = status;
+        self.ending = ending;
+    }
+
+    /// What its status says, or, for a run that exited with evidence of
+    /// how, that: `ended by signal 15` rather than `exited (code
+    /// unknown)`. A live record says its status, whatever an earlier run
+    /// left, and a failure keeps its own reason.
+    pub fn ended_words(&self) -> String {
+        match (self.ending, &self.status) {
+            (Some(ending), AgentStatus::Exited { .. }) if ending != RunEnd::Unknown => {
+                ending.words()
+            }
+            _ => self.status.to_string(),
+        }
     }
 
     /// Whether a stop is known to have been asked of its current run —
@@ -850,6 +916,7 @@ impl AgentRecord {
             terminal: None,
             restarts: 0,
             stop_requested: Some(false),
+            ending: None,
             host: "local".to_owned(),
             pid: None,
             process_started_at: None,
@@ -892,6 +959,84 @@ mod tests {
         assert_eq!(shown(None), "exited (code unknown)");
         assert_eq!(shown(Some(0)), "exited (0)");
         assert_eq!(shown(Some(137)), "exited (137)");
+    }
+
+    /// How a run ended is kept beside its status only where proved: in
+    /// storage as a tagged value, none from a record written without it,
+    /// an unknown kind read as `Unknown`. It goes with the run: a run that
+    /// begins clears it, a later ending replaces it, and a reader says it
+    /// only for an exit, never for a live record or in a failure's place.
+    #[test]
+    fn a_runs_ending_is_said_only_where_it_was_proved() {
+        let mut record = AgentRecord::new(AgentSpec::default(), true, chrono::Utc::now());
+        assert_eq!(record.ending, None);
+        for (ending, kind, words) in [
+            (
+                RunEnd::Signal { signal: 15 },
+                "signal",
+                "ended by signal 15",
+            ),
+            (RunEnd::FoundGone, "found_gone", "ended, found gone"),
+            (RunEnd::NeverStarted, "never_started", "never started"),
+            (RunEnd::Deregistered, "deregistered", "deregistered"),
+        ] {
+            record.end_run(AgentStatus::Exited { code: None }, Some(ending));
+            assert_eq!(record.ended_words(), words);
+            let stored = serde_json::to_value(&record).unwrap();
+            assert_eq!(stored["ending"]["kind"], kind);
+            let back: AgentRecord = serde_json::from_value(stored).unwrap();
+            assert_eq!(back, record);
+        }
+        let stored = serde_json::to_value(&record).unwrap();
+        let mut newer = stored.clone();
+        newer["ending"] = serde_json::json!({"kind": "a_newer_ending"});
+        let newer: AgentRecord = serde_json::from_value(newer).unwrap();
+        assert_eq!(newer.ending, Some(RunEnd::Unknown));
+        assert_eq!(newer.ended_words(), "exited (code unknown)");
+        let mut older = stored;
+        older.as_object_mut().unwrap().remove("ending");
+        let older: AgentRecord = serde_json::from_value(older).unwrap();
+        assert_eq!(older.ending, None);
+        assert_eq!(
+            older.ended_words(),
+            "exited (code unknown)",
+            "never a signal"
+        );
+
+        // Deregistered beside the code it has always written.
+        record.end_run(
+            AgentStatus::Exited { code: Some(0) },
+            Some(RunEnd::Deregistered),
+        );
+        assert_eq!(record.ended_words(), "deregistered");
+        // A failure keeps its reason, whatever else is known.
+        record.end_run(
+            AgentStatus::Failed {
+                reason: "could not be executed".into(),
+            },
+            Some(RunEnd::NeverStarted),
+        );
+        assert_eq!(record.ended_words(), "failed: could not be executed");
+        // A later ending without evidence replaces the earlier one.
+        record.end_run(
+            AgentStatus::Exited { code: None },
+            Some(RunEnd::Signal { signal: 9 }),
+        );
+        record.end_run(AgentStatus::Exited { code: Some(1) }, None);
+        assert_eq!(record.ending, None);
+        assert_eq!(record.ended_words(), "exited (1)");
+        // A run that begins carries no ending of the last, and a live
+        // record says its status whatever was left.
+        record.end_run(
+            AgentStatus::Exited { code: None },
+            Some(RunEnd::Signal { signal: 9 }),
+        );
+        record.begin_run();
+        assert_eq!(record.ending, None);
+        let mut live = record.clone();
+        live.ending = Some(RunEnd::Signal { signal: 9 });
+        live.status = AgentStatus::Running;
+        assert_eq!(live.ended_words(), "running");
     }
 
     /// A stop is marked on the run it was asked of, outlives the exit,

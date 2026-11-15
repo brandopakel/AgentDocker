@@ -582,19 +582,41 @@ async fn supervise(
     let group = match Group::of(&pending, shared.input.as_ref()) {
         Ok(group) => group,
         Err(error) => {
+            // Dropped before its gate opened: the child is refused exec,
+            // so its program never began.
             drop(pending);
-            return finish_failed(&shared, &child, format!("{error:#}"), &mut acknowledgement)
-                .await;
+            return finish_failed(
+                &shared,
+                &child,
+                format!("{error:#}"),
+                true,
+                &mut acknowledgement,
+            )
+            .await;
         }
     };
-    let mut owned = match tokio::task::spawn_blocking(move || pending.activate()).await {
+    let mut owned = match tokio::task::spawn_blocking(move || pending.activate_proving()).await {
         Ok(Ok(child)) => child,
-        Ok(Err(error)) => {
-            return finish_failed(&shared, &child, format!("{error:#}"), &mut acknowledgement)
-                .await;
+        Ok(Err(failure)) => {
+            return finish_failed(
+                &shared,
+                &child,
+                format!("{:#}", failure.error),
+                failure.never_ran,
+                &mut acknowledgement,
+            )
+            .await;
         }
+        // A task that did not finish proves nothing of the program.
         Err(error) => {
-            return finish_failed(&shared, &child, error.to_string(), &mut acknowledgement).await;
+            return finish_failed(
+                &shared,
+                &child,
+                error.to_string(),
+                false,
+                &mut acknowledgement,
+            )
+            .await;
         }
     };
     lock(&shared.hello).activated = true;
@@ -768,6 +790,7 @@ async fn supervise(
             signal: None,
             log_flushed,
             at: Utc::now(),
+            never_ran: None,
         },
         Err(error) => {
             tracing::warn!(agent = %shared.launch.agent, %error, "cannot wait for the agent");
@@ -779,16 +802,21 @@ async fn supervise(
                 signal: None,
                 log_flushed,
                 at: Utc::now(),
+                never_ran: None,
             }
         }
     };
     finish(&shared, report, &mut acknowledgement).await
 }
 
+/// The launch failed before its program ran, or before the owner could
+/// tell whether it did: `never_ran` is the owner's proof that it did not,
+/// written into the report only when the failure shows it.
 async fn finish_failed(
     shared: &Arc<Shared>,
     child: &ChildIdentity,
     reason: String,
+    never_ran: bool,
     acknowledgement: &mut watch::Receiver<bool>,
 ) -> i32 {
     tracing::warn!(agent = %shared.launch.agent, %reason, "launch failed");
@@ -800,6 +828,7 @@ async fn finish_failed(
         signal: None,
         log_flushed: true,
         at: Utc::now(),
+        never_ran: never_ran.then_some(true),
     };
     finish(shared, report, acknowledgement).await
 }
