@@ -944,7 +944,8 @@ first, then the links and the launcher, so one that stops has deactivated the
 installation and never leaves an active one with pieces missing. One that fails
 says where it stopped: on the pointer nothing was removed, and after it the
 message gives the uninstall to run again, typed with the running program (or
-says where one is, when that program was in what was being removed), since the
+says where one is, when that program was in what was being removed or its path
+cannot be written in a command), since the
 command links lead through the pointer and run nothing without it. The
 pointer alone still does not say the installation is whole: `desktop status` reads the rest (`condition`: the retained releases,
 each command link, the launcher against the active release) and derives one

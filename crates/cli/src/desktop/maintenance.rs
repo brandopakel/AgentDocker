@@ -261,7 +261,9 @@ fn remove_owned(layout: &Layout, path: &Path) -> Result<()> {
 /// removed; once it is gone no release is active, a command still in
 /// the bin folder runs nothing, and the way to finish is the same
 /// uninstall, typed with a program that still runs: this one, unless it
-/// was itself in what the uninstall was removing (the application).
+/// was itself in what the uninstall was removing (the application) or its
+/// path cannot be written in a command; either way the person is then
+/// told where a program is, never given the bare command alone.
 fn stopped(layout: &Layout, path: &Path, program: Option<&Path>) -> String {
     if layout.root.join("current").symlink_metadata().is_ok() {
         return format!(
@@ -269,7 +271,10 @@ fn stopped(layout: &Layout, path: &Path, program: Option<&Path>) -> String {
             path.display()
         );
     }
-    let again = match program.filter(|program| program.is_file()) {
+    let named = program
+        .filter(|program| program.is_file())
+        .and_then(Path::to_str);
+    let again = match named {
         Some(program) => layout.uninstall_with(Some(program)),
         None => format!(
             "{}, typed with the `agentdocker` of a package or of a release kept under {}",
@@ -907,19 +912,30 @@ mod tests {
         );
         // A program that is gone by then (it was in what was being
         // removed) is not named: the person is told where one is.
+        let elsewhere = format!(
+            "`agentdocker desktop --prefix '{}' uninstall`, typed with the `agentdocker` of a package or of a release kept under {}",
+            layout.prefix.display(),
+            layout.root.join("versions").display()
+        );
         let gone = stopped(
             &layout,
             &layout.application,
             Some(&layout.application.join("agentdocker")),
         );
-        assert!(
-            gone.contains(&format!(
-                "`agentdocker desktop --prefix '{}' uninstall`, typed with the `agentdocker` of a package or of a release kept under {}",
-                layout.prefix.display(),
-                layout.root.join("versions").display()
-            )),
-            "{gone}"
-        );
+        assert!(gone.contains(&elsewhere), "{gone}");
+        // Nor one whose path cannot be written in a command, though it is
+        // there: the same words, not the bare command alone. (Only where a
+        // file can have such a name.)
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            let unwritable = layout
+                .prefix
+                .join(std::ffi::OsStr::from_bytes(b"agentdocker-\xff"));
+            std::fs::write(&unwritable, "a program").unwrap();
+            let said = stopped(&layout, &layout.application, Some(&unwritable));
+            assert!(said.contains(&elsewhere), "{said}");
+        }
         assert!(layout.active().unwrap().is_none());
         let found = layout.condition(None);
         assert_eq!(
