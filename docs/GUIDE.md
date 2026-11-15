@@ -1941,7 +1941,8 @@ Current behaviour that the sections above do not already state, by area.
   the session's context is (`Context 62 %`) where its provider's own record
   states the latest request's size and the model's window is known; it is an
   estimate from the provider's counts, and there is nothing to show where no
-  record says or the model is unknown to AgentDocker.
+  record says, or where the newest record's model is one AgentDocker does not
+  know the window of.
 
 - Exact or estimated: `agentdocker usage` says in its FIGURES column whether
   a row's counts are the provider's own count for each response (`exact`:

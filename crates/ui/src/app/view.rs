@@ -3040,8 +3040,8 @@ impl App {
                 facts.push(tokens);
             }
             // How full its context is, where its provider's record says.
-            if let Some(context) = self.agent_context.get(&id) {
-                facts.push(context.label());
+            if let Some(label) = self.agent_context.get(&id).and_then(|c| c.label()) {
+                facts.push(label);
             }
             // Its roles, in the palette's words, said with the rest.
             let roles = self.role_names(agent);
@@ -3692,11 +3692,8 @@ impl App {
                 facts.push(("Last message".to_owned(), value(ago(Utc::now(), at))));
             }
             // How full its context is, where its provider's record says.
-            if let Some(context) = self.agent_context.get(&id) {
-                facts.push((
-                    "Context".to_owned(),
-                    value(format!("{} %", context.percent())),
-                ));
+            if let Some(percent) = self.agent_context.get(&id).and_then(|c| c.percent()) {
+                facts.push(("Context".to_owned(), value(format!("{percent} %"))));
             }
             if let Some(pid) = agent.pid {
                 facts.push(("Process".to_owned(), mono_value(pid.to_string())));
@@ -5622,7 +5619,11 @@ mod tests {
         let rows = seen(app.session_rows(&[&agent], c));
         assert!(rows.reads("Context 62 %"), "{:?}", rows.controls);
         let panel = seen(app.inspector(&agent, c));
-        assert!(panel.reads("Context") && panel.reads("62 %"), "{:?}", panel.texts);
+        assert!(
+            panel.reads("Context") && panel.reads("62 %"),
+            "{:?}",
+            panel.texts
+        );
     }
 
     #[test]

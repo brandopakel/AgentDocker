@@ -410,7 +410,8 @@ its provider reported over the last 24 hours when collection is on
 none did), and how full its context is where its provider's own record
 says (`Context 62 %`: the latest request's size against the model's
 window, an estimate from the provider's counts; nothing where no record
-says or the model's window is unknown); the row's spoken name adds what it is doing. Sessions needing
+says, or where the newest gives no figure because its model's window is
+unknown); the row's spoken name adds what it is doing. Sessions needing
 input appear first within each project. An ended Claude Code session that can
 come back carries **Reconnect here** on its row itself (the same action as in
 Details, which says why a session cannot be reconnected yet); while its

@@ -3,8 +3,8 @@
 use super::context::Context;
 use super::{Aggregate, CounterReport, Coverage};
 use chrono::{DateTime, Utc};
-use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

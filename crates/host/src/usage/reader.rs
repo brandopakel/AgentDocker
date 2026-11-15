@@ -6,7 +6,7 @@
 //! durable ingestion belong to the collector, not this file-reading primitive.
 
 use super::{Codex, Sample};
-use agentdocker_core::usage::context::Context;
+use agentdocker_core::usage::context::Reading;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -323,9 +323,12 @@ pub struct Gap {
 pub struct Batch {
     pub cursor: Cursor,
     pub samples: Vec<Sample>,
-    /// Each session's latest context use among this batch's records that
-    /// state one; a record that says nothing leaves an earlier one standing.
-    pub contexts: BTreeMap<String, Context>,
+    /// Each session's newest context reading among this batch's records
+    /// that speak for it, by the time the provider wrote them (a tie goes
+    /// to the later record, as the store keeps it): a figure, or none from
+    /// a newer record that cannot give one. A record that does not speak
+    /// for the session (a sidechain's) leaves the reading standing.
+    pub contexts: BTreeMap<String, Reading>,
     pub gaps: Vec<Gap>,
     pub bytes_read: u64,
     /// Complete-prefix rechecks, separate from parser reads: at most 32 MiB
@@ -511,9 +514,9 @@ fn scan_checked(
                 })
         };
         match parsed {
-            Ok(Some((sample, context))) => {
-                if let Some(context) = context {
-                    contexts.insert(sample.session_id.clone(), context);
+            Ok(Some((sample, reading))) => {
+                if let Some(reading) = reading {
+                    keep_newest(&mut contexts, &sample.session_id, reading);
                 }
                 samples.push(sample);
             }
@@ -565,6 +568,19 @@ fn scan_checked(
         validation_bytes_read,
         stop,
     })
+}
+
+/// Keep a session's newest reading: one no older than the reading kept
+/// takes its place, the rule the store applies across batches, so records
+/// out of time order in one batch cannot lose the newest.
+fn keep_newest(contexts: &mut BTreeMap<String, Reading>, session: &str, reading: Reading) {
+    match contexts.get_mut(session) {
+        Some(kept) if kept.replaced_by(&reading) => *kept = reading,
+        Some(_) => {}
+        None => {
+            contexts.insert(session.to_owned(), reading);
+        }
+    }
 }
 
 /// Ignore large prompt/tool bodies only after validating the complete JSON

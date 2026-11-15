@@ -1,7 +1,7 @@
 //! Atomic token accounting. File bytes never enter these tables.
 use super::*;
 use agentdocker_core::LeaseMode;
-use agentdocker_core::usage::context::Context as SessionContext;
+use agentdocker_core::usage::context::{Context as SessionContext, Reading as ContextReading};
 use agentdocker_core::usage::{self, Aggregate, Baseline, Counters, Range, report::*};
 use agentdocker_host::usage::{Sample, Semantics, reader};
 use serde::{Deserialize, Serialize};
@@ -104,8 +104,8 @@ pub(crate) struct Ingest<'a> {
     pub key: &'a str,
     pub progress: &'a FileProgress,
     pub samples: &'a [(Sample, Attribution)],
-    /// Each session's latest context use among the batch's records.
-    pub contexts: &'a BTreeMap<String, SessionContext>,
+    /// Each session's newest context reading among the batch's records.
+    pub contexts: &'a BTreeMap<String, ContextReading>,
     pub gaps: &'a [reader::Gap],
     pub collection: &'a Collection,
     pub retained_since: DateTime<Utc>,
@@ -365,12 +365,12 @@ impl Store {
                 None => done.gaps += self.usage_tracking_gap(batch.now.max(sample.at))?,
             }
         }
-        for (session, context) in batch.contexts {
+        for (session, reading) in batch.contexts {
             if self
-                .usage_bounded_write(|| self.usage_keep_context(session, context))?
+                .usage_bounded_write(|| self.usage_keep_context(session, reading))?
                 .is_none()
             {
-                gaps += self.usage_tracking_gap(batch.now.max(context.at))?;
+                done.gaps += self.usage_tracking_gap(batch.now.max(reading.at))?;
             }
         }
         for gap in batch.gaps {
@@ -944,26 +944,28 @@ impl Store {
         Ok(Some(row(Some(card.to_owned()), &total, false)))
     }
 
-    /// Keep a session's latest context use: a record no older than the one
-    /// kept replaces it, so a replayed or rescanned file cannot turn the
-    /// figure back, and a record that says nothing never reaches here.
-    fn usage_keep_context(&self, session: &str, context: &SessionContext) -> Result<()> {
+    /// Keep a session's newest context reading: a record no older than the
+    /// one kept replaces it (`Reading::replaced_by`), so a replayed or
+    /// rescanned file cannot turn the reading back, and a newer reading with
+    /// no figure clears an older figure. A record that does not speak for
+    /// the session never reaches here.
+    fn usage_keep_context(&self, session: &str, reading: &ContextReading) -> Result<()> {
         self.conn.execute(
             "INSERT INTO usage_context VALUES (?1,?2,?3,?4)
              ON CONFLICT(runtime,session) DO UPDATE SET at=excluded.at, json=excluded.json
              WHERE excluded.at>=usage_context.at",
             params![
-                context.runtime,
+                reading.runtime,
                 session,
-                text(context.at),
-                serde_json::to_string(context)?
+                text(reading.at),
+                serde_json::to_string(reading)?
             ],
         )?;
         Ok(())
     }
 
-    /// The latest context use of each named session (runtime, session id)
-    /// that a record states one for, keyed as the caller keys them.
+    /// The context figure of each named session (runtime, session id)
+    /// whose newest reading gives one, keyed as the caller keys them.
     pub(crate) fn usage_contexts(
         &self,
         sessions: &[(String, String, String)],
@@ -976,8 +978,13 @@ impl Store {
             let json: Option<String> = statement
                 .query_row(params![runtime, session], |r| r.get(0))
                 .optional()?;
-            if let Some(json) = json {
-                found.insert(key.clone(), serde_json::from_str(&json)?);
+            let figure = json
+                .map(|json| serde_json::from_str::<ContextReading>(&json))
+                .transpose()?
+                .and_then(|reading| reading.context)
+                .filter(|context| context.percent().is_some());
+            if let Some(context) = figure {
+                found.insert(key.clone(), context);
             }
         }
         Ok(found)
@@ -1321,12 +1328,23 @@ mod tests {
         samples: Vec<(Sample, Attribution)>,
         cutoff: DateTime<Utc>,
     ) -> Result<Event> {
+        ingest_with(store, progress, key, samples, &BTreeMap::new(), cutoff)
+    }
+
+    fn ingest_with(
+        store: &Store,
+        progress: &FileProgress,
+        key: &str,
+        samples: Vec<(Sample, Attribution)>,
+        contexts: &BTreeMap<String, ContextReading>,
+        cutoff: DateTime<Utc>,
+    ) -> Result<Event> {
         store
             .usage_ingest(Ingest {
                 key,
                 progress,
                 samples: &samples,
-                contexts: &BTreeMap::new(),
+                contexts,
                 gaps: &[],
                 collection: &Collection {
                     discovery_generation: Some(1),
@@ -1634,6 +1652,7 @@ mod tests {
                 key: "transcript",
                 progress: &progress,
                 samples: &[(transcript("msg-2", Some("req-2")), held.clone())],
+                contexts: &BTreeMap::new(),
                 gaps: &[],
                 collection: &Collection {
                     discovery_generation: Some(1),
@@ -2651,6 +2670,119 @@ mod tests {
             Some(("codex".into(), "session".into()))
         );
         assert_eq!(report(&store, 0, 21).rows[0].key.as_deref(), Some("agent"));
+    }
+
+    /// A made-up reading of the session `session` written at `hour`, with
+    /// `used` of `window` tokens, or with no figure.
+    fn reading(hour: u32, figure: Option<(u64, u64)>) -> ContextReading {
+        ContextReading {
+            runtime: "claude-code".into(),
+            at: at(hour),
+            context: figure.map(|(used, window)| SessionContext {
+                used_tokens: used,
+                window_tokens: window,
+                model: Some("model".into()),
+                runtime: "claude-code".into(),
+                format: "fixture".into(),
+                record: format!("record-{hour}"),
+                at: at(hour),
+            }),
+        }
+    }
+
+    fn context_percent(store: &Store) -> Option<u64> {
+        store
+            .usage_contexts(&[("agent".into(), "claude-code".into(), "session".into())])
+            .unwrap()
+            .get("agent")
+            .and_then(SessionContext::percent)
+    }
+
+    fn rows(store: &Store, table: &str) -> i64 {
+        store
+            .conn
+            .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
+    }
+
+    /// A session's context reading commits with its batch or not at all, is
+    /// replaced only by one no older and cleared by a newer one without a
+    /// figure, is refused with a durable gap when it does not fit the
+    /// tracking capacity (the one kept standing) and admitted once there
+    /// is room, and leaves with the retention window.
+    #[test]
+    fn a_context_reading_commits_with_its_batch_fits_the_capacity_and_expires() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = Store::open(&temp.path().join("state.db")).unwrap();
+        let progress = progress(temp.path());
+        let batch = |reading: ContextReading| BTreeMap::from([("session".to_owned(), reading)]);
+        let keep = |reading: ContextReading, cutoff: DateTime<Utc>| {
+            ingest_with(
+                &store,
+                &progress,
+                "source",
+                Vec::new(),
+                &batch(reading),
+                cutoff,
+            )
+        };
+
+        store.conn.execute_batch("CREATE TRIGGER fail_usage BEFORE INSERT ON events BEGIN SELECT RAISE(ABORT,'usage event refused'); END;").unwrap();
+        assert!(keep(reading(3, Some((50, 100))), at(0)).is_err());
+        assert_eq!(
+            rows(&store, "usage_context"),
+            0,
+            "rolled back with its batch"
+        );
+        store
+            .conn
+            .execute_batch("DROP TRIGGER fail_usage;")
+            .unwrap();
+        keep(reading(3, Some((50, 100))), at(0)).unwrap();
+        assert_eq!(context_percent(&store), Some(50));
+
+        keep(reading(2, Some((10, 100))), at(0)).unwrap();
+        assert_eq!(
+            context_percent(&store),
+            Some(50),
+            "an older reading is no word"
+        );
+        keep(reading(4, None), at(0)).unwrap();
+        assert_eq!(context_percent(&store), None, "a newer reading says none");
+        assert_eq!(rows(&store, "usage_context"), 1);
+        keep(reading(5, Some((70, 100))), at(0)).unwrap();
+        assert_eq!(context_percent(&store), Some(70));
+
+        set_tracking_capacity(&store, tracking_bytes(&store));
+        let mut large = reading(6, Some((90, 100)));
+        if let Some(context) = large.context.as_mut() {
+            context.model = Some("m".repeat(4096));
+        }
+        let event = keep(large.clone(), at(0)).unwrap();
+        assert!(
+            matches!(event.kind, EventKind::UsageRecorded { gaps: 1, .. }),
+            "{:?}",
+            event.kind
+        );
+        assert_eq!(context_percent(&store), Some(70), "the kept one stands");
+        assert!(
+            report(&store, 0, 21)
+                .coverage
+                .tracking
+                .unwrap()
+                .capacity_gap
+        );
+        set_tracking_capacity(&store, 1_000_000);
+        keep(large, at(0)).unwrap();
+        assert_eq!(context_percent(&store), Some(90));
+
+        ingest(&store, &progress, "source", Vec::new(), at(7)).unwrap();
+        assert_eq!(
+            rows(&store, "usage_context"),
+            0,
+            "out of the retained window"
+        );
+        assert_eq!(context_percent(&store), None);
     }
 
     #[test]
