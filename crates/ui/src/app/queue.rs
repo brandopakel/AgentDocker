@@ -1,6 +1,7 @@
 //! Bounded UI admission with one queued refresh per snapshot kind/project.
 use super::Cmd;
-use std::collections::BTreeSet;
+use super::remote::Ask;
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, mpsc};
 
 pub(super) const CAPACITY: usize = 32;
@@ -88,7 +89,17 @@ fn key(command: &Cmd) -> Option<Key> {
     })
 }
 
-type Pending = Arc<Mutex<BTreeSet<Key>>>;
+/// The ask a command carries, when it is a read that carries one and
+/// can be folded into another: what the one that waits will answer to.
+fn ask(command: &Cmd) -> Option<Ask> {
+    match command {
+        Cmd::ReviewBranch(_, ask) => Some(*ask),
+        _ => None,
+    }
+}
+
+/// The refreshes that wait, and the ask each carries.
+type Pending = Arc<Mutex<BTreeMap<Key, Option<Ask>>>>;
 
 #[derive(Clone)]
 pub(super) struct Sender {
@@ -107,8 +118,10 @@ pub(super) enum Sent {
     /// It waits for the worker.
     Queued,
     /// One like it was already waiting and stands for both: this one
-    /// will not be run, and no answer to it will come.
-    Merged,
+    /// will not be run, and no answer to it will come. The ask is the
+    /// one the waiting command carries, when it carries one: its answer
+    /// is the answer to this one too.
+    Merged(Option<Ask>),
 }
 
 #[derive(Debug)]
@@ -143,10 +156,11 @@ impl Sender {
             .pending
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if let Some(key) = &refresh
-            && !pending.insert(key.clone())
-        {
-            return Ok(Sent::Merged);
+        if let Some(key) = &refresh {
+            if let Some(waiting) = pending.get(key) {
+                return Ok(Sent::Merged(*waiting));
+            }
+            pending.insert(key.clone(), ask(&command));
         }
         let error = match self.inner.try_send(command) {
             Ok(()) => return Ok(Sent::Queued),

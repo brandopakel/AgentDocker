@@ -10596,6 +10596,189 @@ mod tests {
         );
     }
 
+    /// A session's changes are asked for again while the first ask still
+    /// waits in the queue, with another session asked about in between.
+    /// The queue folds the second ask into the first, and the first is
+    /// the one that will be answered: the read waits for that ask, as the
+    /// queue kept it. Worked out from the counter instead, it waited for
+    /// an ask no command carried, and the session stayed "Reading…" with
+    /// nothing out that could answer.
+    #[test]
+    fn changes_asked_for_again_before_the_first_ask_is_run_are_answered_by_it() {
+        use crate::app::remote::Seen;
+        let (mut app, commands, messages) = app();
+        app.link.open();
+        let diff = |patch: &str| agentdocker_core::review::Review {
+            patch: patch.into(),
+            ..Default::default()
+        };
+        let reads = |commands: &CommandReceiver| {
+            commands
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::ReviewBranch(agent, ask) => Some((agent, ask)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let _ = reads(&commands);
+
+        // A, B, A while the worker is busy: nothing leaves the queue.
+        for agent in ["agent-1", "agent-2", "agent-1"] {
+            let _ = app.update(Message::SelectSession(agent.into()));
+        }
+        let sent = reads(&commands);
+        assert_eq!(
+            sent.iter()
+                .map(|(agent, _)| agent.as_str())
+                .collect::<Vec<_>>(),
+            ["agent-1", "agent-2"],
+            "the second read of A is folded into the first"
+        );
+        // Each command's own answer, in the order the worker runs them.
+        let (first_a, about_b) = (sent[0].1, sent[1].1);
+        messages
+            .send(Msg::BranchReview(
+                "agent-1".into(),
+                first_a,
+                Ok(diff("a's")),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::BranchReview(
+                "agent-2".into(),
+                about_b,
+                Ok(diff("b's")),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.branch_review.of("agent-1"),
+            Seen::Ready(&diff("a's")),
+            "A is read, not left reading"
+        );
+
+        // Folded more than once, with a read of B refused in between.
+        let _ = app.update(Message::SelectSession("agent-1".into()));
+        let _ = app.update(Message::SelectSession("agent-1".into()));
+        fill_queue(&mut app);
+        let _ = app.update(Message::SelectSession("agent-2".into()));
+        assert!(
+            app.branch_review.of("agent-2").error().is_some(),
+            "B's read could not be queued, and says so"
+        );
+        let _ = app.update(Message::SelectSession("agent-1".into()));
+        let sent = reads(&commands);
+        assert_eq!(sent.len(), 1, "one read of A waits for all three asks");
+        assert_eq!(sent[0].0, "agent-1");
+        messages
+            .send(Msg::BranchReview(
+                "agent-1".into(),
+                sent[0].1,
+                Ok(diff("a's, newer")),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.branch_review.of("agent-1"),
+            Seen::Ready(&diff("a's, newer"))
+        );
+    }
+
+    /// A merge or a removal started on one session finishes after the
+    /// person has selected another. Its handler asks for the first
+    /// session's changes again, and the changes on view are one read
+    /// about one session: that ask took the selected session's place,
+    /// so its changes vanished and its own answer, still on its way, was
+    /// let go.
+    #[test]
+    fn a_merge_or_removal_that_finishes_late_leaves_the_selected_sessions_changes() {
+        use crate::app::remote::Seen;
+        let (mut app, commands, messages) = app();
+        app.link.open();
+        let diff = |patch: &str| agentdocker_core::review::Review {
+            patch: patch.into(),
+            ..Default::default()
+        };
+        let reads = |commands: &CommandReceiver| {
+            commands
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::ReviewBranch(agent, ask) => Some((agent, ask)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // What A's merge and removal bring back, late.
+        let late = |messages: &SyncSender<Msg>| {
+            messages
+                .send(Msg::BranchMerged(
+                    "agent-1".into(),
+                    Ok(("main".into(), "abc1234".into())),
+                ))
+                .unwrap();
+            messages
+                .send(Msg::WorktreeRemoved("agent-1".into(), Ok((true, None))))
+                .unwrap();
+        };
+        let _ = reads(&commands);
+
+        // B is on view, and read.
+        let _ = app.update(Message::SelectSession("agent-2".into()));
+        let about_b = reads(&commands)[0].1;
+        messages
+            .send(Msg::BranchReview(
+                "agent-2".into(),
+                about_b,
+                Ok(diff("b's")),
+            ))
+            .unwrap();
+        app.drain();
+        late(&messages);
+        app.drain();
+        assert_eq!(app.shell.selected.as_deref(), Some("agent-2"));
+        assert_eq!(app.branch_review.of("agent-2"), Seen::Ready(&diff("b's")));
+        assert!(reads(&commands).is_empty(), "A, not on view, is not read");
+
+        // And with B's own read still out.
+        let _ = app.update(Message::ReviewChanges("agent-2".into()));
+        let again = reads(&commands)[0].1;
+        late(&messages);
+        app.drain();
+        assert_eq!(
+            app.branch_review.of("agent-2"),
+            Seen::Reading {
+                last: Some(&diff("b's"))
+            },
+            "B's read is still the one out, with B's changes on view"
+        );
+        assert!(reads(&commands).is_empty());
+        // An answer about A changes nothing; B's own is taken.
+        messages
+            .send(Msg::BranchReview("agent-1".into(), again, Ok(diff("a's"))))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.branch_review.of("agent-2"),
+            Seen::Reading {
+                last: Some(&diff("b's"))
+            }
+        );
+        messages
+            .send(Msg::BranchReview(
+                "agent-2".into(),
+                again,
+                Ok(diff("b's, newer")),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.branch_review.of("agent-2"),
+            Seen::Ready(&diff("b's, newer"))
+        );
+        assert_eq!(app.branch_review.of("agent-1"), Seen::Unasked);
+    }
+
     /// To-do drew one blank for four things: never asked for, being
     /// read, read and found empty, and could not be read, which was only
     /// a passing line at the window's foot. Each is now said on the page,

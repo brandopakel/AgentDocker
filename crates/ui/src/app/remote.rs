@@ -25,9 +25,9 @@ pub(crate) struct Ask(u64);
 enum Read {
     /// Nothing has been asked, of this subject at least.
     Unasked,
-    /// The latest ask is out.
-    Reading,
-    /// The latest ask was answered.
+    /// An ask is out, and this is the one whose answer is taken.
+    Reading(Ask),
+    /// That ask was answered.
     Done,
     /// The latest ask could not be answered, and why.
     Failed(String),
@@ -39,8 +39,8 @@ enum Read {
 pub(crate) struct Remote<T> {
     last: Option<T>,
     read: Read,
-    /// How many asks there have been. It never goes back, a forgotten
-    /// subject's asks included, so no two asks share a number.
+    /// How many asks there have been. It never goes back, so no two
+    /// asks share a number, a forgotten subject's included.
     asks: u64,
 }
 
@@ -93,26 +93,31 @@ impl<'a, T> Seen<'a, T> {
 }
 
 impl<T> Remote<T> {
-    /// A read begins. The number goes out with the request.
+    /// A read begins. The number goes out with the request, and its
+    /// answer is the one now awaited.
     pub fn ask(&mut self) -> Ask {
         self.asks += 1;
-        self.read = Read::Reading;
-        Ask(self.asks)
+        let ask = Ask(self.asks);
+        self.read = Read::Reading(ask);
+        ask
     }
 
-    /// The request for `ask` was folded into one already waiting, which
-    /// will answer for both: that one is the latest ask again.
-    pub fn merged(&mut self, ask: Ask) {
-        if ask.0 == self.asks {
-            self.asks -= 1;
+    /// The request just asked was folded into one already waiting in
+    /// the queue, which will answer for both. `waiting` is the ask that
+    /// one carries, as the queue kept it: its answer is the one awaited.
+    /// It is given, not worked out: the asks between the two may have
+    /// been about other subjects.
+    pub fn merged(&mut self, waiting: Ask) {
+        if matches!(self.read, Read::Reading(_)) {
+            self.read = Read::Reading(waiting);
         }
     }
 
-    /// An answer. Taken only when it is to the latest ask and that ask
-    /// is still out; returns whether it was. A value replaces the last
-    /// one; a failure is kept beside it.
+    /// An answer. Taken only when it is to the ask that is out; returns
+    /// whether it was. A value replaces the last one; a failure is kept
+    /// beside it.
     pub fn answer(&mut self, ask: Ask, result: Result<T, String>) -> bool {
-        if ask.0 != self.asks || self.read != Read::Reading {
+        if self.read != Read::Reading(ask) {
             return false;
         }
         match result {
@@ -125,12 +130,11 @@ impl<T> Remote<T> {
         true
     }
 
-    /// Another subject: what was read is not about it, and an answer
-    /// still on its way is to an ask that is no longer the latest.
+    /// Another subject: what was read is not about it, and no answer
+    /// is awaited, so one still on its way is let go.
     pub fn forget(&mut self) {
         self.last = None;
         self.read = Read::Unasked;
-        self.asks += 1;
     }
 
     /// What a view draws.
@@ -138,7 +142,7 @@ impl<T> Remote<T> {
         let last = self.last.as_ref();
         match &self.read {
             Read::Unasked => Seen::Unasked,
-            Read::Reading => Seen::Reading { last },
+            Read::Reading(_) => Seen::Reading { last },
             Read::Done => match last {
                 Some(value) => Seen::Ready(value),
                 None => Seen::Unasked,
@@ -168,10 +172,14 @@ impl<T> Remote<T> {
         self.last.as_mut()
     }
 
-    /// The latest ask, for a test to answer what the window asked.
+    /// The ask that is out (else the last one made), for a test to
+    /// answer what the window asked.
     #[cfg(test)]
     pub fn latest(&self) -> Ask {
-        Ask(self.asks)
+        match self.read {
+            Read::Reading(ask) => ask,
+            _ => Ask(self.asks),
+        }
     }
 }
 
@@ -204,10 +212,10 @@ impl<K: PartialEq, T> About<K, T> {
         self.read.ask()
     }
 
-    /// The request for `ask` was folded into one already waiting
-    /// ([`Remote::merged`]).
-    pub fn merged(&mut self, ask: Ask) {
-        self.read.merged(ask);
+    /// The request just asked was folded into one already waiting,
+    /// which carries `waiting` ([`Remote::merged`]).
+    pub fn merged(&mut self, waiting: Ask) {
+        self.read.merged(waiting);
     }
 
     /// An answer about `subject`. Taken only when that is the subject
@@ -389,22 +397,39 @@ mod tests {
     }
 
     /// A request folded into one already waiting is answered by that
-    /// one: its ask is the latest again, and the read is not left out
-    /// for an answer that will never come.
+    /// one, whose ask the queue gives back: the read is not left out for
+    /// an answer that will never come. The ask is not the one before the
+    /// folded one: asks about other subjects may lie between them.
     #[test]
     fn a_request_folded_into_one_waiting_is_answered_by_it() {
         let mut review: Remote<&str> = Remote::default();
         let waiting = review.ask();
-        let folded = review.ask();
-        review.merged(folded);
+        let _folded = review.ask();
+        review.merged(waiting);
         assert_eq!(review.seen(), Seen::Reading { last: None }, "still out");
         assert!(review.answer(waiting, Ok("the diff")));
         assert_eq!(review.seen(), Seen::Ready(&"the diff"));
-        // Only the latest ask can be folded away.
-        let one = review.ask();
-        let two = review.ask();
-        review.merged(one);
-        assert!(!review.answer(one, Ok("older")));
-        assert!(review.answer(two, Ok("newer")));
+
+        // The same with other subjects asked about in between, as a
+        // keyed read does it: A, B, A, the second A folded into the first.
+        let mut changes: About<&str, &str> = About::default();
+        let first_a = changes.ask("a");
+        let about_b = changes.ask("b");
+        let _second_a = changes.ask("a");
+        changes.merged(first_a);
+        assert!(
+            !changes.answer(&"b", about_b, Ok("b's diff")),
+            "not on view"
+        );
+        assert!(changes.answer(&"a", first_a, Ok("a's diff")));
+        assert_eq!(changes.of("a"), Seen::Ready(&"a's diff"));
+
+        // Folded when nothing is out (the answer came first): no ask is
+        // put back out.
+        let mut done: Remote<&str> = Remote::default();
+        let ask = done.ask();
+        done.answer(ask, Ok("read"));
+        done.merged(ask);
+        assert_eq!(done.seen(), Seen::Ready(&"read"));
     }
 }

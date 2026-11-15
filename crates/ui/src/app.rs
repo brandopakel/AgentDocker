@@ -2771,16 +2771,28 @@ impl App {
     }
 
     /// Read a session's branch against the main folder's.
+    ///
+    /// Only the selected session's: the changes on view are one read
+    /// about one session, and a read of another's would take its place.
+    /// A merge or a removal that finishes after the person has moved on
+    /// asks for the changes of a session no longer on view; that one is
+    /// read when it is next selected.
     pub(crate) fn request_review(&mut self, agent: &str) {
-        if self.link.is_up() {
-            let ask = self.branch_review.ask(agent.to_owned());
-            match self.tx.send(Cmd::ReviewBranch(agent.to_owned(), ask)) {
-                Ok(queue::Sent::Queued) => {}
-                // A read of this session's changes is already waiting,
-                // and answers for both.
-                Ok(queue::Sent::Merged) => self.branch_review.merged(ask),
-                Err(queue::Rejected { command, reason }) => self.rejected(*command, reason),
+        if !self.link.is_up() || self.shell.selected.as_deref() != Some(agent) {
+            return;
+        }
+        let ask = self.branch_review.ask(agent.to_owned());
+        match self.tx.send(Cmd::ReviewBranch(agent.to_owned(), ask)) {
+            Ok(queue::Sent::Queued) => {}
+            // A read of this session's changes is already waiting, and
+            // answers for both: its ask is the one awaited, as the queue
+            // kept it.
+            Ok(queue::Sent::Merged(waiting)) => {
+                if let Some(waiting) = waiting {
+                    self.branch_review.merged(waiting);
+                }
             }
+            Err(queue::Rejected { command, reason }) => self.rejected(*command, reason),
         }
     }
 

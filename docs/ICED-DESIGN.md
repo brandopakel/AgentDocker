@@ -718,9 +718,13 @@ command.
   asked, being read, read, and failed with the value as last read are four
   cases, and a view draws each (`Remote::seen`). Every ask has a number
   (`remote::Ask`) that goes out in the command and comes back in the answer;
-  only the latest ask's answer is taken, so a late answer cannot put back an
-  older value or land on the card or session that was open before. A command
-  the queue refuses is a failed read, said in the read's own place. Each case
+  only the answer to the ask that is out is taken, so a late answer cannot put
+  back an older value or land on the card or session that was open before. A
+  read the queue folds into one already waiting is answered by that one, whose
+  ask the queue hands back (`queue::Sent::Merged`). A command the queue
+  refuses is a failed read, said in the read's own place. A session's changes
+  are one read about the selected session, and only that session's are asked
+  for. Each case
   has a node the workflow driver can wait on: *Reading…* is `todo-reading`,
   `card-reading`, `changes-reading` and `session-log-reading`; a failure is
   `todo-error-mark`, `card-error-mark`, `changes-error-mark` and
