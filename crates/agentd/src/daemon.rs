@@ -85,6 +85,7 @@ mod review;
 mod roles;
 mod secret_reviews;
 mod tasks;
+mod teams;
 mod topics;
 mod transport;
 mod usage;
@@ -555,6 +556,22 @@ struct State {
     /// its linked worktrees. Refreshed off the lock on the same tick as
     /// the VCS sweep, because enumerating them runs git.
     project_checkouts: HashMap<ProjectId, Vec<PathBuf>>,
+    /// Claude Code's configuration directory by the daemon's own
+    /// environment (`$CLAUDE_CONFIG_DIR`, else `~/.claude`), as read when
+    /// the daemon started: where a session's team files are read from
+    /// only when nothing says which directory the session itself uses.
+    /// `None` where neither could be told.
+    claude_config_dir: Option<PathBuf>,
+    /// Each live Claude Code process's command line and configuration
+    /// directory as last read, by pid and birth, so they are read from the
+    /// process table and its environment once rather than on every tick.
+    team_processes: teams::ProcessCache,
+    /// The roster each live Claude Code record was placed by, as last read
+    /// from that session's own configuration directory: who a lease's
+    /// actor is, and how a refusal names it. Kept per record, so two
+    /// directories with a team of one name never stand for each other. In
+    /// memory only: read again on the next tick.
+    team_rosters: HashMap<AgentId, agentdocker_core::Team>,
     /// Where each checkout stood when git was last asked, by path, with
     /// its project: read off the lock on the checkout tick and by a brief
     /// that finds none read. In memory only: a restarted daemon reads them
@@ -1783,6 +1800,9 @@ impl Daemon {
                 last_branch: HashMap::new(),
                 worktree_creators: HashMap::new(),
                 project_checkouts: HashMap::new(),
+                claude_config_dir: agentdocker_host::teams::claude_config_dir(),
+                team_processes: HashMap::new(),
+                team_rosters: HashMap::new(),
                 checkout_reads: HashMap::new(),
                 checkout_scans: HashSet::new(),
                 committing: std::collections::BTreeSet::new(),
@@ -2335,6 +2355,7 @@ impl Daemon {
             Request::Register { spec, pid, session } => {
                 let registered = self.register(spec, pid, session, authorized).await;
                 self.trace_starter(&registered);
+                self.note_team(&registered).await;
                 registered
             }
             Request::SessionAttach {
@@ -2357,6 +2378,7 @@ impl Daemon {
             Request::Adopt { pid, name, runtime } => {
                 let adopted = self.adopt(pid, name, runtime, authorized).await;
                 self.trace_starter(&adopted);
+                self.note_team(&adopted).await;
                 adopted
             }
             Request::Stop { agent, force } => self.stop_agent(&agent, force).await,
@@ -3142,6 +3164,7 @@ impl Daemon {
                 priority,
                 automatic,
                 fresh,
+                actor,
             } => {
                 self.claim(
                     &agent,
@@ -3155,6 +3178,7 @@ impl Daemon {
                         priority,
                         automatic,
                         fresh,
+                        actor,
                     },
                 )
                 .await
@@ -3200,9 +3224,16 @@ impl Daemon {
                 summary,
                 summary_source,
                 only_automatic,
+                actor,
             } => {
                 self.flush_release_watcher(&agent, None).await;
-                lock(&self.state).release_all(&agent, summary, summary_source, only_automatic)
+                lock(&self.state).release_all(
+                    &agent,
+                    summary,
+                    summary_source,
+                    only_automatic,
+                    actor.as_deref(),
+                )
             }
             Request::RequestRelease {
                 from,
@@ -6275,6 +6306,19 @@ impl State {
                         .spec
                         .labels
                         .insert(agentdocker_core::agent::PROFILE_LABEL.to_owned(), profile);
+                }
+                // The session's own configuration directory, as the half
+                // that binds the session sees it in its environment, where
+                // the record does not say one yet.
+                let config_label = agentdocker_core::team::CONFIG_DIR_LABEL;
+                if let Some(dir) = record.spec.labels.get(config_label)
+                    && !dir.is_empty()
+                    && !updated.spec.labels.contains_key(config_label)
+                {
+                    updated
+                        .spec
+                        .labels
+                        .insert(config_label.to_owned(), dir.clone());
                 }
                 let event = Event::new(
                     EventKind::AgentSessionBound {

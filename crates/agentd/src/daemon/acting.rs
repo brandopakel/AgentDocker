@@ -1677,6 +1677,7 @@ mod tests {
             wait_secs: 0,
             priority: 0,
             automatic: false,
+            actor: None,
             fresh: false,
         };
         let me = Some((std::process::id(), procinfo::start_time(std::process::id())));
@@ -3075,6 +3076,7 @@ mod tests {
                     wait_secs: 0,
                     priority: 0,
                     automatic: false,
+                    actor: None,
                     fresh: false,
                 })
                 .await;
@@ -3159,6 +3161,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
                 fresh: false,
             })
             .await;

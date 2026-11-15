@@ -1050,6 +1050,13 @@ pub enum EventKind {
         agent: AgentId,
         vcs: VcsState,
     },
+    /// An agent's place in a Claude Code team was read: it is now the
+    /// lead of one or a teammate (`team`), or no longer in one (`None`).
+    AgentTeamChanged {
+        agent: AgentId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        team: Option<crate::team::TeamMembership>,
+    },
     /// The daemon is about to exit; `reason` is `signal`, `request` or
     /// `transferred`.
     DaemonStopping {
@@ -1255,6 +1262,7 @@ impl EventKind {
         "agent_owner_lost",
         "checkpoints_pruned",
         "agent_vcs_changed",
+        "agent_team_changed",
         "daemon_stopping",
         "daemon_transfer_offered",
         "daemon_transfer_readdressed",

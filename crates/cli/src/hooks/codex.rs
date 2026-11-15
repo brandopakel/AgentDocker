@@ -637,7 +637,7 @@ async fn end_session<B: Backend>(
     if !plain_session(&agent, input, pid, process_started_at, &checkout) {
         return Ok(false);
     }
-    super::release_held(backend, &agent, None, false).await?;
+    super::release_held(backend, &agent, None, false, None).await?;
     match backend
         .call(Request::Deregister {
             agent: agent.id.to_string(),
@@ -683,6 +683,7 @@ pub(super) async fn claim_edits<B: Backend>(
                 wait_secs: 0,
                 priority: 0,
                 automatic: true,
+                actor: None,
                 fresh: false,
             })
             .await?;

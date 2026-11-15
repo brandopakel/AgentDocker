@@ -1730,6 +1730,7 @@ mod tests {
             priority: 0,
             note: Some("x".repeat(1024 * 1024)),
             automatic: false,
+            actor: None,
             fresh: false,
         })
         .unwrap()
@@ -1793,6 +1794,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
                 fresh: false,
             })
             .await;
@@ -1818,6 +1820,7 @@ mod tests {
                 summary: None,
                 summary_source: agentdocker_core::SummarySource::Explicit,
                 only_automatic: false,
+                actor: None,
             })
             .await;
         assert!(

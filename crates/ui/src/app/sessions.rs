@@ -590,6 +590,7 @@ mod tests {
             project: None,
             started_at: agent.process_started_at,
             session: None,
+            team: None,
         };
         app.agents.push(agent);
         app.discovered = vec![process.clone(), process];

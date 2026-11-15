@@ -1419,6 +1419,12 @@ pub enum Request {
         /// asked for holds until it releases it or the TTL runs out.
         #[serde(default)]
         automatic: bool,
+        /// Who inside the agent's session takes it, where a session is
+        /// several agents in one process (a Claude Code in-process
+        /// teammate's id, from its hooks). Kept on the lease and named in
+        /// a refusal; never an agent of its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
         /// Only a new lease will do: a lease the agent already holds that
         /// would stop another agent (the same resource, one over or under
         /// it, a conflicting mode) is in this claim's way too, and nothing
@@ -1475,6 +1481,13 @@ pub enum Request {
         /// asked for stays held. The hooks adapter's turn-end release.
         #[serde(default)]
         only_automatic: bool,
+        /// Whose turn ended inside the agent's session, where a session
+        /// is several agents in one process (a Claude Code in-process
+        /// teammate's id, from its hooks): only the leases that teammate
+        /// owns are released. None, or one that names no teammate, is
+        /// the session itself, and every lease of the agent is.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        actor: Option<String>,
     },
     /// Ask whoever holds leases overlapping `resource` to let go of them:
     /// each holder gets a `release_request` message naming the resource,
@@ -2729,6 +2742,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                actor: None,
                 fresh: false,
             }
         );

@@ -689,6 +689,7 @@ mod tests {
             wait_secs: 20,
             priority: 0,
             automatic: false,
+            actor: None,
             fresh: false,
         };
         assert!(daemon.restricted_request("wrong", Request::Ping).is_err());

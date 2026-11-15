@@ -262,6 +262,11 @@ pub struct DiscoveredProcess {
     /// the tool that already owns its terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<crate::multiplexer::Session>,
+    /// The Claude Code team its command line puts it in, as a teammate;
+    /// a lead is only known once its session is registered. See
+    /// [`crate::team`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<crate::team::TeamMembership>,
 }
 
 impl DiscoveredProcess {
@@ -416,6 +421,13 @@ pub struct AgentRecord {
     /// [`crate::judgment`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub judged: Option<crate::judgment::ScreenJudgment>,
+    /// Its place in a Claude Code agent team — the lead of one, or a
+    /// teammate with the name and colour its lead gave it — as the
+    /// daemon reads it from the process's command line and Claude's team
+    /// files ([`crate::team`]). Attached and taken away by the daemon
+    /// alone (`agent_team_changed`); a client's own value is dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<crate::team::TeamMembership>,
     /// What the provider itself says of this agent's conversation: the
     /// role it gave the thread and the thread that spawned it (Codex's
     /// multi-agent threads). Learned once the conversation is bound and
@@ -852,6 +864,7 @@ impl AgentRecord {
             input_binding: None,
             legacy_offers: Default::default(),
             judged: None,
+            team: None,
             thread: None,
         }
     }

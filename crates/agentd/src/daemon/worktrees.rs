@@ -1495,6 +1495,7 @@ impl Daemon {
                     priority: 0,
                     automatic: false,
                     fresh: false,
+                    actor: None,
                 },
             )
             .await

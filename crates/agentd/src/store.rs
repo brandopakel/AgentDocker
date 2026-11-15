@@ -3271,6 +3271,7 @@ mod tests {
             note: Some("n".into()),
             amount: 0,
             automatic: false,
+            actor: None,
         };
         store.upsert_lease(&lease).unwrap();
         assert_eq!(store.load_leases().unwrap(), vec![lease.clone()]);
@@ -3297,6 +3298,7 @@ mod tests {
             note: None,
             amount: 0,
             automatic: false,
+            actor: None,
         };
         store.upsert_lease(&lease).unwrap();
         let mut event = Event::new(
@@ -4708,6 +4710,7 @@ mod tests {
             note: None,
             amount: 0,
             automatic: false,
+            actor: None,
         };
         store.upsert_lease(&lease).unwrap();
         store
