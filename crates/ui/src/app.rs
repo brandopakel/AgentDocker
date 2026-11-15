@@ -691,7 +691,6 @@ pub struct App {
     /// Every project's open cards, for To-do; `None` until read.
     todo: Option<Vec<agentdocker_core::Task>>,
     /// The plan open on Plans, with the cards that carry it out.
-    plan_open: Option<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>,
     /// Cards that changed a moment ago, and when: they flash once.
     flashes: BTreeMap<agentdocker_core::TaskId, Instant>,
     /// The projects told to hold, and why.
@@ -855,7 +854,6 @@ impl App {
             palettes: BTreeMap::new(),
             palettes_asked: BTreeSet::new(),
             todo: None,
-            plan_open: None,
             flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
@@ -950,7 +948,6 @@ impl App {
             palettes: BTreeMap::new(),
             palettes_asked: BTreeSet::new(),
             todo: None,
-            plan_open: None,
             flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
@@ -1100,9 +1097,7 @@ impl App {
                 // told so, or it would wait for one for good, with Save off.
                 // What the person wrote and its revision stay, unsaved.
                 Cmd::PlanSave { save, .. } => {
-                    if self.shell.plan_draft.saving == Some(save) {
-                        self.shell.plan_draft.refused();
-                    }
+                    self.shell.plan.refused(save);
                 }
                 // Not sent: the draft stays, and Keep is offered again.
                 Cmd::MemoryAdd { project, .. } => {
@@ -1566,8 +1561,9 @@ impl App {
                     if let Some(open) = self.task_open.clone() {
                         self.send(Cmd::TaskDetail(open));
                     }
-                    if let Some((plan, _)) = &self.plan_open {
-                        self.send(Cmd::PlanGet(plan.id.clone()));
+                    if let shell::PlanPane::Open(open) = &self.shell.plan {
+                        let open = open.plan.id.clone();
+                        self.send(Cmd::PlanGet(open));
                     }
                     if self.screen == Screen::Todo {
                         self.send(Cmd::Todo);
@@ -1585,42 +1581,31 @@ impl App {
                     // another plan's id and revision, under which its next
                     // save would overwrite that plan, nor free it from a
                     // save of its own that is still out.
-                    let its_draft = self.shell.plan_draft.saving == Some(save);
                     match result {
-                        Ok(plan) if its_draft => {
-                            let (plan, tasks) = *plan;
-                            self.shell.plan_draft.saved(&plan);
-                            self.plan_open = Some((plan, tasks));
-                        }
                         // Kept by the daemon for a draft that is no longer
-                        // in the editor: what is there now is left alone.
-                        Ok(_) => {}
+                        // in the editor, what is there now is left alone.
+                        Ok(plan) => {
+                            let (plan, tasks) = *plan;
+                            self.shell.plan.kept(save, plan, tasks);
+                        }
                         // Said, and nothing read in its place: what the
                         // person wrote stays in the editor, on the revision
                         // it was written from, until they save it again or
                         // open the plan anew. A refusal of a draft that is
                         // gone is said too, and touches nothing.
                         Err(error) => {
-                            if its_draft {
-                                self.shell.plan_draft.refused();
-                            }
+                            self.shell.plan.refused(save);
                             self.say(error);
                         }
                     }
                 }
                 Msg::Plan(result) => match result {
+                    // Taken by the pane that is waiting for this plan or
+                    // is on it, and by no other: not one the person has
+                    // since asked another plan of, and not a new plan's.
                     Ok(plan) => {
                         let (plan, tasks) = *plan;
-                        // A plan read again replaces the one open, unless
-                        // another has been opened since.
-                        if self
-                            .plan_open
-                            .as_ref()
-                            .is_none_or(|(open, _)| open.id == plan.id)
-                        {
-                            self.shell.plan_draft.load(&plan);
-                            self.plan_open = Some((plan, tasks));
-                        }
+                        self.shell.plan.read(plan, tasks);
                     }
                     Err(error) => self.say(error),
                 },
@@ -2222,10 +2207,7 @@ impl App {
                     self.send(Cmd::Workspace(project));
                 }
                 if let EventKind::PlanChanged { plan, .. } = &event.kind
-                    && self
-                        .plan_open
-                        .as_ref()
-                        .is_some_and(|(open, _)| open.id == *plan)
+                    && matches!(&self.shell.plan, shell::PlanPane::Open(open) if open.plan.id == *plan)
                 {
                     self.send(Cmd::PlanGet(plan.clone()));
                 }

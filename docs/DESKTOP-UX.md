@@ -579,6 +579,9 @@ over and save again. One save is out at a time, and its answer is for the
 draft that sent it: if you have begun another plan or opened this one anew
 before it comes, what is in the editor is left as it is. A save the app could
 not send (its request queue was full) is said at once and can be sent again.
+The pane shows the plan you asked for last and no other: a plan you left before
+it had been read does not open when its answer comes, and a new plan you are
+writing is not replaced by a read of the one that was open before it.
 Under it are the project's files,
 each opening with the system's app (a private copy) or deleted, and **Add a
 file**. Under those is the project's **Memory**: a **New memory** line to keep

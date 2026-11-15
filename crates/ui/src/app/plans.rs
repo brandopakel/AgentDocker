@@ -180,8 +180,8 @@ impl App {
         };
         let connected = self.connected.is_ok();
         let workspace = self.workspaces.get(&root);
-        let draft = &self.shell.plan_draft;
-        let open_id = draft.id.clone();
+        let pane = &self.shell.plan;
+        let open_id = pane.id();
         // The list: each plan a name and its status chip.
         let mut list = column![
             row![
@@ -207,7 +207,7 @@ impl App {
         .spacing(2)
         .width(Fill);
         for plan in workspace.map(|w| w.plans.as_slice()).unwrap_or_default() {
-            let selected = open_id.as_deref() == Some(plan.id.as_str());
+            let selected = open_id == Some(plan.id.as_str());
             list = list.push(custom_sized(
                 format!("plan-{}", plan.id),
                 format!("{}, {}", plan.title, plan.status.label()),
@@ -237,9 +237,8 @@ impl App {
             .width(240)
             .style(move |_| c.card_style());
         // The plan open, or being written.
-        let editing = draft.id.is_some() || draft.dirty;
         let mut editor = column![].spacing(10).width(Fill);
-        if editing {
+        if let Some(draft) = pane.draft() {
             let status = |value: PlanStatus| {
                 crate::controls::segment(
                     format!("plan-status-set-{}", value.as_str()),
@@ -280,17 +279,15 @@ impl App {
                         primary(
                             "plan-save",
                             "Save",
-                            (connected && draft.dirty && draft.saving.is_none())
+                            (connected && draft.saving == super::shell::PlanSaving::Unsaved)
                                 .then_some(Message::PlanSave),
                         ),
                     ]
                     .align_y(Center),
                 );
             // The cards that carry it out, each opening on its board.
-            if let Some((plan, tasks)) = &self.plan_open
-                && draft.id.as_deref() == Some(plan.id.as_str())
-            {
-                for task in tasks {
+            if let super::shell::PlanPane::Open(open) = pane {
+                for task in &open.cards {
                     editor = editor.push(
                         row![
                             icon(Icon::Board, c.faint, 12.0),
