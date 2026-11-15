@@ -850,7 +850,7 @@ impl App {
         if let Some(entry) = self.shell.catalog.selected() {
             let name = entry.name();
             let available = self.shell.project_available != Some(false);
-            if self.connected.is_ok() && available {
+            if self.link.is_up() && available {
                 items.push(action(
                     "launch",
                     "Launch agent…",
@@ -899,7 +899,7 @@ impl App {
                 self.screen,
                 Screen::Questions | Screen::Runtimes | Screen::Settings | Screen::Desktop
             );
-            if on_view && self.connected.is_ok() && !paused && !busy {
+            if on_view && self.link.is_up() && !paused && !busy {
                 items.push(action(
                     "pause",
                     "Pause…",
@@ -1467,7 +1467,7 @@ mod tests {
     #[test]
     fn agents_that_need_you_lead_and_command_enter_goes_to_the_terminal() {
         let mut app = app();
-        app.connected = Ok(());
+        app.link.connected();
         let now = Utc::now();
         for name in ["asking", "busy", "done", "quiet"] {
             let mut agent = AgentRecord::new(
@@ -1683,7 +1683,7 @@ mod tests {
     #[test]
     fn running_a_row_sends_its_message_and_launch_agent_opens_the_tools() {
         let mut app = app();
-        app.connected = Ok(());
+        app.link.connected();
         let dir = tempfile::tempdir().unwrap();
         let project = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
         app.shell.catalog.remember(project.clone(), true).unwrap();

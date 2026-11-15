@@ -785,7 +785,11 @@ conversation, and **Conversations** returns to the list.
 
 **Messages** is what the rail item (named Messages then, Inbox otherwise)
 opens against a daemon that keeps conversations (schema 21 and later); an
-older daemon still gets the inbox below. It is shaped like a chat workspace.
+older daemon still gets the inbox below. Which of the two it is is asked of
+the service on every connection: a window left open while the service is
+replaced by one that keeps conversations moves from Inbox to Messages when
+the new one answers, without being reopened, and shows what it showed before
+until then. It is shaped like a chat workspace.
 The sidebar lists the project chats — the chat (`#everyone`) of each project in your
 sidebar, on the project's tile, named for the project and opening that project's **Chat** — then,
 under a rule, the direct messages: your conversations with agents that have something in
@@ -1076,7 +1080,10 @@ feed* chip beside it; a check that fails is one line beside the alert mark,
 
 The foot of the sidebar, above **Add project…**, says something about the
 background service only when there is something to say, and then one thing: it
-is not reachable yet (a *Reconnecting…* chip); or it is older than the app —
+has not answered since the window opened (a *Connecting…* chip, quiet until a
+try has failed); it answered and no longer does (a *Reconnecting…* chip),
+either with the reason in the chip's detail once there is one; or it is older
+than the app —
 an older version, or another installed release of the same version, which is
 what an update installed underneath a running daemon looks like — a *Service
 is older* chip whose detail gives both versions, and **Restart…** beside it;
@@ -1086,7 +1093,12 @@ confirmation, an amber strip across the bottom with **Restart** and **Cancel**,
 asks *Restart the background service?* with what a restart costs as counts:
 how many sessions AgentDocker itself launched stop (and how many start again).
 Sessions started in a terminal keep running and reconnect, and the strip says
-nothing of them. A
+nothing of them. What a service says of itself (its version and where it runs
+from, whether it keeps conversations) is asked again on every connection:
+*Service is older* is said of the service that answers now, never of one that
+has been replaced, and while none answers the window goes on showing what the
+last one said. The restart question is asked of the service that answers and
+closes when it stops answering. A
 request the older service has never heard of reads *The background service is
 older than this app…* instead of the service's parser error, and no screen
 shows raw error codes or Rust debug output.

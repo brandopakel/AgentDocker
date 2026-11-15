@@ -178,7 +178,7 @@ impl App {
         let Some(root) = self.selected_project_root() else {
             return super::view::empty(None, c);
         };
-        let connected = self.connected.is_ok();
+        let connected = self.link.is_up();
         let workspace = self.workspaces.get(&root);
         let pane = &self.shell.plan;
         let open_id = pane.id();
@@ -383,7 +383,7 @@ mod tests {
         let (tx, _commands) = super::super::queue::channel();
         let (_messages, rx) = std::sync::mpsc::sync_channel(super::super::MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.connected();
         let project = agentdocker_core::ProjectRef::directory("/fixture/plans");
         let root = project.root.display().to_string();
         app.shell.catalog.remember(project.clone(), true).unwrap();

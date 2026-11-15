@@ -987,14 +987,19 @@ impl App {
     /// than this window: what it costs before it is done, then that it is
     /// happening. Nothing otherwise.
     fn daemon_notice(&self, c: Colors) -> Option<Element<'_, Message>> {
-        self.daemon_behind_now()?;
-        let connected = self.connected.is_ok();
+        // A restart says so until it has ended, whatever is known of the
+        // daemon meanwhile: the one that comes back has not yet said who
+        // it is.
+        if !self.daemon_restarting() {
+            self.daemon_behind_now()?;
+        }
+        let connected = self.link.is_up();
         let row = if self.daemon_restarting() {
             row![
                 dot(c.amber, 7.0, c),
                 small("Restarting the background service…", c).width(Fill),
             ]
-        } else if self.shell.confirm_daemon_restart {
+        } else if self.link.confirming_restart() {
             // The question and what it costs, as counts: the sessions this
             // app launched stop, some of them start again; nothing else is
             // said, since nothing else changes.
@@ -1106,7 +1111,7 @@ impl App {
     /// and saved configuration cannot establish a connection.
     pub(super) fn tool_reports(&self, runtime: &str) -> bool {
         let now = Utc::now();
-        self.connected.is_ok()
+        self.link.is_up()
             && self.agents.iter().any(|a| {
                 a.spec.runtime == runtime
                     && a.status.is_live()
@@ -1129,7 +1134,7 @@ impl App {
         if state == State::Ended {
             return Readiness::Decided(state);
         }
-        if self.connected.is_err() {
+        if !self.link.is_up() {
             return Readiness::Unavailable;
         }
         // A current receiver with words queued that no receipt covers is
@@ -1549,61 +1554,57 @@ impl App {
     fn service_chip(&self, r: Colors) -> Option<Element<'_, Message>> {
         use super::chip::{Chip, Tone};
         // A chip that says the state, and the one action beside it.
-        let chip: Element<'_, Message> = if self.connected.is_err() {
-            Chip::new(
-                "service-reconnecting",
-                Some(Icon::Ring),
-                "Reconnecting…",
-                Tone::Attention,
-            )
-            .detail("Reconnecting to the background service…")
-            .view(r)
-        } else if let Some(version) = self.daemon_behind_now() {
-            if self.daemon_restarting() || self.shell.confirm_daemon_restart {
-                // The strip across the bottom has it now.
-                return None;
-            }
-            row![
-                Chip::new(
-                    "service-behind",
-                    Some(Icon::Alert),
-                    "Service is older",
-                    Tone::Attention
-                )
-                .detail(format!(
-                    "Background service {version} is older than this app ({}).",
-                    env!("CARGO_PKG_VERSION")
-                ))
-                .view(r),
-                ghost(
-                    "daemon-restart",
-                    "Restart…",
-                    Some(Message::ConfirmDaemonRestart(true)),
-                ),
-            ]
-            .spacing(4)
-            .align_y(Center)
-            .into()
-        } else {
-            let version = self.desktop.update_available()?;
-            crate::controls::custom_sized(
-                "open-available-update",
-                format!("Update {version} available"),
+        let chip: Element<'_, Message> =
+            if let Some((id, label, tone, detail)) = unreachable_service(&self.link) {
+                Chip::new(id, Some(Icon::Ring), label, tone)
+                    .detail(detail)
+                    .view(r)
+            } else if let Some(version) = self.daemon_behind_now() {
+                if self.daemon_restarting() || self.link.confirming_restart() {
+                    // The strip across the bottom has it now.
+                    return None;
+                }
                 row![
-                    icon(Icon::Download, r.accent_ink, 12.0),
-                    text(format!("Update {version}"))
-                        .size(12)
-                        .color(r.accent_ink)
+                    Chip::new(
+                        "service-behind",
+                        Some(Icon::Alert),
+                        "Service is older",
+                        Tone::Attention
+                    )
+                    .detail(format!(
+                        "Background service {version} is older than this app ({}).",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .view(r),
+                    ghost(
+                        "daemon-restart",
+                        "Restart…",
+                        Some(Message::ConfirmDaemonRestart(true)),
+                    ),
                 ]
-                .spacing(8)
-                .align_y(Center),
-                Some(Message::Navigate(Screen::Desktop)),
-                false,
-                Kind::Nav,
-                [5, 10],
-                Fill,
-            )
-        };
+                .spacing(4)
+                .align_y(Center)
+                .into()
+            } else {
+                let version = self.desktop.update_available()?;
+                crate::controls::custom_sized(
+                    "open-available-update",
+                    format!("Update {version} available"),
+                    row![
+                        icon(Icon::Download, r.accent_ink, 12.0),
+                        text(format!("Update {version}"))
+                            .size(12)
+                            .color(r.accent_ink)
+                    ]
+                    .spacing(8)
+                    .align_y(Center),
+                    Some(Message::Navigate(Screen::Desktop)),
+                    false,
+                    Kind::Nav,
+                    [5, 10],
+                    Fill,
+                )
+            };
         Some(container(chip).padding([4, 0]).width(Fill).into())
     }
 
@@ -2252,7 +2253,7 @@ impl App {
     /// each role's next colour and its delete, and a new role by name.
     fn roles_menu<'a>(&'a self, agent: &AgentRecord, c: Colors) -> Element<'a, Message> {
         let id = agent.id.to_string();
-        let connected = self.connected.is_ok();
+        let connected = self.link.is_up();
         let palette = self.palette_for(agent).unwrap_or_default();
         let mut items = column![].spacing(1).width(Fill);
         if !self.shell.roles_editing {
@@ -2476,7 +2477,7 @@ impl App {
     /// project's own state.
     pub(super) fn pause_controls(&self, c: Colors) -> Option<Element<'_, Message>> {
         let root = self.selected_project_root()?;
-        let connected = self.connected.is_ok();
+        let connected = self.link.is_up();
         let control = self.pause_states.get(&root);
         let sending = control.is_some_and(|control| control.pending.is_some());
         if let Some(pause) = self.selected_pause() {
@@ -2532,7 +2533,7 @@ impl App {
     /// agents will read, Pause agents and Cancel, and the last refusal.
     pub(super) fn pause_form(&self, c: Colors) -> Option<Element<'_, Message>> {
         let root = self.selected_project_root()?;
-        let connected = self.connected.is_ok();
+        let connected = self.link.is_up();
         let control = self.pause_states.get(&root);
         let sending = control.is_some_and(|control| control.pending.is_some());
         let error = control.and_then(|control| control.error.as_ref());
@@ -2590,7 +2591,7 @@ impl App {
     /// chevron.
     fn launch_button(&self, c: Colors) -> Option<Element<'_, Message>> {
         self.shell.catalog.selected()?;
-        let ready = self.connected.is_ok() && self.shell.project_available != Some(false);
+        let ready = self.link.is_up() && self.shell.project_available != Some(false);
         let main = crate::controls::split_primary(
             "launch-agent",
             "Launch agent…",
@@ -2878,7 +2879,7 @@ impl App {
                         } else {
                             "Connect"
                         },
-                        (self.connected.is_ok() && !self.shell.adopting.contains(&process.pid))
+                        (self.link.is_up() && !self.shell.adopting.contains(&process.pid))
                             .then_some(Message::Adopt(process.pid)),
                         false,
                     )),
@@ -2913,7 +2914,7 @@ impl App {
                     primary(
                         "empty-launch",
                         "Launch agent…",
-                        (self.connected.is_ok() && self.shell.project_available != Some(false))
+                        (self.link.is_up() && self.shell.project_available != Some(false))
                             .then_some(Message::OpenLaunch),
                     )
                 });
@@ -3138,7 +3139,7 @@ impl App {
                     })
                     .size(12.5)
                     .font(weight(iced::font::Weight::Medium)),
-                    (!self.shell.starting() && self.connected.is_ok())
+                    (!self.shell.starting() && self.link.is_up())
                         .then_some(Message::Reconnect(id.clone())),
                     false,
                     Kind::Secondary,
@@ -3287,7 +3288,7 @@ impl App {
                         action(
                             "resume-provider",
                             "Resume delivery",
-                            self.connected.is_ok().then(|| {
+                            self.link.is_up().then(|| {
                                 Message::ResumeProvider(source.id.to_string(), state.observed_at)
                             }),
                             false,
@@ -3316,8 +3317,8 @@ impl App {
                         action(
                             "retry-receiver",
                             "Restart delivery",
-                            self.connected
-                                .is_ok()
+                            self.link
+                                .is_up()
                                 .then(|| Message::RetryController(agent.id.to_string())),
                             false,
                         )
@@ -3368,7 +3369,7 @@ impl App {
                     } else {
                         "Review delivery"
                     },
-                    self.connected.is_ok().then_some(Message::ReviewDelivery),
+                    self.link.is_up().then_some(Message::ReviewDelivery),
                     false,
                 ));
                 if self.shell.review_delivery {
@@ -3431,9 +3432,7 @@ impl App {
             actions = actions.push(terminal_kind(
                 "Open terminal".to_owned(),
                 "attach-session",
-                self.connected
-                    .is_ok()
-                    .then_some(Message::Attach(id.clone())),
+                self.link.is_up().then_some(Message::Attach(id.clone())),
             ));
         } else if Self::terminal_reachable(agent) {
             actions = actions.push(terminal_kind(
@@ -3463,7 +3462,7 @@ impl App {
             let value = draft.map_or("", |draft| draft.text.as_str());
             let target_for_notice = draft_key.clone();
             let target = draft_key.clone();
-            let send = (!sending && !value.trim().is_empty() && self.connected.is_ok())
+            let send = (!sending && !value.trim().is_empty() && self.link.is_up())
                 .then_some(Message::SendSession(draft_key));
             body = body
                 .push(composer(
@@ -3550,14 +3549,14 @@ impl App {
                                 draft,
                                 Message::RenameDraft,
                                 true,
-                                (self.connected.is_ok() && valid.is_ok())
+                                (self.link.is_up() && valid.is_ok())
                                     .then_some(Message::SubmitRename),
                             ),
                             row![
                                 action(
                                     "rename-save",
                                     "Save",
-                                    (self.connected.is_ok() && valid.is_ok())
+                                    (self.link.is_up() && valid.is_ok())
                                         .then_some(Message::SubmitRename),
                                     false,
                                 ),
@@ -3737,7 +3736,7 @@ impl App {
                         danger(
                             "stop-session",
                             "Confirm stop",
-                            self.connected.is_ok().then_some(Message::Stop(id.clone())),
+                            self.link.is_up().then_some(Message::Stop(id.clone())),
                         ),
                         custom_sized(
                             "stop-session-cancel",
@@ -3759,7 +3758,7 @@ impl App {
                 action(
                     "stop-session",
                     "Stop session…",
-                    self.connected.is_ok().then_some(Message::Stop(id)),
+                    self.link.is_up().then_some(Message::Stop(id)),
                     false,
                 )
             };
@@ -3786,7 +3785,7 @@ impl App {
         // everything else behind More options. No title: the button names
         // the dialog.
         let ready =
-            !self.shell.starting() && self.shell.launch_runtime.is_some() && self.connected.is_ok();
+            !self.shell.starting() && self.shell.launch_runtime.is_some() && self.link.is_up();
         let prompt = crate::controls::composer(
             super::shell::LAUNCH_PROMPT,
             "launch",
@@ -4366,6 +4365,43 @@ pub(super) fn plain_pause_reason(reason: &str) -> String {
 }
 
 // Questions, approvals, the Inbox without conversations and Needs you.
+/// What the rail's foot says of a background service that does not
+/// answer: the chip's id, its words, its tone and its detail. `None`
+/// while one answers.
+///
+/// A window that has not reached a daemon yet is connecting, and says so
+/// quietly until a try has failed; one that had a daemon and lost it is
+/// reconnecting. Either gives the reason once there is one: it was kept
+/// and never shown, and "Reconnecting…" was said of both.
+fn unreachable_service(
+    link: &link::Link,
+) -> Option<(&'static str, &'static str, super::chip::Tone, String)> {
+    use super::chip::Tone;
+    match link {
+        link::Link::Up(_) => None,
+        link::Link::Connecting { reason: None } => Some((
+            "service-connecting",
+            "Connecting…",
+            Tone::Info,
+            "Connecting to the background service…".to_owned(),
+        )),
+        link::Link::Connecting {
+            reason: Some(reason),
+        } => Some((
+            "service-connecting",
+            "Connecting…",
+            Tone::Attention,
+            format!("The background service has not answered yet ({reason}). Still trying…"),
+        )),
+        link::Link::Down { reason, .. } => Some((
+            "service-reconnecting",
+            "Reconnecting…",
+            Tone::Attention,
+            format!("The background service stopped answering ({reason}). Reconnecting…"),
+        )),
+    }
+}
+
 mod approvals;
 mod changes;
 mod secret_reviews;
@@ -4500,7 +4536,7 @@ mod tests {
         let (commands, requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.connected();
         let c = Colors::new(false);
         let mut agent = AgentRecord::new(
             AgentSpec {
@@ -4645,7 +4681,7 @@ mod tests {
         let mut app = App::bare(commands, results);
         let c = Colors::new(true);
         let r = c.rail();
-        app.connected = Ok(());
+        app.link.connected();
         assert!(app.service_chip(r).is_none(), "healthy: nothing");
         assert!(app.daemon_notice(c).is_none(), "and no bottom strip");
         app.desktop.update = Some(serde_json::json!({
@@ -4654,8 +4690,65 @@ mod tests {
         }));
         assert!(app.service_chip(r).is_some(), "an update to install");
         app.desktop.update = None;
-        app.connected = Err("gone".into());
+        app.link.lost("gone".into());
         assert!(app.service_chip(r).is_some(), "reconnecting");
+    }
+
+    /// A window that has not reached a daemon yet says it is connecting,
+    /// and one that lost its daemon that it is reconnecting: both said
+    /// "Reconnecting…", so a first launch read as a fault. Either gives
+    /// the reason once there is one; it was kept and never shown.
+    #[test]
+    fn a_first_launch_is_connecting_and_only_a_lost_service_is_reconnecting() {
+        use super::super::view::testing::seen;
+        use super::*;
+        use crate::app::chip::Tone;
+        use crate::app::link::Link;
+        let said = |link: &Link| super::unreachable_service(link);
+
+        let mut link = Link::default();
+        let (id, words, tone, detail) = said(&link).expect("nothing answers yet");
+        assert_eq!((id, words), ("service-connecting", "Connecting…"));
+        assert_eq!(tone, Tone::Info, "on its way: nothing has gone wrong");
+        assert_eq!(detail, "Connecting to the background service…");
+
+        // A try failed: still connecting, since nothing was lost, and now
+        // with why.
+        link.lost("no socket at the usual place".to_owned());
+        let (id, words, tone, detail) = said(&link).expect("still nothing");
+        assert_eq!((id, words), ("service-connecting", "Connecting…"));
+        assert_eq!(tone, Tone::Attention);
+        assert_eq!(
+            detail,
+            "The background service has not answered yet (no socket at the usual place). \
+             Still trying…"
+        );
+
+        link.connected();
+        assert_eq!(said(&link), None, "a healthy service says nothing");
+
+        link.lost("event stream ended".to_owned());
+        let (id, words, tone, detail) = said(&link).expect("lost");
+        assert_eq!((id, words), ("service-reconnecting", "Reconnecting…"));
+        assert_eq!(tone, Tone::Attention);
+        assert_eq!(
+            detail,
+            "The background service stopped answering (event stream ended). Reconnecting…"
+        );
+
+        // And the rail shows it: a window that has just opened.
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        let r = Colors::new(true).rail();
+        app.link = Link::default();
+        let chip = seen(app.service_chip(r).expect("connecting"));
+        assert!(chip.reads("Connecting…"), "{:?}", chip.texts);
+        assert!(!chip.reads("Reconnecting…"), "{:?}", chip.texts);
+        app.link.connected();
+        app.link.lost("gone".to_owned());
+        let chip = seen(app.service_chip(r).expect("reconnecting"));
+        assert!(chip.reads("Reconnecting…"), "{:?}", chip.texts);
     }
 
     /// A limit's reset reads on the person's clock: minutes, then hours
@@ -4858,7 +4951,7 @@ mod tests {
             app.input_readiness(&agent).label(),
             "Not receiving messages"
         );
-        app.connected = Err("offline".into());
+        app.link.lost("offline".into());
         assert!(!app.tool_reports("codex"));
         assert_eq!(app.input_readiness(&agent).label(), "Readiness unavailable");
     }
@@ -4959,7 +5052,7 @@ mod tests {
         let root = project.root.display().to_string();
         app.shell.catalog.remember(project.clone(), true).unwrap();
         app.shell.catalog.selected = Some(project.root.clone());
-        app.connected = Ok(());
+        app.link.connected();
         app.screen = Screen::Board;
         app.shell.board_layout = BoardLayout::Table;
         let now = chrono::Utc::now();
@@ -5262,7 +5355,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.connected();
         let mut agent = AgentRecord::new(
             AgentSpec {
                 name: "worker".into(),
@@ -5320,7 +5413,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.connected();
         let mut agent = AgentRecord::new(
             AgentSpec {
                 name: "worker".into(),
@@ -5418,7 +5511,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.connected();
         let root = std::path::PathBuf::from("/work/orchard");
         app.shell.catalog.projects.push(crate::catalog::Entry {
             project: ProjectRef::directory(&root),
@@ -5615,14 +5708,15 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.connected();
         let c = Colors::new(false);
 
-        app.daemon = Some(crate::app::DaemonInfo {
+        let service = app.link.serving().expect("a daemon answers");
+        service.info = Some(crate::app::DaemonInfo {
             version: "0.0.1".into(),
             executable: None,
         });
-        app.shell.confirm_daemon_restart = true;
+        service.confirm_restart = true;
         let strip = seen(app.daemon_notice(c).expect("the strip"));
         assert!(
             strip
@@ -5655,7 +5749,7 @@ mod tests {
             strip.texts
         );
         assert!(!strip.reads("keep running"));
-        app.shell.confirm_daemon_restart = false;
+        app.link.serving().unwrap().confirm_restart = false;
 
         let project = ProjectRef::directory("/fixture/alpha");
         app.shell.catalog.remember(project.clone(), false).unwrap();
@@ -5758,7 +5852,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.connected();
         let c = Colors::new(false);
         let now = Utc::now();
         let agent = AgentRecord::new(

@@ -180,7 +180,7 @@ impl App {
                         } else {
                             "Remove worktree (may delete its branch)"
                         },
-                        (!removing && self.connected.is_ok())
+                        (!removing && self.link.is_up())
                             .then(|| Message::RemoveWorktree(id.clone())),
                         false,
                     ),
@@ -246,7 +246,7 @@ impl App {
         // checkout and other agents' leases stay theirs to sort out.
         let name = self.display_name(agent);
         let mut asks = row![].spacing(8).align_y(Center);
-        let live = agent.status.is_live() && self.connected.is_ok();
+        let live = agent.status.is_live() && self.link.is_up();
         if let Some(Blocker::Uncommitted(n)) = blockers
             .iter()
             .find(|b| matches!(b, Blocker::Uncommitted(_)))
@@ -304,7 +304,7 @@ impl App {
         section = section.push(asks.wrap());
         let head = review.head.clone().unwrap_or_default();
         let merging = self.merging.as_deref() == Some(id.as_str());
-        let ready = blockers.is_empty() && !merging && self.connected.is_ok();
+        let ready = blockers.is_empty() && !merging && self.link.is_up();
         // The command it runs is its tooltip, so nothing about it is a
         // surprise.
         section = section.push(tip(
@@ -460,7 +460,7 @@ mod tests {
         let (commands, _requests) = crate::app::queue::channel();
         let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
         let mut app = App::bare(commands, results);
-        app.connected = Ok(());
+        app.link.connected();
         let root = std::path::Path::new("/fixture/alpha");
         let merged_head = "1111111111111111111111111111111111111111";
         let new_head = "2222222222222222222222222222222222222222";

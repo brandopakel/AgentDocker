@@ -10,7 +10,7 @@ fn app() -> App {
     let (commands, _requests) = queue::channel();
     let (_messages, results) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
     let mut app = App::bare(commands, results);
-    app.connected = Ok(());
+    app.link.connected();
     app.shell.width = 1400.0;
     app.shell.height = 900.0;
     app.screen = Screen::Agents;

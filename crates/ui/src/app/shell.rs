@@ -580,8 +580,6 @@ pub(super) struct State {
     pub renaming: Option<(String, String)>,
     /// Processes a Connect was pressed for, until the daemon answers.
     pub adopting: BTreeSet<u32>,
-    /// The footer is asking whether to restart the daemon.
-    pub confirm_daemon_restart: bool,
     pub pending_answer_reveal: Option<MessageId>,
     pub reveal_next_question: bool,
     pub generation: u64,
@@ -1674,7 +1672,7 @@ impl App {
             self.thread = None;
         }
         self.shell.conversation = Some(conversation.clone());
-        if self.connected.is_ok() {
+        if self.link.is_up() {
             self.send(Cmd::History(conversation, self.history_epoch));
         }
         self.recover_reply();
@@ -1971,7 +1969,7 @@ impl App {
                 tasks.push(self.routing(Self::advance_notification));
                 if let Some(smoke) = &mut self.smoke {
                     tasks.push(smoke.tick(
-                        self.connected.is_ok(),
+                        self.link.is_up(),
                         self.runtimes.len(),
                         &self.discovered,
                     ));
@@ -2248,7 +2246,7 @@ impl App {
                 }
                 self.shell.conversation = Some(id.clone());
                 self.shell.inbox_open = true;
-                if self.connected.is_ok() {
+                if self.link.is_up() {
                     self.send(Cmd::History(id, self.history_epoch));
                 }
             }
@@ -2275,7 +2273,7 @@ impl App {
                 let (conversation, reply_to) = super::split_draft_key(&key);
                 let conversation = conversation.to_owned();
                 let to = self.conversation_destination(&conversation);
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && self.conversation_can_send(&conversation)
                     && let Some(to) = to
                     && let Some(draft) = self.shell.conversation_drafts.get_mut(&key)
@@ -2290,7 +2288,7 @@ impl App {
                 }
             }
             Message::EarlierHistory(conversation) => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && let Some(first) = self
                         .history
                         .get(&conversation)
@@ -2316,7 +2314,7 @@ impl App {
             Message::OpenThread(root) => {
                 self.shell.thread = Some(root.clone());
                 self.thread = None;
-                if self.connected.is_ok() {
+                if self.link.is_up() {
                     self.send(Cmd::Thread(root, self.history_epoch));
                 }
             }
@@ -3248,7 +3246,7 @@ impl App {
                 }
             }
             Message::MarkAllRead => {
-                if self.connected.is_ok() {
+                if self.link.is_up() {
                     let heads: Vec<(String, u64)> = self
                         .conversations
                         .iter()
@@ -3338,7 +3336,7 @@ impl App {
                 self.shell.project_rename = None;
             }
             Message::SendSession(id) => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && self.agents.iter().any(|a| {
                         a.id.as_str() == self.canonical_agent(&id)
                             && a.status.is_live()
@@ -3364,12 +3362,12 @@ impl App {
                 }
             }
             Message::ResumeProvider(agent, blocked_at) => {
-                if self.connected.is_ok() {
+                if self.link.is_up() {
                     self.send(Cmd::ResumeProvider(agent, blocked_at));
                 }
             }
             Message::RetryController(agent) => {
-                if self.connected.is_ok() {
+                if self.link.is_up() {
                     self.send(Cmd::RetryController(agent));
                 }
             }
@@ -3394,7 +3392,7 @@ impl App {
                 }
             }
             Message::ReviewDelivery => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && let Some(id) = self.shell.selected.clone()
                     && self.agents.iter().any(|agent| {
                         agent.id.as_str() == id
@@ -3424,14 +3422,14 @@ impl App {
                 };
             }
             Message::RemoveWorktree(id) => {
-                if self.removing_worktree.is_none() && self.connected.is_ok() {
+                if self.removing_worktree.is_none() && self.link.is_up() {
                     self.removing_worktree = Some(id.clone());
                     self.merge_outcome = None;
                     self.send(Cmd::WorktreeRemove(id));
                 }
             }
             Message::MergeBranch(id, head) => {
-                if self.merging.is_none() && self.connected.is_ok() {
+                if self.merging.is_none() && self.link.is_up() {
                     self.merging = Some(id.clone());
                     self.merge_outcome = None;
                     self.send(Cmd::MergeBranch { agent: id, head });
@@ -3452,7 +3450,7 @@ impl App {
                     .iter()
                     .find(|a| a.id.as_str() == self.canonical_agent(&id))
                     .and_then(|a| a.project.as_ref().map(|p| p.id().to_string()));
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && let Some(project) = project
                     && let Some(entry) = self.shell.session_drafts.get_mut(&id)
                     && let Some(text) = entry.draft.begin()
@@ -3665,7 +3663,7 @@ impl App {
                 }
             }
             Message::CopyQuestionUrl(id) => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && !self.sending.contains(&id)
                     && let Some(question) = self
                         .questions
@@ -3684,7 +3682,7 @@ impl App {
                 }
             }
             Message::AnswerChoice(id, value) => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && !self.sending.contains(&id)
                     && self.questions.iter().any(|q| {
                         q.id == id
@@ -3759,7 +3757,7 @@ impl App {
                     .and_then(|_| self.shell.answers.get(&id))
                     .map(|words| words.trim().to_owned())
                     .filter(|words| !words.is_empty());
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && !self.sending.contains(&id)
                     && (!choices.is_empty() || other.is_some())
                     && question.is_some()
@@ -3784,31 +3782,31 @@ impl App {
                 }
             }
             Message::SecretEdit(id, field, value) => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && !value.is_some_and(|v| self.secrets.edit(&id, &field, v, Utc::now()))
                 {
                     self.say("Temporary input is closed or exceeds its size limit.");
                 }
             }
             Message::SecretAcknowledge(id, value) => {
-                if self.connected.is_ok() {
+                if self.link.is_up() {
                     self.secrets.acknowledge(&id, value, Utc::now());
                 }
             }
             Message::SecretSubmit(id) => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && let Some(answers) = self.secrets.take(&id, Utc::now())
                 {
                     self.send(Cmd::SecretAnswer(id, answers));
                 }
             }
             Message::SecretCancel(id) => {
-                if self.connected.is_ok() && self.secrets.cancel(&id, Utc::now()) {
+                if self.link.is_up() && self.secrets.cancel(&id, Utc::now()) {
                     self.send(Cmd::SecretCancel(id));
                 }
             }
             Message::Answer(id) => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && !self.sending.contains(&id)
                     && self.questions.iter().any(|q| {
                         q.id == id
@@ -3857,7 +3855,7 @@ impl App {
                 }
             }
             Message::DismissInbox(mut ids) => {
-                if self.connected.is_ok() && ids.len() <= 1000 {
+                if self.link.is_up() && ids.len() <= 1000 {
                     ids.retain(|id| {
                         !self.dismissing.contains(id)
                             && self.inbox.iter().any(|message| &message.id == id)
@@ -3872,14 +3870,14 @@ impl App {
                 }
             }
             Message::AdoptAll => {
-                if self.connected.is_ok() {
+                if self.link.is_up() {
                     self.send(Cmd::AdoptAll);
                 }
             }
             Message::Adopt(pid) => {
                 // Once per press until the daemon answers: a second press
                 // would send a second adoption of the same process.
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && self.discovered.iter().any(|p| p.pid == pid)
                     && self.shell.adopting.insert(pid)
                 {
@@ -3888,7 +3886,7 @@ impl App {
             }
             Message::DisarmStop => self.confirm_stop = None,
             Message::Stop(id) => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && self
                         .agents
                         .iter()
@@ -3925,7 +3923,7 @@ impl App {
                 }
             }
             Message::SubmitRename => {
-                if self.connected.is_ok()
+                if self.link.is_up()
                     && let Some((id, name)) = self.shell.renaming.take()
                 {
                     let name = name.trim().to_owned();
@@ -4050,7 +4048,7 @@ impl App {
                 }
             }
             Message::AskAgent(id, words) => {
-                if self.connected.is_ok() {
+                if self.link.is_up() {
                     let name = self
                         .agents
                         .iter()
@@ -4135,7 +4133,7 @@ impl App {
             Message::LaunchChannel(on) => self.shell.launch_channel = on,
             Message::LaunchWorktree(on) => self.shell.launch_worktree = on,
             Message::Launch => {
-                if self.connected.is_ok() && !self.shell.starting() {
+                if self.link.is_up() && !self.shell.starting() {
                     match self
                         .launch_spec()
                         .and_then(|spec| self.prepare_launch(spec, sibling_cli()))
@@ -4312,11 +4310,20 @@ impl App {
                 }
             }
             Message::Recall(back) => self.recall(back),
-            Message::ConfirmDaemonRestart(asking) => self.shell.confirm_daemon_restart = asking,
+            // Asked of the daemon that answers: the question goes with its
+            // connection (`Link`), and there is none to ask about without
+            // one.
+            Message::ConfirmDaemonRestart(asking) => {
+                if let Some(service) = self.link.serving() {
+                    service.confirm_restart = asking;
+                }
+            }
             Message::RestartDaemon => {
                 if !self.daemon_restarting {
                     self.daemon_restarting = true;
-                    self.shell.confirm_daemon_restart = false;
+                    if let Some(service) = self.link.serving() {
+                        service.confirm_restart = false;
+                    }
                     self.send(Cmd::RestartDaemon);
                 }
             }
@@ -5395,7 +5402,7 @@ impl App {
             if started.elapsed() >= Duration::from_secs(10) {
                 self.shell.route.end();
                 self.screen = Screen::Questions;
-                self.say(if self.connected.is_ok() {
+                self.say(if self.link.is_up() {
                     "This notification's message is no longer available."
                 } else {
                     "Cannot open the notification while disconnected. Try again after reconnecting."
@@ -5550,7 +5557,7 @@ impl App {
     /// stale: the process is back, the checkout differs, somebody is
     /// attached) comes back as the error under the button.
     pub(super) fn reconnect(&mut self, id: &str, cli: Result<PathBuf, String>) {
-        if self.connected.is_ok() && !self.shell.starting() {
+        if self.link.is_up() && !self.shell.starting() {
             match self.reconnect_spec(id, cli) {
                 Ok(spec) => {
                     self.shell.start = Some(Starting::Reconnect(id.to_owned()));
@@ -6976,7 +6983,7 @@ mod tests {
     fn the_person_keeps_searches_and_forgets_a_projects_memory() {
         use agentdocker_core::memory::Memory;
         let (mut app, commands, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let memory = |id: &str, text: &str| Memory {
             id: id.into(),
             project: agentdocker_core::ProjectId::from("a"),
@@ -7192,7 +7199,7 @@ mod tests {
     #[test]
     fn palettes_are_read_for_the_agents_on_view_and_again_on_a_change() {
         let (mut app, commands, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let agent = |name: &str, root: &str| {
             let mut record = agentdocker_core::AgentRecord::new(
                 agentdocker_core::AgentSpec {
@@ -7273,7 +7280,7 @@ mod tests {
             "the failed one again, not the answered one"
         );
         // A reconnect asks every palette again with its next list.
-        app.connected = Err("gone".into());
+        app.link.lost("gone".into());
         messages.send(Msg::Connected).unwrap();
         app.drain();
         let _ = palettes_asked(&commands);
@@ -7786,7 +7793,7 @@ mod tests {
     #[test]
     fn a_card_save_sends_only_what_the_person_changed() {
         let (mut app, requests, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let id = agentdocker_core::TaskId::from("aaaaaaaaaaaa".to_owned());
         let words = CardWords {
             title: "Port the parser".into(),
@@ -7904,7 +7911,7 @@ mod tests {
     #[test]
     fn a_card_draft_survives_other_board_actions_late_replies_and_refused_queues() {
         let (mut app, requests, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let dir = tempfile::tempdir().unwrap();
         let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
@@ -8073,7 +8080,7 @@ mod tests {
     #[test]
     fn the_board_shows_more_a_page_at_a_time_and_stays_expanded_through_a_refresh() {
         let (mut app, requests, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let dir = tempfile::tempdir().unwrap();
         let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(dir.path().join("beta"));
@@ -8337,7 +8344,7 @@ mod tests {
             secret::{SecretField, SecretReview, SecretReviewSpec, SecretText},
         };
         let (mut app, commands, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let now = Utc::now();
         let review = SecretReview {
             id: "temporary".into(),
@@ -8401,7 +8408,7 @@ mod tests {
             (true, agentdocker_core::ALLOW_FOR_SESSION),
         ] {
             let (mut app, commands, messages) = app();
-            app.connected = Ok(());
+            app.link.connected();
             let presentation = QuestionPresentation::CodexFiles {
                 cwd: "/owned".into(),
                 reason: "Fixture".into(),
@@ -8457,7 +8464,7 @@ mod tests {
     #[test]
     fn structured_choices_use_one_answer_command_and_reject_stale_or_invalid_clicks() {
         let (mut app, commands, _) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
             command: "printf hello".into(),
             cwd: "/owned".into(),
@@ -8507,7 +8514,7 @@ mod tests {
     #[test]
     fn a_denial_carries_its_note_to_the_agent_once_accepted() {
         let (mut app, commands, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         for (choice, noted) in [("Deny", true), ("Allow", false)] {
             let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
                 command: "rm -rf build".into(),
@@ -8558,7 +8565,7 @@ mod tests {
     #[test]
     fn a_refused_denial_note_lands_in_the_message_box_and_leaves_other_sends_alone() {
         let (mut app, commands, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let note = "Denied `rm -rf build`: Use the fixture script instead";
         let deny = |app: &mut App, id: &str| -> MessageId {
             let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
@@ -8680,7 +8687,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let (mut app, commands, messages) = app();
         app.shell = State::load(home.path());
-        app.connected = Ok(());
+        app.link.connected();
         let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
             command: "rm -rf build".into(),
             cwd: "/owned".into(),
@@ -8726,7 +8733,7 @@ mod tests {
 
         // Delivered: the saved copy goes with it.
         let (mut app, _commands, messages) = self::app();
-        app.connected = Ok(());
+        app.link.connected();
         app.shell.deny_notes.insert(
             id.clone(),
             DenyNote {
@@ -8750,7 +8757,7 @@ mod tests {
     #[test]
     fn a_denial_note_the_queue_rejects_goes_to_the_message_box() {
         let (mut app, _commands, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let id = MessageId::from("question-full".to_owned());
         let presentation = agentdocker_core::QuestionPresentation::CodexCommand {
             command: "make clean".into(),
@@ -9059,7 +9066,7 @@ mod tests {
     #[test]
     fn asking_an_agent_to_repair_sends_it_the_words() {
         let (mut app, commands, _messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let _ = commands.try_iter().count();
         let _ = app.update(Message::AskAgent(
             "worker".into(),
@@ -9478,7 +9485,7 @@ mod tests {
     #[test]
     fn mcp_url_questions_never_submit_or_save_a_typed_draft() {
         let (mut app, commands, _) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let presentation = agentdocker_core::QuestionPresentation::McpUrl {
             server: "example-tools".into(),
             elicitation_id: "one".into(),
@@ -9520,7 +9527,7 @@ mod tests {
     #[test]
     fn explicit_choices_bypass_full_draft_storage_and_failed_delivery_keeps_text() {
         let (mut app, commands, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         for index in 0..128 {
             assert!(
                 app.shell
@@ -9636,7 +9643,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let (mut app, commands, messages) = app();
         app.shell = State::load(home.path());
-        app.connected = Ok(());
+        app.link.connected();
         let id = MessageId::from("question-one".to_owned());
         let other = MessageId::from("question-two".to_owned());
         let question = Question {
@@ -9720,7 +9727,7 @@ mod tests {
         let home = tempfile::tempdir().unwrap();
         let (mut app, commands, messages) = app();
         app.shell = State::load(home.path());
-        app.connected = Ok(());
+        app.link.connected();
         let alpha = agentdocker_core::ProjectRef::directory(home.path().join("alpha"));
         let beta = agentdocker_core::ProjectRef::directory(home.path().join("beta"));
         for project in [&alpha, &beta] {
@@ -10294,7 +10301,7 @@ mod tests {
     fn answering_reveals_the_next_question_only_while_that_interaction_is_current() {
         let (mut app, commands, messages) = app();
         app.screen = Screen::Questions;
-        app.connected = Ok(());
+        app.link.connected();
         let first = MessageId::from("first".to_owned());
         let second = MessageId::from("second".to_owned());
         let question = Question {
@@ -10345,7 +10352,7 @@ mod tests {
         for response_before_back in [false, true] {
             let (mut app, commands, messages) = app();
             app.screen = Screen::Questions;
-            app.connected = Ok(());
+            app.link.connected();
             app.shell.inbox_open = true;
             app.shell.inbox_thread = Some("first-asker".into());
             let first = MessageId::from("first".to_owned());
@@ -10451,7 +10458,7 @@ mod tests {
         ));
         assert!(app.shell.route.is_routing());
         assert_eq!(app.screen, Screen::Agents);
-        app.conversations_supported = Some(true);
+        app.with_conversations(true);
         let conversation = agentdocker_core::ConversationId::dm("user", "sender-1").to_string();
         app.history.insert(conversation.clone(), Vec::new());
         app.history_complete.insert(conversation);
@@ -10885,7 +10892,7 @@ mod tests {
     #[test]
     fn needs_you_review_opens_the_sessions_delivery_review() {
         let (mut app, commands, _) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let now = Utc::now();
         let mut paused = AgentRecord::new(
             agentdocker_core::AgentSpec {
@@ -11051,7 +11058,7 @@ mod tests {
     #[test]
     fn reconnect_here_relaunches_an_ended_claude_session_with_its_conversation_and_the_channel() {
         let (mut app, commands, messages) = app();
-        app.connected = Ok(());
+        app.link.connected();
         let cli = tempfile::NamedTempFile::new().unwrap();
         let cli_path = cli.path().to_path_buf();
         app.runtimes = vec![agentdocker_core::runtime::RuntimeInfo {
@@ -11744,7 +11751,7 @@ mod tests {
     #[test]
     fn a_new_notification_cancels_the_previous_reveal_before_its_data_arrives() {
         let (mut app, commands, messages, _home, mut action) = notification_app();
-        app.conversations_supported = Some(true);
+        app.with_conversations(true);
         app.screen = Screen::Questions;
         let conversation = "dm:previous:user".to_owned();
         app.shell.conversation = Some(conversation.clone());
@@ -12762,7 +12769,7 @@ mod tests {
     #[test]
     fn a_todo_card_of_another_project_opens_on_its_board_and_stays_open() {
         let (mut app, alpha, beta, kept) = travel();
-        app.connected = Ok(());
+        app.link.connected();
         let card = card_in("aaaaaaaaaaaa", &beta, "Port the parser");
         let _ = app.update(Message::SelectProject(alpha.clone()));
         let _ = app.update(Message::Navigate(Screen::Todo));
@@ -12814,7 +12821,7 @@ mod tests {
     /// the second and then to itself.
     fn linked_cards() -> (App, PathBuf, Kept, [agentdocker_core::Task; 2]) {
         let (mut app, alpha, beta, kept) = travel();
-        app.connected = Ok(());
+        app.link.connected();
         let mut first = card_in("aaaaaaaaaaaa", &alpha, "Port the parser");
         let second = card_in("bbbbbbbbbbbb", &alpha, "Write the release notes");
         for target in [second.id.to_string(), first.id.to_string()] {

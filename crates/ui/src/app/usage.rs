@@ -878,7 +878,7 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.connected();
         let dir = tempfile::tempdir().unwrap();
         let project = agentdocker_core::ProjectRef::directory(dir.path().join("project"));
         let root = project.root.display().to_string();
@@ -941,7 +941,7 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.connected();
         let dir = tempfile::tempdir().unwrap();
         let first = agentdocker_core::ProjectRef::directory(dir.path().join("first"));
         let second = agentdocker_core::ProjectRef::directory(dir.path().join("second"));
@@ -993,7 +993,7 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.connected();
         for _ in 0..3 {
             messages
                 .send(Msg::Agents(Vec::new(), BTreeMap::new()))
@@ -1209,7 +1209,7 @@ mod tests {
         let (tx, _commands) = queue::channel();
         let (_messages, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.connected();
         let project = agentdocker_core::ProjectRef::directory("/fixture/usage");
         let root = project.root.display().to_string();
         app.shell.catalog.remember(project.clone(), true).unwrap();

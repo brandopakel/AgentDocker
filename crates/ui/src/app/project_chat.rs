@@ -27,7 +27,7 @@ impl App {
         let conversation = format!("everyone:{project}");
         self.shell.conversation = Some(conversation.clone());
         self.shell.inbox_open = true;
-        if self.connected.is_ok() {
+        if self.link.is_up() {
             self.send(Cmd::Conversations(self.conversation_scope()));
             self.send(Cmd::History(conversation, self.history_epoch));
         }
@@ -413,7 +413,7 @@ mod tests {
         let (tx, commands) = queue::channel();
         let (_sender, rx) = std::sync::mpsc::sync_channel(MESSAGE_CAPACITY);
         let mut app = App::bare(tx, rx);
-        app.connected = Ok(());
+        app.link.connected();
         for name in ["alpha", "beta"] {
             let mut project = ProjectRef::directory(format!("/fixture/{name}"));
             project.fingerprint = Some(name.to_owned());
