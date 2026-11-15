@@ -54,20 +54,45 @@ impl App {
         agent: &AgentRecord,
         c: Colors,
     ) -> Option<Element<'_, Message>> {
-        let (id, result) = self.branch_review.as_ref()?;
-        if id != agent.id.as_str() {
-            return None;
+        // The session's changes are a read like any other: being read
+        // for the first time it says so (`changes-reading`); a read that
+        // failed says why (`changes-error`) above the changes as last
+        // read, which a failed refresh does not take away.
+        let read = self.branch_review.of(agent.id.as_str());
+        if read.first_read() {
+            return Some(super::super::chip::chip(
+                "changes-reading",
+                None,
+                "Reading…",
+                super::super::chip::Tone::Info,
+                c,
+            ));
         }
-        let review = match result {
-            Ok(review) => review,
-            Err(reason) => {
-                return Some(error_line(
-                    "changes-error",
-                    &format!("Changes could not be read: {reason}"),
-                    c,
-                ));
-            }
-        };
+        let failure = read.error().map(|reason| {
+            error_line(
+                "changes-error",
+                &format!("Changes could not be read: {reason}"),
+                c,
+            )
+        });
+        let changes = read
+            .value()
+            .and_then(|review| self.changes_of(agent, review, c));
+        match (failure, changes) {
+            (Some(failure), Some(changes)) => Some(column![failure, changes].spacing(8).into()),
+            (failure, changes) => failure.or(changes),
+        }
+    }
+
+    /// A session's changes as read: what is ahead, what stands in the
+    /// way of merging them, and what to do with them.
+    fn changes_of<'a>(
+        &'a self,
+        agent: &AgentRecord,
+        review: &'a Review,
+        c: Colors,
+    ) -> Option<Element<'a, Message>> {
+        let id = &agent.id.to_string();
         let blockers = review.blockers();
         // An agent working straight in the main folder has nothing apart to
         // merge, and a checkout with no branch has nothing to name.
@@ -474,9 +499,9 @@ mod tests {
             updated_at: Utc::now(),
         });
         app.agents.push(agent.clone());
-        app.branch_review = Some((
+        app.branch_review = crate::app::remote::About::ready(
             agent.id.to_string(),
-            Ok(Review {
+            Review {
                 agent: agent.id.clone(),
                 checkout: "/fixture/alpha-wt/feature".into(),
                 branch: Some("claude/feature".into()),
@@ -488,8 +513,8 @@ mod tests {
                     subject: "Do the thing".into(),
                 }],
                 ..Review::default()
-            }),
-        ));
+            },
+        );
         let c = style::Colors::new(true);
         let before = seen(app.changes_section(&agent, c).expect("changes"));
         assert!(before.control("merge-branch").is_some(), "not merged yet");
@@ -516,18 +541,8 @@ mod tests {
         let remove = after.control("remove-worktree").expect("remove");
         assert_eq!(remove.1, "Remove worktree (may delete its branch)");
         assert!(!after.reads("git worktree remove"));
-        let merged_commits = app
-            .branch_review
-            .as_ref()
-            .unwrap()
-            .1
-            .as_ref()
-            .unwrap()
-            .commits
-            .clone();
-        if let Some((_, Ok(review))) = app.branch_review.as_mut() {
-            review.commits.clear();
-        }
+        let merged_commits = app.branch_review.value_mut().unwrap().commits.clone();
+        app.branch_review.value_mut().unwrap().commits.clear();
         let clean = seen(app.changes_section(&agent, c).expect("changes"));
         assert_eq!(
             clean.control("remove-worktree").expect("remove").1,
@@ -577,22 +592,14 @@ mod tests {
             )
         );
 
-        app.branch_review
-            .as_mut()
-            .unwrap()
-            .1
-            .as_mut()
-            .unwrap()
-            .commits = merged_commits;
+        app.branch_review.value_mut().unwrap().commits = merged_commits;
         // A new registry head must stop offering cleanup even before the
         // refreshed branch review arrives. The cached PR is still merged.
         agent.vcs.as_mut().unwrap().head = Some(new_head.into());
         let moved = seen(app.changes_section(&agent, c).expect("changes"));
         assert!(moved.control("merge-branch").is_some());
         assert!(moved.control("remove-worktree").is_none());
-        if let Some((_, Ok(review))) = app.branch_review.as_mut() {
-            review.head = Some(new_head.into());
-        }
+        app.branch_review.value_mut().unwrap().head = Some(new_head.into());
         let refreshed = seen(app.changes_section(&agent, c).expect("changes"));
         assert!(refreshed.control("merge-branch").is_some());
         assert!(refreshed.control("remove-worktree").is_none());

@@ -3410,23 +3410,39 @@ impl App {
                             c,
                         ));
                     }
-                    if let Some((log_agent, result)) = &self.session_log
-                        && log_agent == &id
-                    {
-                        match result {
-                            Err(error) => {
-                                body = body.push(error_line(
-                                    "session-log-error",
-                                    &format!("Could not read the session log: {error}"),
-                                    c,
-                                ));
-                            }
-                            Ok(log) if log.is_empty() => {}
-                            Ok(log) => {
-                                body =
-                                    body.push(scrollable(text(log.as_str()).size(12)).height(120));
-                            }
+                    // The session's log: a read that failed says why,
+                    // above the log as last read; a first read says so;
+                    // and a log read and found empty is named for a
+                    // reader and the workflow driver, with nothing drawn.
+                    let log = self.session_log.of(id.as_str());
+                    if let Some(error) = log.error() {
+                        body = body.push(error_line(
+                            "session-log-error",
+                            &format!("Could not read the session log: {error}"),
+                            c,
+                        ));
+                    }
+                    if log.first_read() {
+                        body = body.push(super::chip::chip(
+                            "session-log-reading",
+                            None,
+                            "Reading…",
+                            super::chip::Tone::Info,
+                            c,
+                        ));
+                    }
+                    match log.value() {
+                        Some(lines) if !lines.is_empty() => {
+                            body = body.push(scrollable(text(lines.as_str()).size(12)).height(120));
                         }
+                        Some(_) if log.error().is_none() => {
+                            body = body.push(said(
+                                "session-log-empty",
+                                "The session log is empty",
+                                Space::new(),
+                            ));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -5139,6 +5155,7 @@ mod tests {
         messages
             .send(Msg::TaskDetail(
                 dependent.id.clone(),
+                app.card.latest(),
                 Ok(Box::new(detail.clone())),
             ))
             .unwrap();
@@ -5173,7 +5190,7 @@ mod tests {
 
         // A closed prerequisite permits the action even though the board page
         // still has the old card. Use the actual rendered button's callback.
-        app.card.as_mut().unwrap().blockers[0].column = Column::Done;
+        app.card.value_mut().unwrap().blockers[0].column = Column::Done;
         let (_, _, action) = start(&app).expect("closed prerequisite permits Start");
         let _ = app.update(action.unwrap());
         assert_eq!(app.shell.card_menu, Some(CardMenu::Start));
@@ -5182,37 +5199,102 @@ mod tests {
 
         // A queued click must not bypass a newer blocker or a changed card.
         let _ = app.update(Message::CardMenu(CardMenu::Start));
-        app.card.as_mut().unwrap().blockers[0].column = Column::Ready;
+        app.card.value_mut().unwrap().blockers[0].column = Column::Ready;
         assert!(start(&app).is_none());
         let _ = app.update(Message::StartAgent("codex".into()));
         assert!(take_starts().is_empty());
         assert_eq!(app.shell.card_menu, None);
-        app.card.as_mut().unwrap().blockers.clear();
+        app.card.value_mut().unwrap().blockers.clear();
         assert!(
             start(&app).is_none(),
             "missing dependency details are not proof of completion"
         );
-        app.card.as_mut().unwrap().task.id = "cccccccccccc".to_owned().into();
+        app.card.value_mut().unwrap().task.id = "cccccccccccc".to_owned().into();
         assert!(
             start(&app).is_none(),
             "another card's detail cannot authorize this one"
         );
         let _ = app.update(Message::StartAgent("codex".into()));
         assert!(take_starts().is_empty());
-        app.card = None;
+        app.card = crate::app::remote::Remote::default();
         assert!(start(&app).is_none(), "wait for the opened card's detail");
         let _ = app.update(Message::StartAgent("codex".into()));
         assert!(take_starts().is_empty());
 
         // The detail's own task fields also take precedence over the page.
-        app.card = Some(detail);
-        app.card.as_mut().unwrap().task.blocked_by.clear();
-        app.card.as_mut().unwrap().blockers.clear();
+        app.card = crate::app::remote::Remote::ready(detail);
+        app.card.value_mut().unwrap().task.blocked_by.clear();
+        app.card.value_mut().unwrap().blockers.clear();
         assert!(start(&app).is_some());
-        app.card.as_mut().unwrap().task.external_blocker = "approval".into();
+        app.card.value_mut().unwrap().task.external_blocker = "approval".into();
         assert!(start(&app).is_none());
         let _ = app.update(Message::StartAgent("codex".into()));
         assert!(take_starts().is_empty());
+    }
+
+    /// A session's changes drew nothing while they were read, and a
+    /// refresh that failed took away the changes that were on view. Now a
+    /// first read says so, and a failure stands above the changes as last
+    /// read.
+    #[test]
+    fn a_sessions_changes_say_reading_and_keep_what_was_read_beside_a_failure() {
+        use super::super::view::testing::seen;
+        use agentdocker_core::review::Review;
+        let (tx, _commands) = crate::app::queue::channel();
+        let (_sender, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::bare(tx, rx);
+        let c = super::Colors::new(false);
+        let mut agent = agentdocker_core::AgentRecord::new(
+            agentdocker_core::AgentSpec::default(),
+            false,
+            Utc::now(),
+        );
+        agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+        let id = agent.id.to_string();
+        let review = Review {
+            agent: agent.id.clone(),
+            checkout: "repo/worktree".into(),
+            target_checkout: "repo".into(),
+            branch: Some("feature".into()),
+            target: Some("main".into()),
+            ..Review::default()
+        };
+
+        assert!(app.changes_section(&agent, c).is_none(), "never asked");
+        let first = app.branch_review.ask(id.clone());
+        let reading = seen(app.changes_section(&agent, c).expect("being read"));
+        assert!(reading.control("changes-reading").is_some());
+        app.branch_review
+            .answer(&id, first, Err("not a git repository".into()));
+        let failed = seen(app.changes_section(&agent, c).expect("the failure"));
+        assert_eq!(
+            failed
+                .control("changes-error-mark")
+                .map(|said| said.1.as_str()),
+            Some("Changes could not be read: not a git repository")
+        );
+        assert!(failed.control("changes-reading").is_none());
+
+        let second = app.branch_review.ask(id.clone());
+        app.branch_review.answer(&id, second, Ok(review));
+        let read = seen(app.changes_section(&agent, c).expect("the changes"));
+        assert!(read.control("remove-worktree").is_some());
+        assert!(read.control("changes-error-mark").is_none());
+
+        // A refresh behind the changes says nothing, and one that fails
+        // leaves them under the failure.
+        let third = app.branch_review.ask(id.clone());
+        let behind = seen(app.changes_section(&agent, c).expect("the changes"));
+        assert!(behind.control("changes-reading").is_none());
+        assert!(behind.control("remove-worktree").is_some());
+        app.branch_review
+            .answer(&id, third, Err("git timed out".into()));
+        let both = seen(app.changes_section(&agent, c).expect("both"));
+        assert!(both.control("changes-error-mark").is_some());
+        assert!(
+            both.control("remove-worktree").is_some(),
+            "the changes as last read stay"
+        );
     }
 
     #[test]
@@ -5237,7 +5319,7 @@ mod tests {
             ..Review::default()
         };
         // A truly empty branch still offers the person's cleanup action.
-        app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
+        app.branch_review = crate::app::remote::About::ready(agent.id.to_string(), review.clone());
         let controls = offered(app.changes_section(&agent, c).unwrap());
         assert!(controls.iter().any(|(id, _, _)| id == "remove-worktree"));
         let reason = "Git did not confirm the merge: the pre-merge-commit hook rejected it";
@@ -5249,7 +5331,8 @@ mod tests {
         ] {
             review.in_progress = Some(operation);
             review.target = target.map(str::to_owned);
-            app.branch_review = Some((agent.id.to_string(), Ok(review.clone())));
+            app.branch_review =
+                crate::app::remote::About::ready(agent.id.to_string(), review.clone());
             let shown = inspected(app.changes_section(&agent, c).unwrap());
             // The marks beside the blocker and the failure are named labels,
             // not actions: the only action is Refresh.

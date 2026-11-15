@@ -297,7 +297,7 @@ impl App {
             generation,
             ..self.draft_of(&task)
         };
-        self.send(Cmd::TaskDetail(task.clone()));
+        self.request_card(task.clone());
         self.task_open = Some(task);
     }
 
@@ -307,7 +307,7 @@ impl App {
     /// starts with none of them.
     pub(super) fn close_card(&mut self) {
         self.task_open = None;
-        self.card = None;
+        self.card.forget();
         // The openings stay numbered across cards: a save's late reply
         // is never taken for a later opening's.
         self.shell.card_draft = super::shell::CardDraft {
@@ -1626,8 +1626,27 @@ impl App {
             .width(Fill);
         body = body.push(self.card_extras(task, c));
         // What the daemon knows beyond the card: the cards around it, the
-        // talk on it and what happened to it.
-        if let Some(detail) = self.card.as_ref().filter(|d| d.task.id == id) {
+        // talk on it and what happened to it. Being read for the first
+        // time it says so (`card-reading`); a read that failed says why
+        // (`card-error`) above the detail as last read.
+        let read = self.card.seen();
+        if let Some(error) = read.error() {
+            body = body.push(super::view::error_line(
+                "card-error",
+                &format!("The card's details could not be read: {error}"),
+                c,
+            ));
+        }
+        if read.first_read() {
+            body = body.push(super::chip::chip(
+                "card-reading",
+                None,
+                "Reading…",
+                super::chip::Tone::Info,
+                c,
+            ));
+        }
+        if let Some(detail) = read.value().filter(|d| d.task.id == id) {
             let related =
                 |list: &[Task], glyph: Icon, words: &'static str| -> Option<Element<'_, Message>> {
                     (!list.is_empty()).then(|| {
@@ -1958,7 +1977,7 @@ impl App {
             && self.task_open.as_ref() == Some(id)
             && self
                 .card
-                .as_ref()
+                .value()
                 .filter(|d| &d.task.id == id)
                 .is_some_and(|detail| {
                     agentdocker_core::rule::startable(&detail.task, |blocker| {
@@ -1993,7 +2012,7 @@ impl App {
                 c,
             )
         };
-        let detail = self.card.as_ref().filter(|d| d.task.id == task.id);
+        let detail = self.card.value().filter(|d| d.task.id == task.id);
         let workspace = self
             .selected_project_root()
             .and_then(|p| self.workspaces.get(&p));
@@ -2668,7 +2687,7 @@ mod tests {
 
         // The open card: each stay, and the pull to Done.
         app.task_open = Some(card.id.clone());
-        app.card = Some(crate::app::CardDetail {
+        app.card = crate::app::remote::Remote::ready(crate::app::CardDetail {
             task: card.clone(),
             board: board.clone(),
             comments: Vec::new(),

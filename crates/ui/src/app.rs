@@ -23,6 +23,7 @@ pub(crate) mod panes;
 mod plans;
 mod project_chat;
 pub(crate) mod queue;
+mod remote;
 mod route;
 mod secret_reviews;
 mod send_readiness;
@@ -159,7 +160,7 @@ enum Cmd {
     /// Every agent's tokens over the last day, for the session rows.
     AgentTokens,
     /// An agent's branch against the main folder's.
-    ReviewBranch(String),
+    ReviewBranch(String, remote::Ask),
     /// Merge an agent's branch at the head the person looked at.
     MergeBranch {
         agent: String,
@@ -201,7 +202,7 @@ enum Cmd {
         body: String,
     },
     /// One card in full, for its open detail.
-    TaskDetail(agentdocker_core::TaskId),
+    TaskDetail(agentdocker_core::TaskId, remote::Ask),
     /// A project's boards.
     Boards(String),
     /// A board's lanes reshaped, or a new board, for a project.
@@ -240,8 +241,8 @@ enum Cmd {
         project: String,
         request: Box<Request>,
     },
-    /// Every project's open cards, for To-do.
-    Todo,
+    /// Every project's open cards, for To-do, and which ask this is.
+    Todo(remote::Ask),
     /// A plan written; its answer opens it. `save` is the number the
     /// draft it was written from knows it by.
     PlanSave {
@@ -268,7 +269,7 @@ enum Cmd {
     },
     /// The person lifts a project's pause.
     ResumeProject(PauseRequest),
-    SessionLog(String),
+    SessionLog(String, remote::Ask),
     /// Ask which daemon serves: its version and the executable it runs.
     Ping,
     /// Give a live session the name a person typed.
@@ -442,7 +443,11 @@ enum Msg {
     /// Every agent's tokens over the last day, or why they could not be read.
     AgentTokens(Result<agentdocker_core::usage::report::Report, String>),
     /// An agent's branch reviewed, or why it could not be.
-    BranchReview(String, Result<agentdocker_core::review::Review, String>),
+    BranchReview(
+        String,
+        remote::Ask,
+        Result<agentdocker_core::review::Review, String>,
+    ),
     /// A merge made (into which branch, as which commit), or why not.
     BranchMerged(String, Result<(String, String), String>),
     /// A worktree removed (with its branch?), or why not.
@@ -457,7 +462,11 @@ enum Msg {
         Result<(), String>,
     ),
     /// One card in full, or why it could not be read.
-    TaskDetail(agentdocker_core::TaskId, Result<Box<CardDetail>, String>),
+    TaskDetail(
+        agentdocker_core::TaskId,
+        remote::Ask,
+        Result<Box<CardDetail>, String>,
+    ),
     Workspace(String, Result<Box<Workspace>, String>),
     MemorySearched(
         String,
@@ -468,7 +477,7 @@ enum Msg {
     /// What reading a project's roles came back with.
     Palette(String, PaletteRead),
     BoardActed(String, Result<(), String>),
-    Todo(Result<Vec<agentdocker_core::Task>, String>),
+    Todo(remote::Ask, Result<Vec<agentdocker_core::Task>, String>),
     Plan(Result<Box<(agentdocker_core::Plan, Vec<agentdocker_core::Task>)>, String>),
     /// What became of a save of the plan in the editor: the plan as the
     /// daemon kept it with its cards, or why it was not kept.
@@ -482,7 +491,7 @@ enum Msg {
     /// The pause or resume the person asked for a project, done or
     /// refused; the project says which form or control it answers.
     Paused(PauseRequest, Result<(), String>),
-    SessionLog(String, Result<String, String>),
+    SessionLog(String, remote::Ask, Result<String, String>),
     Questions(Vec<Question>),
     SecretReviews(Vec<agentdocker_core::secret::SecretReview>),
     /// The daemon's restart outlooks for the generation that asked, or
@@ -696,7 +705,7 @@ pub struct App {
     agent_tokens_asked: Option<std::time::Instant>,
     /// The selected session's branch read against the main folder's, by
     /// agent id; a merge on its way, and the last merge's outcome.
-    branch_review: Option<(String, Result<agentdocker_core::review::Review, String>)>,
+    branch_review: remote::About<String, agentdocker_core::review::Review>,
     merging: Option<String>,
     merge_outcome: Option<(String, Result<String, String>)>,
     /// A worktree removal on its way, by agent id.
@@ -721,7 +730,7 @@ pub struct App {
     /// A card whose acceptance text is open.
     task_open: Option<agentdocker_core::TaskId>,
     /// The open card in full: its board, comments and history.
-    card: Option<CardDetail>,
+    card: remote::Remote<CardDetail>,
     /// Each project's boards, by project root.
     boards: BTreeMap<String, Vec<agentdocker_core::Board>>,
     /// Each project's tags, rules, plans and files, by project root.
@@ -733,7 +742,7 @@ pub struct App {
     palettes: BTreeMap<String, Option<Vec<agentdocker_core::RoleDef>>>,
     palettes_asked: BTreeSet<String>,
     /// Every project's open cards, for To-do; `None` until read.
-    todo: Option<Vec<agentdocker_core::Task>>,
+    todo: remote::Remote<Vec<agentdocker_core::Task>>,
     /// The plan open on Plans, with the cards that carry it out.
     /// Cards that changed a moment ago, and when: they flash once.
     flashes: BTreeMap<agentdocker_core::TaskId, Instant>,
@@ -753,7 +762,7 @@ pub struct App {
     daemon_restarting: bool,
     /// Per agent, the queued inputs no current receipt covers.
     awaiting_receipt: BTreeMap<String, usize>,
-    session_log: Option<(String, Result<String, String>)>,
+    session_log: remote::About<String, String>,
     /// Answers on their way to the daemon, so the same one is not sent
     /// twice while it is in flight.
     sending: std::collections::BTreeSet<MessageId>,
@@ -888,7 +897,7 @@ impl App {
             agent_tokens: BTreeMap::new(),
             agent_context: BTreeMap::new(),
             agent_tokens_asked: None,
-            branch_review: None,
+            branch_review: remote::About::default(),
             merging: None,
             merge_outcome: None,
             removing_worktree: None,
@@ -899,12 +908,12 @@ impl App {
             plan_saves: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
-            card: None,
+            card: remote::Remote::default(),
             boards: BTreeMap::new(),
             workspaces: BTreeMap::new(),
             palettes: BTreeMap::new(),
             palettes_asked: BTreeSet::new(),
-            todo: None,
+            todo: remote::Remote::default(),
             flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
@@ -913,7 +922,7 @@ impl App {
             own_release: None,
             daemon_restarting: false,
             awaiting_receipt: BTreeMap::new(),
-            session_log: None,
+            session_log: remote::About::default(),
         }
     }
 
@@ -985,7 +994,7 @@ impl App {
             agent_tokens: BTreeMap::new(),
             agent_context: BTreeMap::new(),
             agent_tokens_asked: None,
-            branch_review: None,
+            branch_review: remote::About::default(),
             merging: None,
             merge_outcome: None,
             removing_worktree: None,
@@ -996,12 +1005,12 @@ impl App {
             plan_saves: 0,
             board_asks: BTreeMap::new(),
             task_open: None,
-            card: None,
+            card: remote::Remote::default(),
             boards: BTreeMap::new(),
             workspaces: BTreeMap::new(),
             palettes: BTreeMap::new(),
             palettes_asked: BTreeSet::new(),
-            todo: None,
+            todo: remote::Remote::default(),
             flashes: BTreeMap::new(),
             pauses: Vec::new(),
             pause_states: BTreeMap::new(),
@@ -1010,7 +1019,7 @@ impl App {
             own_release: None,
             daemon_restarting: false,
             awaiting_receipt: BTreeMap::new(),
-            session_log: None,
+            session_log: remote::About::default(),
             dismissing: std::collections::BTreeSet::new(),
         }
     }
@@ -1274,24 +1283,16 @@ impl App {
             }
             // The session's log, asked for by opening its delivery review:
             // the reason stands where the log would.
-            Cmd::SessionLog(agent) => {
-                self.session_log = Some((agent, Err(reason.into())));
+            Cmd::SessionLog(agent, ask) => {
+                self.session_log.answer(&agent, ask, Err(reason.into()));
                 return;
             }
             // A session's changes against the main folder. Asked for by
             // the person and again by the app after a merge or a removal:
-            // the reason stands where the diff would, unless a review of
-            // that session is already on view, which a failed refresh
-            // does not take away.
-            Cmd::ReviewBranch(agent) => {
-                if self.shell.selected.as_deref() == Some(agent.as_str())
-                    && !self
-                        .branch_review
-                        .as_ref()
-                        .is_some_and(|(shown, _)| *shown == agent)
-                {
-                    self.branch_review = Some((agent, Err(reason.into())));
-                }
+            // the reason stands above the diff, and a review of that
+            // session already on view stays beside it.
+            Cmd::ReviewBranch(agent, ask) => {
+                self.branch_review.answer(&agent, ask, Err(reason.into()));
                 return;
             }
             // The thread a person is opening, never asked of the daemon: its
@@ -1308,13 +1309,17 @@ impl App {
                 }
                 self.shell.thread = None;
             }
-            // The To-do list, asked for by opening it. With nothing of it
-            // read the page would stay empty with no word; a list already
-            // on view is read again when a board next changes.
-            Cmd::Todo => {
-                if self.screen != Screen::Todo || self.todo.is_some() {
-                    return;
-                }
+            // An open card's detail: the reason stands on the card, beside
+            // the detail as last read.
+            Cmd::TaskDetail(_, ask) => {
+                self.card.answer(ask, Err(reason.into()));
+                return;
+            }
+            // The To-do list: the reason stands on its page, beside the
+            // list as last read, where a read that failed is said.
+            Cmd::Todo(ask) => {
+                self.todo.answer(ask, Err(reason.into()));
+                return;
             }
             // A project's plans, files and memory, asked for by opening the
             // project. With nothing of them read it is said; what is on view
@@ -1347,7 +1352,6 @@ impl App {
             | Cmd::TaskEdit { .. }
             | Cmd::TaskArchive(_)
             | Cmd::TaskComment { .. }
-            | Cmd::TaskDetail(_)
             | Cmd::Boards(_)
             | Cmd::BoardSave { .. }
             | Cmd::BoardCreate { .. }
@@ -1465,8 +1469,14 @@ impl App {
             match msg {
                 Msg::Agents(agents, aliases) => {
                     self.aliases = aliases;
-                    if let Some(selected) = &self.shell.selected {
-                        self.shell.selected = Some(self.canonical_agent(selected).to_owned());
+                    if let Some(selected) = self.shell.selected.clone() {
+                        let now = self.canonical_agent(&selected).to_owned();
+                        if now != selected {
+                            // The session on view under the id it stands
+                            // for now: its changes are read under that one.
+                            self.shell.selected = Some(now.clone());
+                            self.request_review(&now);
+                        }
                     }
                     self.agents = agents;
                     self.request_agent_tokens();
@@ -1565,10 +1575,10 @@ impl App {
                         self.journal.reverse();
                     }
                 }
-                Msg::SessionLog(agent, result) => {
-                    if self.shell.selected.as_deref() == Some(agent.as_str()) {
-                        self.session_log = Some((agent, result));
-                    }
+                // The session whose log was asked for last, and the
+                // latest ask of it: a late answer about another is let go.
+                Msg::SessionLog(agent, ask, result) => {
+                    self.session_log.answer(&agent, ask, result);
                 }
                 Msg::Tasks(project, request, result) => {
                     // Only a reply to an ask still standing, for the
@@ -1644,12 +1654,12 @@ impl App {
                         }
                     }
                 }
-                Msg::BranchReview(agent, result) => {
-                    // Only the session on view; a late answer for another
-                    // is let go.
-                    if self.shell.selected.as_deref() == Some(agent.as_str()) {
-                        self.branch_review = Some((agent, result));
-                    }
+                Msg::BranchReview(agent, ask, result) => {
+                    // Only the session whose changes were asked for last,
+                    // and the latest ask of them: a late answer about
+                    // another, or an older one, is let go. A read that
+                    // failed keeps the changes as last read beside it.
+                    self.branch_review.answer(&agent, ask, result);
                 }
                 Msg::WorktreeRemoved(agent, result) => {
                     self.removing_worktree = None;
@@ -1710,7 +1720,7 @@ impl App {
                     Ok(()) => {
                         self.request_tasks();
                         if let Some(open) = self.task_open.clone() {
-                            self.send(Cmd::TaskDetail(open));
+                            self.request_card(open);
                         }
                     }
                     Err(error) => self.say(error),
@@ -1722,17 +1732,17 @@ impl App {
                         }
                         self.request_tasks();
                         if let Some(open) = self.task_open.clone() {
-                            self.send(Cmd::TaskDetail(open));
+                            self.request_card(open);
                         }
                     }
                     Err(error) => self.say(error),
                 },
-                Msg::TaskDetail(task, result) => {
+                // The card says a read that failed, beside its detail as
+                // last read. An answer about a card no longer open, or to
+                // an ask that is no longer the latest, is let go.
+                Msg::TaskDetail(task, ask, result) => {
                     if self.task_open.as_ref() == Some(&task) {
-                        match result {
-                            Ok(detail) => self.card = Some(*detail),
-                            Err(error) => self.say(error),
-                        }
+                        self.card.answer(ask, result.map(|detail| *detail));
                     }
                 }
                 Msg::Boards(project, result) => match result {
@@ -1811,20 +1821,22 @@ impl App {
                     self.send(Cmd::Workspace(project));
                     self.request_tasks();
                     if let Some(open) = self.task_open.clone() {
-                        self.send(Cmd::TaskDetail(open));
+                        self.request_card(open);
                     }
                     if let shell::PlanPane::Open(open) = &self.shell.plan {
                         let open = open.plan.id.clone();
                         self.send(Cmd::PlanGet(open));
                     }
                     if self.screen == Screen::Todo {
-                        self.send(Cmd::Todo);
+                        self.request_todo();
                     }
                 }
-                Msg::Todo(result) => match result {
-                    Ok(cards) => self.todo = Some(cards),
-                    Err(error) => self.say(error),
-                },
+                // The page says a read that failed, beside the list as
+                // last read; an answer to an ask that is no longer the
+                // latest is let go.
+                Msg::Todo(ask, result) => {
+                    self.todo.answer(ask, result);
+                }
                 Msg::PlanSaved(save, result) => {
                     // Only the draft that sent a save takes its answer. A
                     // draft that has taken its place since (a new plan
@@ -2055,6 +2067,17 @@ impl App {
                         if self.screen == Screen::Usage {
                             self.request_usage();
                         }
+                        // And what a page on view read from the last
+                        // connection is read from this one.
+                        if self.screen == Screen::Todo {
+                            self.request_todo();
+                        }
+                        if let Some(open) = self.task_open.clone() {
+                            self.request_card(open);
+                        }
+                        if let Some(selected) = self.shell.selected.clone() {
+                            self.request_review(&selected);
+                        }
                     }
                 }
                 // A call asked on an earlier connection failed against
@@ -2162,6 +2185,8 @@ impl App {
                         Ok(id) => {
                             self.shell.launch = false;
                             self.shell.selected = Some(id.clone());
+                            // Its changes, as for a session chosen by hand.
+                            self.request_review(&id);
                             // What it was asked to do is its first message:
                             // queued now, delivered when it takes input.
                             let prompt = std::mem::take(&mut self.shell.launch_prompt);
@@ -2183,6 +2208,8 @@ impl App {
                     match result {
                         Ok((id, generation)) => {
                             self.shell.selected = Some(id.clone());
+                            // Its changes, as for a session chosen by hand.
+                            self.request_review(&id);
                             self.shell.attach_when_listed = Some((id, generation));
                             self.send(Cmd::Agents);
                         }
@@ -2458,11 +2485,11 @@ impl App {
                     self.shell.history.forget_card(task);
                 }
                 if self.task_open.as_ref() == Some(task) {
-                    self.send(Cmd::TaskDetail(task.clone()));
+                    self.request_card(task.clone());
                 }
                 self.request_tasks();
                 if self.screen == Screen::Todo {
-                    self.send(Cmd::Todo);
+                    self.request_todo();
                 }
             }
             EventKind::BoardChanged { .. } => {
@@ -2516,7 +2543,7 @@ impl App {
                     self.send(Cmd::PlanGet(plan.clone()));
                 }
                 if let Some(open) = self.task_open.clone() {
-                    self.send(Cmd::TaskDetail(open));
+                    self.request_card(open);
                 }
             }
             EventKind::RuleFired { .. } => {}
@@ -2850,11 +2877,49 @@ impl App {
     /// Read the selected project's board, when there is one and the
     /// daemon is there: as many cards as are on view, so a board
     /// expanded past its first page stays expanded through a refresh.
+    /// Read the open card's detail: the cards around it, the talk on it
+    /// and what happened to it.
+    pub(crate) fn request_card(&mut self, task: agentdocker_core::TaskId) {
+        let ask = self.card.ask();
+        self.send(Cmd::TaskDetail(task, ask));
+    }
+
+    /// Read every project's open cards, for To-do.
+    pub(crate) fn request_todo(&mut self) {
+        let ask = self.todo.ask();
+        self.send(Cmd::Todo(ask));
+    }
+
     /// Read a session's branch against the main folder's.
+    ///
+    /// Only the selected session's: the changes on view are one read
+    /// about one session, and a read of another's would take its place.
+    /// A merge or a removal that finishes after the person has moved on
+    /// asks for the changes of a session no longer on view; that one is
+    /// read when it is next selected.
     pub(crate) fn request_review(&mut self, agent: &str) {
-        if self.link.is_up() {
-            self.send(Cmd::ReviewBranch(agent.to_owned()));
+        if !self.link.is_up() || self.shell.selected.as_deref() != Some(agent) {
+            return;
         }
+        let ask = self.branch_review.ask(agent.to_owned());
+        match self.tx.send(Cmd::ReviewBranch(agent.to_owned(), ask)) {
+            Ok(queue::Sent::Queued) => {}
+            // A read of this session's changes is already waiting, and
+            // answers for both: its ask is the one awaited, as the queue
+            // kept it.
+            Ok(queue::Sent::Merged(waiting)) => {
+                if let Some(waiting) = waiting {
+                    self.branch_review.merged(waiting);
+                }
+            }
+            Err(queue::Rejected { command, reason }) => self.rejected(*command, reason),
+        }
+    }
+
+    /// Read a session's log, for its delivery review.
+    pub(crate) fn request_session_log(&mut self, agent: String) {
+        let ask = self.session_log.ask(agent.clone());
+        self.send(Cmd::SessionLog(agent, ask));
     }
 
     /// Ask for every agent's tokens over the last day, at most once a
@@ -3794,9 +3859,9 @@ fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Opt
             Response::Agent { .. } => None,
             _ => None,
         },
-        Cmd::SessionLog(agent) => {
+        Cmd::SessionLog(agent, ask) => {
             let result = read_session_log(client, &agent).map_err(|error| format!("{error:#}"));
-            Some(Msg::SessionLog(agent, result))
+            Some(Msg::SessionLog(agent, ask, result))
         }
         Cmd::Tasks {
             project,
@@ -3825,7 +3890,7 @@ fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Opt
             };
             Some(Msg::Tasks(project, request, result))
         }
-        Cmd::ReviewBranch(agent) => {
+        Cmd::ReviewBranch(agent, ask) => {
             let result = match client.call(&Request::ReviewBranch {
                 agent: agent.clone(),
             }) {
@@ -3834,7 +3899,7 @@ fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Opt
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::BranchReview(agent, result))
+            Some(Msg::BranchReview(agent, ask, result))
         }
         Cmd::WorktreeRemove(agent) => {
             let result = match client.call(&Request::WorktreeRemove {
@@ -4024,7 +4089,7 @@ fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Opt
             };
             Some(Msg::TaskChanged(result))
         }
-        Cmd::TaskDetail(task) => {
+        Cmd::TaskDetail(task, ask) => {
             let result = match client.call(&Request::TaskGet {
                 task: task.to_string(),
             }) {
@@ -4054,7 +4119,7 @@ fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Opt
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::TaskDetail(task, result))
+            Some(Msg::TaskDetail(task, ask, result))
         }
         Cmd::Workspace(project) => {
             let read = || -> Result<Workspace, String> {
@@ -4145,7 +4210,7 @@ fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Opt
             };
             Some(Msg::BoardActed(project, result))
         }
-        Cmd::Todo => {
+        Cmd::Todo(ask) => {
             let result = match client.call(&Request::Tasks {
                 project: None,
                 column: None,
@@ -4165,7 +4230,7 @@ fn run(client: &Client, cmd: Cmd, asked: link::Connection) -> anyhow::Result<Opt
                 Ok(other) => Err(unexpected_reply(&other)),
                 Err(error) => Err(format!("{error:#}")),
             };
-            Some(Msg::Todo(result))
+            Some(Msg::Todo(ask, result))
         }
         Cmd::MemorySearch { project, query } => {
             let result = match client.call(&memory_search(&project, &query)) {
@@ -7001,7 +7066,7 @@ pub(crate) mod tests {
         assert!(app.shell.review_delivery);
         assert!(!app.shell.session_details);
         assert!(
-            matches!(requests.try_iter().next(), Some(Cmd::SessionLog(target)) if target == id)
+            matches!(requests.try_iter().next(), Some(Cmd::SessionLog(target, _)) if target == id)
         );
         messages
             .send(Msg::Activity(vec![AgentActivity {
@@ -7018,13 +7083,17 @@ pub(crate) mod tests {
             }]))
             .unwrap();
         messages
-            .send(Msg::SessionLog(id.clone(), Ok("input retained".into())))
+            .send(Msg::SessionLog(
+                id.clone(),
+                app.session_log.latest(),
+                Ok("input retained".into()),
+            ))
             .unwrap();
         app.drain();
         assert_eq!(app.queued_inputs[&id], 2);
         assert_eq!(
-            app.session_log.as_ref().unwrap().1.as_ref().unwrap(),
-            "input retained"
+            app.session_log.of(id.as_str()).value().map(String::as_str),
+            Some("input retained")
         );
         assert_eq!(
             app.shell.session_drafts[&id].draft.text,
@@ -7033,12 +7102,16 @@ pub(crate) mod tests {
         assert!(app.shell.session_message);
         app.shell.selected = Some("another-session".into());
         messages
-            .send(Msg::SessionLog(id.clone(), Ok("late reply".into())))
+            .send(Msg::SessionLog(
+                id.clone(),
+                app.session_log.latest(),
+                Ok("late reply".into()),
+            ))
             .unwrap();
         app.drain();
         assert_eq!(
-            app.session_log.as_ref().unwrap().1.as_ref().unwrap(),
-            "input retained"
+            app.session_log.of(id.as_str()).value().map(String::as_str),
+            Some("input retained")
         );
         assert_eq!(
             app.shell.session_drafts[&id].draft.text,

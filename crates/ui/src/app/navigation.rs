@@ -392,7 +392,7 @@ impl App {
     fn card_gone(&self, place: &Place, card: &TaskId) -> bool {
         if self
             .card
-            .as_ref()
+            .value()
             .is_some_and(|d| &d.task.id == card && d.task.archived_at.is_some())
         {
             return true;
@@ -595,7 +595,7 @@ impl App {
     fn card_name(&self, card: &TaskId) -> Option<String> {
         let task = self
             .card
-            .as_ref()
+            .value()
             .map(|d| &d.task)
             .filter(|t| &t.id == card)
             .or_else(|| {
@@ -605,7 +605,7 @@ impl App {
             })
             .or_else(|| {
                 self.todo
-                    .as_ref()
+                    .value()
                     .and_then(|cards| cards.iter().find(|t| &t.id == card))
             })?;
         Some(if task.key.is_empty() {
