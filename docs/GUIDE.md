@@ -577,6 +577,7 @@ An agent that has ended shows the exit code that was recorded for it: `exited (0
 | `rename <agent> <name>` | Give a live agent a name of your choosing (up to 64 characters, unique among live agents); its id and everything addressed by id are unchanged |
 | `deregister --as <agent>` / `rm <agent>` | Mark an external agent finished, without signalling its process / forget a finished one. `rm` on a live agent says which of the two applies: `stop` for one AgentDocker started, `deregister` for one it did not. A finished record that holds nothing is forgotten by itself thirty days on, or after `[agents] retention` in `~/.agentdocker/agentd.toml` (`"off"` keeps every record) |
 | `up` / `down` | Start or stop the agents in an `Agentfile.toml`. An entry with `after = "build exits 0"` starts once `build` has exited 0; `up` stays while it waits (`waiting: build exits 0`), and if `build` exits otherwise, is stopped or fails to start, it and everything waiting on it are not started (`not started: build exited 1`) and `up` exits unsuccessfully. `up test` alone takes an earlier exit 0 of `build`, from another `up`, as success when it was `build`'s own: its record says no stop was asked of that run, and it is still the run of the entry as this file gives it now (the same command, runtime, working directory, environment and the rest of how it runs; not renamed). Edit `build` in any of those ways, or give it `isolate = true`, and bring it up again before `test`. An earlier `build` that was stopped does not count, whatever it exited with (`not started: build was stopped`), and neither does one whose record cannot show this (`not started: build ended before this run; …`); the record is kept, and the answer with it, across a daemon restart and until retention forgets it. For an agent `up` is watching, only an exit 0 whose event it received counts, so an exit 0 seen after `up` has said its event stream ended does not |
+| `agentfile check` / `upgrade` / `schema` | Read an `Agentfile.toml` the way `up` will — any version upgraded, `${VAR}` expanded from this environment, commands built — and show what would start, without starting it (`--json` for a program; an agent's `env` is shown as names, never values, and command arguments as they will run, so a secret belongs in `env`, not in `args` or `prompt`); rewrite a version 1 file as version 2 in place, keeping its comments (`--print` to see it instead); print the JSON Schema of the format, for editors (`#:schema <url>` on the file's first line) |
 | `heartbeat` | Report that an agent is alive |
 
 ### Talk
@@ -670,7 +671,7 @@ turn. A copied instruction is not executed by AgentDocker.
 
 | Command | What it does |
 |---|---|
-| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]… [<path>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files. With no path it goes in the project's own worktrees folder, `.agentdocker/worktrees/<name>` inside the project (a `/` in the branch name becomes `-`), which the daemon keeps out of git through the repository's own exclude file, so everything of a project stays in the one folder you cloned; the command prints where. If a rule in the project's own `.gitignore` keeps that folder in git's view, the command refuses and names the rule: change it, move the folder with the setting below, or give a path. `[worktrees] dir = "…"` in `~/.agentdocker/agentd.toml` moves the folder: a relative path is another place inside each project, an absolute one holds every project's checkouts outside them (for a project whose tools search its whole folder and would find the checkouts inside it). A path you give is outside the checkout, or inside that folder; a relative one is read where you run the command. A path lease covers everything under its folder, so hold files and folders of your own checkout rather than the project's root; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
+| `worktree-create --branch <name> [--from <ref>] [--seed-build <dir>]… [<path>]` | A new linked checkout and branch, at your HEAD or at `--from`, without touching existing files. With no path it goes in the project's own worktrees folder, `.agentdocker/worktrees/<name>` inside the project (a `/` in the branch name becomes `-`), which the daemon keeps out of git through the repository's own exclude file, so everything of a project stays in the one folder you cloned; the command prints where. If a rule in the project's own `.gitignore` keeps that folder in git's view, the command refuses and names the rule: change it, move the folder with the setting below, or give a path. `[worktrees] dir = "…"` in `~/.agentdocker/agentd.toml` moves the folder: a relative path is another place inside each project, an absolute one holds every project's checkouts outside them (for a project whose tools search its whole folder and would find the checkouts inside it, or look upward and find the main checkout: Cargo does for a package its workspace leaves out, until that package's manifest has a `[workspace]` table of its own). A path you give is outside the checkout, or inside that folder; a relative one is read where you run the command. A path lease covers everything under its folder, so hold files and folders of your own checkout rather than the project's root; commits you make there with git are journaled as yours, and a post-commit hook (put in front of any the repository has, which still runs) reports each one so your verdict on that branch is refused later. When it cannot (the repository sets `core.hooksPath`), it says why on stderr. `--seed-build target` (repeatable: `node_modules`, `.venv`) starts the new checkout with your build output so its first build is warm: cloned on APFS (near-instant, no extra space until a file changes), reflinked where Linux's filesystem can, copied otherwise; not on Windows yet. No symlink on the way to it is followed, and nothing already in the new checkout is replaced. It prints the new path, then one line per directory on stderr (`target: cloned`, `node_modules: skipped (…)`); a directory that cannot be seeded never stops the worktree |
 | `worktree-diff` | Tracked changes in an agent's checkout |
 | `worktree-remove <agent>` | Remove an ended session's own worktree once its branch is merged or no longer wanted; the worktree must be clean, and the branch is deleted only when git considers it merged. The worktree's build cache (`target/`) goes with it |
 | `worktree-remove --path <path>` or `--branch <name>` | Remove a worktree of your project that nobody works in, named by where it is or by the branch checked out in it: one you made with `worktree-create` and are done with, or one another session left behind. Any running agent of the project may ask. It is refused, with what is in the way, for the project's main folder, the worktree you are in, one another agent works in, one in which anybody holds a path or whose branch anybody holds (release yours first), and one with uncommitted or untracked files. The branch is deleted only when git considers it merged; otherwise the worktree goes, the branch stays and the command says so. The worktree's build cache (`target/`) goes with it |
@@ -1609,6 +1610,98 @@ Current behaviour that the sections above do not already state, by area.
   `[agents] retention = "90d"` in `~/.agentdocker/agentd.toml` changes the
   window and `"off"` keeps every record. The journal and the ledger keep a
   forgotten agent's id.
+
+### Agentfiles
+
+- **An `Agentfile.toml` has a version.** A file without `version` is version
+  1, the format before versions: it reads as it always did. `version = 2`
+  adds `${VAR}` expansion and lets an entry say what it wants instead of how
+  to type it. A field from version 2 in a version 1 file is refused with the
+  version to declare; `agentdocker agentfile upgrade` rewrites the file in
+  place, keeping comments, with `version = 2` at the top and every `$`
+  doubled so it still means itself (version 1 never expanded one).
+
+- **Say what you want, for the tools AgentDocker knows how to start.** With
+  `version = 2`, an entry for `claude-code`, `codex` or `gemini-cli` may leave
+  `command` out and give `prompt`, `model`, `effort`, `args` (the tool's own
+  arguments) and `config` (the tool's own settings); AgentDocker builds the
+  command, wires its MCP server in — and Claude Code's hooks — where your own
+  configuration lacks them (`coordinate = false` leaves that out), and
+  `idle_messages = true` lets a message start a turn while the session is
+  idle, as `run --claude-channel` and `run --codex-input` do. Any other
+  runtime, or an entry with `command`, is launched as written.
+
+  ```toml
+  #:schema https://raw.githubusercontent.com/brandopakel/AgentDocker/main/crates/cli/schemas/agentfile.schema.json
+  version = 2
+  name = "feature"
+
+  [agents.writer]
+  runtime = "claude-code"
+  prompt = "Implement ${TASK:?set TASK to what the writer should build}"
+  model = "${WRITER_MODEL:-opus}"
+  effort = "high"
+  args = ["--permission-mode", "acceptEdits"]
+  isolate = true
+
+  [agents.reviewer]
+  runtime = "codex"
+  prompt = "Review what writer changed and message it with findings"
+  model = "${REVIEWER_MODEL:-gpt-5}"
+  effort = "medium"
+  config = { approval_policy = "never", sandbox_mode = "workspace-write" }
+  labels = { role = "reviewer" }
+  after = "writer exits 0"
+
+  [agents.pair]
+  runtime = "claude-code"
+  tty = true                              # interactive, so no prompt is needed
+  idle_messages = true                    # a message wakes it while idle
+  config = { permissionMode = "plan" }
+
+  [agents.notes]
+  runtime = "gemini-cli"
+  prompt = "Summarise the day's commits in NOTES.md"
+  model = "gemini-pro"
+
+  [agents.serve]
+  command = ["sh", "-c", "echo costs $$5; exec ./serve --port ${PORT:-8080}"]
+  restart = "always"
+  ```
+
+  Without a terminal (`tty`, `in_pane`) a built command needs a `prompt`.
+  Efforts are the tool's own words: Claude Code `low`, `medium`, `high`,
+  `xhigh`, `max`; Codex `minimal`, `low`, `medium`, `high`, `xhigh`; Gemini
+  CLI has none. `config` reaches Claude Code as its `--settings` document and
+  Codex as `-c key=value` per entry (`sandbox = { mode = "workspace-write" }`
+  becomes `-c sandbox.mode="workspace-write"`). The tool and its
+  configuration are looked for with the entry's `env` laid over yours: an
+  entry's `PATH` chooses its CLI, and its `CLAUDE_CONFIG_DIR` or `CODEX_HOME`
+  the profile whose wiring counts, so set such a variable in the entry's
+  `env` for the agent to use that profile too. A relative directory there
+  (`PATH = "bin:/usr/bin"`, `CLAUDE_CONFIG_DIR = ".claude-profile"`) is
+  relative to the agent's working directory; an isolated entry needs it
+  absolute. With `isolate = true` the project's Claude Code settings count
+  as the agent's new worktree will have them: as committed, since an
+  uncommitted edit stays in your checkout, plus what `.worktreeinclude`
+  copies in (a regular file, never a symlink). What cannot work is refused
+  when the file is read, naming the agent and the field: `command` beside a
+  launch field, an effort the tool does not take, a tool AgentDocker cannot
+  build for, a `prompt` on a Codex entry with `idle_messages` (it takes none
+  on its command line; send the first message once it is up).
+
+- **`${VAR}` reads the environment of the `up` that starts the file.**
+  `${VAR:-default}` gives a value when `VAR` is unset or empty, `${VAR-default}`
+  only when it is unset, `${VAR:?message}` stops with the message when it is
+  unset or empty, and `$$` is one dollar sign; an unset `${VAR}` with no
+  default, and any other `$`, stop `up` with the field named
+  (`agents.writer.prompt`). It reaches `command`, `args`, `prompt`, `model`,
+  `effort`, `provider`, `workdir`, the values of `env` and `labels` and the
+  strings in `config`; names, the runtime, `restart` and the waits are taken
+  as written. `agentdocker agentfile check` shows the result before anything
+  starts; like `up`, `check <names>` reads every entry, so an unset variable
+  in one you did not name stops both. `down` needs only the names, so an
+  unset variable never keeps you from stopping what runs.
 
 ### Sessions and worktrees
 

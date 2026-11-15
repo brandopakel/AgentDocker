@@ -495,6 +495,19 @@ mod tests {
             &other,
             &["commit", "-q", "--allow-empty", "-m", "other root"]
         ));
+        // Uncommitted files with long names make the other checkout's line
+        // longer than the closing line a brief keeps room for, wherever the
+        // temporary directory is. With only a short path to show (`/tmp` on
+        // Linux) the line is the shorter, no budget under the whole holds
+        // the title and the closing line, and the brief rightly says nothing
+        // at all, which is no test of the closing line.
+        for n in 0..3 {
+            std::fs::write(
+                other.join(format!("{n}-{}.txt", "a-long-file-name-".repeat(4))),
+                "not yet",
+            )
+            .unwrap();
+        }
         let daemon =
             Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock")).unwrap());
         let me = register(&daemon, "alice", &main).await;
@@ -567,10 +580,10 @@ mod tests {
         let other_id = stranger.project.as_ref().unwrap().id();
         assert!(
             short.contains(&format!(
-                "; `agentdocker brief --all --project {}` shows them.",
+                "\nLeft out for room: 1 checkout; `agentdocker brief --all --project {}` shows them.",
                 other_id.as_str()
             )),
-            "{short}"
+            "{short:?} of {whole:?}"
         );
     }
 

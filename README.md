@@ -287,32 +287,38 @@ The hook fails open: if `agentd` isn't running, Claude Code carries on as if the
 Describe several agents in one file and manage them together, the way a compose file manages containers:
 
 ```toml
+version = 2
 name = "backend"                      # every agent gets label team=backend
 
 [agents.writer]
 runtime = "claude-code"
-command = ["claude", "-p", "Implement the parser in src/parser.rs"]
+prompt = "Implement the parser in src/parser.rs"
+model = "${WRITER_MODEL:-opus}"       # from the environment, with a default
+effort = "high"
 workdir = "."                         # relative to this file
 isolate = true                        # its own worktree and branch
 
 [agents.reviewer]
 tty = true                            # a terminal, for an interactive agent
 runtime = "codex"
-command = ["codex", "exec", "Review whatever writer changes and message it"]
+command = ["codex", "Review whatever writer changes and message it"]
 env = { RUST_LOG = "info" }
 labels = { role = "review" }
 
 [agents.summary]
 runtime = "claude-code"
-command = ["claude", "-p", "Summarise what writer changed for the project"]
+prompt = "Summarise what writer changed for the project"
 after = "writer exits 0"              # only once writer has finished successfully
 ```
 
 ```sh
+agentdocker agentfile check   # what `up` would start, with every ${VAR} expanded
 agentdocker up                # starts writer and reviewer, then summary once writer exits 0
 agentdocker up reviewer       # just one
 agentdocker down              # stops them
 ```
+
+An entry with a `command` is launched as written. With `version = 2`, an entry for Claude Code, Codex or Gemini CLI may say `prompt`, `model`, `effort`, `args` and `config` instead, and AgentDocker builds the command and wires itself in where your configuration lacks it. A file without `version` is the format before versions and reads as it always did; `agentdocker agentfile upgrade` rewrites it as version 2, keeping its comments.
 
 `after` takes one condition or a list (`after = ["build exits 0", "lint exits 0"]`). While an entry waits, `up` stays and says so; if what it waits on exits otherwise, is stopped or fails to start, the entry is never started — nor is anything waiting on it — and `up` says why (`summary  not started: writer exited 1`) and exits unsuccessfully. `up summary` alone takes an earlier exit 0 of `writer` as success when it was `writer`'s own — its record says no stop was asked of that run, and it ran as this file gives `writer` now (command, working directory, environment and the rest) — and not when `writer` was stopped, whatever it then exited with. For an agent `up` is watching, only an exit 0 whose event it received counts, so one seen after its event stream has ended (a daemon reload ends it) does not.
 
