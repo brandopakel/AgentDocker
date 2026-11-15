@@ -748,10 +748,16 @@ command.
   its answer is told at once: what a person started (a merge, a worktree's
   removal, a launch or a reconnect, a rename, a save, a send, opening a plan)
   gets its control back and says why, in the status line or where its answer
-  would have been shown, and can be sent again; a read the app makes by itself
-  is dropped without a word and asked again on the next tick, event or
-  refresh. Every request names what its refusal gives back: the handler has no
-  catch-all, so a request added later does not compile until it does.
+  would have been shown, and can be sent again. So does a read a person asks
+  for by going somewhere: a session's changes, a thread being opened (its pane
+  closes), the messages before the oldest shown, the To-do page and a
+  project's plans, files and memory while nothing of them is on view, and a
+  project's journal, which is asked again on the next look at the project. A
+  read the app repeats by itself is dropped without a word: the lists, the
+  inbox and deliveries on its timer, a conversation's newest page with them,
+  and the same reads as above once something of them is on view. Every request
+  names what its refusal gives back: the handler has no catch-all, so a request
+  added later does not compile until it does.
 - Setup and installation preserve their existing exact-preview/apply and
   undo/rollback checks. A framework migration does not relax process identity,
   release lifetime pins, queue limits or private state requirements.

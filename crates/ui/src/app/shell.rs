@@ -2239,8 +2239,11 @@ impl App {
                     self.shell.diff_file = None;
                     self.merge_outcome = None;
                 }
+                // Selected before its changes are asked for: a request the
+                // queue refuses is answered at once, and the answer is for
+                // the session on view.
+                self.shell.selected = Some(id.clone());
                 self.request_review(&id);
-                self.shell.selected = Some(id);
                 self.shell.session_details = false;
                 self.shell.editor_menu = None;
                 self.shell.review_delivery = false;
@@ -6572,6 +6575,107 @@ mod tests {
         );
     }
 
+    /// A read the person asked for, by choosing a session, opening a
+    /// thread or asking for earlier messages, says so when the queue will
+    /// not take it. Each waited without a word: the session's changes
+    /// because the session was selected only after they were asked for,
+    /// so the refusal found another session on view; the thread and the
+    /// earlier page because they were taken for reads the app makes
+    /// again by itself, which it does not.
+    #[test]
+    fn a_read_a_person_asked_for_says_when_it_was_never_sent() {
+        let (mut app, commands, _messages) = app();
+        let full = "queue is full";
+        let capacity = super::super::queue::CAPACITY;
+
+        // Choosing a session asks for its changes. With nobody selected,
+        // and then with another session selected, the refusal is the
+        // chosen session's, shown where its changes would be.
+        for before in [None, Some("agent-2")] {
+            app.shell.selected = before.map(str::to_owned);
+            app.branch_review = None;
+            fill_queue(&mut app);
+            let _ = app.update(Message::SelectSession("agent-1".into()));
+            assert_eq!(app.shell.selected.as_deref(), Some("agent-1"));
+            assert!(
+                matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why.contains(full)),
+                "from {before:?}: {:?}",
+                app.branch_review
+            );
+            assert_eq!(commands.try_iter().count(), capacity);
+        }
+        // Chosen again once there is room, the read is queued.
+        let _ = app.update(Message::SelectSession("agent-1".into()));
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::ReviewBranch(agent)] if agent == "agent-1"
+        ));
+        // A review already on view is not taken away by a refresh of it
+        // that could not be asked.
+        app.branch_review = Some(("agent-1".into(), Err("what was on view".into())));
+        fill_queue(&mut app);
+        let _ = app.update(Message::ReviewChanges("agent-1".into()));
+        assert!(
+            matches!(&app.branch_review, Some((agent, Err(why))) if agent == "agent-1" && why == "what was on view")
+        );
+        let _ = commands.try_iter().count();
+
+        // Opening a thread: its pane stops waiting and says why; opened
+        // again, the read is queued and the pane waits for it.
+        let root = MessageId::from("thread-root".to_owned());
+        fill_queue(&mut app);
+        app.status.clear();
+        let _ = app.update(Message::OpenThread(root.clone()));
+        assert_eq!(app.shell.thread, None, "no ring left turning");
+        assert!(app.status.contains(full), "{}", app.status);
+        assert_eq!(commands.try_iter().count(), capacity);
+        let _ = app.update(Message::OpenThread(root.clone()));
+        assert_eq!(app.shell.thread.as_ref(), Some(&root));
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::Thread(asked, _)] if *asked == root
+        ));
+        // A thread already on view, read again by the app: the pane stays
+        // and nothing is said.
+        let stored = |id: &MessageId, seq: u64| {
+            let mut envelope = agentdocker_core::Envelope::new(
+                "sender",
+                agentdocker_core::Destination::Broadcast,
+                "chat",
+                serde_json::json!({"text": "a message"}),
+                None,
+                Utc::now(),
+            );
+            envelope.id = id.clone();
+            agentdocker_core::ArchivedMessage {
+                seq,
+                conversation: agentdocker_core::ConversationId::from("room".to_owned()),
+                envelope,
+                replies: 0,
+            }
+        };
+        app.thread = Some((stored(&root, 7), Vec::new()));
+        app.status.clear();
+        app.rejected(Cmd::Thread(root.clone(), app.history_epoch), "refused");
+        assert_eq!(app.shell.thread.as_ref(), Some(&root));
+        assert!(app.status.is_empty(), "{}", app.status);
+
+        // Show earlier messages: the page before the oldest one shown.
+        let oldest = MessageId::from("oldest-shown".to_owned());
+        app.history
+            .insert("room".into(), vec![stored(&oldest, 801)]);
+        fill_queue(&mut app);
+        app.status.clear();
+        let _ = app.update(Message::EarlierHistory("room".into()));
+        assert!(app.status.contains(full), "{}", app.status);
+        assert_eq!(commands.try_iter().count(), capacity);
+        let _ = app.update(Message::EarlierHistory("room".into()));
+        assert!(matches!(
+            commands.try_iter().collect::<Vec<_>>().as_slice(),
+            [Cmd::HistoryBefore(room, 801, _)] if room == "room"
+        ));
+    }
+
     /// What is refused says so in one place. A session's log and its
     /// changes say it where the answer would have been shown, and a
     /// review already on view is not taken away by a refresh that could
@@ -6607,19 +6711,17 @@ mod tests {
             app.status
         );
 
-        // Reads the app makes by itself: nothing is said.
+        // Reads the app repeats by itself, or makes when the daemon is
+        // reached: nothing is said.
         for command in [
             Cmd::Agents,
             Cmd::Leases,
             Cmd::Runtimes,
             Cmd::Connector,
             Cmd::Discovered,
-            Cmd::Journal("p".into(), "p".into()),
             Cmd::Inbox,
             Cmd::Activity,
             Cmd::AgentTokens,
-            Cmd::Workspace("/work/a".into()),
-            Cmd::Todo,
             Cmd::Pauses,
             Cmd::Ping,
             Cmd::Me,
@@ -6628,7 +6730,6 @@ mod tests {
             Cmd::UpdateCheck,
             Cmd::Conversations(None),
             Cmd::History("room".into(), 1),
-            Cmd::HistoryBefore("room".into(), 9, 1),
             // A plan that is open, read again; not one being opened.
             Cmd::PlanGet("abc123def456".into()),
         ] {
@@ -6636,6 +6737,49 @@ mod tests {
             app.rejected(command, "refused");
             assert!(app.status.is_empty(), "{named} said: {}", app.status);
         }
+
+        // Reads a person asks for by going somewhere are told apart from
+        // the same reads made again by the app: said when nothing of what
+        // was asked for is on view, dropped quietly when something is.
+        app.shell.catalog.selected = Some("/work/a".into());
+        let quiet = |app: &mut App, command: Cmd| {
+            let named = format!("{command:?}");
+            app.status.clear();
+            app.rejected(command, "refused");
+            assert!(app.status.is_empty(), "{named} said: {}", app.status);
+        };
+        let said = |app: &mut App, command: Cmd| {
+            let named = format!("{command:?}");
+            app.status.clear();
+            app.rejected(command, "refused");
+            assert_eq!(app.status, "refused", "{named}");
+        };
+        // The To-do list: only while its page is open with nothing read.
+        quiet(&mut app, Cmd::Todo);
+        app.screen = Screen::Todo;
+        said(&mut app, Cmd::Todo);
+        app.todo = Some(Vec::new());
+        quiet(&mut app, Cmd::Todo);
+        // A project's plans, files and memory: the project on view, with
+        // nothing of them read.
+        quiet(&mut app, Cmd::Workspace("/work/b".into()));
+        said(&mut app, Cmd::Workspace("/work/a".into()));
+        app.workspaces
+            .insert("/work/a".into(), Workspace::default());
+        quiet(&mut app, Cmd::Workspace("/work/a".into()));
+        // A project's journal: the project chosen, which is then no longer
+        // taken as read, so that the next look at it asks again.
+        app.journal_project = Some("project-a".into());
+        quiet(
+            &mut app,
+            Cmd::Journal("project-b".into(), "project-b".into()),
+        );
+        assert_eq!(app.journal_project.as_deref(), Some("project-a"));
+        said(
+            &mut app,
+            Cmd::Journal("project-a".into(), "project-a".into()),
+        );
+        assert_eq!(app.journal_project, None, "asked again on the next look");
 
         // What a person did that leaves nothing waiting: said.
         for command in [
@@ -6645,6 +6789,8 @@ mod tests {
             Cmd::Stop("agent-1".into()),
             Cmd::RetryController("agent-1".into()),
             Cmd::Boards("/work/a".into()),
+            // The page before the oldest message shown.
+            Cmd::HistoryBefore("room".into(), 9, 1),
         ] {
             let named = format!("{command:?}");
             app.status.clear();

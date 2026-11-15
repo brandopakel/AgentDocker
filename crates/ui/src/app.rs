@@ -1186,9 +1186,53 @@ impl App {
                 }
                 return;
             }
+            // The thread a person is opening, never asked of the daemon: its
+            // pane stops waiting and says why. A thread already on view is
+            // read again by the app when its conversation next moves.
+            Cmd::Thread(root, _) => {
+                let opening = self.shell.thread.as_ref() == Some(&root)
+                    && !self
+                        .thread
+                        .as_ref()
+                        .is_some_and(|(shown, _)| shown.envelope.id == root);
+                if !opening {
+                    return;
+                }
+                self.shell.thread = None;
+            }
+            // The To-do list, asked for by opening it. With nothing of it
+            // read the page would stay empty with no word; a list already
+            // on view is read again when a board next changes.
+            Cmd::Todo => {
+                if self.screen != Screen::Todo || self.todo.is_some() {
+                    return;
+                }
+            }
+            // A project's plans, files and memory, asked for by opening the
+            // project. With nothing of them read it is said; what is on view
+            // is read again when one of them next changes.
+            Cmd::Workspace(project) => {
+                if self.workspaces.contains_key(&project)
+                    || self.selected_project_root().as_deref() != Some(project.as_str())
+                {
+                    return;
+                }
+            }
+            // A project's journal is read once, when the project is chosen.
+            // Refused, it is said, and the project is no longer taken as
+            // read, so the next look at it asks again.
+            Cmd::Journal(project, _) => {
+                if self.journal_project.as_deref() != Some(project.as_str()) {
+                    return;
+                }
+                self.journal_project = None;
+            }
             // What a person did that leaves nothing waiting: it was not
-            // done, and the status line says so.
-            Cmd::TaskMove { .. }
+            // done, and the status line says so. The page before the oldest
+            // message shown is one of them: its place is not kept, so it is
+            // asked for again by asking again.
+            Cmd::HistoryBefore(..)
+            | Cmd::TaskMove { .. }
             | Cmd::TaskEdit { .. }
             | Cmd::TaskArchive(_)
             | Cmd::TaskComment { .. }
@@ -1204,31 +1248,30 @@ impl App {
             | Cmd::Stop(_)
             | Cmd::ResumeProvider(..)
             | Cmd::RetryController(_) => {}
-            // Reads the app makes by itself, each asked again on the next
-            // tick, event or refresh: a full queue may drop them, and
-            // nothing is said.
+            // Reads the app repeats on its own timer, so a full queue may
+            // drop one and nothing is said: the lists and the inbox every
+            // refresh, deliveries with them, the runtimes and each agent's
+            // tokens on their own intervals. A conversation's newest page
+            // is among them: every answer to the conversations' list asks
+            // for the open one's again.
             Cmd::Agents
             | Cmd::Leases
-            | Cmd::Runtimes
-            | Cmd::Connector
             | Cmd::Discovered
-            | Cmd::Journal(..)
-            | Cmd::Inbox
-            | Cmd::Activity
-            | Cmd::Delivery(_)
-            | Cmd::AgentTokens
-            | Cmd::Workspace(_)
-            | Cmd::Todo
-            | Cmd::Pauses
-            | Cmd::Ping
-            | Cmd::Me
             | Cmd::Questions
             | Cmd::SecretReviews
-            | Cmd::UpdateCheck
+            | Cmd::Activity
+            | Cmd::Inbox
+            | Cmd::Delivery(_)
+            | Cmd::Runtimes
+            | Cmd::AgentTokens
             | Cmd::Conversations(_)
-            | Cmd::History(..)
-            | Cmd::HistoryBefore(..)
-            | Cmd::Thread(..) => return,
+            | Cmd::History(..) => return,
+            // Reads made when the daemon is first reached, or comes back,
+            // and again when what they show changes. The queue is all but
+            // empty then; one dropped all the same is read at the next
+            // connection or event, and nothing is said. The update check
+            // is sent past this handler by its own caller.
+            Cmd::Ping | Cmd::Me | Cmd::Pauses | Cmd::Connector | Cmd::UpdateCheck => return,
         }
         self.say(reason);
     }
