@@ -3093,6 +3093,10 @@ impl App {
             ]
             .spacing(8)
             .align_y(Center);
+            // A launch the daemon refused to go on with, and the way out.
+            if let Some(chip) = super::chip::dead_end(format!("session-dead-end-{id}"), agent) {
+                content = content.push(chip.view(c));
+            }
             // One more chip, the first that applies: the time left to
             // answer, else the pull request.
             if standing.needs_you() || standing == agentdocker_core::standing::Standing::Failed {
@@ -3158,28 +3162,31 @@ impl App {
             .as_ref()
             .is_some_and(|(armed, at)| armed == &id && at.elapsed() < CONFIRM_WITHIN);
         let name = self.display_name(agent);
+        // The name and the row's standing chip, so the panel and the list
+        // never disagree; what it is doing, its tool and where it runs are
+        // the chip's detail. A launch the daemon refused to go on with
+        // follows, with the way out.
+        let mut named = row![
+            heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
+            {
+                let mut words = vec![self.activity_label(agent), super::agent_tool_label(agent)];
+                if let Some(place) = Self::whereabouts(agent).filter(|_| agent.status.is_live()) {
+                    words.push(place);
+                }
+                super::chip::standing("inspector-standing", self.standing(agent))
+                    .detail(super::chip::sentence(&words.join(" · ")))
+                    .view(c)
+            },
+        ]
+        .spacing(6)
+        .align_y(Center)
+        .width(Fill);
+        if let Some(chip) = super::chip::dead_end("inspector-dead-end", agent) {
+            named = named.push(chip.view(c));
+        }
         let header = row![
             agent_mark(Some(agent.spec.runtime.as_str()), &name, &id, 32.0, c),
-            // The name and the row's standing chip, so the panel and the
-            // list never disagree; what it is doing, its tool and where it
-            // runs are the chip's detail.
-            row![
-                heading(name.clone(), 15).wrapping(iced::widget::text::Wrapping::WordOrGlyph),
-                {
-                    let mut words =
-                        vec![self.activity_label(agent), super::agent_tool_label(agent)];
-                    if let Some(place) = Self::whereabouts(agent).filter(|_| agent.status.is_live())
-                    {
-                        words.push(place);
-                    }
-                    super::chip::standing("inspector-standing", self.standing(agent))
-                        .detail(super::chip::sentence(&words.join(" · ")))
-                        .view(c)
-                },
-            ]
-            .spacing(6)
-            .align_y(Center)
-            .width(Fill),
+            named,
             custom_sized(
                 "close-session",
                 "Back to sessions",
@@ -5235,6 +5242,105 @@ mod tests {
             crate::app::App::session_editor_folder(&agent),
             Some(worktree)
         );
+    }
+
+    /// A managed container the daemon refused at a dead end says so beside
+    /// its standing, in the session row and the panel alike, with the way
+    /// out in its words and why in its detail. The standing still says
+    /// what the agent's status and activity say. A stop, or the engine
+    /// reporting it running or exited, takes the chip away.
+    #[test]
+    fn a_container_at_a_dead_end_says_so_beside_its_standing() {
+        use super::super::view::testing::seen;
+        use super::*;
+        use agentdocker_core::container::{ContainerDeadEnd, ContainerIntent, ManagedContainer};
+        use agentdocker_core::{Activity, AgentSpec, AgentStatus};
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                name: "worker".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        agent.container = Some(ManagedContainer {
+            inputs: None,
+            build: "build".into(),
+            engine: agentdocker_core::ContainerEngine::Podman,
+            connection: None,
+            image_id: "sha256:image".into(),
+            name: "agent-container".into(),
+            owner: "owner-label".into(),
+            id: Some("engine-id".into()),
+            intent: ContainerIntent::Run,
+            start_attempted: true,
+            create_attempted: true,
+            last_error: Some("an earlier failure".into()),
+            options: Default::default(),
+            workspace: None,
+            deadline: None,
+            dead_end: None,
+        });
+        // What the daemon reports of any agent not yet started.
+        app.activity
+            .insert(agent.id.to_string(), Activity::Starting);
+        let c = Colors::new(false);
+        let row_chip = format!("session-dead-end-{}", agent.id);
+        let shown = |app: &App, agent: &AgentRecord| {
+            let rows = seen(app.session_rows(&[agent], c));
+            let panel = seen(app.inspector(agent, c));
+            let standing = rows
+                .control(&format!("session-standing-{}", agent.id))
+                .unwrap()
+                .1
+                .clone();
+            (
+                rows.control(&row_chip).map(|c| (c.1.clone(), c.2.clone())),
+                panel
+                    .control("inspector-dead-end")
+                    .map(|c| (c.1.clone(), c.2.clone())),
+                standing,
+            )
+        };
+        assert_eq!(shown(&app, &agent), (None, None, "Starting".to_owned()));
+        for (dead_end, words) in [
+            (
+                ContainerDeadEnd::StartUnknown,
+                "Start unknown: stop it before retrying",
+            ),
+            (
+                ContainerDeadEnd::PrepareAbandoned,
+                "Preparation unfinished: stop it before retrying",
+            ),
+            (
+                ContainerDeadEnd::Unknown,
+                "Launch blocked: stop it before retrying",
+            ),
+        ] {
+            agent.container.as_mut().unwrap().dead_end = Some(dead_end);
+            let said = Some((words.to_owned(), Some(dead_end.why().to_owned())));
+            assert_eq!(
+                shown(&app, &agent),
+                (said.clone(), said, "Starting".to_owned()),
+                "{dead_end:?}"
+            );
+        }
+        let mut stopping = agent.clone();
+        stopping.container.as_mut().unwrap().intent = ContainerIntent::Stop;
+        stopping.mark_stopping();
+        let mut running = agent.clone();
+        running.status = AgentStatus::Running;
+        let mut exited = agent.clone();
+        exited.status = AgentStatus::Exited { code: Some(0) };
+        for gone in [stopping, running, exited] {
+            let (row, panel, _) = shown(&app, &gone);
+            assert_eq!((row, panel), (None, None), "{:?}", gone.status);
+        }
     }
 
     /// Every state is a chip that prints its word, the healthy ones too:

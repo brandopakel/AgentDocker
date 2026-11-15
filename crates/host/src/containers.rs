@@ -451,6 +451,7 @@ mod tests {
             options: Default::default(),
             workspace: None,
             deadline: None,
+            dead_end: None,
         });
         r
     }

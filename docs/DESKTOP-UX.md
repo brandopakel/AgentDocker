@@ -170,7 +170,14 @@ question, its own prompt, or messages it cannot take, which the chip's detail
 names), **Failed** (red, until you look), **Working**, **Waiting on a lease**,
 **Starting**, **Finished** (the accent, *finished since you looked* in its
 detail), **Running** (live, with no fresh report of what it is doing),
-**Idle** (only when its tool reported it quiet) and **Ended**. The name is set
+**Idle** (only when its tool reported it quiet) and **Ended**. A managed
+container the daemon refused to go on launching — its start's outcome
+unknown, or its launch's preparation unfinished — also shows a red chip
+beside its standing, in the session list and in its panel, with the way out:
+**Start unknown: stop it before retrying** or **Preparation unfinished: stop
+it before retrying**, and why in its detail. Its standing still says
+**Starting**; stopping it, or the engine reporting it running or exited,
+removes the chip. The name is set
 semibold when something there
 is new or waits on you, and is cut before the chip is. "Finished since you
 looked" means its turn ended, or the session did, while its project was not

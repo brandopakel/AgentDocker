@@ -6570,6 +6570,21 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
 
 /// Agents, then — dimmed — running agent processes nobody registered,
 /// shown under the name `adopt` would give them.
+/// What `ps` says in an agent's STATUS column.
+fn status_cell(a: &AgentRecord, now: chrono::DateTime<chrono::Utc>) -> String {
+    // A browser agent, or a conversation known by its key alone, no
+    // process ends: registered until revoked or ended, but not connected
+    // once unheard from.
+    if a.connector_absent(now) || a.session_absent(now) {
+        "not connected".to_owned()
+    } else if let Some(dead_end) = a.container_dead_end() {
+        // Refused at a dead end, which 'created' would hide.
+        dead_end.words().to_owned()
+    } else {
+        a.status.to_string()
+    }
+}
+
 fn print_agents(
     agents: &[AgentRecord],
     unadopted: &[DiscoveredProcess],
@@ -6629,14 +6644,7 @@ fn print_agents(
                     .to_owned(),
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
-                // A browser agent, or a conversation known by its key
-                // alone, no process ends: registered until revoked or
-                // ended, but not connected once unheard from.
-                if a.connector_absent(chrono::Utc::now()) || a.session_absent(chrono::Utc::now()) {
-                    "not connected".to_owned()
-                } else {
-                    a.status.to_string()
-                },
+                status_cell(a, chrono::Utc::now()),
                 if a.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
                     "App inbox".into()
                 } else {
@@ -7203,6 +7211,59 @@ fn read_import(reader: impl std::io::Read) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// A container refused at a dead end says so in `ps` where its status
+    /// alone would say `created`; once stopping or seen to run, the status
+    /// speaks again.
+    #[test]
+    fn ps_says_a_containers_dead_end_in_place_of_created() {
+        use super::{AgentRecord, AgentSpec, status_cell};
+        use agentdocker_core::container::{ContainerDeadEnd, ContainerIntent, ManagedContainer};
+        let now = chrono::Utc::now();
+        let mut record = AgentRecord::new(AgentSpec::default(), true, now);
+        record.container = Some(ManagedContainer {
+            inputs: None,
+            build: "build".into(),
+            engine: agentdocker_core::ContainerEngine::Docker,
+            connection: None,
+            image_id: "sha256:image".into(),
+            name: "agent-container".into(),
+            owner: "owner-label".into(),
+            id: Some("engine-id".into()),
+            intent: ContainerIntent::Run,
+            start_attempted: true,
+            create_attempted: true,
+            last_error: Some("an earlier failure".into()),
+            options: Default::default(),
+            workspace: None,
+            deadline: None,
+            dead_end: None,
+        });
+        assert_eq!(status_cell(&record, now), "created");
+        for (dead_end, words) in [
+            (
+                ContainerDeadEnd::StartUnknown,
+                "start unknown: stop it before retrying",
+            ),
+            (
+                ContainerDeadEnd::PrepareAbandoned,
+                "preparation unfinished: stop it before retrying",
+            ),
+            (
+                ContainerDeadEnd::Unknown,
+                "launch blocked: stop it before retrying",
+            ),
+        ] {
+            record.container.as_mut().unwrap().dead_end = Some(dead_end);
+            assert_eq!(status_cell(&record, now), words);
+        }
+        let mut stopping = record.clone();
+        stopping.container.as_mut().unwrap().intent = ContainerIntent::Stop;
+        stopping.mark_stopping();
+        assert_eq!(status_cell(&stopping, now), "stopping");
+        record.status = agentdocker_core::AgentStatus::Running;
+        assert_eq!(status_cell(&record, now), "running");
+    }
+
     /// A claim's first ask carries the whole wait it was given, whatever
     /// time has already passed; only a later ask carries what is left,
     /// and never more than that.

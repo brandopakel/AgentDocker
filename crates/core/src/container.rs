@@ -119,6 +119,81 @@ pub struct ManagedContainer {
     /// Validation runners are killed after this durable deadline, including after recovery.
     #[serde(default)]
     pub deadline: Option<DateTime<Utc>>,
+    /// The dead end the reconciler last refused at, kept apart from
+    /// `last_error`, which any later failure overwrites. Set only by that
+    /// refusal; cleared by an observed run or exit and by a stop or kill
+    /// intent, and a new record starts without one. It is what readers
+    /// show, never what the reconciler decides by. Absent from a record
+    /// written before it, and an older daemon that rewrites the record
+    /// drops it until the next refusal sets it again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dead_end: Option<ContainerDeadEnd>,
+}
+
+/// A dead end the reconciler refused a container at, as its record keeps
+/// it for readers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerDeadEnd {
+    StartUnknown,
+    PrepareAbandoned,
+    /// One a newer daemon recorded.
+    #[serde(other)]
+    Unknown,
+}
+
+impl ContainerDeadEnd {
+    /// The dead end a phase is, if it is one.
+    pub fn of(phase: ContainerPhase) -> Option<Self> {
+        match phase {
+            ContainerPhase::StartUnknown => Some(Self::StartUnknown),
+            ContainerPhase::PrepareAbandoned => Some(Self::PrepareAbandoned),
+            ContainerPhase::Prepared
+            | ContainerPhase::Creating
+            | ContainerPhase::Created
+            | ContainerPhase::Starting
+            | ContainerPhase::Running
+            | ContainerPhase::Stopping
+            | ContainerPhase::Ended => None,
+        }
+    }
+
+    /// What a status column says in place of `created`.
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::StartUnknown => "start unknown: stop it before retrying",
+            Self::PrepareAbandoned => "preparation unfinished: stop it before retrying",
+            Self::Unknown => "launch blocked: stop it before retrying",
+        }
+    }
+
+    /// Why the daemon stopped there and what a person does about it, for
+    /// a reader with room for more than the status words.
+    pub fn why(self) -> &'static str {
+        match self {
+            Self::StartUnknown => {
+                "Its earlier start's outcome is unknown and the engine still reports it created, so the daemon will not start it again. Stop it, then start a new agent."
+            }
+            Self::PrepareAbandoned => {
+                "Its launch ended before it recorded creating a container, so the daemon will not create one on a guess. Stop it, then start a new agent."
+            }
+            Self::Unknown => {
+                "A newer daemon refused to go on with its launch. Stop it, then start a new agent."
+            }
+        }
+    }
+}
+
+impl crate::AgentRecord {
+    /// The dead end its container is recorded at, while that still stands:
+    /// the agent is live, still meant to run and not seen to start. A stop
+    /// or an observed run or exit supersedes it.
+    pub fn container_dead_end(&self) -> Option<ContainerDeadEnd> {
+        let container = self.container.as_ref()?;
+        (self.status == crate::AgentStatus::Created && container.intent == ContainerIntent::Run)
+            .then_some(container.dead_end)
+            .flatten()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -363,6 +438,7 @@ mod tests {
             options: ContainerRunOptions::default(),
             workspace: None,
             deadline: None,
+            dead_end: None,
         }
     }
 
@@ -545,6 +621,98 @@ mod tests {
                 .contains("stop before starting a replacement")
         );
     }
+
+    /// The dead end is kept in a form older readers skip: absent when there
+    /// is none, none from a record written without it, and a word from a
+    /// newer daemon read as `Unknown` rather than refused.
+    #[test]
+    fn a_dead_end_is_stored_beside_the_flags_and_read_tolerantly() {
+        let mut c = container();
+        let without = serde_json::to_value(&c).unwrap();
+        assert!(without.get("dead_end").is_none(), "{without}");
+        let read: ManagedContainer = serde_json::from_value(without.clone()).unwrap();
+        assert_eq!(read.dead_end, None);
+        for (dead_end, word) in [
+            (ContainerDeadEnd::StartUnknown, "start_unknown"),
+            (ContainerDeadEnd::PrepareAbandoned, "prepare_abandoned"),
+        ] {
+            c.dead_end = Some(dead_end);
+            let json = serde_json::to_value(&c).unwrap();
+            assert_eq!(json["dead_end"], word);
+            let read: ManagedContainer = serde_json::from_value(json).unwrap();
+            assert_eq!(read, c);
+        }
+        let mut newer = without;
+        newer["dead_end"] = "a_newer_dead_end".into();
+        let read: ManagedContainer = serde_json::from_value(newer).unwrap();
+        assert_eq!(read.dead_end, Some(ContainerDeadEnd::Unknown));
+        // Only the two dead-end phases are dead ends, and each one says
+        // what a person does about it.
+        use ContainerPhase::*;
+        for phase in [
+            Prepared,
+            Creating,
+            Created,
+            Starting,
+            Running,
+            StartUnknown,
+            PrepareAbandoned,
+            Stopping,
+            Ended,
+        ] {
+            assert_eq!(
+                ContainerDeadEnd::of(phase).is_some(),
+                phase.dead_end().is_some(),
+                "{phase:?}"
+            );
+        }
+        for dead_end in [
+            ContainerDeadEnd::StartUnknown,
+            ContainerDeadEnd::PrepareAbandoned,
+            ContainerDeadEnd::Unknown,
+        ] {
+            assert!(dead_end.words().ends_with(": stop it before retrying"));
+            assert!(dead_end.why().ends_with("Stop it, then start a new agent."));
+        }
+    }
+
+    /// A record shows its dead end only while it stands: live, still meant
+    /// to run and not seen to start.
+    #[test]
+    fn a_dead_end_is_read_only_while_it_stands() {
+        let mut record =
+            crate::AgentRecord::new(crate::AgentSpec::default(), true, chrono::Utc::now());
+        assert_eq!(record.container_dead_end(), None);
+        let mut c = container();
+        (c.create_attempted, c.start_attempted) = (true, true);
+        c.id = Some("engine-id".into());
+        c.dead_end = Some(ContainerDeadEnd::StartUnknown);
+        record.container = Some(c);
+        assert_eq!(
+            record.container_dead_end(),
+            Some(ContainerDeadEnd::StartUnknown)
+        );
+        for status in [
+            AgentStatus::Running,
+            AgentStatus::Stopping,
+            AgentStatus::Exited { code: None },
+            AgentStatus::Failed {
+                reason: "fixture".into(),
+            },
+        ] {
+            let mut other = record.clone();
+            other.status = status;
+            assert_eq!(other.container_dead_end(), None, "{:?}", other.status);
+        }
+        for intent in [ContainerIntent::Stop, ContainerIntent::Kill] {
+            let mut other = record.clone();
+            other.container.as_mut().unwrap().intent = intent;
+            assert_eq!(other.container_dead_end(), None, "{intent:?}");
+        }
+        record.container.as_mut().unwrap().dead_end = None;
+        assert_eq!(record.container_dead_end(), None);
+    }
+
     #[test]
     fn portable_environment_ignores_only_local_build_and_connection_names() {
         let environment = ContainerEnvironment {
