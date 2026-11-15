@@ -13,16 +13,25 @@
 //! reads: `thread/loaded/list`, `thread/read` and the server's own
 //! `thread/status/changed`. A profile without the socket is never contacted,
 //! and nothing changes for its records.
+//!
+//! The same loop learns what Codex says of each bound thread itself: the
+//! role and parent a spawned thread carries in its rollout's first record
+//! (`agentdocker_host::codex_rollout`), and the parent `thread/read` names.
+//! Both go on the record as [`ProviderThread`] and are announced once as
+//! `agent_thread_learned`; a root thread's record says it was read and has
+//! neither. Nothing is written to the profile.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use agentdocker_core::{
-    ActivityObservation, ActivitySource, AgentId, AgentRecord, ReportedActivity, Response,
-    WaitReason,
+    ActivityObservation, ActivitySource, AgentId, AgentRecord, Event, EventKind, ProviderThread,
+    ReportedActivity, Response, ThreadRef, ThreadSource, WaitReason, codex_thread::ThreadMeta,
 };
 use agentdocker_host::codex_control::{self, ThreadStatus};
+use agentdocker_host::codex_rollout;
 use chrono::{DateTime, Utc};
 use tracing::debug;
 
@@ -30,6 +39,11 @@ use super::{Daemon, State, lock};
 
 /// How often each profile's conversations are read again.
 const EVERY: std::time::Duration = std::time::Duration::from_secs(5);
+/// A thread whose rollout said nothing yet (not written, or not where the
+/// profile keeps them) is looked for again after this long.
+const RETRY_ROLLOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// At most this many rollouts are read per tick, off the state lock.
+const ROLLOUTS_PER_TICK: usize = 4;
 /// An unchanged observation is renewed this long after it was made, inside
 /// the five minutes a server observation lasts whatever it says.
 const RENEW: chrono::Duration = chrono::Duration::minutes(4);
@@ -57,13 +71,17 @@ fn watched(record: &AgentRecord) -> Option<(PathBuf, String)> {
 }
 
 /// One watch per profile that has a socket, started again when it ends;
-/// a profile without one is looked at again on the next tick.
+/// a profile without one is looked at again on the next tick. Each tick
+/// also reads the rollouts of bound threads whose records have not learned
+/// what Codex says of them, socket or no socket.
 pub(crate) async fn run(daemon: Arc<Daemon>, every: std::time::Duration) {
     let mut watching: HashMap<PathBuf, tokio::task::JoinHandle<()>> = HashMap::new();
+    let mut looked: HashMap<AgentId, Instant> = HashMap::new();
     let mut ticker = tokio::time::interval(every);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         ticker.tick().await;
+        learn_from_rollouts(&daemon, &mut looked).await;
         watching.retain(|_, task| !task.is_finished());
         for profile in daemon.codex_profiles() {
             if watching.contains_key(&profile) {
@@ -80,6 +98,66 @@ pub(crate) async fn run(daemon: Arc<Daemon>, every: std::time::Duration) {
                 }
             }
         }
+    }
+}
+
+/// Read, off the state lock, the rollout of every bound Codex thread whose
+/// record has not yet learned what Codex says of it, a few per tick, each
+/// looked for again only after [`RETRY_ROLLOUT`]; then resolve the parents'
+/// agents of children bound before their parents.
+async fn learn_from_rollouts(daemon: &Arc<Daemon>, looked: &mut HashMap<AgentId, Instant>) {
+    looked.retain(|_, at| at.elapsed() < RETRY_ROLLOUT);
+    let unlearned: Vec<_> = daemon
+        .codex_unlearned()
+        .into_iter()
+        .filter(|(id, _, _)| !looked.contains_key(id))
+        .take(ROLLOUTS_PER_TICK)
+        .collect();
+    for (id, profile, thread) in unlearned {
+        looked.insert(id.clone(), Instant::now());
+        let read = {
+            let (profile, thread) = (profile.clone(), thread.clone());
+            tokio::task::spawn_blocking(move || codex_rollout::read_thread(&profile, &thread)).await
+        };
+        match read {
+            Ok(Ok(Some(meta))) => {
+                daemon.learn_codex_thread(&id, from_rollout(&meta));
+            }
+            Ok(Ok(None)) => {
+                debug!(agent = %id, thread = %thread, "Codex rollout not found yet");
+            }
+            Ok(Err(error)) => {
+                debug!(agent = %id, thread = %thread, %error, "Codex rollout unreadable");
+            }
+            Err(_) => {}
+        }
+    }
+    daemon.resolve_codex_parents();
+}
+
+/// What a rollout's first record says of its thread, as the record keeps it.
+fn from_rollout(meta: &ThreadMeta) -> ProviderThread {
+    ProviderThread {
+        role: meta.role.clone(),
+        nickname: meta.nickname.clone(),
+        parent: meta.parent_thread.clone().map(|thread| ThreadRef {
+            thread,
+            agent: None,
+        }),
+        source: ThreadSource::Rollout,
+    }
+}
+
+/// What the shared server says of a thread another spawned: its parent.
+fn from_server(parent: &str) -> ProviderThread {
+    ProviderThread {
+        role: None,
+        nickname: None,
+        parent: Some(ThreadRef {
+            thread: parent.to_owned(),
+            agent: None,
+        }),
+        source: ThreadSource::CodexServer,
     }
 }
 
@@ -113,8 +191,14 @@ async fn observe(
                 }
                 match statuses(&mut session, watched).await {
                     Ok(statuses) => {
-                        for (id, thread, status) in statuses {
-                            daemon.observe_codex_thread(&id, profile, &thread, &status, waits);
+                        for (id, thread, read) in statuses {
+                            match read {
+                                Read::Status(status) => daemon
+                                    .observe_codex_thread(&id, profile, &thread, &status, waits),
+                                Read::Child { parent } => {
+                                    daemon.learn_codex_thread(&id, from_server(&parent));
+                                }
+                            }
                         }
                     }
                     Err(error) => break Err(error),
@@ -135,9 +219,14 @@ async fn observe(
                     .collect();
                 if !watched.is_empty() {
                     match status(&mut session, &change.thread).await {
-                        Ok(Some(status)) => {
+                        Ok(Some(Read::Status(status))) => {
                             for (id, thread) in watched {
                                 daemon.observe_codex_thread(&id, profile, &thread, &status, waits);
+                            }
+                        }
+                        Ok(Some(Read::Child { parent })) => {
+                            for (id, _) in watched {
+                                daemon.learn_codex_thread(&id, from_server(&parent));
                             }
                         }
                         Ok(None) => {}
@@ -151,44 +240,54 @@ async fn observe(
     outcome
 }
 
-/// Each watched record's conversation status: read when the server has it
-/// loaded, not loaded otherwise; one with nothing to say this round is left
-/// out.
+/// What one read of a conversation gave: its status, or, for a conversation
+/// another spawned, whose it is. A child's status is never a record's own
+/// activity; what the server says of its parent is still learned.
+enum Read {
+    Status(ThreadStatus),
+    Child { parent: String },
+}
+
+/// Each watched record's conversation: its status, read when the server has
+/// it loaded, not loaded otherwise, or its parent for a child; one with
+/// nothing to say this round is left out.
 async fn statuses(
     session: &mut codex_control::Session,
     watched: Vec<(AgentId, String)>,
-) -> std::io::Result<Vec<(AgentId, String, ThreadStatus)>> {
+) -> std::io::Result<Vec<(AgentId, String, Read)>> {
     let loaded: HashSet<String> = session.loaded().await?.into_iter().collect();
     let mut statuses = Vec::with_capacity(watched.len());
     for (id, thread) in watched {
-        let status = if loaded.contains(&thread) {
+        let read = if loaded.contains(&thread) {
             match status(session, &thread).await? {
-                Some(status) => status,
+                Some(read) => read,
                 None => continue,
             }
         } else {
-            ThreadStatus::NotLoaded
+            Read::Status(ThreadStatus::NotLoaded)
         };
-        statuses.push((id, thread, status));
+        statuses.push((id, thread, read));
     }
     Ok(statuses)
 }
 
 /// One conversation's status from a fresh read. The server's word that it
 /// is not loaded (it unloaded between the list and the read) is that status.
-/// Any other answer about it alone (a refusal, a status this build does not
-/// know, a child conversation, which is never a record's own) says nothing
-/// this round, so one conversation never ends the profile's watch. Only a
-/// failed connection is an error.
+/// A child conversation, which is never a record's own, gives its parent
+/// instead. Any other answer about it alone (a refusal, a status this build
+/// does not know) says nothing this round, so one conversation never ends
+/// the profile's watch. Only a failed connection is an error.
 async fn status(
     session: &mut codex_control::Session,
     thread: &str,
-) -> std::io::Result<Option<ThreadStatus>> {
+) -> std::io::Result<Option<Read>> {
     match session.read(thread).await {
-        Ok(read) if read.parent.is_some() => Ok(None),
-        Ok(read) => Ok(Some(read.status)),
+        Ok(read) => Ok(Some(match read.parent {
+            Some(parent) => Read::Child { parent },
+            None => Read::Status(read.status),
+        })),
         Err(error) if codex_control::not_loaded(&error, thread) => {
-            Ok(Some(ThreadStatus::NotLoaded))
+            Ok(Some(Read::Status(ThreadStatus::NotLoaded)))
         }
         Err(error) if codex_control::answered(&error) => {
             debug!(thread, %error, "Codex conversation skipped this round");
@@ -237,6 +336,41 @@ impl Daemon {
         lock(&self.state).observe_codex_thread(id, profile, thread, status, waits, Utc::now());
     }
 
+    /// The live Codex records bound to a thread under a profile whose
+    /// rollout has not been read yet (what the server said of the thread
+    /// meanwhile does not carry its role).
+    fn codex_unlearned(&self) -> Vec<(AgentId, PathBuf, String)> {
+        let state = lock(&self.state);
+        state
+            .registry
+            .live()
+            .filter(|record| {
+                record.spec.runtime == "codex"
+                    && record
+                        .thread
+                        .as_ref()
+                        .is_none_or(|thread| thread.source != ThreadSource::Rollout)
+            })
+            .filter_map(|record| {
+                let key = record.session_key()?;
+                let profile = PathBuf::from(key.profile?);
+                (profile.is_absolute() && codex_rollout::is_thread_id(&key.session))
+                    .then(|| (record.id.clone(), profile, key.session))
+            })
+            .collect()
+    }
+
+    /// Put what Codex says of `id`'s thread on its record; whether anything
+    /// new was learned.
+    pub(super) fn learn_codex_thread(&self, id: &AgentId, learned: ProviderThread) -> bool {
+        lock(&self.state).learn_codex_thread(id, learned, Utc::now())
+    }
+
+    /// Resolve the parents' agents of children bound before their parents.
+    fn resolve_codex_parents(&self) {
+        lock(&self.state).resolve_codex_parents(Utc::now());
+    }
+
     fn clear_codex_waits(&self, waits: &mut Waits) {
         let now = Utc::now();
         let mut state = lock(&self.state);
@@ -248,6 +382,105 @@ impl Daemon {
 }
 
 impl State {
+    /// Put what Codex says of `id`'s thread on its record, merged with what
+    /// the record already says ([`ProviderThread::merged`]), with the
+    /// parent's agent resolved where a live Codex record is bound to that
+    /// thread under the same profile, and announce it as
+    /// `agent_thread_learned`. Only a live Codex record learns, and only
+    /// news is written; whether anything was.
+    pub(super) fn learn_codex_thread(
+        &mut self,
+        id: &AgentId,
+        learned: ProviderThread,
+        now: DateTime<Utc>,
+    ) -> bool {
+        if self.fenced() {
+            return false;
+        }
+        let Some(record) = self.registry.get(id) else {
+            return false;
+        };
+        if record.spec.runtime != "codex" || !record.status.is_live() {
+            return false;
+        }
+        let profile = record.session_key().and_then(|key| key.profile);
+        let mut learned = learned;
+        if let Some(parent) = &mut learned.parent
+            && parent.agent.is_none()
+        {
+            parent.agent = self.codex_agent_for_thread(&parent.thread, profile.as_deref());
+        }
+        let merged = match &record.thread {
+            Some(current) => current.merged(&learned),
+            None => learned,
+        };
+        if record.thread.as_ref() == Some(&merged) {
+            return false;
+        }
+        let mut updated = record.clone();
+        updated.thread = Some(merged.clone());
+        let event = Event::new(
+            EventKind::AgentThreadLearned {
+                agent: id.clone(),
+                role: merged.role.clone(),
+                parent: merged.parent.clone(),
+            },
+            now,
+        );
+        let id = id.clone();
+        let _ = self.transition(
+            "thread learned",
+            event,
+            |store, event| store.agent_transition(&updated, event),
+            |state| {
+                *state.registry.get_mut(&id).expect("just found") = updated.clone();
+            },
+        );
+        self.write_failure().is_none()
+    }
+
+    /// Every live Codex record whose parent thread has no agent yet learns
+    /// the agent now bound to that thread under the same profile, if one
+    /// is: a child bound before its parent learns whose it is once the
+    /// parent binds, whatever the parent's own record has learned.
+    pub(super) fn resolve_codex_parents(&mut self, now: DateTime<Utc>) {
+        let resolved: Vec<(AgentId, ProviderThread)> = self
+            .registry
+            .live()
+            .filter(|record| record.spec.runtime == "codex")
+            .filter_map(|record| {
+                let thread = record.thread.as_ref()?;
+                let parent = thread.parent.as_ref().filter(|p| p.agent.is_none())?;
+                let profile = record.session_key()?.profile;
+                let agent = self.codex_agent_for_thread(&parent.thread, profile.as_deref())?;
+                let mut with_parent = thread.clone();
+                with_parent.parent = Some(ThreadRef {
+                    thread: parent.thread.clone(),
+                    agent: Some(agent),
+                });
+                Some((record.id.clone(), with_parent))
+            })
+            .collect();
+        for (id, with_parent) in resolved {
+            self.learn_codex_thread(&id, with_parent, now);
+        }
+    }
+
+    /// The live Codex record bound to `thread` under `profile`, by
+    /// canonical id: the same thread id under another profile is another
+    /// conversation.
+    fn codex_agent_for_thread(&self, thread: &str, profile: Option<&str>) -> Option<AgentId> {
+        self.registry
+            .live()
+            .find(|record| {
+                record.spec.runtime == "codex"
+                    && record.session_key().is_some_and(|key| {
+                        key.session == thread && key.profile.as_deref() == profile
+                    })
+            })
+            .map(|record| self.registry.canonical_id(&record.id).clone())
+    }
+
     /// Record what Codex's shared server says of `id`'s conversation
     /// `thread` in `profile` as the daemon's own observation, while the
     /// record is still watched there and the word is news

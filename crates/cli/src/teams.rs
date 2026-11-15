@@ -1,4 +1,6 @@
-//! `agentdocker up` / `down`: start and stop the agents in an Agentfile.
+//! `agentdocker up` / `down`: start and stop the agents in an Agentfile;
+//! `agentdocker agentfile check` / `upgrade`: read one the way `up` will,
+//! and rewrite a version 1 file as the latest version.
 //!
 //! `up` is a client of the daemon like any other: a `run` for each entry,
 //! and, for an entry that waits on another's exit (`after`), the daemon's
@@ -26,9 +28,13 @@ use crate::client::Client;
 /// why, and makes the command fail.
 pub async fn up(client: &Client, file: Option<&Path>, only: &[String]) -> Result<()> {
     let (agentfile, path) = Agentfile::load(file)?;
-    // Refuses a name that is not in the file.
-    agentfile.specs(&path, only)?;
-    let specs = agentfile.specs(&path, &[])?;
+    // Every entry is built, selected or not: an entry left out is judged
+    // against the launch the file gives it now.
+    let built = agentfile.launches(&path, only, &crate::agentfile::SystemHost::new())?;
+    for note in built.iter().flat_map(|built| &built.notes) {
+        eprintln!("note: {note}");
+    }
+    let specs = built.into_iter().map(|built| built.spec).collect();
     let entries = agentfile.entries();
     let endings = if entries.iter().any(|entry| !entry.after.is_empty()) {
         // Subscribed before anything starts, so no ending is missed.
@@ -466,12 +472,13 @@ pub async fn down(
     only: &[String],
     force: bool,
 ) -> Result<()> {
+    // Stopping needs names only: an unset `${VAR}` must not keep anyone
+    // from stopping what is running.
     let (agentfile, path) = Agentfile::load(file)?;
-    let specs = agentfile.specs(&path, only)?;
+    let names = agentfile.names(&path, only)?;
     let live = live_agents(client).await?;
     let mut failed = 0;
-    for spec in specs {
-        let name = spec.name;
+    for name in names {
         let Some(agent) = live.iter().find(|a| a.spec.name == name) else {
             println!("{name:<24} not running");
             continue;
@@ -490,6 +497,211 @@ pub async fn down(
     }
     if failed > 0 {
         bail!("{failed} agent(s) failed to stop");
+    }
+    Ok(())
+}
+
+/// `agentfile check`: read the file the way `up` will — any version
+/// upgraded, `${VAR}` expanded from this environment, commands built — and
+/// show what would be launched, without launching anything or asking the
+/// daemon. The values of the agent's `env` are not shown, only its names:
+/// expansion can put a secret there. Command arguments are shown as they
+/// will run, so a secret belongs in `env`, not in `args` or `prompt`.
+pub fn check(file: Option<&Path>, only: &[String], json: bool) -> Result<()> {
+    let (agentfile, path) = Agentfile::load(file)?;
+    let host = crate::agentfile::SystemHost::new();
+    print!("{}", check_report(&agentfile, &path, only, json, &host)?);
+    Ok(())
+}
+
+/// What `check` prints. The whole file is built as `up` builds it
+/// ([`Agentfile::launches`]), so the check fails wherever `up` would, an
+/// unset variable in an entry `only` leaves out included; what is shown is
+/// the entries `only` selects.
+fn check_report(
+    agentfile: &Agentfile,
+    path: &Path,
+    only: &[String],
+    json: bool,
+    host: &dyn crate::agentfile::launch::Host,
+) -> Result<String> {
+    use std::fmt::Write as _;
+    let built = agentfile.launches(path, only, host)?;
+    let entries = agentfile.entries();
+    let ordered: Vec<&crate::agentfile::Built> = agentfile::order(&entries)
+        .into_iter()
+        .filter(|&i| only.is_empty() || only.contains(&entries[i].name))
+        .filter_map(|i| built.iter().find(|b| b.spec.name == entries[i].name))
+        .collect();
+    let after = |name: &str| -> Vec<String> {
+        entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .map(|entry| entry.after.iter().map(ToString::to_string).collect())
+            .unwrap_or_default()
+    };
+    let mut out = String::new();
+    if json {
+        let rows: Vec<serde_json::Value> = ordered
+            .iter()
+            .map(|built| {
+                let spec = &built.spec;
+                serde_json::json!({
+                    "name": spec.name,
+                    "runtime": spec.runtime,
+                    "model": spec.model,
+                    "effort": spec.labels.get(agentdocker_core::model_choice::EFFORT_LABEL),
+                    "workdir": spec.workdir,
+                    "command": spec.command,
+                    "env": spec.env.keys().collect::<Vec<_>>(),
+                    "labels": spec.labels,
+                    "tty": spec.tty,
+                    "in_pane": spec.in_pane,
+                    "isolate": spec.isolate,
+                    "restart": spec.restart.describe(),
+                    "depends_on": spec.depends_on,
+                    "after": after(&spec.name),
+                    "notes": built.notes,
+                })
+            })
+            .collect();
+        let report = serde_json::json!({
+            "file": path,
+            "declared_version": agentfile.declared,
+            "version": agentfile.version,
+            "agents": rows,
+        });
+        writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+        return Ok(out);
+    }
+    writeln!(
+        out,
+        "{}: version {}{}, {} agent{}",
+        path.display(),
+        agentfile.declared,
+        if agentfile.declared == agentfile.version {
+            String::new()
+        } else {
+            format!(
+                " (read as version {}; `agentdocker agentfile upgrade` rewrites it)",
+                agentfile.version
+            )
+        },
+        ordered.len(),
+        if ordered.len() == 1 { "" } else { "s" }
+    )?;
+    for built in ordered {
+        let spec = &built.spec;
+        writeln!(
+            out,
+            "\n{}  {}{}{}",
+            spec.name,
+            spec.runtime,
+            spec.model
+                .as_deref()
+                .map(|m| format!("  model {m}"))
+                .unwrap_or_default(),
+            spec.labels
+                .get(agentdocker_core::model_choice::EFFORT_LABEL)
+                .map(|e| format!("  effort {e}"))
+                .unwrap_or_default()
+        )?;
+        if let Some(dir) = &spec.workdir {
+            writeln!(out, "  in     {}", dir.display())?;
+        }
+        // A wired-in settings or MCP document is long JSON; its size says
+        // enough here, and `--json` shows it whole.
+        let words: Vec<String> = spec
+            .command
+            .iter()
+            .map(|word| {
+                if word.starts_with('{') && word.len() > 60 {
+                    format!("<{} bytes of JSON>", word.len())
+                } else {
+                    word.clone()
+                }
+            })
+            .collect();
+        writeln!(
+            out,
+            "  runs   {}",
+            shlex::try_join(words.iter().map(String::as_str)).unwrap_or_else(|_| words.join(" "))
+        )?;
+        let mut how = Vec::new();
+        if spec.tty {
+            how.push("tty".to_owned());
+        }
+        if spec.in_pane {
+            how.push("in a tmux pane".to_owned());
+        }
+        if spec.isolate {
+            how.push("own worktree".to_owned());
+        }
+        if !spec.restart.is_no() {
+            how.push(format!("restart {}", spec.restart.describe()));
+        }
+        if !how.is_empty() {
+            writeln!(out, "  with   {}", how.join(", "))?;
+        }
+        if !spec.env.is_empty() {
+            let names: Vec<&str> = spec.env.keys().map(String::as_str).collect();
+            writeln!(out, "  env    {}", names.join(", "))?;
+        }
+        if !spec.depends_on.is_empty() {
+            writeln!(out, "  needs  {} running", spec.depends_on.join(", "))?;
+        }
+        let after = after(&spec.name);
+        if !after.is_empty() {
+            writeln!(out, "  after  {}", after.join(", "))?;
+        }
+        for note in &built.notes {
+            writeln!(out, "  note   {note}")?;
+        }
+    }
+    Ok(out)
+}
+
+/// `agentfile upgrade`: rewrite a version 1 file as the latest version, in
+/// place (or on stdout with `print`), keeping its comments. The file is
+/// read as an Agentfile first, so what is rewritten is a file `up` reads.
+pub fn upgrade(file: Option<&Path>, print: bool) -> Result<()> {
+    let (_, path) = Agentfile::load(file)?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("cannot read {}", path.display()))?;
+    let Some(upgraded) = crate::agentfile::upgrade::upgrade(&text)? else {
+        eprintln!(
+            "{} is already version {}; nothing to do",
+            path.display(),
+            crate::agentfile::LATEST
+        );
+        return Ok(());
+    };
+    // What was written reads, and means what it meant, before the file is
+    // touched.
+    Agentfile::parse(&upgraded.text)
+        .with_context(|| format!("the upgraded {} does not read", path.display()))?;
+    let dollars = match upgraded.escaped {
+        0 => String::new(),
+        1 => "; one `$` was doubled so it still means itself".to_owned(),
+        n => format!("; {n} `$` were doubled so each still means itself"),
+    };
+    if print {
+        print!("{}", upgraded.text);
+        eprintln!(
+            "{}: version {} as version {}{dollars} (not written: --print)",
+            path.display(),
+            upgraded.from,
+            crate::agentfile::LATEST
+        );
+    } else {
+        std::fs::write(&path, &upgraded.text)
+            .with_context(|| format!("cannot write {}", path.display()))?;
+        println!(
+            "{}: upgraded from version {} to {}{dollars}; comments kept",
+            path.display(),
+            upgraded.from,
+            crate::agentfile::LATEST
+        );
     }
     Ok(())
 }
@@ -521,5 +733,53 @@ async fn recorded_agents(client: &Client, path: &Path) -> Result<Vec<AgentRecord
     {
         Response::Agents { agents, .. } => Ok(agents),
         other => bail!("unexpected reply to list: {other:?}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agentfile::launch::tests::Fake;
+
+    /// `check <names>` builds the whole file as `up <names>` does, so an
+    /// unset variable in an entry that was not named fails both; once it
+    /// is set, only what was named is shown.
+    #[test]
+    fn check_fails_where_up_would_and_shows_only_what_was_named() {
+        let file = Agentfile::parse(
+            "version = 2\n[agents.a]\ncommand = [\"${NOPE}\"]\n\n[agents.b]\ncommand = [\"true\"]\n",
+        )
+        .unwrap();
+        let path = Path::new("/work/app/Agentfile.toml");
+        let only = ["b".to_owned()];
+        let checked = check_report(&file, path, &only, false, &Fake::default()).unwrap_err();
+        let checked = format!("{checked:#}");
+        assert!(checked.contains("agents.a.command[0]"), "{checked}");
+        assert!(checked.contains("`NOPE` is not set"), "{checked}");
+        // `up` builds through the same function, and fails the same way.
+        let up = file.launches(path, &only, &Fake::default()).unwrap_err();
+        assert_eq!(format!("{up:#}"), checked);
+
+        let mut host = Fake::default();
+        host.vars.insert("NOPE", "sh");
+        let shown = check_report(&file, path, &only, false, &host).unwrap();
+        assert!(shown.contains("1 agent\n"), "{shown}");
+        assert!(shown.contains("\nb  custom\n"), "{shown}");
+        assert!(!shown.contains("\na  "), "{shown}");
+        let json: serde_json::Value =
+            serde_json::from_str(&check_report(&file, path, &only, true, &host).unwrap()).unwrap();
+        let names: Vec<&str> = json["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|agent| agent["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["b"]);
+        assert!(
+            check_report(&file, path, &["c".to_owned()], false, &host)
+                .unwrap_err()
+                .to_string()
+                .contains("no agent `c`")
+        );
     }
 }

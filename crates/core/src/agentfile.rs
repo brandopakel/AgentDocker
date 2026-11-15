@@ -8,7 +8,10 @@
 //! down. Checking a file ([`check`]), ordering it ([`order`]), telling when
 //! an agent has ended for good ([`Ending::of`]) and deciding whether an
 //! entry starts, waits or never will ([`readiness`]) are all here, so each
-//! rule is a unit test; `agentdocker up` does the I/O.
+//! rule is a unit test; `agentdocker up` does the I/O. So is reading
+//! `${VAR}` in a value ([`expand`]), through a lookup the CLI supplies.
+
+pub mod expand;
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -509,7 +512,7 @@ impl fmt::Display for Ending {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Exited { code: Some(code) } => write!(f, "exited {code}"),
-            Self::Exited { code: None } => f.write_str("was ended by a signal"),
+            Self::Exited { code: None } => f.write_str("exited with unknown code"),
             Self::Stopped => f.write_str("was stopped"),
             Self::Failed { reason } => write!(f, "failed: {reason}"),
             Self::FailedToStart { reason } => write!(f, "failed to start: {reason}"),
@@ -851,12 +854,26 @@ mod tests {
         );
     }
 
+    /// An ending with no recorded code says only that, never a cause
+    /// nobody saw; a recorded code is shown as it is, zero included.
+    #[test]
+    fn an_ending_without_a_recorded_code_claims_no_cause() {
+        let shown = |code| Ending::Exited { code }.to_string();
+        assert_eq!(shown(None), "exited with unknown code");
+        assert_eq!(shown(Some(0)), "exited 0");
+        assert_eq!(shown(Some(137)), "exited 137");
+    }
+
+    /// An unknown code is not an exit 0: what waits for one stays blocked.
     #[test]
     fn every_other_ending_blocks_it_and_says_why() {
         let test = entry("test", &[], &["build"]);
         for (ending, reason) in [
             (Ending::Exited { code: Some(1) }, "build exited 1"),
-            (Ending::Exited { code: None }, "build was ended by a signal"),
+            (
+                Ending::Exited { code: None },
+                "build exited with unknown code",
+            ),
             (Ending::Stopped, "build was stopped"),
             (
                 Ending::FailedToStart {

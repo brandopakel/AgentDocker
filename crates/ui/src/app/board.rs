@@ -246,9 +246,11 @@ impl App {
     }
 
     /// Open a card: a new opening of its editor, started from its words
-    /// as the board has them, and its full detail asked for.
+    /// as the board has them, and its full detail asked for. Every way to
+    /// a card comes through here, and the card open before closes first,
+    /// so nothing of it is carried over.
     pub(super) fn open_card(&mut self, task: TaskId) {
-        self.card = None;
+        self.close_card();
         let generation = self.shell.card_draft.generation + 1;
         self.shell.card_draft = super::shell::CardDraft {
             generation,
@@ -256,6 +258,24 @@ impl App {
         };
         self.send(Cmd::TaskDetail(task.clone()));
         self.task_open = Some(task);
+    }
+
+    /// Close the open card, and with it what was its own: its detail, the
+    /// words in its editor and comment line, the link being added and its
+    /// menu. Every way a card closes comes through here, so the next card
+    /// starts with none of them.
+    pub(super) fn close_card(&mut self) {
+        self.task_open = None;
+        self.card = None;
+        // The openings stay numbered across cards: a save's late reply
+        // is never taken for a later opening's.
+        self.shell.card_draft = super::shell::CardDraft {
+            generation: self.shell.card_draft.generation,
+            ..Default::default()
+        };
+        self.shell.link_kind = None;
+        self.shell.link_target.clear();
+        self.shell.card_menu = None;
     }
 
     /// A card opened before its board was read (from To-do, or Back to

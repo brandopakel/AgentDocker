@@ -22,7 +22,11 @@ mod roles;
 mod rules;
 pub(in crate::daemon) mod verdicts;
 
-const DOCUMENT: &str = "task";
+pub(in crate::daemon) use memory::MemorySearchArgs;
+pub(in crate::daemon) use plans::FilePutArgs;
+pub(in crate::daemon) use roles::RoleSaveArgs;
+
+const DOCUMENT: &str = crate::store::TASK_DOCUMENT;
 const BOARD: &str = "board";
 const COMMENT: &str = "task_comment";
 const ENTRY: &str = "task_entry";
@@ -76,14 +80,6 @@ fn comment_doc(comment: &Comment) -> Doc {
     doc(COMMENT, comment.id.to_string(), comment)
 }
 
-fn invalid(message: impl Into<String>) -> Box<Response> {
-    Box::new(Response::error(ErrorCode::Invalid, message))
-}
-
-fn not_found(message: impl Into<String>) -> Box<Response> {
-    Box::new(Response::error(ErrorCode::NotFound, message))
-}
-
 fn board_error(error: board::BoardError) -> Box<Response> {
     let details = match &error {
         board::BoardError::NoLane { lanes, .. } => Some(serde_json::json!({ "lanes": lanes })),
@@ -125,7 +121,7 @@ impl State {
     fn resolve_task(&mut self, reference: &str) -> Result<Task, Box<Response>> {
         let reference = reference.trim();
         if reference.is_empty() {
-            return Err(invalid("name a card by its key or id"));
+            return Err(Box::new(Response::invalid("name a card by its key or id")));
         }
         if let Some((prefix, number)) = reference.split_once('-')
             && !prefix.is_empty()
@@ -145,7 +141,7 @@ impl State {
             let mut found = found.into_iter();
             return match (found.next(), found.next()) {
                 (Some(task), None) => Ok(task),
-                (None, _) => Err(not_found(format!("no card is {key}"))),
+                (None, _) => Err(Box::new(Response::not_found(format!("no card is {key}")))),
                 (Some(_), Some(_)) => Err(Box::new(Response::error(
                     ErrorCode::Ambiguous,
                     format!("more than one project has a card {key}; give its id"),
@@ -153,7 +149,9 @@ impl State {
             };
         }
         if !reference.bytes().all(|b| b.is_ascii_alphanumeric()) {
-            return Err(not_found(format!("no card matches {reference}")));
+            return Err(Box::new(Response::not_found(format!(
+                "no card matches {reference}"
+            ))));
         }
         // Two is enough to tell one match from several, and no more of
         // the board is read for a lookup.
@@ -167,7 +165,9 @@ impl State {
         let mut matching = matching.into_iter();
         match (matching.next(), matching.next()) {
             (Some(task), None) => Ok(task),
-            (None, _) => Err(not_found(format!("no card matches {reference}"))),
+            (None, _) => Err(Box::new(Response::not_found(format!(
+                "no card matches {reference}"
+            )))),
             (Some(_), Some(_)) => Err(Box::new(Response::error(
                 ErrorCode::Ambiguous,
                 format!("more than one card matches {reference}; give more of the id"),
@@ -264,12 +264,15 @@ impl State {
         })
     }
 
-    fn board_of(&mut self, task: &Task) -> Result<Board, Box<Response>> {
+    pub(super) fn board_of(&mut self, task: &Task) -> Result<Board, Box<Response>> {
         self.project_board(&task.project, task.board.as_deref())
     }
 
     /// Every card of a project, archived ones too.
-    fn project_cards(&mut self, project: &ProjectId) -> Result<Vec<Task>, Box<Response>> {
+    pub(super) fn project_cards(
+        &mut self,
+        project: &ProjectId,
+    ) -> Result<Vec<Task>, Box<Response>> {
         self.store_read("project cards", |store| {
             store.documents_where::<Task>(DOCUMENT, "project", project.as_str(), PROJECT_CARDS)
         })
@@ -280,7 +283,7 @@ impl State {
         })
     }
 
-    fn card_comments(&mut self, task: &TaskId) -> Vec<Comment> {
+    pub(super) fn card_comments(&mut self, task: &TaskId) -> Vec<Comment> {
         let mut comments = self
             .store_read("card comments", |store| {
                 store.documents_where::<Comment>(COMMENT, "task", task.as_str(), 2000)
@@ -326,6 +329,9 @@ impl State {
             .and_then(|id| self.plan_by_id(id).ok())
             .map(|p| p.summary());
         let files = self.card_files(&task.id);
+        let usage = self
+            .store_read("card usage", |store| store.usage_card_row(task.id.as_str()))
+            .flatten();
         Response::TaskDetail {
             task,
             board,
@@ -336,6 +342,7 @@ impl State {
             lease,
             plan,
             files,
+            usage,
         }
     }
 
@@ -404,6 +411,43 @@ impl State {
         kinds: Vec<EventKind>,
         documents: Vec<Doc>,
     ) -> Option<Response> {
+        self.commit_task_journaled(
+            task,
+            holder,
+            claimed,
+            released,
+            kinds,
+            documents,
+            Vec::new(),
+        )
+    }
+
+    /// [`Self::commit_task`], with the journal's lines for the change in
+    /// the same commit: each gets its place in the project's journal and
+    /// its `journal_appended` event here, and none of it lands without
+    /// the card.
+    #[allow(clippy::too_many_arguments)]
+    fn commit_task_journaled(
+        &mut self,
+        task: &Task,
+        holder: Option<AgentId>,
+        claimed: Option<Lease>,
+        released: Vec<Lease>,
+        mut kinds: Vec<EventKind>,
+        documents: Vec<Doc>,
+        journal: Vec<JournalEntry>,
+    ) -> Option<Response> {
+        let previous_seq = self.journal_seq.clone();
+        let journal: Vec<JournalEntry> = journal
+            .into_iter()
+            .map(|mut entry| {
+                entry.seq = self.next_journal_seq(&entry.project);
+                entry
+            })
+            .collect();
+        kinds.extend(journal.iter().map(|entry| EventKind::JournalAppended {
+            entry: entry.clone(),
+        }));
         let now = task.updated_at;
         let record = holder.as_ref().map(|id| {
             let mut record = self
@@ -430,6 +474,7 @@ impl State {
                     kind: DOCUMENT,
                     id: task.id.as_str(),
                     documents: &documents,
+                    journal: &journal,
                     events,
                 };
                 store.task_transition(&transition, task)
@@ -447,9 +492,14 @@ impl State {
                 if let Some(lease) = &claimed {
                     state.leases.restore(lease.clone());
                 }
+                for entry in &journal {
+                    state.cache_journal(entry.clone());
+                }
             },
         );
         if committed != Persisted::Committed {
+            // The journal's places were taken for lines that were not kept.
+            self.journal_seq = previous_seq;
             return Some(self.write_failure().unwrap_or_else(|| {
                 Response::error(ErrorCode::StorageUnavailable, "the card was not recorded")
             }));
@@ -512,8 +562,9 @@ impl State {
         None
     }
 
-    /// Tell an agent about a card the person did something to: handed
-    /// it to them, moved it while they held it, or said something on it.
+    /// Tell an agent about a card somebody else did something to: the
+    /// person handed it to them or said something on it, or anybody
+    /// moved it while they held it.
     /// The card goes with it as a link; nothing is sent to the person.
     fn tell_holder(&mut self, from: &str, to: &AgentId, task: &Task, text: String) {
         if self.registry.get(to).is_none_or(super::humans::is_human) {
@@ -561,9 +612,9 @@ impl State {
                 .collect();
             match matches.as_slice() {
                 [one] => Ok(one.id.clone()),
-                [] => Err(not_found(format!(
+                [] => Err(Box::new(Response::not_found(format!(
                     "no card of this project matches {words}"
-                ))),
+                )))),
                 _ => Err(Box::new(Response::error(
                     ErrorCode::Ambiguous,
                     format!("more than one card matches {words}; give more of the id"),
@@ -675,6 +726,25 @@ pub(super) struct Filing {
     /// Tags every card gets.
     pub tags: Vec<String>,
     pub cards: Vec<BatchCard>,
+}
+
+/// Where a card goes: a lane, a holder, a place in the lane, and a word
+/// about why.
+pub(super) struct TaskMoveArgs<'a> {
+    pub column: Option<Column>,
+    pub to: Option<&'a str>,
+    pub after: Option<&'a str>,
+    pub before: Option<&'a str>,
+    pub comment: Option<&'a str>,
+}
+
+/// What a board update changes; a field left `None` keeps what the board
+/// has.
+pub(super) struct BoardChange {
+    pub name: Option<String>,
+    pub lanes: Option<Vec<Lane>>,
+    pub pull_source: Option<String>,
+    pub pull_target: Option<String>,
 }
 
 impl Daemon {
@@ -927,7 +997,15 @@ impl Daemon {
         take_over_from: Option<&str>,
         project: Option<&str>,
         board_selector: Option<&str>,
+        unblock: Option<&str>,
     ) -> Response {
+        // Saying a wait is over is about one card, taken afresh.
+        if unblock.is_some() && (task.is_none() || take_over_from.is_some()) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "name the card whose wait is over; a take-over takes a card already in progress, which waits on nothing to start",
+            );
+        }
         let named_project = match project {
             Some(selector) => match self.resolve_project(selector).await {
                 Ok(id) => Some(id),
@@ -1051,8 +1129,22 @@ impl Daemon {
             .clone()
             .filter(|_| held.is_none() && task.column.working());
         let from_lane = task.lane_on(&board).slug.clone();
+        // What the card waited on, and what the taker says happened.
+        let mut unblocked: Option<(String, String)> = None;
         let from = match take_over_from {
             None => {
+                if task.assignee.as_ref() == Some(&agent)
+                    && held.is_some()
+                    && unblock.is_some()
+                    && !task.external_blocker.trim().is_empty()
+                {
+                    // Its own held card that still waits: its holder says
+                    // so on the card itself, not by taking it again.
+                    return Response::error(
+                        ErrorCode::Invalid,
+                        "you hold this card: say what it waits on with task update (`--blocker \"\"` clears it)",
+                    );
+                }
                 if task.assignee.as_ref() == Some(&agent) && held.is_some() {
                     // Its own held card: the pull is a renewal, so a
                     // retry after an uncertain reply changes nothing.
@@ -1092,6 +1184,23 @@ impl Daemon {
                         };
                     }
                 }
+                // What the card waited on off the board has happened, says
+                // whoever takes it: any agent of the card's project, since
+                // the one that filed it is a session that ends. Cleared on
+                // this copy only; nothing is kept unless the pull is.
+                if let Some(reason) = unblock {
+                    if record.project.as_ref().map(ProjectRef::id).as_ref() != Some(&task.project)
+                    {
+                        return Response::error(
+                            ErrorCode::Forbidden,
+                            "an agent says a card's wait is over in its own project",
+                        );
+                    }
+                    match task.unblock(reason) {
+                        Ok(was) => unblocked = Some((was, reason.trim().to_owned())),
+                        Err(error) => return refused_with(error, lapsed.as_ref()),
+                    }
+                }
                 if let Err(error) = task.pull(&agent, &board, named, now) {
                     return refused_with(error, lapsed.as_ref());
                 }
@@ -1126,7 +1235,7 @@ impl Daemon {
             Ok(lease) => lease,
             Err(response) => return *response,
         };
-        let kinds = vec![
+        let mut kinds = vec![
             EventKind::LeaseClaimed {
                 lease: lease.clone(),
             },
@@ -1147,13 +1256,60 @@ impl Daemon {
             },
             now,
         );
-        if let Some(error) = state.commit_task(
+        let mut documents = vec![entry_doc(&entry)];
+        let mut journal = Vec::new();
+        // A wait declared over is kept where the next reader looks: on the
+        // card, as a comment with what it waited on and what happened; in
+        // the journal; and as an event. All of it with the pull, or none.
+        if let Some((was, reason)) = unblocked {
+            let body = format!(
+                "Took the card and said its wait is over.\nIt waited on: {was}\nWhat happened: {reason}"
+            );
+            let comment = match Comment::new(&task, agent.as_str(), &body, None, now) {
+                Ok(comment) => comment,
+                Err(error) => return refused(error),
+            };
+            documents.push(comment_doc(&comment));
+            documents.push(entry_doc(&TaskEntry::new(
+                &task,
+                agent.as_str(),
+                TaskAction::Commented {
+                    comment: comment.id.clone(),
+                },
+                now,
+            )));
+            kinds.push(EventKind::TaskCommented {
+                task: task.id.clone(),
+                project: task.project.clone(),
+                by: agent.to_string(),
+                comment: comment.id.clone(),
+            });
+            journal.extend(state.plain_entry(
+                &record,
+                JournalKind::Note,
+                format!(
+                    "took {} and said its wait is over: it waited on \"{}\"; {reason}",
+                    task.handle(),
+                    agentdocker_core::memory::headline(&was)
+                ),
+                SummarySource::Synthesised,
+            ));
+            kinds.push(EventKind::TaskUnblocked {
+                task: task.id.clone(),
+                project: task.project.clone(),
+                by: agent.to_string(),
+                was,
+                reason,
+            });
+        }
+        if let Some(error) = state.commit_task_journaled(
             &task,
             Some(agent),
             Some(lease.clone()),
             Vec::new(),
             kinds,
-            vec![entry_doc(&entry)],
+            documents,
+            journal,
         ) {
             return error;
         }
@@ -1188,17 +1344,19 @@ impl Daemon {
             .collect()
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn task_move(
         self: &Arc<Self>,
         reference: &str,
         task: &str,
-        column: Option<Column>,
-        to: Option<&str>,
-        after: Option<&str>,
-        before: Option<&str>,
-        comment: Option<&str>,
+        args: TaskMoveArgs<'_>,
     ) -> Response {
+        let TaskMoveArgs {
+            column,
+            to,
+            after,
+            before,
+            comment,
+        } = args;
         let mut state = lock(&self.state);
         let actor = match state.actor(reference) {
             Ok(actor) => actor,
@@ -1213,6 +1371,14 @@ impl Daemon {
             Ok(task) => task,
             Err(response) => return *response,
         };
+        // Anybody in the card's project moves it, whoever holds it; an
+        // agent of another project does not.
+        if !actor.human && actor.project.as_ref() != Some(&task.project) {
+            return Response::error(
+                ErrorCode::Forbidden,
+                "an agent moves cards in its own project",
+            );
+        }
         if let Err(response) = Self::agent_hold(&state, &task, &actor) {
             return *response;
         }
@@ -1346,11 +1512,11 @@ impl Daemon {
         if let Some(error) = state.commit_task(&task, None, None, released, kinds, documents) {
             return error;
         }
-        // The person moved a card an agent held, or sent it back: the
+        // Somebody else moved a card an agent held, or sent it back: the
         // agent hears where it went and why.
-        if actor.human
-            && moved
+        if moved
             && let Some(holder) = previous.assignee.clone()
+            && holder.as_str() != actor.id
         {
             let mut text = format!("{} {} → {}", task.handle(), task.title, lane.name);
             if let Some(words) = words {
@@ -1369,7 +1535,6 @@ impl Daemon {
         Response::Task { task }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) fn task_update(
         self: &Arc<Self>,
         reference: &str,
@@ -1962,17 +2127,19 @@ impl Daemon {
         Response::Board { board }
     }
 
-    #[allow(clippy::too_many_arguments)]
     pub(super) async fn board_update(
         self: &Arc<Self>,
         from: &str,
         project: Option<&str>,
         selector: &str,
-        name: Option<String>,
-        lanes: Option<Vec<Lane>>,
-        pull_source: Option<String>,
-        pull_target: Option<String>,
+        change: BoardChange,
     ) -> Response {
+        let BoardChange {
+            name,
+            lanes,
+            pull_source,
+            pull_target,
+        } = change;
         let named = match project {
             Some(selector) => match self.resolve_project(selector).await {
                 Ok(id) => Some(id),
@@ -2316,6 +2483,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             };
             async move { as_card(daemon.handle(request).await) }
         };
@@ -2366,12 +2534,13 @@ mod tests {
     }
 
     /// The person files a card; two agents pull it and only the first
-    /// gets it, the second told who holds it; the holder moves it on and
-    /// nobody else can; the person can reassign, move back (releasing
+    /// gets it, the second told who holds it; anybody in the project
+    /// moves it on and it stays its holder's, while an agent of another
+    /// project cannot; the person can reassign, move back (releasing
     /// it) and archive; the board lists by column, oldest first, and
     /// leaves archived cards out unless asked; it all survives a reopen.
     #[tokio::test]
-    async fn a_card_is_pulled_once_and_moved_by_its_holder_or_the_person() {
+    async fn a_card_is_pulled_once_and_moved_by_anybody_in_its_project() {
         let dir = TempDir::new().unwrap();
         let daemon = open(&dir);
         let work = dir.path().join("work");
@@ -2583,6 +2752,7 @@ mod tests {
                         agentdocker_core::LinkKind::Task,
                         "zz"
                     )],
+                    idempotency_key: None,
                 })
                 .await,
             Response::Error {
@@ -2600,6 +2770,7 @@ mod tests {
                     payload: serde_json::json!({"text": "this one is yours"}),
                     reply_to: None,
                     links: vec![card_link.clone()],
+                    idempotency_key: None,
                 })
                 .await,
             Response::Sent { .. }
@@ -2636,6 +2807,7 @@ mod tests {
                     take_over_from: None,
                     project: None,
                     board: None,
+                    unblock: None,
                 })
                 .await,
         ) else {
@@ -2671,6 +2843,7 @@ mod tests {
                     take_over_from: None,
                     project: None,
                     board: None,
+                    unblock: None,
                 })
                 .await,
         ) {
@@ -2690,6 +2863,7 @@ mod tests {
                     take_over_from: None,
                     project: None,
                     board: None,
+                    unblock: None,
                 })
                 .await,
             Response::NothingReady { .. }
@@ -2704,6 +2878,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -2712,11 +2887,20 @@ mod tests {
                 ..
             }
         ));
-        // Moves: bob cannot, alice can, the person can.
+        // Moves: an agent of another project cannot; bob, who does not
+        // hold the card, can, and it stays alice's; alice can, the person
+        // can.
+        let elsewhere = dir.path().join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let carol = register(&daemon, "carol", &elsewhere).await;
+        assert_ne!(
+            carol.project.as_ref().map(ProjectRef::id),
+            Some(project.clone())
+        );
         assert!(matches!(
             daemon
                 .handle(Request::TaskMove {
-                    agent: "bob".to_owned(),
+                    agent: "carol".to_owned(),
                     task: first.id.to_string(),
                     column: Some(Column::Review),
                     to: None,
@@ -2730,6 +2914,40 @@ mod tests {
                 ..
             }
         ));
+        let Response::Task { task: moved_by_bob } = daemon
+            .handle(Request::TaskMove {
+                agent: "bob".to_owned(),
+                task: first.id.to_string(),
+                column: Some(Column::Review),
+                to: None,
+                after: None,
+                before: None,
+                comment: None,
+            })
+            .await
+        else {
+            panic!("bob moves a card he does not hold")
+        };
+        assert_eq!(
+            (moved_by_bob.assignee.as_ref(), moved_by_bob.column),
+            (Some(&alice.id), Column::Review),
+            "moved by bob, still alice's"
+        );
+        let Response::Messages { messages } = daemon
+            .handle(Request::Inbox {
+                agent: "alice".to_owned(),
+                drain: false,
+            })
+            .await
+        else {
+            panic!("inbox")
+        };
+        assert!(
+            messages.iter().any(|m| m.kind == "task"
+                && m.from == bob.id.as_str()
+                && m.payload["text"].as_str().is_some_and(|t| t.contains('→'))),
+            "alice is told bob moved her card: {messages:?}"
+        );
         let Response::Task { task: reviewed } = daemon
             .handle(Request::TaskMove {
                 agent: "alice".to_owned(),
@@ -2943,6 +3161,7 @@ mod tests {
                 take_over_from: None,
                 project: None,
                 board: None,
+                unblock: None,
             };
             let daemon = daemon.clone();
             async move { as_card(daemon.handle(request).await) }
@@ -3039,6 +3258,7 @@ mod tests {
                 take_over_from: from.map(str::to_owned),
                 project: None,
                 board: None,
+                unblock: None,
             };
             let daemon = daemon.clone();
             async move { as_card(daemon.handle(request).await) }
@@ -3114,6 +3334,7 @@ mod tests {
                             take_over_from: from,
                             project: None,
                             board: None,
+                            unblock: None,
                         })
                         .await,
                 )
@@ -3237,6 +3458,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await
         else {
@@ -3392,6 +3614,7 @@ mod tests {
                 wait_secs: 0,
                 priority: 0,
                 automatic: false,
+                fresh: false,
             })
             .await
         else {
@@ -3483,6 +3706,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -3512,6 +3736,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -3587,6 +3812,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -3640,6 +3866,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),
@@ -3891,6 +4118,7 @@ mod tests {
                         take_over_from: None,
                         project: None,
                         board: None,
+                        unblock: None,
                     })
                     .await
             ),

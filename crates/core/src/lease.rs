@@ -13,7 +13,7 @@ use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{AgentId, ProjectId};
+use crate::{AgentId, MessageId, ProjectId};
 
 /// Something agents coordinate over. Keys are `kind:value`, for example
 /// `path:/repo/src/main.rs`, `file:<project id>/src/main.rs`,
@@ -149,6 +149,14 @@ pub struct Lease {
     pub holder: AgentId,
     pub mode: LeaseMode,
     pub acquired_at: DateTime<Utc>,
+    /// When its current holder took it, when that is not `acquired_at`:
+    /// the moment a handoff passed it on, which keeps `acquired_at`, so
+    /// the recipient is never taken to have held it before it accepted.
+    /// Absent from a lease its holder claimed, and from leases written
+    /// before it was kept; [`Lease::held_since`] reads either as
+    /// `acquired_at`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub held_since: Option<DateTime<Utc>>,
     /// Last ledger sequence at acquisition; absent for legacy leases.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub change_seq: Option<u64>,
@@ -169,6 +177,64 @@ pub struct Lease {
 
 fn is_zero(n: &u64) -> bool {
     *n == 0
+}
+
+/// How long a release request waits for the holder's answer before the
+/// daemon drops it: a day, so a holder that never answers does not keep
+/// the request on the books for ever.
+pub const RELEASE_REQUEST_TTL_SECS: i64 = 24 * 60 * 60;
+
+/// How long a reason or summary on a release request may be: enough to
+/// say why, not a document.
+pub const RELEASE_REQUEST_TEXT_CHARS: usize = 400;
+
+/// An agent asking another to let go of a resource it holds.
+///
+/// The hooks adapters and the git pre-commit hook refuse an edit or a
+/// commit over a path somebody else holds; this is how the refused agent
+/// asks for the path instead of waiting the lease out. The daemon sends
+/// the holder a `release_request` message, keeps the request as a
+/// document until it is answered or [`RELEASE_REQUEST_TTL_SECS`] pass,
+/// and on an accept releases the named leases on the holder's behalf,
+/// journaled with the summary they give.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseRequest {
+    /// The `release_request` message's id, which the answer names.
+    pub message: MessageId,
+    pub requester: AgentId,
+    pub holder: AgentId,
+    /// What was asked for, as the requester named it (canonical).
+    pub resource: ResourceKey,
+    /// The holder's leases overlapping it when the request was made.
+    pub leases: Vec<LeaseId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    /// Filled when the holder has answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer: Option<ReleaseAnswer>,
+}
+
+impl ReleaseRequest {
+    pub fn expired(&self, now: DateTime<Utc>) -> bool {
+        self.answer.is_none() && self.expires_at <= now
+    }
+}
+
+/// The holder's answer to a [`ReleaseRequest`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReleaseAnswer {
+    pub accepted: bool,
+    /// The summary that went to the journal on an accept; the reason on a
+    /// decline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub at: DateTime<Utc>,
+    /// The leases the daemon released on the holder's behalf: those of
+    /// the request's that were still held when it was accepted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub released: Vec<LeaseId>,
 }
 
 impl LeaseTable {
@@ -192,10 +258,23 @@ impl Lease {
         self.expires_at <= now
     }
 
+    /// When its current holder took it: at the claim, or when it was
+    /// handed over to it.
+    pub fn held_since(&self) -> DateTime<Utc> {
+        self.held_since.unwrap_or(self.acquired_at)
+    }
+
     /// Would this lease stop `requester` from taking `mode` on `resource`?
+    /// An agent's own leases do not stop it.
     fn blocks(&self, requester: &AgentId, mode: LeaseMode, resource: &ResourceKey) -> bool {
-        self.holder != *requester
-            && self.resource.overlaps(resource)
+        self.holder != *requester && self.conflicts(mode, resource)
+    }
+
+    /// Whether this lease and a claim of `mode` on `resource` cannot both
+    /// stand, whoever makes the claim: they overlap, and one of them is
+    /// exclusive.
+    fn conflicts(&self, mode: LeaseMode, resource: &ResourceKey) -> bool {
+        self.resource.overlaps(resource)
             && (self.mode == LeaseMode::Exclusive || mode == LeaseMode::Exclusive)
     }
 }
@@ -247,6 +326,27 @@ impl Claimed {
     }
 }
 
+/// What a claim asks for: the lease to make, before the table says
+/// whether it can.
+#[derive(Clone, Debug)]
+pub struct ClaimRequest {
+    pub resource: ResourceKey,
+    pub holder: AgentId,
+    pub mode: LeaseMode,
+    pub ttl: Duration,
+    pub note: Option<String>,
+    /// An adapter's automatic lease, not one the agent asked for.
+    pub automatic: bool,
+    /// Only a new lease will do: a lease the holder already has is in the
+    /// way exactly as anybody else's would be (the same resource, one
+    /// over or under it, in whichever mode makes the two conflict), and
+    /// nothing is renewed. For a resource one process at a time may use,
+    /// whoever its workers claim as: two of one agent's workers would
+    /// otherwise both be told they hold it, and the first to release
+    /// would end the other's hold.
+    pub fresh: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct LeaseTable {
     leases: HashMap<LeaseId, Lease>,
@@ -258,7 +358,8 @@ impl LeaseTable {
     }
 
     /// Take a lease, or learn who is in the way. Claiming a resource you
-    /// already hold in the same mode renews it instead of failing.
+    /// already hold in the same mode renews it instead of failing, unless
+    /// the claim asks for a fresh lease ([`ClaimRequest::fresh`]).
     pub fn claim(
         &mut self,
         resource: ResourceKey,
@@ -268,24 +369,52 @@ impl LeaseTable {
         note: Option<String>,
         now: DateTime<Utc>,
     ) -> Result<Claimed, LeaseError> {
-        self.claim_as(resource, holder, mode, ttl, note, now, false)
+        self.claim_as(
+            ClaimRequest {
+                resource,
+                holder,
+                mode,
+                ttl,
+                note,
+                automatic: false,
+                fresh: false,
+            },
+            now,
+        )
     }
 
-    /// [`Self::claim`], with the lease marked as an adapter's automatic one.
-    #[allow(clippy::too_many_arguments)]
+    /// [`Self::claim`], with the lease marked as an adapter's automatic one
+    /// when the request says so.
     pub fn claim_as(
         &mut self,
-        resource: ResourceKey,
-        holder: AgentId,
-        mode: LeaseMode,
-        ttl: Duration,
-        note: Option<String>,
+        request: ClaimRequest,
         now: DateTime<Utc>,
-        automatic: bool,
     ) -> Result<Claimed, LeaseError> {
+        let ClaimRequest {
+            resource,
+            holder,
+            mode,
+            ttl,
+            note,
+            automatic,
+            fresh,
+        } = request;
         self.expire(now);
 
-        if let Some(existing) = self
+        if fresh {
+            // Every lease in the way, the holder's own among them: what
+            // would stop another agent stops this claim.
+            let mut held_by: Vec<Lease> = self
+                .leases
+                .values()
+                .filter(|l| l.conflicts(mode, &resource))
+                .cloned()
+                .collect();
+            if !held_by.is_empty() {
+                held_by.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+                return Err(LeaseError::Conflict { resource, held_by });
+            }
+        } else if let Some(existing) = self
             .leases
             .values_mut()
             .find(|l| l.holder == holder && l.resource == resource && l.mode == mode)
@@ -317,6 +446,7 @@ impl LeaseTable {
             holder,
             mode,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + ttl,
             note,
@@ -381,6 +511,7 @@ impl LeaseTable {
             .filter(|l| l.holder == *from)
             .map(|l| {
                 l.holder = to.clone();
+                l.held_since = Some(now);
                 l.clone()
             })
             .collect();
@@ -409,6 +540,7 @@ impl LeaseTable {
             })
             .map(|lease| {
                 lease.holder = to.clone();
+                lease.held_since = Some(now);
                 lease.clone()
             })
             .collect();
@@ -505,13 +637,16 @@ mod tests {
         ] {
             table
                 .claim_as(
-                    ResourceKey::new(resource),
-                    me.clone(),
-                    LeaseMode::Exclusive,
-                    ttl,
-                    None,
+                    ClaimRequest {
+                        resource: ResourceKey::new(resource),
+                        holder: me.clone(),
+                        mode: LeaseMode::Exclusive,
+                        ttl,
+                        note: None,
+                        automatic,
+                        fresh: false,
+                    },
                     now,
-                    automatic,
                 )
                 .unwrap();
         }
@@ -536,36 +671,45 @@ mod tests {
         // Deliberately claiming what was automatic makes it deliberate.
         table
             .claim_as(
-                ResourceKey::new("path:/repo/src/c.rs"),
-                me.clone(),
-                LeaseMode::Exclusive,
-                ttl,
-                None,
+                ClaimRequest {
+                    resource: ResourceKey::new("path:/repo/src/c.rs"),
+                    holder: me.clone(),
+                    mode: LeaseMode::Exclusive,
+                    ttl,
+                    note: None,
+                    automatic: true,
+                    fresh: false,
+                },
                 now,
-                true,
             )
             .unwrap();
         table
             .claim_as(
-                ResourceKey::new("path:/repo/src/c.rs"),
-                me.clone(),
-                LeaseMode::Exclusive,
-                ttl,
-                None,
+                ClaimRequest {
+                    resource: ResourceKey::new("path:/repo/src/c.rs"),
+                    holder: me.clone(),
+                    mode: LeaseMode::Exclusive,
+                    ttl,
+                    note: None,
+                    automatic: false,
+                    fresh: false,
+                },
                 now,
-                false,
             )
             .unwrap();
         // An automatic re-claim of a deliberate lease leaves it deliberate.
         table
             .claim_as(
-                ResourceKey::new("branch:feature"),
-                me.clone(),
-                LeaseMode::Exclusive,
-                ttl,
-                None,
+                ClaimRequest {
+                    resource: ResourceKey::new("branch:feature"),
+                    holder: me.clone(),
+                    mode: LeaseMode::Exclusive,
+                    ttl,
+                    note: None,
+                    automatic: true,
+                    fresh: false,
+                },
                 now,
-                true,
             )
             .unwrap();
         assert!(
@@ -585,6 +729,35 @@ mod tests {
 
     fn key(s: &str) -> ResourceKey {
         ResourceKey::new(s)
+    }
+
+    /// A request expires only unanswered, and at its deadline, not before.
+    #[test]
+    fn a_release_request_expires_only_unanswered_and_at_its_deadline() {
+        let now = Utc::now();
+        let mut request = ReleaseRequest {
+            message: MessageId::from("m1".to_owned()),
+            requester: agent("a"),
+            holder: agent("b"),
+            resource: key("branch:main"),
+            leases: Vec::new(),
+            reason: None,
+            at: now - Duration::hours(1),
+            expires_at: now + Duration::seconds(1),
+            answer: None,
+        };
+        assert!(!request.expired(now), "not yet due");
+        request.expires_at = now;
+        assert!(request.expired(now), "due at its deadline");
+        request.expires_at = now - Duration::seconds(1);
+        assert!(request.expired(now), "past due");
+        request.answer = Some(ReleaseAnswer {
+            accepted: false,
+            text: None,
+            at: now,
+            released: Vec::new(),
+        });
+        assert!(!request.expired(now), "answered: nothing to drop");
     }
 
     #[test]
@@ -834,6 +1007,112 @@ mod tests {
         assert_eq!(t.len(), 1);
     }
 
+    /// A fresh claim does not count a lease its holder already has: it is
+    /// refused as anybody else's claim would be, names that lease as the
+    /// one in the way, and renews nothing. Two workers claiming as one
+    /// agent are then never both told they hold the resource. Once it is
+    /// released, a fresh claim takes it, as a new lease.
+    #[test]
+    fn a_fresh_claim_is_not_answered_with_a_lease_the_holder_already_has() {
+        let mut t = LeaseTable::new();
+        let now = Utc::now();
+        let fresh = |note: &str| ClaimRequest {
+            resource: key("task:slot"),
+            holder: agent("a"),
+            mode: LeaseMode::Exclusive,
+            ttl: ttl(),
+            note: Some(note.to_owned()),
+            automatic: false,
+            fresh: true,
+        };
+        let Claimed::New(first) = t.claim_as(fresh("first worker"), now).unwrap() else {
+            panic!("nothing held it")
+        };
+        let later = now + Duration::seconds(30);
+        let Err(LeaseError::Conflict { held_by, .. }) = t.claim_as(fresh("second worker"), later)
+        else {
+            panic!("the holder's own lease is in the way")
+        };
+        assert_eq!(held_by, std::slice::from_ref(&first));
+        let kept = t.get(&first.id).unwrap();
+        assert_eq!(kept.expires_at, now + ttl(), "not renewed");
+        assert_eq!(kept.note.as_deref(), Some("first worker"), "nor renamed");
+        assert_eq!(t.len(), 1);
+        // Somebody else's fresh claim is the ordinary conflict.
+        let other = ClaimRequest {
+            holder: agent("b"),
+            ..fresh("another agent")
+        };
+        assert!(matches!(
+            t.claim_as(other, later),
+            Err(LeaseError::Conflict { .. })
+        ));
+        t.release(&first.id, &agent("a")).unwrap();
+        let Claimed::New(second) = t.claim_as(fresh("second worker"), later).unwrap() else {
+            panic!("free again")
+        };
+        assert_ne!(second.id, first.id);
+    }
+
+    /// A fresh claim is stopped by any lease of its holder that would stop
+    /// another agent: one over or under the resource, and one in the other
+    /// mode. Two shared holds do not conflict, for one holder as for two.
+    #[test]
+    fn a_fresh_claim_meets_its_holders_overlapping_leases_and_other_modes() {
+        let now = Utc::now();
+        let ask = |resource: &str, mode: LeaseMode, fresh: bool| ClaimRequest {
+            resource: key(resource),
+            holder: agent("a"),
+            mode,
+            ttl: ttl(),
+            note: None,
+            automatic: false,
+            fresh,
+        };
+        let refused = |held: (&str, LeaseMode), wanted: (&str, LeaseMode)| {
+            let mut t = LeaseTable::new();
+            let first = t.claim_as(ask(held.0, held.1, true), now).unwrap();
+            let answer = t.claim_as(ask(wanted.0, wanted.1, true), now);
+            assert_eq!(t.len(), usize::from(answer.is_ok()) + 1);
+            match answer {
+                Err(LeaseError::Conflict { held_by, .. }) => {
+                    assert_eq!(held_by, std::slice::from_ref(first.lease()));
+                    true
+                }
+                Ok(Claimed::New(_)) => false,
+                other => panic!("{other:?}"),
+            }
+        };
+        use LeaseMode::{Exclusive, Shared};
+        // Under and over an exclusive hold.
+        assert!(refused(
+            ("path:/repo/src", Exclusive),
+            ("path:/repo/src/main.rs", Exclusive)
+        ));
+        assert!(refused(
+            ("path:/repo/src/main.rs", Exclusive),
+            ("path:/repo/src", Exclusive)
+        ));
+        // The other mode on the same resource, either way round.
+        assert!(refused(("task:slot", Exclusive), ("task:slot", Shared)));
+        assert!(refused(("task:slot", Shared), ("task:slot", Exclusive)));
+        // Shared beside shared stands, as it does for two agents.
+        assert!(!refused(("task:slot", Shared), ("task:slot", Shared)));
+        // Something else entirely is free.
+        assert!(!refused(
+            ("task:slot", Exclusive),
+            ("task:other", Exclusive)
+        ));
+        // A plain claim is unchanged: the holder's own leases do not stop it.
+        let mut t = LeaseTable::new();
+        t.claim_as(ask("path:/repo/src", Exclusive, false), now)
+            .unwrap();
+        assert!(matches!(
+            t.claim_as(ask("path:/repo/src/main.rs", Exclusive, false), now),
+            Ok(Claimed::New(_))
+        ));
+    }
+
     #[test]
     fn leases_expire() {
         let mut t = LeaseTable::new();
@@ -919,6 +1198,7 @@ mod tests {
             holder: agent("a"),
             mode: LeaseMode::Exclusive,
             acquired_at: now,
+            held_since: None,
             change_seq: None,
             expires_at: now + ttl(),
             note: None,
@@ -1016,11 +1296,37 @@ mod tests {
         assert_eq!(
             moved[0].note.as_deref(),
             Some("x"),
-            "everything but the holder survives"
+            "everything but the holder and its start survives"
         );
+        assert_eq!(moved[0].acquired_at, kept.acquired_at);
+        assert_eq!(
+            kept.held_since(),
+            kept.acquired_at,
+            "a claim holds from its acquisition"
+        );
+        assert_eq!(
+            moved[0].held_since(),
+            later,
+            "the recipient holds it from the hand-over"
+        );
+        let selected = t.transfer_selected(
+            &agent("b"),
+            &agent("a"),
+            &[kept.id.clone()].into_iter().collect(),
+            later + Duration::seconds(1),
+        );
+        assert_eq!(selected[0].held_since(), later + Duration::seconds(1));
+        assert_eq!(selected[0].acquired_at, kept.acquired_at);
+        let back = t.transfer(&agent("a"), &agent("b"), later);
+        assert_eq!(back.len(), 1);
         assert!(t.by_holder(&agent("a")).is_empty());
         assert_eq!(t.by_holder(&agent("b")).len(), 1);
         assert_eq!(t.by_holder(&agent("c")).len(), 1);
+        // Absent from the stored form until a hand-over sets it.
+        let stored = serde_json::to_value(&kept).unwrap();
+        assert!(stored.get("held_since").is_none());
+        let read: Lease = serde_json::from_value(stored).unwrap();
+        assert_eq!(read.held_since(), kept.acquired_at);
         assert!(
             t.release(&kept.id, &agent("a")).is_err(),
             "the old holder no longer may"

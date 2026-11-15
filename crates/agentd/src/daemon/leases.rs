@@ -1,21 +1,33 @@
 use super::*;
 use agentdocker_core::wait::{self, Priority};
-use agentdocker_core::{Blocked, WaitOutcome};
+use agentdocker_core::{Blocked, ClaimRequest, WaitOutcome};
+
+/// What a claim asks for, as the request spelt it.
+pub(super) struct ClaimArgs {
+    pub resource: String,
+    pub mode: LeaseMode,
+    pub amount: Option<u64>,
+    pub ttl_secs: u64,
+    pub note: Option<String>,
+    pub wait_secs: u64,
+    pub priority: Priority,
+    pub automatic: bool,
+    pub fresh: bool,
+}
 
 impl Daemon {
-    #[allow(clippy::too_many_arguments)]
-    pub(super) async fn claim(
-        self: &Arc<Self>,
-        reference: &str,
-        resource: String,
-        mode: LeaseMode,
-        amount: Option<u64>,
-        ttl_secs: u64,
-        note: Option<String>,
-        wait_secs: u64,
-        priority: Priority,
-        automatic: bool,
-    ) -> Response {
+    pub(super) async fn claim(self: &Arc<Self>, reference: &str, args: ClaimArgs) -> Response {
+        let ClaimArgs {
+            resource,
+            mode,
+            amount,
+            ttl_secs,
+            note,
+            wait_secs,
+            priority,
+            automatic,
+            fresh,
+        } = args;
         if !wait::valid_priority(priority) {
             return Response::error(
                 ErrorCode::Invalid,
@@ -110,6 +122,11 @@ impl Daemon {
                     if let Some(pause) = state.pause_holding(&holder) {
                         break 'attempt Err((pause_refusal(pause), gone));
                     }
+                    // Nor is anything claimed in a worktree on its way out,
+                    // by a waiter that queued before its removal began either.
+                    if let Some(refusal) = state.removal_refuses_claim(&resource) {
+                        break 'attempt Err((refusal, gone));
+                    }
                     let now = Utc::now();
                     state.expire_leases_at(now);
                     if let Some(error) = state.write_failure() {
@@ -153,20 +170,23 @@ impl Daemon {
                     }
                     let result = if state.may_attempt(waiting.ticket()) {
                         state.leases.clone().claim_as(
-                            resource.clone(),
-                            holder.clone(),
-                            // A quota is shared by construction: it is spent,
-                            // not occupied, so exclusivity would make every
-                            // budget a lock on itself.
-                            if resource.kind() == "quota" {
-                                LeaseMode::Shared
-                            } else {
-                                mode
+                            ClaimRequest {
+                                resource: resource.clone(),
+                                holder: holder.clone(),
+                                // A quota is shared by construction: it is
+                                // spent, not occupied, so exclusivity would
+                                // make every budget a lock on itself.
+                                mode: if resource.kind() == "quota" {
+                                    LeaseMode::Shared
+                                } else {
+                                    mode
+                                },
+                                ttl: ttl(ttl_secs),
+                                note: note.clone(),
+                                automatic,
+                                fresh,
                             },
-                            ttl(ttl_secs),
-                            note.clone(),
                             now,
-                            automatic,
                         )
                     } else {
                         Err(LeaseError::Conflict {
@@ -221,6 +241,34 @@ impl Daemon {
                         Err(err) => match err {
                             // Said by whom, by name: the holder is somebody the
                             // person can go and talk to, and an id is not a name.
+                            // A fresh claim with a lease of the asker's own
+                            // in its way: another worker of the same agent
+                            // holds it. Answered at once, whatever wait was
+                            // asked and whoever else is in the way too: an
+                            // agent queued behind itself is a ring of one,
+                            // and the asker's client asks again instead.
+                            LeaseError::Conflict { held_by, .. }
+                                if fresh && held_by.iter().any(|l| l.holder == holder) =>
+                            {
+                                // Its own leases are named; any of other
+                                // agents in the way too are in the details.
+                                let own: Vec<String> = held_by
+                                    .iter()
+                                    .filter(|l| l.holder == holder)
+                                    .map(|l| l.id.to_string())
+                                    .collect();
+                                break 'attempt Err((
+                                    Response::Error {
+                                        code: ErrorCode::Conflict,
+                                        message: format!(
+                                            "{resource} is already held by this agent (lease {}): a fresh claim waits for it to be released",
+                                            own.join(", ")
+                                        ),
+                                        details: Some(json!({ "own": true, "held_by": held_by })),
+                                    },
+                                    gone,
+                                ));
+                            }
                             LeaseError::Conflict { held_by, .. } => {
                                 let holders = held_by
                                     .iter()
@@ -419,10 +467,14 @@ impl Daemon {
         } else {
             return Ok(key);
         };
-        let path = tokio::task::spawn_blocking(move || project::try_canonical(&path))
-            .await
-            .map_err(|err| Box::new(Response::error(ErrorCode::Internal, err.to_string())))?
-            .map_err(|err| Box::new(Response::error(ErrorCode::Invalid, err.to_string())))?;
+        let path = physical(path).await.map_err(|err| {
+            // A runtime failure is the daemon's; an unresolvable path is the caller's.
+            Box::new(if err.is::<tokio::task::JoinError>() {
+                Response::internal(err)
+            } else {
+                Response::invalid(err)
+            })
+        })?;
         if !path.is_absolute() {
             return Err(Box::new(Response::error(
                 ErrorCode::Invalid,
@@ -527,6 +579,39 @@ impl State {
             }
             Err(err) => lease_error(err),
         }
+    }
+
+    /// Release the leases `reference` holds on exactly `resource`, which is
+    /// already the daemon's own spelling of it ([`Daemon::localise`]). A
+    /// lease on a folder is not a lease on a file in it, nor the other way
+    /// round: only the resource itself is released, and holding nothing on
+    /// it is `not_found`, with whatever is held around it left in place.
+    pub(super) fn release_resource(
+        &mut self,
+        reference: &str,
+        resource: &ResourceKey,
+        summary: Option<String>,
+        source: SummarySource,
+    ) -> Response {
+        let holder = match self.resolve(reference) {
+            Ok(id) => id,
+            Err(response) => return *response,
+        };
+        self.expire_leases();
+        let released: Vec<Lease> = self
+            .leases
+            .by_holder(&holder)
+            .into_iter()
+            .filter(|l| l.resource == *resource)
+            .cloned()
+            .collect();
+        if released.is_empty() {
+            return Response::not_found(format!(
+                "you hold no lease on {resource}; `leases` lists what is held"
+            ));
+        }
+        let released = self.finish_release(&holder, released, summary, source);
+        Response::Leases { leases: released }
     }
 
     pub(super) fn release_all(

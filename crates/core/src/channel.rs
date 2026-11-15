@@ -363,6 +363,26 @@ mod tests {
         assert_eq!(back.role, None);
     }
 
+    /// Dismissing takes a member out once, leaves everyone else, and keeps
+    /// what they said.
+    #[test]
+    fn a_dismissed_member_leaves_and_what_it_said_stays() {
+        let mut room = channel();
+        room.reviews.push(review("b2", "a1", Verdict::Approve, 1));
+        let (a1, b2, c3) = (
+            AgentId::from("a1"),
+            AgentId::from("b2"),
+            AgentId::from("c3"),
+        );
+        assert!(room.dismiss(&b2));
+        assert_eq!(room.members, [a1.clone(), c3.clone()]);
+        assert!(!room.dismiss(&b2), "gone already");
+        assert!(!room.dismiss(&AgentId::from("nobody")), "never a member");
+        assert_eq!(room.members, [a1, c3]);
+        assert_eq!(room.reviews.len(), 1, "its review stays");
+        assert_eq!(room.reviews[0].by, b2);
+    }
+
     fn channel() -> Channel {
         Channel {
             id: ChannelId::from("c1"),

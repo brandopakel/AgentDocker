@@ -21,7 +21,7 @@ agentdocker setup --undo PLAN_ID
 
 Preview prints the new plan ID on stdout and its redacted description on stderr. `--json` prints a machine-readable description instead. The public description includes paths, channels and the AgentDocker executable, never the contents of existing provider configuration. Ordinary `agentdocker setup [runtime...]` creates and applies a saved plan, prints its ID and an undo command, and supports `--json`. `--dry-run` is read-only; `--shell` saves a preview that needs an explicit apply. The native window uses the same saved-plan apply/undo safeguards.
 
-Guided Claude Code setup installs the complete hooks adapter, every event in its list, in `.claude/settings.json`; the report-only events (`StopFailure`, `PermissionRequest`, `SubagentStart`, `SubagentStop`, `CwdChanged`) are installed asynchronous, so they never answer for the session or hold it up. Hooks an earlier version installed — our command on some events and not on the ones added since — are *outdated*: the plan notes it, naming the events it adds, and adds only those; `agentdocker runtimes`, `setup --dry-run` and `setup --health` (hooks check `outdated`) say the same, with the fix `agentdocker setup <runtime>`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse is verified; existing duplicates are repaired offline with `identity-repair`. Codex receives both stdio MCP and activity hooks (including `SessionEnd`, `SubagentStart` and `SubagentStop`, which an existing install gains by running setup again and reviewing in `/hooks`); other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
+Guided Claude Code setup installs the complete hooks adapter, every event in its list, in `.claude/settings.json`; the report-only events (`StopFailure`, `PermissionRequest`, `SubagentStart`, `SubagentStop`, `CwdChanged`) are installed asynchronous, so they never answer for the session or hold it up. Hooks an earlier version installed — our command on some events and not on the ones added since — are *outdated*: the plan notes it, naming the events it adds, and adds only those; a Claude Code plan also carries a note with the environment lines (`CLAUDE_CODE_ENABLE_TELEMETRY`, `OTEL_LOGS_EXPORTER`, `OTEL_EXPORTER_OTLP_PROTOCOL`, `OTEL_EXPORTER_OTLP_ENDPOINT`) that send Claude Code's estimated-cost and token events to the daemon's receiver when `agentd.toml` configures one (`[usage] otlp_listen`), and says to configure that first when it does not — a preview only, since setup writes neither the shell nor the Claude settings for them; `agentdocker runtimes`, `setup --dry-run` and `setup --health` (hooks check `outdated`) say the same, with the fix `agentdocker setup <runtime>`. When MCP registration is missing and the Claude CLI is available, setup delegates registration to that CLI; it does not restore or rewrite `.claude.json` as a file snapshot. The receipt tracks ownership for undo. Identity reuse is verified; existing duplicates are repaired offline with `identity-repair`. Codex receives both stdio MCP and activity hooks (including `SessionEnd`, `SubagentStart` and `SubagentStop`, which an existing install gains by running setup again and reviewing in `/hooks`); other supported JSON MCP hosts receive their stdio adapter. Other runtimes remain discoverable without claiming an unsupported integration. Existing verified registrations are preserved. A disabled or unrecognized entry under the reserved `agentdocker` key requires user review rather than replacement. Inventory labels it `unverified`, even when another alias is configured correctly; **Review setup** and **Check connections** remain available. Missing registration and malformed or unreadable configuration are also reported separately.
 
 ## Shared coordination skill
 
@@ -52,6 +52,40 @@ documented loader; desktop inventory alone does not imply skill support.
 Provider trust, skill policy and tool permissions still apply. No AGENTS.md,
 CLAUDE.md or global approval settings are rewritten.
 
+## The git pre-commit backstop
+
+`agentdocker setup --git-hook`, run inside a repository, plans one change to
+that repository's git `pre-commit` hook (where `git rev-parse --git-path hooks`
+says it is, so `core.hooksPath` and a linked worktree's shared hooks directory
+are honoured): a marked block, in POSIX `sh`, that pipes the staged paths to
+`agentdocker hook pre-commit`. A shell hook you already have keeps every line
+and gains the block first, right after its `#!` line, so a hook that ends in
+`exec` or `exit` still runs it; it gains the execute bit too if it lacked one
+(the plan says so: lines git was skipping will run from then on). A hook in
+another language is left alone, with a note saying what to add to it; when
+there is no hook, the plan creates a new executable `sh` script; a block an
+earlier executable planned is replaced in place. When `core.hooksPath` puts the hooks outside the repository's git
+directory — a directory shared by every repository, or one in the working tree
+that is committed — the plan says that too. Like `--shell`, `--git-hook` saves
+the plan and prints `agentdocker setup --apply PLAN_ID`; `setup --undo
+PLAN_ID` restores the hook to the byte and to its earlier mode. `setup --remove
+--git-hook` takes the block out without the receipt, leaving your lines or
+deleting a file that was only ours, and its undo puts the hook back with the
+mode it had; it touches no tool's configuration. The block in a hook git
+cannot run — one without its execute bit — does not count as set up:
+`--git-hook` plans the bit, with the same warning.
+Ordinary `agentdocker setup`, run inside a repository whose hook lacks the
+block, adds a note that `--git-hook` offers it; it never plans the hook
+unasked.
+
+The hook refuses a commit over a path another live agent holds exclusively,
+naming the holder, its note and when the lease ends, and lets your own leases
+pass. It never starts a daemon and waits at most three seconds for one: when
+the daemon cannot be reached it says so on stderr and lets the commit through.
+That is deliberate — a backstop must never block the person when the daemon is
+down, and with no daemon there are no leases to protect. `git commit
+--no-verify` skips it. The block is POSIX `sh`; Windows is not covered yet.
+
 ## Apply, recovery and undo
 
 Saved plans live in `$AGENTDOCKER_HOME/setup` (default `~/.agentdocker/setup`), with directory mode 0700 and receipt mode 0600. Receipts contain before/after configuration snapshots, which may include secrets already in those files: keep that directory private and out of source control, exports and shared diagnostics. Existing configuration files also keep the private backups used by the legacy setup writer.
@@ -59,6 +93,8 @@ Saved plans live in `$AGENTDOCKER_HOME/setup` (default `~/.agentdocker/setup`), 
 All planned files and delegated provider entries are checked before the first write. Apply refuses configuration changed since preview, a changed symlink target, or an unavailable previewed executable. Each file is replaced atomically, preserving existing content outside the integration and preserving symlink targets. A durable `applying` receipt precedes writes. After interruption, applying the same plan resumes only if every file still matches its recorded before or after state.
 
 A multi-file plan is **not one filesystem transaction**. A failure can leave a partially applied plan; its ID is retained for inspection, resume or undo. Undo has the same recovery behavior, refuses later user edits, restores original bytes, and removes a newly created configuration file while keeping its directory. A completed/undone plan does not silently reapply after external changes. Saved plans can be reopened after the app restarts. The list shows at most the 100 most recently modified receipts; a known ID can still be opened directly. Unreadable or incompatible receipts are preserved and counted while healthy plans remain visible.
+
+A receipt records where its plan stands as one of five phases: `prepared` (saved, nothing written), `applying`, `applied`, `undoing` and `undone`. Apply takes a prepared plan through `applying` to `applied`, resumes one left in `applying`, and changes nothing on an applied one. Undo takes an applying or applied plan through `undoing` to `undone`, resumes one left in `undoing`, and marks a prepared plan undone without writing a file. An undone plan is finished: apply refuses it, and a fresh preview is the way to apply again. A plan an interrupted undo left in `undoing` is half undone, not undone: apply refuses it and names `agentdocker setup --undo PLAN_ID`, which finishes the undo. A receipt whose phase is none of the five (a hand edit, or a receipt another version wrote) is unreadable, not in progress: `--show`, `--apply` and `--undo` refuse it, naming the phase, and the list counts it with the other unreadable receipts and leaves the file as it is. In the window, a plan left in `applying` or `undoing` while no setup operation runs there reads *Apply interrupted* or *Undo interrupted*, and **Connect** or **Undo** finishes it.
 
 For delegated Claude MCP registration, a new receipt records the complete planned
 server entry and a unique ownership marker in its environment. Undo requires
