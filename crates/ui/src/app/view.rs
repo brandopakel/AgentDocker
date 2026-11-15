@@ -1090,6 +1090,13 @@ impl App {
             }
         } else if let agentdocker_core::AgentStatus::Failed { reason } = &agent.status {
             format!("failed: {reason}")
+        } else if let Some(ending) = agent
+            .ending
+            .filter(|ending| *ending != agentdocker_core::RunEnd::Unknown)
+        {
+            // How it ended, where the daemon saw: by a signal, found gone,
+            // never started, deregistered.
+            ending.words()
         } else {
             "ended".to_owned()
         }
@@ -5241,6 +5248,61 @@ mod tests {
         assert_eq!(
             crate::app::App::session_editor_folder(&agent),
             Some(worktree)
+        );
+    }
+
+    /// An ended session's panel says how its run ended where the daemon
+    /// saw it, in its standing chip's detail beside the tool, and says
+    /// "ended" where nothing proved how; a failure keeps its reason.
+    #[test]
+    fn an_ended_session_says_how_its_run_ended() {
+        use super::super::view::testing::seen;
+        use super::*;
+        use agentdocker_core::{AgentSpec, AgentStatus, RunEnd};
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.connected = Ok(());
+        let mut agent = AgentRecord::new(
+            AgentSpec {
+                name: "worker".into(),
+                runtime: "codex".into(),
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        let c = Colors::new(false);
+        let detail = |app: &App, agent: &AgentRecord| {
+            seen(app.inspector(agent, c))
+                .control("inspector-standing")
+                .unwrap()
+                .2
+                .clone()
+                .unwrap_or_default()
+        };
+        for (ending, words) in [
+            (Some(RunEnd::Signal { signal: 15 }), "Ended by signal 15"),
+            (Some(RunEnd::FoundGone), "Ended, found gone"),
+            (Some(RunEnd::NeverStarted), "Never started"),
+            (Some(RunEnd::Deregistered), "Deregistered"),
+            (None, "Ended"),
+            (Some(RunEnd::Unknown), "Ended"),
+        ] {
+            agent.end_run(AgentStatus::Exited { code: None }, ending);
+            let said = detail(&app, &agent);
+            assert!(said.starts_with(words), "{ending:?}: {said}");
+        }
+        agent.end_run(
+            AgentStatus::Failed {
+                reason: "it could not be executed".into(),
+            },
+            Some(RunEnd::NeverStarted),
+        );
+        let said = detail(&app, &agent);
+        assert!(
+            said.starts_with("Failed: it could not be executed"),
+            "{said}"
         );
     }
 

@@ -191,6 +191,13 @@ pub struct ExitReport {
     /// The log was flushed before this report was written.
     pub log_flushed: bool,
     pub at: DateTime<Utc>,
+    /// The owner's proof that the program never began: `Some(true)` only
+    /// where the launch failed before exec in a way that shows it (exec
+    /// itself refused, or the launch dropped before its gate opened).
+    /// `None` everywhere else, which says nothing, and on a report written
+    /// before this was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub never_ran: Option<bool>,
 }
 
 #[cfg(test)]
@@ -224,6 +231,7 @@ mod tests {
                 signal: None,
                 log_flushed: true,
                 at: Utc::now(),
+                never_ran: None,
             },
         };
         let text = serde_json::to_string(&report).unwrap();

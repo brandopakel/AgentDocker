@@ -86,6 +86,7 @@ proptest! {
                     published.push(EventKind::AgentExited {
                         agent: id.clone(),
                         status: status.clone(),
+                        ending: None,
                     });
                     if record.spec.restart.restarts(&status, record.restarts) {
                         record.restarts += 1;

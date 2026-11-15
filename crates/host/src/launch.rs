@@ -182,22 +182,52 @@ pub fn prepare(mut command: Command) -> io::Result<Pending> {
     })
 }
 
+/// A launch that was not activated, and whether that proves its program
+/// never began.
+#[derive(Debug)]
+pub struct ActivationFailure {
+    pub error: io::Error,
+    /// The launch's own spawn reported the failure: exec was refused, so
+    /// no program began. False where the failure says nothing of that (a
+    /// gate that could not be written, a spawn result that never came).
+    pub never_ran: bool,
+}
+
 impl Pending {
     /// Authorize exec only after the PID/protection transaction commits.
     /// A failed exec is returned with Command's original OS error.
-    pub fn activate(mut self) -> io::Result<OwnedChild> {
+    pub fn activate(self) -> io::Result<OwnedChild> {
+        self.activate_proving().map_err(|failure| failure.error)
+    }
+
+    /// [`Pending::activate`], saying of a failure whether it proves the
+    /// program never began: only the spawn's own error does, the gate
+    /// having been opened or not.
+    pub fn activate_proving(mut self) -> Result<OwnedChild, ActivationFailure> {
         if let Err(error) = self.gate.as_mut().expect("gate retained").write_all(b"G") {
-            return match self.result.recv_timeout(DEADLINE) {
-                Ok(Err(launch_error)) => Err(launch_error),
-                _ => Err(error),
-            };
+            return Err(match self.result.recv_timeout(DEADLINE) {
+                Ok(Err(launch_error)) => ActivationFailure {
+                    error: launch_error,
+                    never_ran: true,
+                },
+                _ => ActivationFailure {
+                    error,
+                    never_ran: false,
+                },
+            });
         }
         let result = self
             .result
             .recv_timeout(DEADLINE)
-            .map_err(io::Error::other)?;
+            .map_err(|error| ActivationFailure {
+                error: io::Error::other(error),
+                never_ran: false,
+            })?;
         self.gate.take();
-        result
+        result.map_err(|error| ActivationFailure {
+            error,
+            never_ran: true,
+        })
     }
 }
 
@@ -270,6 +300,34 @@ mod tests {
         let error = pending.activate().err().unwrap();
         wait_gone(pid);
         assert_eq!(error.raw_os_error(), Some(libc::ECANCELED));
+    }
+
+    /// Exec refused, by a program that is not there or a gate closed
+    /// before it opened, is the spawn's own error: proof that no program
+    /// began, said as such.
+    #[test]
+    fn an_exec_the_spawn_refused_proves_the_program_never_ran() {
+        let pending = prepare(Command::new("/nonexistent/agentdocker-no-such-binary")).unwrap();
+        let pid = pending.pid;
+        let failure = pending.activate_proving().err().unwrap();
+        wait_gone(pid);
+        assert!(failure.never_ran);
+        assert_eq!(failure.error.kind(), io::ErrorKind::NotFound);
+
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("executed");
+        let pending = prepare(fixture(&marker)).unwrap();
+        let pid = pending.pid;
+        pending
+            .gate
+            .as_ref()
+            .unwrap()
+            .shutdown(std::net::Shutdown::Both)
+            .unwrap();
+        let failure = pending.activate_proving().err().unwrap();
+        wait_gone(pid);
+        assert!(failure.never_ran);
+        assert!(!marker.exists(), "the program did not run");
     }
 
     /// The property a handover rests on, and the one whose absence made

@@ -264,12 +264,15 @@ impl Daemon {
                         return true;
                     };
                     failed.restarts = attempt;
-                    failed.status = status.clone();
+                    // This attempt's own failure: whatever ended the run
+                    // before is not how this one ended.
+                    failed.end_run(status.clone(), None);
                     failed.finished_at = Some(Utc::now());
                     let event = Event::new(
                         EventKind::AgentExited {
                             agent: id.clone(),
                             status: status.clone(),
+                            ending: None,
                         },
                         Utc::now(),
                     );
@@ -499,7 +502,12 @@ mod tests {
             true,
             Utc::now(),
         );
-        record.status = AgentStatus::Exited { code: Some(1) };
+        // Its last run ended by a signal: the failed restart is this
+        // attempt's own ending, and keeps none of the last one's.
+        record.end_run(
+            AgentStatus::Exited { code: None },
+            Some(agentdocker_core::RunEnd::Signal { signal: 9 }),
+        );
         lock(&daemon.state).insert_record(record.clone());
         std::fs::write(
             daemon.home.join("policy.toml"),
@@ -523,6 +531,9 @@ mod tests {
             "{:?}",
             current.status
         );
+        assert_eq!(current.ending, None, "not the last run's signal");
+        let durable = lock(&daemon.state).store.load_agents().unwrap()[0].clone();
+        assert_eq!(durable.ending, None);
     }
 
     #[tokio::test]

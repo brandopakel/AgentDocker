@@ -3749,7 +3749,179 @@ async fn a_command_that_cannot_start_is_refused_launch_failed() {
         ),
         "{response:?}"
     );
+    // Failed as before, with the owner's proof beside it: exec was
+    // refused, so nothing of it ran.
+    let failed = until_ended(&daemon, |a| a.spec.name == "missing").await;
+    assert!(
+        matches!(&failed.status, AgentStatus::Failed { .. }),
+        "{:?}",
+        failed.status
+    );
+    assert_eq!(failed.ending, Some(agentdocker_core::RunEnd::NeverStarted));
     daemon.stop_all().await;
+}
+
+/// The record a test's agent ended with, waiting for the supervision
+/// that records it.
+async fn until_ended(daemon: &Arc<Daemon>, which: impl Fn(&AgentRecord) -> bool) -> AgentRecord {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(record) = lock(&daemon.state)
+            .registry
+            .all()
+            .find(|a| which(a) && !a.status.is_live())
+            .cloned()
+        {
+            return record;
+        }
+        assert!(std::time::Instant::now() < deadline, "the run never ended");
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+}
+
+/// How a run ended, said where the daemon saw it, beside the status it
+/// has always had, on the record and on its `agent_exited`: a managed
+/// child a stop ended by a signal, an adopted process found gone, and a
+/// registration taken off the register.
+#[tokio::test]
+async fn an_ended_run_says_how_where_the_daemon_saw() {
+    use agentdocker_core::RunEnd;
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let mut events = daemon.subscribe_events();
+
+    let mut sleeper = spec("stopped");
+    sleeper.workdir = Some(dir.path().to_path_buf());
+    sleeper.command = vec!["sleep".into(), "30".into()];
+    let Response::Agent { agent } = daemon.handle(Request::Run { spec: sleeper }).await else {
+        panic!("managed launch failed");
+    };
+    daemon
+        .handle(Request::Stop {
+            agent: agent.id.to_string(),
+            force: true,
+        })
+        .await;
+    let stopped = until_ended(&daemon, |a| a.id == agent.id).await;
+    assert_eq!(stopped.status, AgentStatus::Exited { code: None });
+    assert!(
+        matches!(stopped.ending, Some(RunEnd::Signal { .. })),
+        "{:?}",
+        stopped.ending
+    );
+    assert!(stopped.ended_words().starts_with("ended by signal"));
+
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let adopted = register(&daemon, "adopted", Some(child.id())).await;
+    child.kill().unwrap();
+    child.wait().unwrap();
+    daemon.check_liveness();
+    let gone = lock(&daemon.state)
+        .registry
+        .get(&adopted.id)
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (gone.status, gone.ending),
+        (AgentStatus::Exited { code: None }, Some(RunEnd::FoundGone))
+    );
+
+    let registered = register(&daemon, "registered", None).await;
+    let Response::Agent { agent: off } = daemon
+        .handle(Request::Deregister {
+            agent: registered.id.to_string(),
+        })
+        .await
+    else {
+        panic!("deregistered")
+    };
+    assert_eq!(
+        (off.status.clone(), off.ending),
+        (
+            AgentStatus::Exited { code: Some(0) },
+            Some(RunEnd::Deregistered)
+        ),
+        "the code it always had, and how"
+    );
+    assert_eq!(off.ended_words(), "deregistered");
+
+    // Each agent_exited carries what its record does.
+    let mut said = std::collections::HashMap::new();
+    while let Ok(event) = events.try_recv() {
+        if let EventKind::AgentExited { agent, ending, .. } = event.kind {
+            said.insert(agent, ending);
+        }
+    }
+    assert_eq!(said.get(&agent.id), Some(&stopped.ending));
+    assert_eq!(said.get(&adopted.id), Some(&Some(RunEnd::FoundGone)));
+    assert_eq!(said.get(&registered.id), Some(&Some(RunEnd::Deregistered)));
+    // Durable, as written.
+    let stored = lock(&daemon.state).store.load_agents().unwrap();
+    let durable = |id: &AgentId| stored.iter().find(|a| &a.id == id).unwrap().ending;
+    assert_eq!(durable(&agent.id), stopped.ending);
+    assert_eq!(durable(&adopted.id), Some(RunEnd::FoundGone));
+    assert_eq!(durable(&registered.id), Some(RunEnd::Deregistered));
+    daemon.stop_all().await;
+}
+
+/// A session that comes back under its ended record brings its own run:
+/// how the last one ended is not this one's, in memory or on disk.
+#[tokio::test]
+async fn a_returning_session_does_not_inherit_how_the_last_run_ended() {
+    use agentdocker_core::RunEnd;
+    let dir = TempDir::new().unwrap();
+    let daemon = open(&dir);
+    let register = async |daemon: &Arc<Daemon>, pid: u32| {
+        let mut spec = spec_here("claude-aaaa");
+        spec.runtime = "claude-code".to_owned();
+        spec.labels
+            .insert("session_id".to_owned(), "session-a".to_owned());
+        match daemon
+            .handle(Request::Register {
+                spec,
+                pid: Some(pid),
+                session: None,
+            })
+            .await
+        {
+            Response::Agent { agent } => agent,
+            other => panic!("{other:?}"),
+        }
+    };
+    let mut first = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let ended = register(&daemon, first.id()).await;
+    first.kill().unwrap();
+    first.wait().unwrap();
+    lock(&daemon.state).mark_ended(
+        &ended.id,
+        AgentStatus::Exited { code: None },
+        Some(RunEnd::Signal { signal: 9 }),
+    );
+    let mut second = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .unwrap();
+    let resumed = register(&daemon, second.id()).await;
+    let durable = lock(&daemon.state)
+        .store
+        .load_agents()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.id == ended.id)
+        .unwrap();
+    let _ = second.kill();
+    let _ = second.wait();
+    assert_eq!(resumed.id, ended.id, "the record it ended with");
+    assert!(resumed.status.is_live());
+    assert_eq!(resumed.ending, None);
+    assert_eq!(durable.ending, None);
+    assert_eq!(resumed.ended_words(), resumed.status.to_string());
 }
 
 #[tokio::test]
@@ -9710,7 +9882,7 @@ async fn restore_retires_half_spawned_agents_and_orphaned_leases() {
         .find(|record| record.spec.name == "half")
         .unwrap();
     assert!(events.iter().any(|event| matches!(&event.kind,
-        EventKind::AgentExited { agent, status } if agent == &half.id && status == &half.status)));
+        EventKind::AgentExited { agent, status, .. } if agent == &half.id && status == &half.status)));
     let mut removed: Vec<_> = events
         .iter()
         .filter_map(|event| match &event.kind {

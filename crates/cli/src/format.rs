@@ -1031,9 +1031,18 @@ pub fn event_line(event: &Event) -> String {
         EventKind::AgentStopping { agent, force } => {
             format!("agent stopping   {} force={force}", agent.short())
         }
-        EventKind::AgentExited { agent, status } => {
-            format!("agent exited     {} {status}", agent.short())
-        }
+        EventKind::AgentExited {
+            agent,
+            status,
+            ending,
+        } => match ending.filter(|e| *e != agentdocker_core::RunEnd::Unknown) {
+            Some(ending) => format!(
+                "agent exited     {} {status}, {}",
+                agent.short(),
+                ending.words()
+            ),
+            None => format!("agent exited     {} {status}", agent.short()),
+        },
         EventKind::AgentOutputFailed { agent, reason } => {
             format!("agent log incomplete {}: {reason}", agent.short())
         }
