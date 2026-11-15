@@ -948,10 +948,22 @@ bound), before the person is told how many messages were searched and that
 **Show earlier messages** reads further back. When the archive's start is
 reached first the message is said to be no longer in the archive, and a
 conversation already holding all the window keeps (5,000 messages) is not
-paged further and is told that limit instead. Navigating away — another
-screen, project, session or conversation, or another notification — or
-losing the daemon ends the search, and a page that arrives late moves
-nothing.
+paged further and is told that limit instead.
+
+A notification that was clicked is followed until the person goes somewhere
+else. Any move of theirs that changes the place ends it — another screen,
+project, session, conversation, thread, board or card, or back to the list in a
+narrow window, by whatever control, and a session they launched or reconnected
+when its terminal opens — and so does choosing another plan on Plans, which Back
+does not keep as a place and is somewhere else all the same. Escape and another
+notification end it too; choosing the place or the plan already on view, or
+anything else that leaves them as they are, ends nothing. It ends
+whole, wherever it had got to: a click still waiting for its data then opens
+nothing when the data comes, so the window is not pulled back from where the
+person went, and a message already shown loses its mark and the search for its
+row, so a page that arrives late moves nothing. Losing the daemon ends the
+search for the row; a click still waiting waits on for the reconnection, and
+gives up ten seconds after it was made.
 
 Each Tools row is the tool's mark and name with a state chip; the part of its
 words that is not the state (*Connected*, *Configured*, what is missing) and

@@ -22,6 +22,7 @@ pub(crate) mod panes;
 mod plans;
 mod project_chat;
 pub(crate) mod queue;
+mod route;
 mod secret_reviews;
 mod send_readiness;
 mod sessions;
@@ -600,7 +601,6 @@ pub struct App {
     new_conversation: bool,
     /// A notification's message to scroll to once its conversation's
     /// archive has it.
-    reveal_archived: Option<Seek>,
     /// Archived history per conversation, oldest first, as last fetched.
     history: BTreeMap<String, Vec<agentdocker_core::ArchivedMessage>>,
     /// Where each of the person's newest messages in the open conversation
@@ -808,7 +808,6 @@ impl App {
             conversations_supported: None,
             hidden_reads: BTreeMap::new(),
             new_conversation: false,
-            reveal_archived: None,
             history: BTreeMap::new(),
             deliveries: BTreeMap::new(),
             history_complete: BTreeSet::new(),
@@ -905,7 +904,6 @@ impl App {
             conversations_supported: None,
             hidden_reads: BTreeMap::new(),
             new_conversation: false,
-            reveal_archived: None,
             history: BTreeMap::new(),
             deliveries: BTreeMap::new(),
             history_complete: BTreeSet::new(),
@@ -1437,11 +1435,11 @@ impl App {
                             }
                             if self
                                 .shell
-                                .notification_message
-                                .as_ref()
+                                .route
+                                .message()
                                 .is_some_and(|id| ids.contains(id))
                             {
-                                self.shell.notification_message = None;
+                                self.shell.route.end();
                             }
                         }
                         Err(reason) => self.say(reason),
@@ -1951,7 +1949,7 @@ impl App {
                     // search ends rather than wait on it, and a usage read
                     // on its way is not waited for either — the next
                     // request is not deduplicated against it.
-                    self.cancel_reveal();
+                    self.shell.route.end_search();
                     self.usage_pending = None;
                 }
                 Msg::Status(text) => self.say(text),
@@ -2126,7 +2124,7 @@ impl App {
                         .collect();
                     merged.extend(messages);
                     self.keep_history(conversation.clone(), merged);
-                    if let Some(seek) = &mut self.reveal_archived
+                    if let Some(seek) = self.shell.route.seek_mut()
                         && seek.conversation == conversation
                     {
                         seek.refresh_pending = false;
@@ -2446,7 +2444,7 @@ impl App {
                 self.thread = None;
                 // A notification's search starts over from the newest
                 // page: the page it was waiting for is of the old archive.
-                if let Some(seek) = self.reveal_archived.clone() {
+                if let Some(seek) = self.shell.route.seek().cloned() {
                     self.start_archive_reveal(seek.conversation, seek.message);
                 }
                 self.on_conversation_activity();
@@ -2945,10 +2943,10 @@ impl App {
     /// its message is missing. A new epoch rejects already queued responses,
     /// including one for the same conversation from before the click.
     fn start_archive_reveal(&mut self, conversation: String, message: MessageId) {
-        self.cancel_reveal();
+        self.shell.route.end_search();
         self.history_epoch += 1;
         if self.queue_reveal_page(Cmd::History(conversation.clone(), self.history_epoch)) {
-            self.reveal_archived = Some(Seek {
+            self.shell.route.start_seek(Seek {
                 conversation,
                 message,
                 pages: 0,
@@ -2962,7 +2960,7 @@ impl App {
     /// with an error: there will be no page response to advance its cursor.
     fn queue_reveal_page(&mut self, command: Cmd) -> bool {
         if let Err(queue::Rejected { reason, .. }) = self.tx.send(command) {
-            self.cancel_reveal();
+            self.shell.route.end_search();
             self.say(reason);
             false
         } else {
@@ -2980,14 +2978,14 @@ impl App {
     /// refreshes. The seek is the open conversation's: navigation away
     /// ends it.
     fn seek_archived(&mut self, conversation: &str) {
-        let Some(seek) = self.reveal_archived.clone() else {
+        let Some(seek) = self.shell.route.seek().cloned() else {
             return;
         };
         if seek.conversation != conversation {
             return;
         }
         if self.shell.conversation.as_deref() != Some(conversation) {
-            self.reveal_archived = None;
+            self.shell.route.end_search();
             return;
         }
         if seek.refresh_pending {
@@ -2998,9 +2996,8 @@ impl App {
             return;
         };
         if messages.iter().any(|m| m.envelope.id == seek.message) {
-            self.reveal_archived = None;
+            self.shell.route.found();
             self.shell.pending_answer_reveal = None;
-            self.shell.reveal_archived_next = Some(seek.message);
             return;
         }
         let first = messages.first().map(|m| m.seq);
@@ -3021,7 +3018,7 @@ impl App {
             None
         };
         if let Some(text) = ended {
-            self.reveal_archived = None;
+            self.shell.route.end_search();
             self.say(text);
             return;
         }
@@ -3036,14 +3033,14 @@ impl App {
         // bound drops the page it is given before it is read — so Show
         // earlier messages cannot help there either, and is not offered.
         if loaded + HISTORY_PAGE > HISTORY_KEEP {
-            self.reveal_archived = None;
+            self.shell.route.end_search();
             self.say(format!(
                 "This notification's message is not among the {loaded} messages this window keeps of a conversation."
             ));
             return;
         }
         if seek.pages >= Self::REVEAL_PAGES {
-            self.reveal_archived = None;
+            self.shell.route.end_search();
             self.say(format!(
                 "This notification's message is not in the {loaded} messages loaded; Show earlier messages reads further back."
             ));
@@ -3055,20 +3052,12 @@ impl App {
             first,
             self.history_epoch,
         )) {
-            self.reveal_archived = Some(Seek {
+            self.shell.route.start_seek(Seek {
                 pages: seek.pages + 1,
                 before: Some(first),
                 ..seek
             });
         }
-    }
-
-    /// A seek and a deferred scroll are a notification's, for the
-    /// conversation it opened: another notification, or navigation, ends
-    /// them, so a late page for the old conversation moves nothing.
-    pub(crate) fn cancel_reveal(&mut self) {
-        self.reveal_archived = None;
-        self.shell.reveal_archived_next = None;
     }
 
     fn keep_history(
@@ -7240,32 +7229,29 @@ pub(crate) mod tests {
             before: None,
             refresh_pending: false,
         };
-        app.reveal_archived = Some(seek("m950"));
+        app.shell.route.start_seek(seek("m950"));
         messages
             .send(Msg::History(room.clone(), app.history_epoch, page(801)))
             .unwrap();
         app.drain();
         assert_eq!(
-            app.shell
-                .reveal_archived_next
-                .take()
-                .map(|id| id.to_string()),
+            app.shell.route.take_scroll().map(|id| id.to_string()),
             Some("m950".into())
         );
-        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.route.seek().is_none());
         assert!(
             !requests
                 .try_iter()
                 .any(|c| matches!(c, Cmd::HistoryBefore(..)))
         );
         // Older: the page before is asked for, once per page, until found.
-        app.reveal_archived = Some(seek("m700"));
+        app.shell.route.start_seek(seek("m700"));
         app.seek_archived(&room);
         assert!(matches!(
             requests.try_iter().next(),
             Some(Cmd::HistoryBefore(c, 801, _)) if c == room
         ));
-        assert_eq!(app.reveal_archived.as_ref().map(|r| r.pages), Some(1));
+        assert_eq!(app.shell.route.seek().map(|r| r.pages), Some(1));
         // A refresh of the newest page while the earlier one is on its
         // way asks for nothing more and spends no page.
         messages
@@ -7277,7 +7263,7 @@ pub(crate) mod tests {
             0,
             "no second ask for the same page"
         );
-        assert_eq!(app.reveal_archived.as_ref().map(|r| r.pages), Some(1));
+        assert_eq!(app.shell.route.seek().map(|r| r.pages), Some(1));
         messages
             .send(Msg::HistoryEarlier(
                 room.clone(),
@@ -7287,17 +7273,14 @@ pub(crate) mod tests {
             .unwrap();
         app.drain();
         assert_eq!(
-            app.shell
-                .reveal_archived_next
-                .take()
-                .map(|id| id.to_string()),
+            app.shell.route.take_scroll().map(|id| id.to_string()),
             Some("m700".into())
         );
-        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.route.seek().is_none());
         // A message that is nowhere: the pages before are asked for until
         // the archive's first page says there is no more, then the person
         // is told and nothing more is asked.
-        app.reveal_archived = Some(seek("m0"));
+        app.shell.route.start_seek(seek("m0"));
         app.seek_archived(&room);
         let mut asked = 0;
         for from in [401u64, 201, 1] {
@@ -7324,10 +7307,10 @@ pub(crate) mod tests {
             app.drain();
         }
         assert!(
-            app.reveal_archived.is_none(),
+            app.shell.route.seek().is_none(),
             "given up at the archive's start"
         );
-        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(app.shell.route.scroll().is_none());
         assert!(
             app.status
                 .contains("no longer in this conversation's archive"),
@@ -7370,7 +7353,7 @@ pub(crate) mod tests {
             if c == room && epoch == app.history_epoch && epoch != old_epoch)
         );
         app.seek_archived(&room);
-        assert!(app.reveal_archived.as_ref().unwrap().refresh_pending);
+        assert!(app.shell.route.seek().unwrap().refresh_pending);
         messages
             .send(Msg::History(room.clone(), old_epoch, Vec::new()))
             .unwrap();
@@ -7378,9 +7361,9 @@ pub(crate) mod tests {
             .send(Msg::HistoryEarlier(room.clone(), old_epoch, Vec::new()))
             .unwrap();
         app.drain();
-        assert!(app.reveal_archived.as_ref().unwrap().refresh_pending);
+        assert!(app.shell.route.seek().unwrap().refresh_pending);
         assert!(app.status.is_empty());
-        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(app.shell.route.scroll().is_none());
         messages
             .send(Msg::History(
                 room.clone(),
@@ -7394,8 +7377,8 @@ pub(crate) mod tests {
             ))
             .unwrap();
         app.drain();
-        assert!(app.reveal_archived.is_none());
-        assert_eq!(app.shell.reveal_archived_next.as_ref(), Some(&target));
+        assert!(app.shell.route.seek().is_none());
+        assert_eq!(app.shell.route.scroll(), Some(&target));
         assert!(app.status.is_empty());
         assert_eq!(requests.try_iter().count(), 0);
     }
@@ -7416,7 +7399,7 @@ pub(crate) mod tests {
                 if earlier {
                     app.start_archive_reveal(room.clone(), target.clone());
                     assert_eq!(requests.try_iter().count(), 1);
-                    app.reveal_archived.as_mut().unwrap().refresh_pending = false;
+                    app.shell.route.seek_mut().unwrap().refresh_pending = false;
                     let page = (1..=HISTORY_PAGE as u64)
                         .map(|seq| agentdocker_core::ArchivedMessage {
                             seq,
@@ -7448,8 +7431,8 @@ pub(crate) mod tests {
                 } else {
                     app.start_archive_reveal(room, target);
                 }
-                assert!(app.reveal_archived.is_none());
-                assert!(app.shell.reveal_archived_next.is_none());
+                assert!(app.shell.route.seek().is_none());
+                assert!(app.shell.route.scroll().is_none());
                 assert!(
                     app.status.contains(if stopped {
                         "worker stopped"
@@ -7524,7 +7507,7 @@ pub(crate) mod tests {
         // The page before is empty: the archive starts with what is here,
         // so the search ends with a word instead of waiting for a page
         // that begins earlier.
-        app.reveal_archived = Some(seek("m700"));
+        app.shell.route.start_seek(seek("m700"));
         app.seek_archived(&room);
         assert_eq!(asked(&requests), 1);
         messages
@@ -7535,7 +7518,7 @@ pub(crate) mod tests {
             ))
             .unwrap();
         app.drain();
-        assert!(app.reveal_archived.is_none(), "ended at an empty page");
+        assert!(app.shell.route.seek().is_none(), "ended at an empty page");
         assert!(
             app.status
                 .contains("no longer in this conversation's archive"),
@@ -7548,11 +7531,11 @@ pub(crate) mod tests {
         // message reveals nothing and asks for nothing.
         app.history_complete.remove(&room);
         app.status.clear();
-        app.reveal_archived = Some(seek("m700"));
+        app.shell.route.start_seek(seek("m700"));
         app.seek_archived(&room);
         assert_eq!(asked(&requests), 1);
         let _ = app.update(Message::Navigate(Screen::Agents));
-        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.route.seek().is_none());
         messages
             .send(Msg::HistoryEarlier(
                 room.clone(),
@@ -7562,7 +7545,7 @@ pub(crate) mod tests {
             .unwrap();
         app.drain();
         assert!(
-            app.shell.reveal_archived_next.is_none(),
+            app.shell.route.scroll().is_none(),
             "a late page moves nothing"
         );
         assert!(app.status.is_empty(), "{}", app.status);
@@ -7573,11 +7556,10 @@ pub(crate) mod tests {
         // kept as history but reveals nothing.
         app.screen = Screen::Questions;
         app.shell.conversation = Some(room.clone());
-        app.shell.reveal_archived_next = Some(MessageId::from("m700".to_owned()));
-        app.reveal_archived = Some(seek("m500"));
+        app.shell.route.start_seek(seek("m500"));
         let _ = app.update(Message::SelectConversation("channel:other".to_owned()));
-        assert!(app.shell.reveal_archived_next.is_none());
-        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.route.scroll().is_none());
+        assert!(app.shell.route.seek().is_none());
         messages
             .send(Msg::HistoryEarlier(
                 room.clone(),
@@ -7586,38 +7568,37 @@ pub(crate) mod tests {
             ))
             .unwrap();
         app.drain();
-        assert!(app.shell.reveal_archived_next.is_none());
+        assert!(app.shell.route.scroll().is_none());
         assert_eq!(app.history[&room].first().unwrap().seq, 401);
         let _ = requests.try_iter().count();
 
         // Project navigation hides the conversation: the search and the
         // deferred scroll go with it.
         app.shell.conversation = Some(room.clone());
-        app.shell.reveal_archived_next = Some(MessageId::from("m500".to_owned()));
-        app.reveal_archived = Some(seek("m300"));
+        app.shell.route.start_seek(seek("m300"));
         let _ = app.update(Message::Unassigned);
-        assert!(app.shell.reveal_archived_next.is_none());
-        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.route.scroll().is_none());
+        assert!(app.shell.route.seek().is_none());
         let _ = requests.try_iter().count();
 
         // The daemon goes while a page is on its way: the search ends.
         app.screen = Screen::Questions;
         app.shell.conversation = Some(room.clone());
-        app.reveal_archived = Some(seek("m300"));
+        app.shell.route.start_seek(seek("m300"));
         app.seek_archived(&room);
         assert_eq!(asked(&requests), 1);
         messages.send(Msg::Disconnected("gone".into())).unwrap();
         app.drain();
-        assert!(app.reveal_archived.is_none(), "ended on disconnect");
+        assert!(app.shell.route.seek().is_none(), "ended on disconnect");
 
         // A window holding all it keeps is not paged further, and is not
         // told that Show earlier messages would help.
         app.connected = Ok(());
         let full: Vec<_> = (1..=HISTORY_KEEP as u64).map(archived).collect();
         app.keep_history(room.clone(), full);
-        app.reveal_archived = Some(seek("m0"));
+        app.shell.route.start_seek(seek("m0"));
         app.seek_archived(&room);
-        assert!(app.reveal_archived.is_none());
+        assert!(app.shell.route.seek().is_none());
         assert!(
             app.status.contains("messages this window keeps"),
             "{}",

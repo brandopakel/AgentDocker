@@ -17,13 +17,13 @@ impl App {
             self.shell.conversation = None;
             self.shell.thread = None;
             self.thread = None;
-            self.cancel_reveal();
+            self.shell.route.end_search();
             return;
         };
         self.screen = Screen::Chat;
         self.shell.thread = None;
         self.thread = None;
-        self.cancel_reveal();
+        self.shell.route.end_search();
         let conversation = format!("everyone:{project}");
         self.shell.conversation = Some(conversation.clone());
         self.shell.inbox_open = true;

@@ -4110,7 +4110,7 @@ impl App {
     ) -> Vec<&'a agentdocker_core::Envelope> {
         let start = messages.len().saturating_sub(keep);
         let mut window: Vec<_> = messages[start..].to_vec();
-        if let Some(wanted) = &self.shell.notification_message
+        if let Some(wanted) = self.shell.route.message()
             && let Some(older) = messages[..start].iter().find(|m| m.id == *wanted)
         {
             window.insert(0, older);

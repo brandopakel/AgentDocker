@@ -952,7 +952,7 @@ impl App {
         // The row a notification led to is marked, so a click shows its
         // message even in a conversation that was already open; the id is
         // what the route scrolls to.
-        let routed = self.shell.notification_message.as_ref() == Some(&id);
+        let routed = self.shell.route.message() == Some(&id);
         let (tint, rail) = if open || routed {
             (
                 Some(alpha(c.accent, if c.dark { 0.13 } else { 0.07 })),
