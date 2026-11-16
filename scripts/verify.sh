@@ -368,7 +368,14 @@ record_run() {
   [ -n "$record_eligible" ] || return 0
   record_eligible=""
   local args=(finish --dir "$campaign_dir" --mode "$record_mode" --exit "$1")
-  [ -z "$record_by" ] || args+=(--by "$record_by")
+  if [ -n "$record_by" ]; then
+    args+=(--by "$record_by")
+  elif [ -z "$campaign_transient" ]; then
+    # The slot was taken as a caller inferred from this process's
+    # ancestry: the record asks the same way, and stays unstated if that
+    # finds nobody. A temporary agent means nobody was found.
+    args+=(--infer-caller)
+  fi
   [ -z "$campaign_transient" ] || args+=(--runner "$campaign_transient")
   [ -z "$campaign_socket" ] || args+=(--socket "$campaign_socket")
   python3 scripts/gate_record.py "${args[@]}" </dev/null || true

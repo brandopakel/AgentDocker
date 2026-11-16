@@ -456,9 +456,11 @@ pub fn validate(report: &GateRunReport, received_at: DateTime<Utc>) -> Result<()
             if !matches!(step.name, StepName::Nextest | StepName::Installer) {
                 return Err(format!("{} reports no counts", step.name));
             }
-            let parts = counts.passed.unwrap_or(0)
-                + counts.failed.unwrap_or(0)
-                + counts.skipped.unwrap_or(0);
+            let parts = [counts.passed, counts.failed, counts.skipped]
+                .into_iter()
+                .flatten()
+                .try_fold(0u64, u64::checked_add)
+                .ok_or_else(|| format!("step {}'s counts cannot add up", step.order))?;
             if counts.run.is_some_and(|run| parts > run) {
                 return Err(format!(
                     "step {}'s counts add up to more than it ran",
@@ -709,6 +711,27 @@ mod tests {
                     r.steps[4].counts = Some(Counts {
                         run: Some(2),
                         passed: Some(3),
+                        ..Counts::default()
+                    })
+                }),
+            ),
+            (
+                "counts that overflow",
+                Box::new(|r| {
+                    r.steps[4].counts = Some(Counts {
+                        run: Some(0),
+                        passed: Some(u64::MAX),
+                        failed: Some(0),
+                        skipped: Some(1),
+                    })
+                }),
+            ),
+            (
+                "counts that overflow with no run",
+                Box::new(|r| {
+                    r.steps[4].counts = Some(Counts {
+                        passed: Some(u64::MAX),
+                        skipped: Some(1),
                         ..Counts::default()
                     })
                 }),

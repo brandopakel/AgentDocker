@@ -17,6 +17,9 @@ pub enum GateRunCommand {
         /// The temporary agent verify.sh registered to hold the build slot, kept apart from the caller.
         #[arg(long)]
         runner: Option<String>,
+        /// With no --as, infer the caller from this process's ancestry as a claim does; unstated when that finds nobody.
+        #[arg(long, conflicts_with = "agent")]
+        infer_caller: bool,
         /// The run's report, as JSON.
         #[arg(long)]
         file: PathBuf,
@@ -48,8 +51,16 @@ pub async fn record(client: &Client, command: GateRunCommand) -> Result<()> {
     let GateRunCommand::Record {
         agent,
         runner,
+        infer_caller,
         file,
     } = command;
+    // An inferred caller is one exact live agent, never the person; a
+    // failed inference leaves the caller unstated rather than refusing.
+    let agent = match agent {
+        Some(agent) => Some(agent),
+        None if infer_caller => crate::sender::resolve(client, None).await.ok().flatten(),
+        None => None,
+    };
     let text = std::fs::read_to_string(&file)
         .with_context(|| format!("cannot read {}", file.display()))?;
     let run: GateRunReport = serde_json::from_str(&text)

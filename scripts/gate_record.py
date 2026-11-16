@@ -28,6 +28,11 @@ from pathlib import Path
 
 # The whole of `finish`, the send included.
 DEADLINE = 10
+# The CLI's exits that say nothing was kept: a usage error before anything
+# was sent, or the daemon's own refusal (invalid, not found, conflict,
+# forbidden, unavailable). Any other exit, 1 above all, may follow a
+# record the daemon kept before its answer was lost.
+REFUSED = (2, 3, 4, 5, 6)
 FULL = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 
 
@@ -238,6 +243,8 @@ def finish(args) -> int:
         command += ["--as", args.by]
     if args.runner:
         command += ["--runner", args.runner]
+    if args.infer_caller:
+        command += ["--infer-caller"]
     if args.socket:
         command += ["--socket", args.socket]
     environment = dict(os.environ, AGENTDOCKER_NO_AUTOSTART="1")
@@ -251,12 +258,17 @@ def finish(args) -> int:
     except OSError as error:
         print(f"verify.sh: this run was not recorded ({error})", file=sys.stderr)
         return 1
-    if done.returncode != 0:
-        said = (done.stderr.strip().splitlines() or ["no reason given"])[-1]
+    said = (done.stderr.strip().splitlines() or ["no reason given"])[-1]
+    if done.returncode == 0:
+        print(f"verify.sh: recorded this run as gate run {done.stdout.strip()}", file=sys.stderr)
+        return 0
+    if done.returncode in REFUSED:
         print(f"verify.sh: this run was not recorded ({said})", file=sys.stderr)
         return 1
-    print(f"verify.sh: recorded this run as gate run {done.stdout.strip()}", file=sys.stderr)
-    return 0
+    # 1 (no answer, a broken connection, an unconfirmed change) or anything
+    # else: the daemon may have kept it before the answer was lost.
+    print(f"verify.sh: recording this run was not confirmed ({said})", file=sys.stderr)
+    return 1
 
 
 def main() -> int:
@@ -273,6 +285,7 @@ def main() -> int:
     end.add_argument("--exit", type=int, required=True)
     end.add_argument("--by")
     end.add_argument("--runner")
+    end.add_argument("--infer-caller", action="store_true")
     end.add_argument("--socket")
     args = parser.parse_args()
     # The whole of it, bounded: a hang anywhere is a run not recorded.

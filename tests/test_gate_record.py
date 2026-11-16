@@ -36,8 +36,13 @@ if cmd in ("release", "deregister"): sys.exit(0)
 if cmd == "gate-run":
     if os.environ.get("FAKE_RECORD") == "hang": time.sleep(30)
     path = args[args.index("--file") + 1]
+    if os.environ.get("FAKE_RECORD") == "refuse":
+        sys.stderr.write("Error: run is already recorded with another report or requester (conflict)\n"); sys.exit(4)
     with open(os.environ["FAKE_RECORDS"], "a") as f:
         f.write(json.dumps({"args": args, "run": json.load(open(path))}) + "\n")
+    if os.environ.get("FAKE_RECORD") == "lost":
+        # Kept, then the connection closed before the answer.
+        sys.stderr.write("Error: the daemon closed the connection before answering\n"); sys.exit(1)
     print("run-id-1"); sys.exit(0)
 sys.stderr.write("unexpected " + " ".join(args) + "\n"); sys.exit(9)
 '''
@@ -272,7 +277,32 @@ class GateRecord(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         args = self.only_record()["args"]
         self.assertNotIn("--as", args)
+        self.assertNotIn("--infer-caller", args)
         self.assertEqual(args[args.index("--runner") + 1], "transient-id")
+
+    def test_a_caller_the_claim_inferred_is_inferred_for_the_record_too(self):
+        # No session variable, and the claim needed no --as: the CLI found
+        # the caller from the process's ancestry, so the record asks so too.
+        result = self.run_verify("test", {"FAKE_MODE": "known"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.only_record()["args"]
+        self.assertIn("--infer-caller", args)
+        self.assertNotIn("--as", args)
+        self.assertNotIn("--runner", args)
+
+    def test_a_reply_lost_after_the_record_is_not_confirmed_and_a_refusal_is_not_recorded(self):
+        for record, said, kept in (("lost", "recording this run was not confirmed", 1),
+                                   ("refuse", "this run was not recorded", 0)):
+            result = self.run_verify("test", {"AGENTDOCKER_AGENT_ID": "abc", "FAKE_RECORD": record})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(said, result.stderr, record)
+            self.assertNotIn("recorded this run as", result.stderr, record)
+            self.assertEqual(len(self.records), kept, record)
+            self.assertEqual(sum(1 for call in self.calls if call[0] == "gate-run"), 1, record)
+            self.assertIn("release", [call[0] for call in self.calls], record)
+        failing = self.run_verify("test", {"AGENTDOCKER_AGENT_ID": "abc", "FAKE_RECORD": "lost",
+                                           "CARGO_FAIL": "test:7"})
+        self.assertEqual(failing.returncode, 7, "the run's own exit is kept")
 
     def test_a_daemon_that_never_answers_neither_holds_the_run_nor_changes_it(self):
         result = self.run_verify("test", {"AGENTDOCKER_AGENT_ID": "abc", "FAKE_RECORD": "hang"})

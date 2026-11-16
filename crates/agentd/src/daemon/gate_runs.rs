@@ -422,7 +422,8 @@ mod tests {
         }
     }
 
-    /// A malformed run is refused, and nothing is recorded.
+    /// A malformed run is refused, and nothing is recorded: a short head,
+    /// and counts that cannot add up.
     #[tokio::test]
     async fn a_malformed_run_is_refused() {
         let (_dir, daemon, repo, author) = daemon().await;
@@ -436,7 +437,33 @@ mod tests {
                 ..
             }
         ));
+        // Counts that cannot add up are refused before anything is kept.
+        let mut overflowing = report(&repo, "run-key-0002", "feature", A);
+        overflowing.steps[0].counts = Some(agentdocker_core::verification::Counts {
+            run: Some(0),
+            passed: Some(u64::MAX),
+            failed: Some(0),
+            skipped: Some(1),
+        });
+        let refused = record(&daemon, Some(&author), None, overflowing).await;
+        assert!(
+            matches!(
+                &refused,
+                Response::Error {
+                    code: ErrorCode::Invalid,
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
         assert_eq!(recorded(&daemon), 0);
+        let Response::GateRuns { runs, .. } = daemon
+            .gate_runs(Some(author.as_str()), None, None, None, None)
+            .await
+        else {
+            panic!("read")
+        };
+        assert!(runs.is_empty(), "nothing stored");
     }
 
     /// The newest runs are kept, the oldest forgotten past the bound.
