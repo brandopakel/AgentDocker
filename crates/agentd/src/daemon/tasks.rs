@@ -16,6 +16,7 @@ use chrono::DateTime;
 #[cfg(test)]
 mod board_tests;
 mod catalog;
+mod crew;
 #[cfg(test)]
 mod hold_tests;
 mod memory;
