@@ -70,7 +70,11 @@ pub enum DaemonCommand {
         force: bool,
     },
     /// Show whether the service is installed and the daemon answering.
-    Status,
+    Status {
+        /// Print one JSON object instead of lines.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the daemon in the foreground, as `agentd` does; the arguments
     /// after `run` are its own (`agentdocker daemon run --help` lists them).
     #[command(disable_help_flag = true)]
@@ -464,6 +468,206 @@ fn installed(layout: &Layout, macos: bool) -> bool {
     }
 }
 
+#[cfg(unix)]
+/// The service's definition file, as read now: a fact apart from what the
+/// manager says, since a definition removed by hand proves nothing of what
+/// the manager still runs.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub(crate) enum Definition {
+    Present { path: PathBuf },
+    Absent { path: PathBuf },
+    Unknown { path: PathBuf, error: String },
+}
+
+#[cfg(unix)]
+fn definition(path: &Path) -> Definition {
+    let path = path.to_owned();
+    match std::fs::metadata(&path) {
+        Ok(meta) if meta.is_file() => Definition::Present { path },
+        Ok(_) => Definition::Unknown {
+            error: "not a file".to_owned(),
+            path,
+        },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Definition::Absent { path },
+        Err(error) => Definition::Unknown {
+            error: error.to_string(),
+            path,
+        },
+    }
+}
+
+#[cfg(unix)]
+/// What the service manager says of the service, read within a bound.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub(crate) enum Manager {
+    /// Loaded and running; its process, where the manager names one.
+    Running { pid: Option<u32> },
+    /// Loaded, and the manager says it runs no process for it.
+    LoadedNotRunning,
+    /// The manager has no such service loaded.
+    NotLoaded,
+    /// The manager could not be asked, did not answer in time, or said
+    /// something that cannot be read.
+    Unknown { reason: String },
+}
+
+#[cfg(unix)]
+/// How long a service manager is given to answer `daemon status`.
+const MANAGER_WITHIN: Duration = Duration::from_secs(2);
+
+#[cfg(unix)]
+/// Run `program` with `args`, its output read on a thread so a full pipe
+/// cannot hold it, and give up after [`MANAGER_WITHIN`].
+fn bounded(
+    program: &str,
+    args: &[&str],
+) -> std::result::Result<(std::process::ExitStatus, String), String> {
+    use std::io::Read;
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|error| format!("cannot run {program}: {error}"))?;
+    let mut stdout = child.stdout.take().expect("piped");
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = stdout.read_to_string(&mut text);
+        text
+    });
+    let deadline = std::time::Instant::now() + MANAGER_WITHIN;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{program} did not answer within {MANAGER_WITHIN:?}"
+                ));
+            }
+            Err(error) => return Err(format!("cannot wait for {program}: {error}")),
+        }
+    };
+    Ok((status, reader.join().unwrap_or_default()))
+}
+
+#[cfg(unix)]
+/// `launchctl print`'s answer for a loaded service: its `state` and `pid`.
+pub(crate) fn parse_launchd(text: &str) -> Manager {
+    let field = |name: &str| {
+        text.lines().map(str::trim).find_map(|line| {
+            line.strip_prefix(name)?
+                .trim_start()
+                .strip_prefix('=')
+                .map(str::trim)
+        })
+    };
+    match field("state") {
+        Some("running") => Manager::Running {
+            pid: field("pid")
+                .and_then(|pid| pid.parse().ok())
+                .filter(|pid| *pid > 0),
+        },
+        Some(_) => Manager::LoadedNotRunning,
+        None => Manager::Unknown {
+            reason: "launchctl print gave no state".to_owned(),
+        },
+    }
+}
+
+#[cfg(unix)]
+/// `systemctl --user show -p LoadState -p ActiveState -p MainPID`'s answer.
+pub(crate) fn parse_systemd(text: &str) -> Manager {
+    let field = |name: &str| {
+        text.lines()
+            .find_map(|line| line.trim().strip_prefix(name)?.strip_prefix('='))
+    };
+    let (Some(load), Some(active)) = (field("LoadState"), field("ActiveState")) else {
+        return Manager::Unknown {
+            reason: "systemctl show gave no load or active state".to_owned(),
+        };
+    };
+    if load == "not-found" {
+        return Manager::NotLoaded;
+    }
+    match active {
+        "active" | "reloading" | "activating" | "deactivating" => Manager::Running {
+            pid: field("MainPID")
+                .and_then(|pid| pid.parse().ok())
+                .filter(|pid| *pid > 0),
+        },
+        "inactive" | "failed" => Manager::LoadedNotRunning,
+        other => Manager::Unknown {
+            reason: format!("systemctl reports the unit {other}"),
+        },
+    }
+}
+
+#[cfg(unix)]
+fn manager(layout: &Layout, macos: bool) -> Manager {
+    if macos {
+        let target = layout.target();
+        match bounded("launchctl", &["print", &target]) {
+            Err(reason) => Manager::Unknown { reason },
+            // launchctl's own word for a service it has not loaded.
+            Ok((status, _)) if status.code() == Some(113) => Manager::NotLoaded,
+            Ok((status, _)) if !status.success() => Manager::Unknown {
+                reason: format!("launchctl print exited {status}"),
+            },
+            Ok((_, text)) => parse_launchd(&text),
+        }
+    } else {
+        match bounded(
+            "systemctl",
+            &[
+                "--user",
+                "show",
+                UNIT,
+                "-p",
+                "LoadState",
+                "-p",
+                "ActiveState",
+                "-p",
+                "MainPID",
+            ],
+        ) {
+            Err(reason) => Manager::Unknown { reason },
+            Ok((status, _)) if !status.success() => Manager::Unknown {
+                reason: format!("systemctl show exited {status}"),
+            },
+            Ok((_, text)) => parse_systemd(&text),
+        }
+    }
+}
+
+#[cfg(unix)]
+/// Whether the serving daemon is the service's, only where both are known:
+/// the same pid, or another one, or the manager saying it runs nothing
+/// while a daemon serves. Two reads moments apart: a restart between them
+/// can mislead.
+pub(crate) fn the_service(
+    daemon_pid: Option<u32>,
+    definition: &Definition,
+    manager: &Manager,
+) -> Option<bool> {
+    let daemon_pid = daemon_pid?;
+    match manager {
+        Manager::Running { pid: Some(pid) } => Some(*pid == daemon_pid),
+        Manager::LoadedNotRunning => Some(false),
+        // No service at all: nothing to compare with.
+        Manager::NotLoaded if matches!(definition, Definition::Absent { .. }) => None,
+        Manager::NotLoaded => Some(false),
+        Manager::Running { pid: None } | Manager::Unknown { .. } => None,
+    }
+}
+
 /// Does the service manager consider it loaded / active?
 fn loaded(layout: &Layout, macos: bool) -> bool {
     if !SERVICE_MANAGER {
@@ -808,7 +1012,13 @@ pub async fn run(socket: Option<PathBuf>, args: DaemonArgs) -> Result<()> {
             crate::client::into_result(response).context("reload failed")?;
             println!("reloaded: a new agentd is serving; agents kept running");
         }
-        DaemonCommand::Status => {
+        #[cfg(unix)]
+        DaemonCommand::Status { json } => status(&layout, macos, socket, json).await?,
+        #[cfg(windows)]
+        DaemonCommand::Status { json } => {
+            if json {
+                bail!("daemon status --json is not available on Windows");
+            }
             let definition = if macos {
                 layout.plist_path()
             } else {
@@ -965,9 +1175,366 @@ fn current_uid() -> u32 {
     }
 }
 
+/// `daemon status --json`: the service's two facts, the daemon as observed,
+/// and whether it is the service's, only where both identities are known.
+#[cfg(unix)]
+fn status_value(
+    observation: &agentdocker_host::presence::Observation,
+    socket: &Path,
+    service: Option<(&Definition, &Manager)>,
+    manager_name: &str,
+    log: &Path,
+) -> serde_json::Value {
+    use agentdocker_host::presence::{Answer, Endpoint, Owner};
+    let owner = match &observation.owner {
+        Owner::Live { pid, started_at } => {
+            serde_json::json!({ "state": "live", "pid": pid, "started_at": started_at })
+        }
+        Owner::Gone { pid } => serde_json::json!({ "state": "gone", "pid": pid }),
+        Owner::None => serde_json::json!({ "state": "none" }),
+        Owner::Unknown { why } => serde_json::json!({ "state": "unknown", "why": why }),
+    };
+    let mut daemon = serde_json::json!({
+        "reading": observation.reading().word(),
+        "words": observation.words(),
+        "socket": socket,
+        "owner": owner,
+    });
+    let mut daemon_pid = None;
+    match &observation.endpoint {
+        Endpoint::Answered(Answer::Pong(pong)) => {
+            if let Response::Pong {
+                version,
+                uptime_secs,
+                pid,
+                executable,
+                authority,
+                ..
+            } = pong.as_ref()
+            {
+                daemon_pid = *pid;
+                daemon["version"] = serde_json::json!(version);
+                daemon["uptime_secs"] = serde_json::json!(uptime_secs);
+                daemon["pid"] = serde_json::json!(pid);
+                daemon["executable"] = serde_json::json!(executable);
+                daemon["authority"] = serde_json::json!(authority);
+            }
+        }
+        Endpoint::Answered(Answer::Refused {
+            code,
+            message,
+            details,
+        }) => {
+            daemon["refusal"] =
+                serde_json::json!({ "code": code, "message": message, "details": details });
+        }
+        _ => {}
+    }
+    let the_service =
+        service.and_then(|(definition, manager)| the_service(daemon_pid, definition, manager));
+    serde_json::json!({
+        "service": service.map(|(definition, manager)| serde_json::json!({
+            "manager": manager_name,
+            "definition": definition,
+            "state": manager,
+        })),
+        "daemon": daemon,
+        "the_service": the_service,
+        "log": log,
+    })
+}
+
+/// `daemon status`: the service's definition and its manager's word, each a
+/// fact of its own; the daemon as observed (`presence`), within a bound and
+/// creating nothing; and whether the serving daemon is the service's, said
+/// only where both identities are known.
+#[cfg(unix)]
+async fn status(layout: &Layout, macos: bool, socket: Option<PathBuf>, json: bool) -> Result<()> {
+    use agentdocker_host::presence::{self, Answer, Endpoint, Reading};
+    let socket = socket.unwrap_or_else(|| agentdocker_host::dirs::socket_path(&layout.home));
+    let lock = paths::daemon_lock(&layout.home, &socket);
+    let observation =
+        presence::observe(&socket, &lock, Instant::now() + Duration::from_secs(3)).await;
+    let manager_name = if macos { "launchd" } else { "systemd" };
+    let service = SERVICE_MANAGER.then(|| {
+        let path = if macos {
+            layout.plist_path()
+        } else {
+            layout.unit_path()
+        };
+        (definition(&path), manager(layout, macos))
+    });
+    let pong = match &observation.endpoint {
+        Endpoint::Answered(Answer::Pong(response)) => match response.as_ref() {
+            Response::Pong { .. } => Some(response.as_ref()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let daemon_pid = match pong {
+        Some(Response::Pong { pid, .. }) => *pid,
+        _ => None,
+    };
+    let the_service = service
+        .as_ref()
+        .and_then(|(definition, manager)| the_service(daemon_pid, definition, manager));
+    if json {
+        let value = status_value(
+            &observation,
+            &socket,
+            service
+                .as_ref()
+                .map(|(definition, manager)| (definition, manager)),
+            manager_name,
+            &layout.log(),
+        );
+        println!("{}", serde_json::to_string_pretty(&value)?);
+        return Ok(());
+    }
+    match &service {
+        None => println!("service   none here"),
+        Some((Definition::Absent { .. }, Manager::NotLoaded)) => println!(
+            "service   not installed (`agentdocker daemon install` adds a {manager_name} user service)"
+        ),
+        Some((definition, manager)) => {
+            let state = match manager {
+                Manager::Running { pid: Some(pid) } => format!("loaded, running (pid {pid})"),
+                Manager::Running { pid: None } => "loaded, running".to_owned(),
+                Manager::LoadedNotRunning => "loaded, not running".to_owned(),
+                Manager::NotLoaded => "not loaded".to_owned(),
+                Manager::Unknown { reason } => format!("state unknown ({reason})"),
+            };
+            match definition {
+                Definition::Present { path } => {
+                    println!("service   {manager_name}, {state} ({})", path.display())
+                }
+                Definition::Absent { path } => println!(
+                    "service   {manager_name}, {state}, with no definition at {}",
+                    path.display()
+                ),
+                Definition::Unknown { path, error } => println!(
+                    "service   {manager_name}, {state}; its definition {} cannot be read: {error}",
+                    path.display()
+                ),
+            }
+        }
+    }
+    match (&observation.endpoint, pong) {
+        (
+            _,
+            Some(Response::Pong {
+                version,
+                uptime_secs,
+                restricted,
+                pid,
+                executable,
+                experimental,
+                judge,
+                authority,
+                ..
+            }),
+        ) => {
+            println!(
+                "daemon    agentd {version} up {} at {}{}",
+                format::span_secs(*uptime_secs),
+                socket.display(),
+                pid.map(|pid| format!(" (pid {pid})")).unwrap_or_default()
+            );
+            if let Some(executable) = executable {
+                println!("serving   {}", executable.display());
+            }
+            if let Some(authority) = authority {
+                println!("authority {}", authority_text(*authority));
+            }
+            if let Some(switches) = experimental {
+                println!(
+                    "switches  experimental: {} ([experimental] in {})",
+                    switches.summary(),
+                    layout
+                        .home
+                        .join(agentdocker_core::config::FILE_NAME)
+                        .display()
+                );
+            }
+            if let Some(judge) = judge {
+                println!("judge     {} ([judge] in agentd.toml)", judge.summary());
+            }
+            match restricted {
+                Some(path) => println!("container {}", path.display()),
+                None => println!("container endpoint off (see the daemon log); grants are refused"),
+            }
+        }
+        (
+            Endpoint::Answered(Answer::Refused {
+                code,
+                message,
+                details,
+            }),
+            _,
+        ) if code == "storage_unavailable" => {
+            for line in storage_failed_lines(&socket, message, details.as_ref()) {
+                println!("{line}");
+            }
+        }
+        _ => {
+            if observation.reading() == Reading::Vacant {
+                println!(
+                    "daemon    not running (clients start it on demand at {})",
+                    socket.display()
+                );
+            } else {
+                println!("daemon    {} at {}", observation.words(), socket.display());
+            }
+            println!(
+                "container {}",
+                paths::container_socket(&layout.home).display()
+            );
+        }
+    }
+    if the_service == Some(false) {
+        let service = match service.as_ref().map(|(_, manager)| manager) {
+            Some(Manager::Running { pid: Some(pid) }) => format!("pid {pid}"),
+            Some(Manager::NotLoaded) => "it is not loaded".to_owned(),
+            _ => "it runs no process".to_owned(),
+        };
+        println!(
+            "note      the serving daemon (pid {}) is not the {manager_name} service's ({service}); the two were read moments apart",
+            daemon_pid.unwrap_or_default()
+        );
+    }
+    println!("log       {}", layout.log().display());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// launchctl's and systemd's words read as the manager's own facts; a
+    /// word that cannot be read is unknown, never "not loaded".
+    #[cfg(unix)]
+    #[test]
+    fn a_managers_answer_is_read_as_its_own_fact() {
+        let launchd = "gui/501/dev.agentdocker.agentd = {\n\tactive count = 1\n\tstate = running\n\tpid = 4242\n}\n";
+        assert_eq!(parse_launchd(launchd), Manager::Running { pid: Some(4242) });
+        assert_eq!(
+            parse_launchd("\tstate = not running\n"),
+            Manager::LoadedNotRunning
+        );
+        assert!(matches!(parse_launchd("garbage"), Manager::Unknown { .. }));
+        assert_eq!(
+            parse_launchd("\tstate = running\n\tpid = nonsense\n"),
+            Manager::Running { pid: None }
+        );
+        assert_eq!(
+            parse_systemd("LoadState=loaded\nActiveState=active\nMainPID=4242\n"),
+            Manager::Running { pid: Some(4242) }
+        );
+        assert_eq!(
+            parse_systemd("LoadState=loaded\nActiveState=active\nMainPID=0\n"),
+            Manager::Running { pid: None }
+        );
+        assert_eq!(
+            parse_systemd("LoadState=loaded\nActiveState=failed\nMainPID=0\n"),
+            Manager::LoadedNotRunning
+        );
+        assert_eq!(
+            parse_systemd("LoadState=not-found\nActiveState=inactive\nMainPID=0\n"),
+            Manager::NotLoaded
+        );
+        assert!(matches!(
+            parse_systemd("MainPID=1\n"),
+            Manager::Unknown { .. }
+        ));
+    }
+
+    /// Whether the serving daemon is the service's is said only where both
+    /// identities are known; a missing pid is unknown, never different.
+    #[cfg(unix)]
+    #[test]
+    fn the_service_is_named_only_where_both_identities_are_known() {
+        let present = Definition::Present { path: "/d".into() };
+        let absent = Definition::Absent { path: "/d".into() };
+        let running = |pid| Manager::Running { pid };
+        let unknown = Manager::Unknown { reason: "x".into() };
+        let cases = [
+            (Some(7), &present, running(Some(7)), Some(true)),
+            (Some(7), &present, running(Some(8)), Some(false)),
+            (None, &present, running(Some(7)), None),
+            (Some(7), &present, running(None), None),
+            (Some(7), &present, unknown.clone(), None),
+            (Some(7), &present, Manager::LoadedNotRunning, Some(false)),
+            (Some(7), &present, Manager::NotLoaded, Some(false)),
+            (Some(7), &absent, Manager::NotLoaded, None),
+            (None, &absent, unknown, None),
+        ];
+        for (daemon, definition, manager, expected) in cases {
+            assert_eq!(
+                the_service(daemon, definition, &manager),
+                expected,
+                "{daemon:?} {definition:?} {manager:?}"
+            );
+        }
+    }
+
+    /// `daemon status --json` from an observation: the reading and its
+    /// words, a refusal kept whole, and the identity only where known.
+    #[cfg(unix)]
+    #[test]
+    fn status_json_says_what_was_observed() {
+        use agentdocker_host::presence::{Answer, Endpoint, Observation, Owner};
+        let socket = Path::new("/s/agentd.sock");
+        let log = Path::new("/s/agentd.log");
+        let vacant = Observation {
+            endpoint: Endpoint::Absent,
+            owner: Owner::None,
+        };
+        let value = status_value(&vacant, socket, None, "launchd", log);
+        assert_eq!(value["daemon"]["reading"], "vacant");
+        assert_eq!(value["daemon"]["owner"]["state"], "none");
+        assert_eq!(value["service"], serde_json::Value::Null);
+        assert_eq!(value["the_service"], serde_json::Value::Null);
+        let refused = Observation {
+            endpoint: Endpoint::Answered(Answer::Refused {
+                code: "storage_unavailable".into(),
+                message: "disk full".into(),
+                details: Some(serde_json::json!({ "pid": 7 })),
+            }),
+            owner: Owner::Unknown {
+                why: "no owner record".into(),
+            },
+        };
+        let value = status_value(&refused, socket, None, "launchd", log);
+        assert_eq!(value["daemon"]["reading"], "refusing");
+        assert_eq!(value["daemon"]["refusal"]["code"], "storage_unavailable");
+        assert_eq!(value["daemon"]["refusal"]["details"]["pid"], 7);
+        let serving = Observation {
+            endpoint: Endpoint::Answered(Answer::Pong(Box::new(Response::Pong {
+                version: "1".into(),
+                uptime_secs: 3,
+                restricted: None,
+                pid: Some(7),
+                executable: None,
+                experimental: None,
+                judge: None,
+                features: Vec::new(),
+                authority: None,
+            }))),
+            owner: Owner::None,
+        };
+        let definition = Definition::Present { path: "/d".into() };
+        let other = Manager::Running { pid: Some(8) };
+        let value = status_value(
+            &serving,
+            socket,
+            Some((&definition, &other)),
+            "launchd",
+            log,
+        );
+        assert_eq!(value["daemon"]["pid"], 7);
+        assert_eq!(value["service"]["state"]["state"], "running");
+        assert_eq!(value["the_service"], false);
+    }
 
     #[test]
     fn each_authority_is_said_in_words_and_a_storage_failure_is_not_not_running() {

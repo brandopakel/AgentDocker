@@ -188,6 +188,18 @@ its writes keep answering `transferring`. A daemon whose storage failed refuses 
 `daemon status` then says it answers, with its pid and version, and prints the
 failure as its authority, where it would otherwise print `not running`.
 
+On macOS and Linux, `daemon status` looks at the daemon without starting or
+creating anything, and says what it saw: serving; answering but not ready;
+connected but not answering; nothing listening while the daemon recorded in
+its lock file is alive (it may be starting or stopping); not running; or that
+the socket cannot be reached. The service line reads the service's
+definition and its manager separately, and says `state unknown` when the
+manager cannot be asked. When a daemon serves and the service manager names
+a different process, or none, a `note` line says the serving daemon is not
+the service's; with either process unknown it says nothing. `daemon status
+--json` prints all of it as one object (`service`, `daemon` with its
+`reading`, `the_service`: true, false or null, and `log`).
+
 For an on-demand or portable home without an ownership record, `daemon status`
 reports no owned service and checks the daemon directly. It does not start
 PowerShell to enumerate unrelated scheduled tasks.

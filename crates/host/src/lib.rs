@@ -14,6 +14,8 @@ pub mod installation;
 pub mod launch;
 pub mod lock;
 pub mod policy_file;
+#[cfg(unix)]
+pub mod presence;
 pub mod procinfo;
 pub mod program;
 pub mod project;

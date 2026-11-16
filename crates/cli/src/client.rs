@@ -10,8 +10,10 @@ use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use agentdocker_core::{Request, Response, paths};
+use agentdocker_host::dirs;
 use agentdocker_host::ipc::Stream;
-use agentdocker_host::{dirs, lock};
+#[cfg(windows)]
+use agentdocker_host::lock;
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -140,12 +142,105 @@ impl Client {
         Ok(reader)
     }
 
+    /// Start `agentd` for this socket when nobody listens, then wait for it
+    /// to answer, every look inside one deadline
+    /// ([`agentdocker_host::presence`]). Nothing here takes the daemon's
+    /// lock: a client that finds nobody listening and no live recorded
+    /// owner spawns a daemon, whose own lock attempt decides which one
+    /// serves, so a client never turns a starting daemon away. A daemon
+    /// that may be starting or stopping is looked at again; our child
+    /// exiting as a duplicate (another took the lock first) is a reason to
+    /// keep looking, and to spawn again only if nobody is serving; one that
+    /// answers, even with a refusal, is connected to, so the caller hears
+    /// its word on its own request.
+    #[cfg(unix)]
+    async fn start_daemon(&self, timeout: Duration) -> Result<Stream> {
+        let home = dirs::home();
+        self.start_with(&home, timeout, || spawn_agentd(&self.socket, &home))
+            .await
+    }
+
+    /// [`Client::start_daemon`], with its way of spawning a daemon given:
+    /// what the tests stand in for.
+    #[cfg(unix)]
+    async fn start_with(
+        &self,
+        home: &Path,
+        timeout: Duration,
+        mut spawn: impl FnMut() -> Result<std::process::Child>,
+    ) -> Result<Stream> {
+        use agentdocker_host::presence::{self, Next};
+        let lock_path = paths::daemon_lock(home, &self.socket);
+        let log_path = paths::daemon_log(home);
+        let deadline = Instant::now() + timeout;
+        let mut child = StartingChild(None);
+        let mut spawned_at: Option<Instant> = None;
+        loop {
+            dirs::check_socket_parent(&self.socket)?;
+            if let Some(status) = child.0.as_mut().and_then(|c| c.try_wait().ok().flatten()) {
+                child.0 = None;
+                if !status.success() {
+                    bail!(
+                        "agentd exited ({status}) before listening on {}:\n{}",
+                        self.socket.display(),
+                        log_tail(&log_path, 6)
+                    );
+                }
+            }
+            let look = (Instant::now() + presence::ANSWER_WITHIN).min(deadline);
+            let observation = presence::observe(&self.socket, &lock_path, look).await;
+            match presence::next(&observation) {
+                Next::Connect => match Stream::connect(&self.socket).await {
+                    Ok(stream) => {
+                        child.0.take();
+                        return Ok(stream);
+                    }
+                    // Gone again between the look and the connection.
+                    Err(err) if absent(&err) => {}
+                    Err(err) => {
+                        return Err(err).with_context(|| {
+                            format!("cannot reach agentd at {}", self.socket.display())
+                        });
+                    }
+                },
+                Next::Fail => bail!(
+                    "cannot reach agentd at {}: {}",
+                    self.socket.display(),
+                    observation.words()
+                ),
+                Next::Spawn
+                    if child.0.is_none()
+                        && spawned_at.is_none_or(|at| at.elapsed() >= presence::RESPAWN_AFTER) =>
+                {
+                    prepare_home(home, &lock_path)?;
+                    child.0 = Some(spawn()?);
+                    spawned_at = Some(Instant::now());
+                }
+                Next::Spawn | Next::Wait => {}
+            }
+            let Some(rest) = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|rest| !rest.is_zero())
+            else {
+                bail!(
+                    "agentd did not come up at {} within {timeout:?}: {} (see {}):\n{}",
+                    self.socket.display(),
+                    observation.words(),
+                    log_path.display(),
+                    log_tail(&log_path, 6)
+                );
+            };
+            tokio::time::sleep(rest.min(Duration::from_millis(50))).await;
+        }
+    }
+
     /// Start `agentd` for this socket if nobody has, then wait for it to
     /// listen. The lock beside the socket says whether a daemon exists:
     /// getting it means none does (it is released again at once, because
     /// the daemon must take it itself); not getting it means one is up or
     /// starting, so only the wait is needed. Two clients racing here may
     /// both spawn a daemon; the loser exits when it finds the lock taken.
+    #[cfg(windows)]
     async fn start_daemon(&self, timeout: Duration) -> Result<Stream> {
         let home = dirs::home();
         let lock_path = paths::daemon_lock(&home, &self.socket);
@@ -440,6 +535,7 @@ impl Drop for StartingChild {
     }
 }
 
+#[cfg(windows)]
 async fn wait_for_start(
     socket: &Path,
     log_path: &Path,
@@ -516,6 +612,24 @@ fn spawn_agentd(socket: &Path, home: &Path) -> Result<std::process::Child> {
         .stderr(log)
         .spawn()
         .with_context(|| format!("cannot start {}", exe.display()))
+}
+
+/// Make the home and the lock's directory as the daemon makes them, on the
+/// one path allowed to create state: a client that has decided to spawn.
+#[cfg(unix)]
+fn prepare_home(home: &Path, lock_path: &Path) -> Result<()> {
+    if let Some(parent) = lock_path.parent() {
+        if parent == home {
+            dirs::secure_state_dir(home)
+                .with_context(|| format!("home {} is unusable", home.display()))?;
+        } else if parent == paths::socket_dir(home) {
+            dirs::ensure_private_dir(parent)
+                .with_context(|| format!("socket directory {} is unusable", parent.display()))?;
+        } else {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    Ok(())
 }
 
 /// How much of the daemon log's end is read for an error message.
@@ -1229,33 +1343,60 @@ mod stream_tests {
         std::fs::remove_dir(parent).unwrap();
     }
 
+    /// A pong, as a daemon answers `ping`, on a thread of its own.
+    fn answering(socket: &Path) -> std::os::unix::net::UnixListener {
+        use std::io::{BufRead, Write};
+        let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        let serving = listener.try_clone().unwrap();
+        std::thread::spawn(move || {
+            for stream in serving.incoming() {
+                let Ok(stream) = stream else { return };
+                let mut line = String::new();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let _ = writeln!(
+                    &stream,
+                    r#"{{"type":"pong","version":"0.0.0","uptime_secs":0}}"#
+                );
+            }
+        });
+        listener
+    }
+
     #[tokio::test]
     async fn startup_timeout_reaps_our_child_and_success_releases_it() {
         let tmp = tempfile::tempdir().unwrap();
         let socket = tmp.path().join("sock");
-        let log = tmp.path().join("log");
-        let child = std::process::Command::new("/bin/sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let pid = child.id();
+        let home = tmp.path().join("home");
+        let client = Client::new(Some(socket.clone()));
+        let mut pid = 0u32;
+        let error = client
+            .start_with(&home, Duration::from_millis(30), || {
+                let child = std::process::Command::new("/bin/sleep").arg("30").spawn()?;
+                pid = child.id();
+                Ok(child)
+            })
+            .await
+            .unwrap_err();
         assert!(
-            wait_for_start(&socket, &log, Duration::from_millis(30), Some(child))
-                .await
-                .is_err()
+            format!("{error:#}").contains("did not come up"),
+            "{error:#}"
         );
         assert_eq!(
             unsafe { libc::kill(pid as i32, 0) },
             -1,
             "timed-out child was reaped"
         );
-        let listener = UnixListener::bind(&socket).unwrap();
-        let child = std::process::Command::new("/bin/sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
-        let pid = child.id();
-        let stream = wait_for_start(&socket, &log, Duration::from_secs(1), Some(child))
+        let mut listener = None;
+        let stream = client
+            .start_with(&home, Duration::from_secs(2), || {
+                let child = std::process::Command::new("/bin/sleep").arg("30").spawn()?;
+                pid = child.id();
+                listener = Some(answering(&socket));
+                Ok(child)
+            })
             .await
             .unwrap();
         assert_eq!(

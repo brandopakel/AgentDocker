@@ -393,13 +393,13 @@ pub(super) async fn handle(
             | DaemonCommand::Start
             | DaemonCommand::Stop
             | DaemonCommand::Restart
-            | DaemonCommand::Status
+            | DaemonCommand::Status { .. }
     );
     if !relevant {
         return Ok(false);
     }
     let receipt = read_receipt(layout)?;
-    if matches!(command, DaemonCommand::Status) {
+    if matches!(command, DaemonCommand::Status { .. }) {
         // A portable/on-demand home has no owned login task. Querying the
         // scheduler here adds a cold PowerShell/CIM dependency to daemon
         // health, and can time out before the responsive daemon is queried.
@@ -636,9 +636,13 @@ mod tests {
         // No PowerShell is available on Unix test hosts. The same public
         // handler must still reach the common daemon-only status path.
         assert!(
-            !handle(&layout, &layout.client(), &DaemonCommand::Status)
-                .await
-                .unwrap()
+            !handle(
+                &layout,
+                &layout.client(),
+                &DaemonCommand::Status { json: false }
+            )
+            .await
+            .unwrap()
         );
         assert!(!receipt_path(&layout).exists());
         assert!(std::fs::read_dir(&layout.home).unwrap().next().is_none());

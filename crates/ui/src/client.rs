@@ -10,7 +10,9 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use agentdocker_core::{Event, Request, Response, paths};
-use agentdocker_host::{dirs, lock};
+use agentdocker_host::dirs;
+#[cfg(windows)]
+use agentdocker_host::lock;
 use anyhow::{Context, Result, bail};
 
 #[derive(Clone, Debug)]
@@ -247,6 +249,105 @@ impl Client {
                 self.socket.display()
             );
         }
+        self.start()
+    }
+
+    /// Start `agentd` when nobody listens, then wait for it to answer, as
+    /// the CLI does ([`agentdocker_host::presence`]): nothing here takes
+    /// the daemon's lock; a spawned daemon's own lock attempt decides which
+    /// one serves; a daemon that may be starting or stopping is looked at
+    /// again inside the one deadline; one that answers, even with a
+    /// refusal, is connected to. One start per [`START_COOLDOWN`] for the
+    /// whole window, whichever thread asks.
+    #[cfg(unix)]
+    fn start(&self) -> Result<Stream> {
+        self.start_with(START_TIMEOUT, || {
+            if !may_spawn() {
+                bail!(
+                    "agentd is not listening at {} (a start was attempted moments ago)",
+                    self.socket.display()
+                );
+            }
+            spawn_agentd(&self.socket, &self.home)
+        })
+    }
+
+    /// [`Client::start`], with the start's deadline and its way of spawning
+    /// a daemon given: what the tests stand in for.
+    #[cfg(unix)]
+    fn start_with(
+        &self,
+        timeout: Duration,
+        mut spawn: impl FnMut() -> Result<Child>,
+    ) -> Result<Stream> {
+        use agentdocker_host::presence::{self, Next};
+        let lock_path = paths::daemon_lock(&self.home, &self.socket);
+        let deadline = Instant::now() + timeout;
+        let mut child = StartingChild(None);
+        loop {
+            check_socket(&self.socket)?;
+            if let Some(process) = child.0.as_mut()
+                && let Some(status) = process.try_wait()?
+            {
+                child.0 = None;
+                if !status.success() {
+                    bail!("agentd exited during startup ({status})");
+                }
+            }
+            let look = (Instant::now() + presence::ANSWER_WITHIN).min(deadline);
+            let observation = presence::observe_blocking(&self.socket, &lock_path, look);
+            match presence::next(&observation) {
+                Next::Connect => match Stream::connect(&self.socket) {
+                    Ok(stream) => {
+                        // The app stays open, so reap our detached daemon if
+                        // it later exits.
+                        if let Some(mut process) = child.0.take() {
+                            std::thread::spawn(move || {
+                                let _ = process.wait();
+                            });
+                        }
+                        return Ok(stream);
+                    }
+                    Err(err) if absent(&err) => {}
+                    Err(err) => {
+                        return Err(err).with_context(|| {
+                            format!("cannot reach agentd at {}", self.socket.display())
+                        });
+                    }
+                },
+                Next::Fail => bail!(
+                    "cannot reach agentd at {}: {}",
+                    self.socket.display(),
+                    observation.words()
+                ),
+                Next::Spawn if child.0.is_none() => {
+                    if let Some(parent) = lock_path.parent() {
+                        if parent == paths::socket_dir(&self.home) && parent != self.home {
+                            dirs::ensure_private_dir(parent)?;
+                        } else {
+                            std::fs::create_dir_all(parent)?;
+                        }
+                    }
+                    child.0 = Some(spawn()?);
+                }
+                Next::Spawn | Next::Wait => {}
+            }
+            let Some(rest) = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|rest| !rest.is_zero())
+            else {
+                bail!(
+                    "agentd did not come up at {}: {}",
+                    self.socket.display(),
+                    observation.words()
+                );
+            };
+            std::thread::sleep(rest.min(Duration::from_millis(50)));
+        }
+    }
+
+    #[cfg(windows)]
+    fn start(&self) -> Result<Stream> {
         if !may_spawn() {
             bail!(
                 "agentd is not listening at {} (a start was attempted moments ago)",
@@ -304,6 +405,7 @@ impl Drop for StartingChild {
     }
 }
 
+#[cfg(windows)]
 fn wait_for_start(socket: &Path, timeout: Duration, child: Option<Child>) -> Result<Stream> {
     let mut child = StartingChild(child);
     let deadline = Instant::now() + timeout;
@@ -566,27 +668,70 @@ mod tests {
         assert!(!home.exists());
     }
 
+    /// A pong, as a daemon answers `ping`.
+    fn answering(socket: &Path) -> (UnixListener, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, Write};
+        let listener = UnixListener::bind(socket).unwrap();
+        let serving = listener.try_clone().unwrap();
+        let thread = std::thread::spawn(move || {
+            for stream in serving.incoming() {
+                let Ok(stream) = stream else { return };
+                let mut line = String::new();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                    continue;
+                }
+                let _ = writeln!(
+                    &stream,
+                    r#"{{"type":"pong","version":"0.0.0","uptime_secs":0}}"#
+                );
+            }
+        });
+        (listener, thread)
+    }
+
     #[test]
     fn startup_failure_reaps_owned_child_and_success_keeps_it_alive() {
         let tmp = tempfile::tempdir().unwrap();
         let socket = tmp.path().join("sock");
-        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
-        let pid = child.id() as i32;
-        assert!(wait_for_start(&socket, Duration::ZERO, Some(child)).is_err());
+        let client = Client::isolated(socket.clone());
+        let mut pid = 0;
+        let error = client
+            .start_with(Duration::ZERO, || {
+                let child = Command::new("/bin/sleep").arg("30").spawn()?;
+                pid = child.id() as i32;
+                Ok(child)
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("did not come up"), "{error}");
         // SAFETY: the PID belongs to the child started above; signal 0 only probes.
-        assert_eq!(unsafe { libc::kill(pid, 0) }, -1);
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            -1,
+            "an owned child is reaped"
+        );
 
-        let child = Command::new("/bin/sh")
-            .args(["-c", "exit 7"])
-            .spawn()
+        let error = client
+            .start_with(Duration::from_secs(2), || {
+                Ok(Command::new("/bin/sh").args(["-c", "exit 7"]).spawn()?)
+            })
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("exited during startup"),
+            "{error}"
+        );
+
+        // The daemon comes up after the spawn: our child is kept, and
+        // reaped in the background when it exits later.
+        let mut serving = None;
+        let stream = client
+            .start_with(Duration::from_secs(2), || {
+                let child = Command::new("/bin/sleep").arg("30").spawn()?;
+                pid = child.id() as i32;
+                serving = Some(answering(&socket));
+                Ok(child)
+            })
             .unwrap();
-        let error = wait_for_start(&socket, Duration::from_secs(2), Some(child)).unwrap_err();
-        assert!(error.to_string().contains("exited during startup"));
-
-        let listener = UnixListener::bind(&socket).unwrap();
-        let child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
-        let pid = child.id() as i32;
-        let stream = wait_for_start(&socket, Duration::from_secs(1), Some(child)).unwrap();
         // SAFETY: only this test's still-running child is probed and terminated.
         let alive = unsafe { libc::kill(pid, 0) };
         unsafe {
@@ -603,6 +748,6 @@ mod tests {
             "the background waiter reaps a later exit"
         );
         drop(stream);
-        drop(listener);
+        drop(serving);
     }
 }
