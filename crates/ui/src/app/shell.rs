@@ -515,7 +515,9 @@ pub(super) struct State {
     /// list decides — a session that ended at once stays in the list with
     /// its exit and no pane opens on it; an older list waits.
     pub attach_when_listed: Option<(String, Option<chrono::DateTime<chrono::Utc>>)>,
-    pub error: Option<String>,
+    /// The page's standing alerts, each by what raised it
+    /// (`alerts::Alerts`).
+    pub alerts: super::alerts::Alerts,
     pub setup_error: Option<String>,
     pub answer_errors: BTreeMap<MessageId, String>,
     pub file_review: Option<MessageId>,
@@ -864,10 +866,19 @@ impl State {
         } else {
             (None, None)
         };
-        let error = error.or_else(|| exclusions_failed.as_ref().map(|(_, m)| m.clone()));
+        // Each says its own: the workspace's warning and the hooks' can
+        // stand together, where the second was dropped when the first
+        // was there.
+        let mut alerts = super::alerts::Alerts::default();
+        if let Some(error) = error {
+            alerts.raise(Source::Workspace, error);
+        }
+        if let Some((_, message)) = &exclusions_failed {
+            alerts.raise(Source::Exclusions, message.clone());
+        }
         Self {
             catalog,
-            error,
+            alerts,
             save_enabled,
             exclusions_synced,
             exclusions_failed,
@@ -1054,7 +1065,7 @@ impl State {
             {
                 draft.error = Some(error.into());
             } else {
-                self.error = Some(error.into());
+                self.alerts.raise(Source::Draft, error);
             }
             return false;
         }
@@ -1112,9 +1123,13 @@ impl State {
         };
         if edited {
             self.drafts.changed();
+            // An edit that fits: what the last one could not do is over.
+            self.alerts.clear(Source::Draft);
         } else {
-            self.error =
-                Some("Finish or clear an earlier draft first. Existing drafts were kept.".into());
+            self.alerts.raise(
+                Source::Draft,
+                "Finish or clear an earlier draft first. Existing drafts were kept.",
+            );
         }
         edited
     }
@@ -1517,7 +1532,8 @@ pub enum Message {
     /// nothing changes on screen (a refusal is the person's settings).
     /// The notification centre finished the operation in hand.
     NoticeDone,
-    DismissError,
+    /// The person dismissed one alert's line: that one goes.
+    DismissError(super::alerts::Source),
     Event(iced::Event),
     Window(window::Id),
     WindowScale(f32),
@@ -2198,22 +2214,7 @@ impl App {
                 self.screen = Screen::Agents;
                 tasks.push(self.update(Message::SelectSession(id)));
             }
-            Message::SelectSession(id) => {
-                self.shell.unviewed_done.remove(&id);
-                if self.shell.selected.as_deref() != Some(id.as_str()) {
-                    self.shell.diff_file = None;
-                    self.merge_outcome = None;
-                }
-                // Selected before its changes are asked for: a request the
-                // queue refuses is answered at once, and the answer is for
-                // the session on view.
-                self.shell.selected = Some(id.clone());
-                self.request_review(&id);
-                self.shell.session_details = false;
-                self.close_menu();
-                self.shell.review_delivery = false;
-                self.shell.session_message = false;
-            }
+            Message::SelectSession(id) => self.select_session(id),
             Message::ComposeSession => {
                 self.shell.session_message = !self.shell.session_message;
                 let selected = self.shell.selected.as_deref();
@@ -3507,8 +3508,9 @@ impl App {
             Message::FolderResolved(result) => match result {
                 Ok(project) => {
                     if let Err(error) = self.shell.catalog.pin(project) {
-                        self.shell.error = Some(error.to_string());
+                        self.shell.alerts.raise(Source::Folder, error.to_string());
                     } else {
+                        self.shell.alerts.clear(Source::Folder);
                         self.shell.adding = false;
                         self.shell.add_path.clear();
                         self.shell.selected = None;
@@ -3518,7 +3520,7 @@ impl App {
                         self.refresh_project_context();
                     }
                 }
-                Err(error) => self.shell.error = Some(error),
+                Err(error) => self.shell.alerts.raise(Source::Folder, error),
             },
             Message::ProjectLocation(path, available) => {
                 if self.shell.catalog.selected.as_ref() == Some(&path) {
@@ -3591,17 +3593,15 @@ impl App {
                 self.shell.exclusions_busy = false;
                 match result {
                     Ok(()) => {
-                        // The disagreement is over: its error goes too.
-                        if let Some((_, message)) = self.shell.exclusions_failed.take()
-                            && self.shell.error.as_deref() == Some(message.as_str())
-                        {
-                            self.shell.error = None;
-                        }
+                        // The disagreement is over: its alert goes too, and
+                        // no other's.
+                        self.shell.exclusions_failed = None;
+                        self.shell.alerts.clear(Source::Exclusions);
                         self.shell.exclusions_synced = Some(hidden);
                     }
                     Err(error) => {
                         let message = exclusions_message(&error);
-                        self.shell.error = Some(message.clone());
+                        self.shell.alerts.raise(Source::Exclusions, message.clone());
                         self.shell.exclusions_failed = Some((Instant::now(), message));
                     }
                 }
@@ -3611,7 +3611,10 @@ impl App {
                 match result {
                     Ok(()) => self.shell.saved_generation = generation,
                     Err(error) => {
-                        self.shell.error = Some(format!("Could not save workspace: {error}"));
+                        self.shell.alerts.raise(
+                            Source::Workspace,
+                            format!("Could not save workspace: {error}"),
+                        );
                         self.shell.save_enabled = false;
                     }
                 }
@@ -4126,10 +4129,13 @@ impl App {
                     {
                         Ok(spec) => {
                             self.shell.start = Some(Starting::Launch);
-                            self.shell.error = None;
+                            // A launch beginning again: what the last one
+                            // could not do is over. Nobody else's alert is
+                            // the launch's to clear.
+                            self.shell.alerts.clear(Source::Launch);
                             self.send(Cmd::Launch(Box::new(spec)));
                         }
-                        Err(error) => self.shell.error = Some(error),
+                        Err(error) => self.shell.alerts.raise(Source::Launch, error),
                     }
                 }
             }
@@ -4191,7 +4197,10 @@ impl App {
                                 },
                             ));
                         } else {
-                            self.shell.error = Some("This agent has not reported its terminal process. Open the app where it started.".into());
+                            self.shell.alerts.raise(
+                                Source::Terminal,
+                                "This agent has not reported its terminal process. Open the app where it started.",
+                            );
                         }
                     }
                 }
@@ -4200,19 +4209,27 @@ impl App {
                 self.shell.terminal_opening = false;
                 self.status.clear();
                 match result {
-                    Ok(crate::native_terminal::Opened::Shown(shown)) => self.say(shown),
+                    Ok(crate::native_terminal::Opened::Shown(shown)) => {
+                        self.shell.alerts.clear(Source::Terminal);
+                        self.say(shown);
+                    }
                     // It runs under AgentDocker itself: the session of the
                     // app's own whose process holds it is where it shows.
                     Ok(crate::native_terminal::Opened::InApp { pid, started_at }) => {
                         match self.in_app_session(pid, started_at) {
-                            Some(id) => tasks.push(self.update(Message::Attach(id))),
+                            Some(id) => {
+                                self.shell.alerts.clear(Source::Terminal);
+                                tasks.push(self.update(Message::Attach(id)));
+                            }
                             None => {
-                                self.shell.error =
-                                    Some(crate::native_terminal::IN_AGENTDOCKER.to_owned());
+                                self.shell.alerts.raise(
+                                    Source::Terminal,
+                                    crate::native_terminal::IN_AGENTDOCKER,
+                                );
                             }
                         }
                     }
-                    Err(error) => self.shell.error = Some(error),
+                    Err(error) => self.shell.alerts.raise(Source::Terminal, error),
                 }
             }
             Message::PullRequests(answers) => {
@@ -4255,8 +4272,11 @@ impl App {
             Message::EditorOpened(result) => {
                 self.status.clear();
                 match result {
-                    Ok(shown) => self.say(shown),
-                    Err(error) => self.shell.error = Some(error),
+                    Ok(shown) => {
+                        self.shell.alerts.clear(Source::Editor);
+                        self.say(shown);
+                    }
+                    Err(error) => self.shell.alerts.raise(Source::Editor, error),
                 }
             }
             Message::TerminalInput(bytes) => {
@@ -4443,8 +4463,8 @@ impl App {
                 self.shell.changed();
             }
             Message::StatusItemClicked => tasks.push(self.raise_window()),
-            Message::DismissError => {
-                self.shell.error = None;
+            Message::DismissError(source) => {
+                self.shell.alerts.clear(source);
                 self.status.clear();
             }
             Message::Event(iced::Event::Window(window::Event::Rescaled(scale))) => {
@@ -5426,10 +5446,7 @@ impl App {
         self.shell.route.resolve(target.message.clone());
         self.shell.message_detail = Some(target.message.clone());
         let chosen = self.canonical_agent(target.agent.as_str()).to_owned();
-        self.shell.selected = Some(chosen.clone());
-        // Its changes, as for a session chosen by hand.
-        self.request_review(&chosen);
-        self.close_menu();
+        self.select_session(chosen);
         self.confirm_stop = None;
         self.screen = Screen::Questions;
         let sender = target.agent.as_str();
@@ -5549,10 +5566,12 @@ impl App {
             match self.reconnect_spec(id, cli) {
                 Ok(spec) => {
                     self.shell.start = Some(Starting::Reconnect(id.to_owned()));
-                    self.shell.error = None;
+                    // A reconnect beginning again clears the reconnect's
+                    // alert and no other's.
+                    self.shell.alerts.clear(Source::Reconnect);
                     self.send(Cmd::Resume(id.to_owned(), Box::new(spec)));
                 }
-                Err(error) => self.shell.error = Some(error),
+                Err(error) => self.shell.alerts.raise(Source::Reconnect, error),
             }
         }
     }
@@ -6061,8 +6080,8 @@ mod tests {
         ));
         assert!(
             app.shell
-                .error
-                .as_deref()
+                .alerts
+                .of(Source::Exclusions)
                 .is_some_and(|e| e.contains("disk full"))
         );
         assert!(app.shell.save_enabled, "the workspace still saves");
@@ -6074,7 +6093,7 @@ mod tests {
         let _ = app.update(Message::Tick);
         assert!(app.shell.exclusions_busy, "tried again");
         let _ = app.update(Message::ExclusionsSynced(removed.clone(), Ok(())));
-        assert!(app.shell.error.is_none());
+        assert!(app.shell.alerts.is_empty());
         assert_eq!(app.shell.exclusions_synced, Some(removed));
     }
     fn app() -> (App, CommandReceiver, SyncSender<Msg>) {
@@ -7865,6 +7884,167 @@ mod tests {
         assert_eq!(app.shell.menu, None, "which is not found open after");
     }
 
+    /// The page had one alert line, and whatever spoke last had it. A
+    /// launch that failed overwrote the warning that the workspace could
+    /// not be saved, and a launch or a reconnect beginning cleared it,
+    /// whoever had set it. Each alert is now its source's: replaced and
+    /// cleared by its own operation only, drawn as a line of its own, and
+    /// dismissed alone.
+    #[test]
+    fn an_alert_stands_until_its_own_operation_clears_it() {
+        use super::super::view::testing::seen;
+        let (mut app, _commands, messages) = app();
+        app.link.open();
+        let saving = "Could not save workspace: disk full";
+
+        // The workspace cannot be saved: nothing changed here is kept.
+        let _ = app.update(Message::CatalogSaved(1, Err("disk full".into())));
+        assert_eq!(app.shell.alerts.of(Source::Workspace), Some(saving));
+        assert!(!app.shell.save_enabled);
+
+        // A launch the daemon refuses says so beside it, not instead.
+        messages
+            .send(Msg::Launched(Err("codex is not installed".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.alerts.of(Source::Launch),
+            Some("codex is not installed")
+        );
+        assert_eq!(app.shell.alerts.of(Source::Workspace), Some(saving));
+        // So does a reconnect, an editor and a terminal.
+        messages
+            .send(Msg::Reconnected(Err("no conversation to resume".into())))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::EditorOpened(
+            Err("Could not open Zed: gone".into()),
+        ));
+        let _ = app.update(Message::NativeTerminalOpened(Err("no terminal app".into())));
+        assert_eq!(app.shell.alerts.shown().count(), 5);
+
+        // Each is a line of its own, with its own Dismiss.
+        let page = seen(app.view());
+        for word in ["workspace", "launch", "reconnect", "terminal", "editor"] {
+            assert!(
+                page.control(&format!("page-error-{word}-mark")).is_some(),
+                "{word}: its line"
+            );
+            assert!(
+                page.control(&format!("dismiss-error-{word}")).is_some(),
+                "{word}: its Dismiss"
+            );
+        }
+
+        // Its own operation going through clears one, and only that one.
+        let _ = app.update(Message::EditorOpened(Ok("Opened in Zed".into())));
+        assert_eq!(app.shell.alerts.of(Source::Editor), None);
+        let _ = app.update(Message::NativeTerminalOpened(Ok(
+            crate::native_terminal::Opened::Shown("Opened in Terminal".into()),
+        )));
+        assert_eq!(app.shell.alerts.of(Source::Terminal), None);
+        assert_eq!(app.shell.alerts.shown().count(), 3);
+
+        // Dismissing one leaves the others.
+        let _ = app.update(Message::DismissError(Source::Reconnect));
+        assert_eq!(app.shell.alerts.of(Source::Reconnect), None);
+        assert_eq!(
+            app.shell.alerts.of(Source::Launch),
+            Some("codex is not installed")
+        );
+
+        // A launch that goes through does not clear the workspace's
+        // warning: the session is launched, and the window still cannot
+        // save.
+        messages.send(Msg::Launched(Ok("fresh".into()))).unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.alerts.of(Source::Workspace),
+            Some(saving),
+            "launching an agent does not clear the warning about saving"
+        );
+
+        // A draft that cannot be kept says so until an edit fits.
+        assert!(
+            !app.shell
+                .edit_draft(DraftKind::Session, String::new(), "words".into())
+        );
+        assert!(app.shell.alerts.of(Source::Draft).is_some());
+        assert!(
+            app.shell
+                .edit_draft(DraftKind::Session, "fresh".into(), "words".into())
+        );
+        assert_eq!(app.shell.alerts.of(Source::Draft), None);
+        assert_eq!(app.shell.alerts.of(Source::Workspace), Some(saving));
+    }
+
+    /// A session comes on view with its panels closed, whichever way it
+    /// comes. The panels are the window's, not the session's: a launch, a
+    /// reconnect and a notification set the selection themselves, and the
+    /// last session's Details, delivery review or composer was open on
+    /// the new one.
+    #[test]
+    fn a_session_comes_on_view_with_its_panels_closed_by_every_route() {
+        let (mut app, _commands, messages) = app();
+        app.link.open();
+        let open_on = |app: &mut App, id: &str| {
+            app.shell.selected = Some(id.into());
+            app.shell.session_details = true;
+            app.shell.review_delivery = true;
+            app.shell.session_message = true;
+            app.shell.diff_file = Some("src/lib.rs".into());
+            app.shell.menu = Some(Menu::Editor(EditorMenu::Session));
+        };
+        let closed = |app: &App| {
+            !app.shell.session_details
+                && !app.shell.review_delivery
+                && !app.shell.session_message
+                && app.shell.diff_file.is_none()
+                && app.shell.menu.is_none()
+        };
+
+        open_on(&mut app, "agent-1");
+        let _ = app.update(Message::SelectSession("agent-2".into()));
+        assert_eq!(app.shell.selected.as_deref(), Some("agent-2"));
+        assert!(closed(&app), "chosen in the list");
+
+        open_on(&mut app, "agent-1");
+        messages
+            .send(Msg::Launched(Ok("launched-1".into())))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.selected.as_deref(), Some("launched-1"));
+        assert!(closed(&app), "just launched");
+
+        open_on(&mut app, "agent-1");
+        messages
+            .send(Msg::Reconnected(Ok(("resumed-1".into(), None))))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.selected.as_deref(), Some("resumed-1"));
+        assert!(closed(&app), "reconnected");
+
+        open_on(&mut app, "agent-1");
+        app.select_session("agent-3".into());
+        assert!(closed(&app), "by the one function itself");
+
+        // The same session under the id it stands for now is the same
+        // session: what was open on it stays open.
+        open_on(&mut app, "agent-1");
+        messages
+            .send(Msg::Agents(
+                Vec::new(),
+                BTreeMap::from([("agent-1".to_owned(), "agent-9".to_owned())]),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.shell.selected.as_deref(), Some("agent-9"));
+        assert!(
+            app.shell.session_details && app.shell.review_delivery && app.shell.session_message,
+            "its panels are kept"
+        );
+    }
+
     /// There is one menu. Opening another puts it in the first one's
     /// place, the board's own two included: they are drawn in the page
     /// and no press outside closes them, so either could stay open beside
@@ -8015,7 +8195,10 @@ mod tests {
         let _ = app.update(Message::EditorOpened(
             Err("Could not open Zed: gone".into()),
         ));
-        assert_eq!(app.shell.error.as_deref(), Some("Could not open Zed: gone"));
+        assert_eq!(
+            app.shell.alerts.of(Source::Editor),
+            Some("Could not open Zed: gone")
+        );
         let _ = app.update(Message::EditorOpened(Ok("Opened in Zed".into())));
         assert_eq!(app.status, "Opened in Zed");
     }
@@ -9681,7 +9864,7 @@ mod tests {
             },
         )));
         assert_eq!(app.screen, Screen::Terminal);
-        assert_eq!(app.shell.error, None);
+        assert!(app.shell.alerts.is_empty());
 
         app.screen = Screen::Agents;
         let _ = app.update(Message::NativeTerminalOpened(Ok(
@@ -9692,7 +9875,7 @@ mod tests {
         )));
         assert_ne!(app.screen, Screen::Terminal);
         assert_eq!(
-            app.shell.error.as_deref(),
+            app.shell.alerts.of(Source::Terminal),
             Some(crate::native_terminal::IN_AGENTDOCKER)
         );
     }
@@ -9719,7 +9902,7 @@ mod tests {
         let _ = app.update(held);
         assert_ne!(app.screen, Screen::Terminal);
         assert_eq!(
-            app.shell.error.as_deref(),
+            app.shell.alerts.of(Source::Terminal),
             Some(crate::native_terminal::IN_AGENTDOCKER)
         );
     }
@@ -10449,8 +10632,8 @@ mod tests {
         assert_eq!(state.draft_snapshot(), before);
         assert!(
             state
-                .error
-                .as_deref()
+                .alerts
+                .of(Source::Draft)
                 .unwrap()
                 .contains("Existing drafts were kept")
         );
@@ -10818,6 +11001,10 @@ mod tests {
                 ..Default::default()
             },
         );
+        // Another session's panels are open as the notification is pressed.
+        app.shell.session_details = true;
+        app.shell.review_delivery = true;
+        app.shell.session_message = true;
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::Open(action),
         ));
@@ -10863,6 +11050,10 @@ mod tests {
         assert!(
             sent.iter()
                 .any(|cmd| matches!(cmd, Cmd::ReviewBranch(agent, _) if agent == "sender-1"))
+        );
+        assert!(
+            !app.shell.session_details && !app.shell.review_delivery && !app.shell.session_message,
+            "and its panels start closed, not as the last session left them"
         );
     }
 
@@ -11572,7 +11763,7 @@ mod tests {
                 String::from_utf8(chunk.to_vec()).unwrap(),
             ));
         }
-        app.shell.error = None;
+        app.shell.alerts.clear(Source::Draft);
         let before = app.shell.draft_snapshot();
         let _ = app.update(Message::Notification(
             crate::notification_route::Activation::ReplyFailed {
@@ -12104,13 +12295,17 @@ mod tests {
         assert!(!app.shell.starting());
         assert!(
             app.shell
-                .error
-                .as_deref()
+                .alerts
+                .of(Source::Reconnect)
                 .is_some_and(|e| e.contains("live messages")),
             "{:?}",
-            app.shell.error
+            app.shell.alerts
         );
         assert_eq!(commands.try_iter().count(), 0);
+        // Something else has a standing alert of its own.
+        app.shell
+            .alerts
+            .raise(Source::Workspace, "Could not save workspace: disk full");
 
         // With the CLI beside the app the press is one resume of that
         // record at the daemon, and a second press while it is unanswered
@@ -12121,7 +12316,16 @@ mod tests {
             !app.shell.launching(),
             "a reconnect is not a launch: the Launch form does not say Launching"
         );
-        assert_eq!(app.shell.error, None);
+        assert_eq!(
+            app.shell.alerts.of(Source::Reconnect),
+            None,
+            "the reconnect beginning again cleared its own alert"
+        );
+        assert_eq!(
+            app.shell.alerts.of(Source::Workspace),
+            Some("Could not save workspace: disk full"),
+            "and not the workspace's, which it used to wipe"
+        );
         app.reconnect("ended-claude", Ok(cli_path.clone()));
         let sent: Vec<Cmd> = commands.try_iter().collect();
         assert_eq!(sent.len(), 1, "{sent:?}");
@@ -12149,8 +12353,8 @@ mod tests {
         );
         assert!(
             app.shell
-                .error
-                .as_deref()
+                .alerts
+                .of(Source::Reconnect)
                 .is_some_and(|e| e.contains("still live"))
         );
         // The request queue is full: the resume never reaches the daemon
@@ -12186,7 +12390,8 @@ mod tests {
             .unwrap();
         app.drain();
         assert!(!app.shell.starting());
-        assert_eq!(app.shell.error, None);
+        assert_eq!(app.shell.alerts.of(Source::Reconnect), None);
+        assert!(app.shell.alerts.of(Source::Workspace).is_some());
         assert_eq!(app.shell.selected.as_deref(), Some("ended-claude"));
         assert!(commands.try_iter().any(|cmd| matches!(cmd, Cmd::Agents)));
         // An older list, from before the reconnect, says nothing: the
@@ -12235,8 +12440,8 @@ mod tests {
         assert!(!app.shell.starting());
         assert!(
             app.shell
-                .error
-                .as_deref()
+                .alerts
+                .of(Source::Reconnect)
                 .is_some_and(|e| e.contains("Exit the session"))
         );
         assert_eq!(commands.try_iter().count(), 0);
@@ -13220,7 +13425,13 @@ mod tests {
             .unwrap();
         let state = State::load(home.path());
         assert!(!state.save_enabled);
-        assert!(state.error.unwrap().contains("preserved"));
+        assert!(
+            state
+                .alerts
+                .of(Source::Workspace)
+                .unwrap()
+                .contains("preserved")
+        );
         assert_eq!(std::fs::read(path).unwrap(), b"not JSON");
     }
 

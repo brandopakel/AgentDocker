@@ -1384,11 +1384,18 @@ impl App {
                 c,
             ));
         }
-        if let Some(error) = &self.shell.error {
+        // Each standing alert is a line of its own, with its own Dismiss:
+        // one does not hide another, and dismissing one leaves the rest.
+        for (source, words) in self.shell.alerts.shown() {
+            let word = source.word();
             content = content.push(attention(
                 row![
-                    error_line("page-error", error, c),
-                    ghost("dismiss-error", "Dismiss", Some(Message::DismissError))
+                    error_line(format!("page-error-{word}"), words, c),
+                    ghost(
+                        format!("dismiss-error-{word}"),
+                        "Dismiss",
+                        Some(Message::DismissError(source))
+                    )
                 ]
                 .spacing(8)
                 .align_y(Center),

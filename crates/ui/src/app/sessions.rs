@@ -12,6 +12,37 @@ pub enum Filter {
 }
 
 impl App {
+    /// Put a session on view as the selected one. Every route to a
+    /// session comes through here: chosen in the list, opened from
+    /// somewhere else, Back and Forward, a launch, a reconnect and a
+    /// notification. So each arrives the same way: marked seen, its
+    /// changes asked for, and its panels closed.
+    ///
+    /// The panels (Details, the delivery review, the composer, the file
+    /// open in its changes) are the window's and not the session's: the
+    /// routes that set the selection themselves left the last session's
+    /// open on the new one.
+    ///
+    /// The one thing that changes the selection and does not come here is
+    /// the list giving the selected session another id: it is the same
+    /// session, and keeps what was open on it.
+    pub(super) fn select_session(&mut self, id: String) {
+        self.shell.unviewed_done.remove(&id);
+        if self.shell.selected.as_deref() != Some(id.as_str()) {
+            self.shell.diff_file = None;
+            self.merge_outcome = None;
+        }
+        // Selected before its changes are asked for: a request the queue
+        // refuses is answered at once, and the answer is for the session
+        // on view.
+        self.shell.selected = Some(id.clone());
+        self.request_review(&id);
+        self.shell.session_details = false;
+        self.close_menu();
+        self.shell.review_delivery = false;
+        self.shell.session_message = false;
+    }
+
     pub(super) fn reset_session_view(&mut self) {
         self.shell.session_filter = Filter::Current;
         self.shell.session_details = false;
