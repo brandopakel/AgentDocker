@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
+mod alerts;
 mod board;
 mod chip;
 mod forms;
@@ -50,6 +51,7 @@ use chrono::Utc;
 
 use crate::client::{Client, RemoteError};
 use crate::terminal::{Status, Terminal};
+use alerts::Source;
 use menu::Menu;
 
 /// How often agents, leases and discovered processes are re-read.
@@ -2187,11 +2189,11 @@ impl App {
                     match result {
                         Ok(id) => {
                             self.shell.launch = false;
-                            // The dialog's Model or Effort menu goes with it.
-                            self.close_menu();
-                            self.shell.selected = Some(id.clone());
-                            // Its changes, as for a session chosen by hand.
-                            self.request_review(&id);
+                            // The new session comes on view as any other
+                            // does: selected, its changes asked for, the
+                            // open menu and the last session's panels
+                            // closed (`select_session`).
+                            self.select_session(id.clone());
                             // What it was asked to do is its first message:
                             // queued now, delivered when it takes input.
                             let prompt = std::mem::take(&mut self.shell.launch_prompt);
@@ -2205,20 +2207,18 @@ impl App {
                             self.shell.attach_when_listed = Some((id, None));
                             self.send(Cmd::Agents);
                         }
-                        Err(error) => self.shell.error = Some(error),
+                        Err(error) => self.shell.alerts.raise(Source::Launch, error),
                     }
                 }
                 Msg::Reconnected(result) => {
                     self.shell.start = None;
                     match result {
                         Ok((id, generation)) => {
-                            self.shell.selected = Some(id.clone());
-                            // Its changes, as for a session chosen by hand.
-                            self.request_review(&id);
+                            self.select_session(id.clone());
                             self.shell.attach_when_listed = Some((id, generation));
                             self.send(Cmd::Agents);
                         }
-                        Err(error) => self.shell.error = Some(error),
+                        Err(error) => self.shell.alerts.raise(Source::Reconnect, error),
                     }
                 }
                 // Asked on another connection: neither the list nor

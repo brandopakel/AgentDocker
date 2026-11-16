@@ -31,6 +31,15 @@ says a second time that it is away: the sidebar's foot says so, what was last
 read stays on view without *Reading…* or a failure line, and what is on view
 is read again when the service is back.
 
+A failure that stands at the top of the page (a launch or a reconnect that
+could not go, a terminal or an editor that could not be opened, a folder that
+could not be added, a draft that could not be kept, the hooks or the saved
+workspace) is a line of its own with **Dismiss**. Several can stand together,
+the workspace's first. Each goes when its own operation goes through or
+begins again, or when it is dismissed, and none clears another: launching an
+agent does not clear the warning that the workspace could not be saved and
+that changes in this window will not be kept.
+
 After a send, **Queued · N sessions need attention** appears when recipients
 have missing or stale input receivers, paused delivery, ended sessions or provider
 limits. **Details** beside it (read aloud as *Delivery details*) lists them, one
@@ -139,7 +148,12 @@ options** for its name and arguments, each field named by its placeholder. Launc
 Agents with it open. A session's Details shows its
 short ID with a copy icon named **Copy session ID**. The Commands screen offers **Previous** and
 **Next** only once a command has run, and shows no output box before then.
-Opening an agent takes you to its project and selects that session.
+Opening an agent takes you to its project and selects that session. A session
+comes on view with its panels closed, whichever way it comes (chosen in the
+list, opened from somewhere else, Back and Forward, just launched,
+reconnected, or named by a notification): its Details, its delivery review,
+its composer and the file open in its changes are the window's, and the last
+session's are not left open on the next.
 
 **Open project terminal**, in the project header, opens a fresh native terminal
 in that project's folder. It is separate from **More → AgentDocker commands**,

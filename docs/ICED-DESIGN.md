@@ -674,7 +674,13 @@ control does, its id or its accessible label:
   happened is a toast at the window's foot for eight seconds (`STATUS_FOR`),
   and a success the screen already shows (an answer, a launch, a rename, a
   saved setup) raises none; a page error is one clipped line beside the
-  alert mark, with **Dismiss**.
+  alert mark, with **Dismiss**. The page's alerts are kept by what raised them
+  (`alerts::Alerts`, one line per `alerts::Source`: the workspace, the hooks'
+  exclusions, a draft, a folder, a launch, a reconnect, a terminal, an
+  editor), drawn each as its own line (`page-error-<source>`,
+  `dismiss-error-<source>`) in that order. A source's line is replaced only by
+  that source and cleared only by its own operation going through or beginning
+  again, or by its Dismiss; no operation clears another's.
   The agents list is one card of one-line rows separated by rules: the
   tool's small mark, the name (semibold when it calls for the person, muted
   when ended, cut before the chips), the standing chip, and one more chip: the
@@ -764,6 +770,14 @@ command.
   `usage-error-mark`; a read that came back empty is `todo-empty` and
   `session-log-empty` (named for a reader, with no sentence drawn), and for a
   session's changes the words *Up to date*.
+- A session comes on view through one function, `App::select_session`:
+  chosen in the list, opened from elsewhere, Back and Forward, a launch, a
+  reconnect, a notification's route. It marks the session seen, asks for its
+  changes, and closes the panels, which are the window's and not the
+  session's (`session_details`, `review_delivery`, `session_message`,
+  `diff_file`) with the open menu. The one change of selection that does not
+  go through it is the list giving the selected session another id: the same
+  session, which keeps what was open.
 - The link to the background service is one value (`link::Link`): connecting,
   until a service first answers; up; or down, keeping what the last service
   said. What a service says of itself (its version and place, whether it
