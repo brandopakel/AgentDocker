@@ -12,7 +12,7 @@ use super::view::{empty, eyebrow, icon_tile, logo_tile, rule, segmented, small, 
 use super::*;
 use crate::accessibility::Semantic;
 use crate::controls::{Control, Kind, custom};
-use agentdocker_core::usage::report::{CollectionState, CounterReports, Group, Report, Row};
+use agentdocker_core::usage::report::{CollectionPhase, CounterReports, Group, Report, Row};
 use agentdocker_core::usage::{CounterReport, Coverage};
 use iced::{
     Center, Element, Fill,
@@ -44,40 +44,37 @@ pub use agentdocker_core::usage::{compact, thousands};
 /// Only current configuration establishes that collection is off. Missing
 /// discovery progress may mean it is starting or this is an older report.
 pub fn collection_off(report: &Report) -> bool {
-    report.coverage.collection.enabled == Some(false)
+    report.coverage.collection.phase() == CollectionPhase::Off
 }
 
-/// Where collection stands, as its chip beside the tracks: the state in
-/// its word; how far it has got, over how many roots, and the overhead
-/// AgentDocker injected its detail.
+/// Where collection stands, as its chip beside the tracks: its phase in
+/// core's word (the one the CLI's line says); how far it has got, over
+/// how many roots, and the overhead AgentDocker injected its detail.
 pub fn collection_chip(report: &Report) -> Chip {
     let collection = &report.coverage.collection;
     let ago = |at| agentdocker_core::journal::ago(chrono::Utc::now(), at);
-    let (word, glyph, tone, progress) = match collection.state {
-        CollectionState::Unknown if collection_off(report) => {
-            ("Collection off", None, Tone::Neutral, None)
+    let phase = collection.phase();
+    let (glyph, tone, progress) = match phase {
+        CollectionPhase::Off | CollectionPhase::Unknown => (None, Tone::Neutral, None),
+        // On its way: nothing is wrong, and nothing is to be read yet.
+        CollectionPhase::Starting | CollectionPhase::Discovering => {
+            (Some(Icon::Ring), Tone::Info, None)
         }
-        CollectionState::Unknown
-            if collection.enabled == Some(true) && collection.discovery_generation.is_none() =>
-        {
-            ("Collection starting", Some(Icon::Ring), Tone::Info, None)
-        }
-        CollectionState::Unknown => ("Collection unknown", None, Tone::Neutral, None),
-        CollectionState::Scanning => (
-            "Collection scanning",
+        // What was found is not all there is: the totals are short.
+        CollectionPhase::DiscoveryIncomplete => (
+            Some(Icon::Alert),
+            Tone::Attention,
+            phase.note().map(str::to_owned),
+        ),
+        CollectionPhase::Reading { files } => (
             Some(Icon::Ring),
             Tone::Info,
-            collection
-                .pending_files
-                .map(|pending| format!("{pending} file(s) to read")),
+            files.map(|files| format!("{files} file(s) to read")),
         ),
-        CollectionState::CaughtUp => (
-            "Collection caught up",
+        CollectionPhase::CaughtUp { at } => (
             Some(Icon::Check),
             Tone::Positive,
-            collection
-                .completed_at
-                .map(|at| format!("Caught up {}", ago(at))),
+            at.map(|at| format!("Caught up {}", ago(at))),
         ),
     };
     let roots = collection.scope.roots.len();
@@ -90,7 +87,8 @@ pub fn collection_chip(report: &Report) -> Chip {
     .flatten()
     .collect::<Vec<_>>()
     .join("\n");
-    Chip::new("usage-collection", glyph, word, tone).detail(detail)
+    let words = format!("Collection {}", phase.word());
+    Chip::new("usage-collection", glyph, words, tone).detail(detail)
 }
 
 /// One line on the overhead: measured, bytes only, or not yet.
@@ -826,7 +824,9 @@ fn share_bar<'a>(fraction: f32, c: Colors) -> Element<'a, Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agentdocker_core::usage::report::{Collection, Overhead, ReportCoverage, Scope};
+    use agentdocker_core::usage::report::{
+        Collection, CollectionState, Overhead, ReportCoverage, Scope,
+    };
 
     fn report(rows: Vec<Row>, state: CollectionState, generation: Option<u64>) -> Report {
         let now = chrono::Utc::now();
@@ -852,6 +852,7 @@ mod tests {
                     snapshot_at: None,
                     completed_at: None,
                     discovery_complete: false,
+                    discovery_ended: false,
                     pending_files: None,
                     pending_tail_files: None,
                     scope: Scope::default(),
@@ -1193,9 +1194,25 @@ mod tests {
             Some("Overhead: not measured yet"),
             "the overhead is the collection chip's detail"
         );
+        // A pass walking its roots, and one whose walk stopped early:
+        // both were *Collection unknown*.
+        let mut walking = report(Vec::new(), CollectionState::Unknown, Some(3));
+        assert_eq!(words(&walking), "Collection discovering");
+        assert_eq!(collection_chip(&walking).tone, Tone::Info);
+        walking.coverage.collection.discovery_ended = true;
+        assert_eq!(words(&walking), "Collection discovery incomplete");
+        let stopped = collection_chip(&walking);
+        assert_eq!(stopped.tone, Tone::Attention);
+        assert!(
+            stopped
+                .detail
+                .unwrap()
+                .starts_with("The walk of the roots stopped early"),
+            "what it means for the totals is its detail"
+        );
         let mut scanning = report(Vec::new(), CollectionState::Scanning, Some(3));
         assert!(!collection_off(&scanning));
-        assert_eq!(words(&scanning), "Collection scanning");
+        assert_eq!(words(&scanning), "Collection reading");
         scanning.coverage.collection.pending_files = Some(4);
         assert!(
             collection_chip(&scanning)

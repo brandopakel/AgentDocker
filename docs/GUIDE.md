@@ -382,7 +382,16 @@ row's usage had no price or some samples did not say, `—` on a row no price
 matched. It is your estimate, kept apart from what the provider reported and
 never added to it; the line under the table, and the app's tooltip, say so.
 The report shows
-the available time range, gaps and whether collection has caught up. The CLI
+the available time range, gaps and where collection stands, as its
+`Collection:` line: `off`, `starting` (switched on, no pass begun yet),
+`discovering` (a pass is walking its folders for the files to read),
+`discovery incomplete` (the walk stopped early, at a bound or a folder it
+could not read, so some files may not be counted; the next pass walks again),
+`reading` (with how many files are left) or `caught up` (with how long ago).
+A pass runs about every half minute, so a collection that has caught up reads
+`discovering` and `reading` again for the moment each pass takes. `unknown` is
+said only of a daemon too old to say whether collection is on. The app's chip
+on the usage screen says the same word. The CLI
 names each agent, project or card row (`codex-<pid>`, `<project>`, `AD-12`) while
 AgentDocker still knows it, and shows its ID once it is gone; `(unattributed)` is
 usage no session could be matched to, and a null card or role row is usage made

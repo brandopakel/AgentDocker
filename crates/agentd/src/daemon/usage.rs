@@ -954,6 +954,9 @@ fn collect_pass(
         let advanced = frontier != progress.frontier;
         progress.frontier = frontier;
         if page.finished {
+            // The walk has ended, complete or not: a reader can now tell
+            // one that stopped early from one still under way.
+            collection.discovery_ended = true;
             collection.discovery_complete = page.complete;
             // Capture failures already have durable source gaps and no jobs.
             // Gaps keep reported token coverage partial, not work pending.
@@ -2360,6 +2363,47 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    /// A walk under way is not a walk that stopped early. The two were
+    /// the same stored fields, and a reader called both unknown.
+    #[tokio::test]
+    async fn a_walk_under_way_and_one_that_stopped_early_are_told_apart() {
+        use agentdocker_core::usage::report::CollectionPhase;
+        // Under way: more entries than one page of the walk takes.
+        let (_temp, daemon, config, root) = fixture();
+        for n in 0..650 {
+            std::fs::write(root.join(format!("ignored-{n}.txt")), "").unwrap();
+        }
+        std::fs::write(root.join("source.jsonl"), record("message", 1)).unwrap();
+        collect_generation_bounded(&Arc::downgrade(&daemon), &config, 1);
+        let walking = query(&daemon).await.coverage.collection;
+        assert_eq!(walking.discovery_generation, Some(1));
+        assert!(!walking.discovery_ended);
+        assert_eq!(walking.phase(), CollectionPhase::Discovering);
+        // The same pass, taken to its end: the walk ended complete.
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let done = query(&daemon).await.coverage.collection;
+        assert!(done.discovery_ended && done.discovery_complete);
+        assert!(matches!(
+            done.phase(),
+            CollectionPhase::CaughtUp { at: Some(_) }
+        ));
+
+        // Stopped early: one of the roots is a file, which is not walked.
+        let (_temp, daemon, config, root) = fixture();
+        std::fs::write(&config.codex_roots[0], "not a directory").unwrap();
+        std::fs::write(root.join("source.jsonl"), record("message", 1)).unwrap();
+        collect_generation(&Arc::downgrade(&daemon), &config);
+        let report = query(&daemon).await;
+        let stopped = &report.coverage.collection;
+        assert_eq!(stopped.discovery_generation, Some(1));
+        assert!(stopped.discovery_ended);
+        assert!(!stopped.discovery_complete);
+        assert_eq!(stopped.state, CollectionState::Unknown);
+        assert_eq!(stopped.pending_files, None);
+        assert_eq!(stopped.phase(), CollectionPhase::DiscoveryIncomplete);
+        assert!(report.coverage.source_gaps > 0, "and its gap is counted");
     }
 
     #[tokio::test]

@@ -768,11 +768,16 @@ Project tabs provide:
   reported; not the cost the provider reported, and not a bill* — after
   what its mark means. There is no heading (the More tab names
   the screen): the window and the grouping are the two tracks, which are
-  the range, and beside them a chip says where collection stands
-  (*Collection caught up*, *Collection scanning*, *Collection starting*,
-  *Collection off*), with how far it has got, over how many roots, and the
-  overhead AgentDocker injected — *not measured yet* until it is — as its
-  detail. What the totals do not cover — the current hour still filling,
+  the range, and beside them a chip says where collection stands, in the
+  word the CLI's `Collection:` line says: *Collection off*; *Collection
+  starting* (switched on, no pass begun); *Collection discovering* (a pass
+  is walking its folders); *Collection discovery incomplete* (the walk
+  stopped early, so some files may not be counted: marked for attention,
+  with that sentence in its detail); *Collection reading*; *Collection
+  caught up*; and *Collection unknown* only for a daemon too old to say
+  whether collection is on. Its detail is how far it has got, over how
+  many roots, and the overhead AgentDocker injected — *not measured yet*
+  until it is. What the totals do not cover — the current hour still filling,
   history retained only since a day, gaps in the sources (lower bounds), the
   tracking storage limit — is each total's tooltip and accessible value,
   after what its mark means. Nothing sits under the table. A window with nothing reported reads
