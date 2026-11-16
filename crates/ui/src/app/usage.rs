@@ -991,6 +991,13 @@ mod tests {
             .unwrap();
         app.drain();
         assert!(app.usage_out.is_none(), "that read is not waited for");
+        assert!(
+            matches!(
+                app.usage.of(second.root.display().to_string().as_str()),
+                crate::app::remote::Seen::Unasked
+            ),
+            "nor is the page left saying it is being read"
+        );
         messages
             .send(Msg::Connected(crate::app::link::Report::Stream))
             .unwrap();

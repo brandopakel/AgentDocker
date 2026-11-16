@@ -25,7 +25,11 @@ and why), above what was last read, which stays on view; it is not a toast.
 A read behind something already on view says nothing until it has an answer.
 And a place that was read and has nothing in it is the quiet mark or the one
 thing to do there, which is none of these. The board, To-do, an open card's
-details, a session's changes and its log, and usage are shown this way.
+details, a session's changes and its log, and usage are shown this way. When
+the service goes away, nothing that was being read is waited for and no page
+says a second time that it is away: the sidebar's foot says so, what was last
+read stays on view without *Reading…* or a failure line, and what is on view
+is read again when the service is back.
 
 After a send, **Queued · N sessions need attention** appears when recipients
 have missing or stale input receivers, paused delivery, ended sessions or provider

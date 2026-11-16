@@ -10884,6 +10884,81 @@ mod tests {
         assert!(asked(&kept).is_some(), "asked again on the new connection");
     }
 
+    /// The service goes while a page is being read. The read is given
+    /// up: the page stops saying it is being read, and the read's own
+    /// failure, arriving late, is not put up as a second banner beside the
+    /// sidebar's "Reconnecting…". A failure already on the page goes the
+    /// same way. What was last read stays, and the page is read again
+    /// when the service is back.
+    #[test]
+    fn a_read_out_when_the_service_goes_is_given_up_and_asked_again_when_it_is_back() {
+        use super::super::view::testing::seen;
+        use crate::app::link::Report;
+        let (mut app, alpha, _beta, kept) = travel();
+        app.link.open();
+        let c = crate::app::style::Colors::new(false);
+        let asked = |kept: &Kept| {
+            kept._commands
+                .try_iter()
+                .filter_map(|cmd| match cmd {
+                    Cmd::Todo(ask) => Some(ask),
+                    _ => None,
+                })
+                .last()
+        };
+        let shows = |app: &App, id: &str| seen(app.todo_view(c)).control(id).is_some();
+        let gone = |kept: &Kept| {
+            kept.messages
+                .send(Msg::Disconnected(Report::Stream, "gone".into()))
+                .unwrap();
+        };
+
+        let _ = app.update(Message::Navigate(Screen::Todo));
+        let first = asked(&kept).expect("opening To-do asks for it");
+        assert!(shows(&app, "todo-reading"));
+
+        // The service goes while that read is out.
+        gone(&kept);
+        app.drain();
+        assert!(
+            !shows(&app, "todo-reading"),
+            "it is not being read any more"
+        );
+        // The read's own failure arrives after: no second banner.
+        kept.messages
+            .send(Msg::Todo(first, Err("cannot reach the service".into())))
+            .unwrap();
+        app.drain();
+        assert!(!shows(&app, "todo-error-mark"), "the sidebar says it once");
+
+        // Back: asked again, and that answer is taken.
+        kept.messages.send(Msg::Connected(Report::Stream)).unwrap();
+        app.drain();
+        let second = asked(&kept).expect("asked again on the new connection");
+        assert_ne!(first, second);
+        let card = card_in("aaaaaaaaaaaa", &alpha, "Port the parser");
+        let row = format!("todo-{}", card.id);
+        kept.messages
+            .send(Msg::Todo(second, Ok(vec![card])))
+            .unwrap();
+        app.drain();
+        assert!(shows(&app, &row));
+
+        // A failure on the page when the service goes: it goes too, and
+        // the list as last read stays.
+        app.request_todo();
+        let third = asked(&kept).unwrap();
+        kept.messages
+            .send(Msg::Todo(third, Err("storage unavailable".into())))
+            .unwrap();
+        app.drain();
+        assert!(shows(&app, "todo-error-mark"));
+        gone(&kept);
+        app.drain();
+        assert!(!shows(&app, "todo-error-mark"));
+        assert!(shows(&app, &row), "what was last read stays on view");
+    }
+
     /// To-do drew one blank for four things: never asked for, being
     /// read, read and found empty, and could not be read, which was only
     /// a passing line at the window's foot. Each is now said on the page,
