@@ -337,6 +337,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::Rules { .. }
             | Request::Tags { .. }
             | Request::RoleCatalog { .. }
+            | Request::Crew { .. }
             | Request::TaskSearch { .. }
             | Request::Plans { .. }
             | Request::PlanGet { .. }
@@ -2969,6 +2970,18 @@ impl Daemon {
                 project,
                 role,
             } => self.role_delete(&from, project, &role).await,
+            Request::Crew { project } => self.crew(project).await,
+            Request::CrewSave {
+                from,
+                project,
+                expect,
+                members,
+            } => self.crew_save(&from, project, expect, members).await,
+            Request::CrewAccept {
+                from,
+                project,
+                proposal,
+            } => self.crew_accept(&from, project, &proposal).await,
             Request::TaskSearch {
                 query,
                 project,

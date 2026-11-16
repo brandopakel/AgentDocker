@@ -712,6 +712,14 @@ pub enum EventKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         tools: Option<Vec<String>>,
     },
+    /// A project's crew was saved: its first, or an edit. `members` is how
+    /// many it has now.
+    CrewSaved {
+        project: ProjectId,
+        revision: u64,
+        by: String,
+        members: u64,
+    },
     /// A memory was kept in a project.
     MemoryAdded {
         project: ProjectId,
@@ -1264,6 +1272,7 @@ impl EventKind {
         "rule_fired",
         "tag_changed",
         "role_changed",
+        "crew_saved",
         "memory_added",
         "memory_forgotten",
         "memory_retired",

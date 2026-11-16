@@ -623,6 +623,12 @@ pub fn event_line(event: &Event) -> String {
             ),
             _ => format!("role set         {role} by {by}"),
         },
+        EventKind::CrewSaved {
+            revision,
+            by,
+            members,
+            ..
+        } => format!("team saved       revision {revision}, {members} member(s), by {by}"),
         EventKind::PlanChanged { plan, by, .. } => format!("plan written     {plan} by {by}"),
         EventKind::MemoryAdded { memory, by, .. } => format!("memory kept     {memory} by {by}"),
         EventKind::MemoryForgotten { memory, by, .. } => {

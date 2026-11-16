@@ -2555,3 +2555,364 @@ async fn mine_is_the_persons_cards_and_their_agents() {
         }
     ));
 }
+
+/// Put a runtime's command-line tool on the daemon's search path, or take
+/// it off: what "installed here" is to the inventory.
+#[cfg(unix)]
+fn install(f: &Fixture, clis: &[&str]) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = f._dir.path().join("bin");
+    let _ = std::fs::remove_dir_all(&bin);
+    std::fs::create_dir_all(&bin).unwrap();
+    for cli in clis {
+        let path = bin.join(cli);
+        std::fs::write(&path, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut roots = lock(&f.daemon.runtime_roots);
+    roots.path = vec![bin];
+    roots.install_dirs = Vec::new();
+    roots.versions = false;
+}
+
+fn shown(response: Response) -> agentdocker_core::crew::CrewView {
+    match response {
+        Response::Crew { crew } => crew,
+        other => panic!("{other:?}"),
+    }
+}
+
+fn refused(response: Response) -> (ErrorCode, String) {
+    match response {
+        Response::Error { code, message, .. } => (code, message),
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A project with no team saved is shown the one the daemon proposes from
+/// what is installed, or why it proposes none. Accepting it saves what was
+/// shown, by its key: a proposal that is no longer the one for what is
+/// installed is refused. Once saved, the team is shown as saved whatever
+/// is installed later, and there is no proposal left to accept.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_project_is_shown_a_proposed_team_until_the_person_saves_one() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let read = || Request::Crew {
+        project: Some(f.work.clone()),
+    };
+    let accept = |key: &str| Request::CrewAccept {
+        from: HUMAN.into(),
+        project: Some(f.work.clone()),
+        proposal: key.to_owned(),
+    };
+
+    // Nothing a member can run on is installed.
+    install(&f, &[]);
+    let none = shown(d.handle(read()).await);
+    assert_eq!(none.revision, 0);
+    assert!(none.members.is_empty() && none.proposal.is_none());
+    assert_eq!(
+        none.unavailable.as_deref(),
+        Some(agentdocker_core::crew::NOTHING_TO_PROPOSE)
+    );
+    let (code, _) = refused(d.handle(accept("anything")).await);
+    assert_eq!(code, ErrorCode::Unavailable);
+
+    // One vendor: both members on it, and said to be a same-vendor team.
+    install(&f, &["codex"]);
+    let one = shown(d.handle(read()).await);
+    assert!(one.same_vendor);
+    let one_key = one.proposal.clone().unwrap();
+
+    // Two vendors.
+    install(&f, &["claude", "codex"]);
+    let both = shown(d.handle(read()).await);
+    let key = both.proposal.clone().unwrap();
+    assert_eq!(
+        key,
+        format!(
+            "writer=claude-code:implementer,reviewer=codex:reviewer@{}",
+            both.project.as_str()
+        )
+    );
+    assert!(!both.same_vendor);
+    assert!(both.members.iter().all(|m| m.id.is_none() && m.installed));
+
+    // The proposal shown while only Codex was installed is not the one
+    // there is now: it is not saved in its place.
+    let (code, why) = refused(d.handle(accept(&one_key)).await);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert!(why.contains("what is installed has changed"), "{why}");
+    assert_eq!(
+        shown(d.handle(read()).await).revision,
+        0,
+        "nothing was saved"
+    );
+
+    let saved = shown(d.handle(accept(&key)).await);
+    assert_eq!(saved.revision, 1);
+    assert!(saved.proposal.is_none());
+    assert_eq!(
+        saved
+            .members
+            .iter()
+            .map(|m| (m.name.as_str(), m.runtime.as_str(), m.roles.join("+")))
+            .collect::<Vec<_>>(),
+        [
+            ("writer", "claude-code", "implementer".to_owned()),
+            ("reviewer", "codex", "reviewer".to_owned()),
+        ]
+    );
+    let ids: Vec<_> = saved
+        .members
+        .iter()
+        .map(|m| m.id.clone().unwrap())
+        .collect();
+    assert_ne!(ids[0], ids[1]);
+
+    // Codex goes: the saved team is shown as saved, its reviewer not
+    // installed, and nobody is put in its place.
+    install(&f, &["claude"]);
+    let later = shown(d.handle(read()).await);
+    assert_eq!(later.revision, 1);
+    assert_eq!(
+        later
+            .members
+            .iter()
+            .map(|m| m.installed)
+            .collect::<Vec<_>>(),
+        [true, false]
+    );
+    assert_eq!(
+        later
+            .members
+            .iter()
+            .map(|m| m.id.clone().unwrap())
+            .collect::<Vec<_>>(),
+        ids
+    );
+    let (code, why) = refused(d.handle(accept(&key)).await);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert!(why.contains("has a team saved (revision 1)"), "{why}");
+
+    // It is in the daemon's home: a daemon opened again has it.
+    let dir = f._dir;
+    drop(f.daemon);
+    let reopened = open(&dir);
+    let again = shown(
+        reopened
+            .handle(Request::Crew {
+                project: Some(f.work.clone()),
+            })
+            .await,
+    );
+    assert_eq!(again.revision, 1);
+    assert_eq!(
+        again
+            .members
+            .iter()
+            .map(|m| m.id.clone().unwrap())
+            .collect::<Vec<_>>(),
+        ids
+    );
+}
+
+/// A proposal is accepted for the project it was shown for and no other.
+/// Two projects on one machine are proposed the same members, so a key
+/// that named the members alone let one project's proposal be saved as
+/// another's: the command copied from a read of one, run in the other's
+/// folder. The key names its project; the other project refuses it and
+/// saves nothing, and what is installed changing still refuses it where
+/// it was shown.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_proposal_is_accepted_only_for_the_project_it_was_shown_for() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let other = f._dir.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = other.display().to_string();
+    let read = |project: &str| Request::Crew {
+        project: Some(project.to_owned()),
+    };
+    let accept = |project: &str, key: &str| Request::CrewAccept {
+        from: HUMAN.into(),
+        project: Some(project.to_owned()),
+        proposal: key.to_owned(),
+    };
+
+    install(&f, &["claude", "codex"]);
+    let a = shown(d.handle(read(&f.work)).await);
+    let b = shown(d.handle(read(&other)).await);
+    assert_ne!(a.project, b.project, "two projects");
+    let (a_key, b_key) = (a.proposal.clone().unwrap(), b.proposal.clone().unwrap());
+    assert_eq!(
+        a_key.rsplit_once('@').map(|(members, _)| members),
+        b_key.rsplit_once('@').map(|(members, _)| members),
+        "the same members are proposed to both"
+    );
+    assert_ne!(a_key, b_key, "and each project has a key of its own");
+
+    // B's key, sent about A: the command a person copied from a read of
+    // B, run where A is the project. Refused, and neither is saved.
+    let (code, why) = refused(d.handle(accept(&f.work, &b_key)).await);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert!(why.contains("proposed for another project"), "{why}");
+    assert_eq!(shown(d.handle(read(&f.work)).await).revision, 0);
+    assert_eq!(shown(d.handle(read(&other)).await).revision, 0);
+
+    // What is installed changes after B was shown: its key is no longer
+    // B's proposal either, and is refused there too.
+    install(&f, &["codex"]);
+    let (code, why) = refused(d.handle(accept(&other, &b_key)).await);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert!(why.contains("what is installed has changed"), "{why}");
+    assert_eq!(shown(d.handle(read(&other)).await).revision, 0);
+
+    // As it was shown, for the project it was shown for: B is saved, and
+    // only B.
+    install(&f, &["claude", "codex"]);
+    let saved = shown(d.handle(accept(&other, &b_key)).await);
+    assert_eq!((saved.revision, &saved.project), (1, &b.project));
+    assert_eq!(
+        shown(d.handle(read(&f.work)).await).revision,
+        0,
+        "the other project still has no team"
+    );
+    assert_eq!(shown(d.handle(read(&other)).await).revision, 1);
+}
+
+/// Only the person saves a team, and an edit names the revision it was
+/// made against. A member kept by its id stays that member; one taken out
+/// and another added under its name is a new member. A role is one of the
+/// palette as it is at the save.
+#[cfg(unix)]
+#[tokio::test]
+async fn only_the_person_saves_a_team_and_an_edit_names_its_revision() {
+    use agentdocker_core::crew::MemberInput;
+    let f = fixture().await;
+    let d = &f.daemon;
+    install(&f, &["claude", "codex"]);
+    let member = |name: &str, runtime: &str, roles: &[&str]| MemberInput {
+        name: name.into(),
+        runtime: runtime.into(),
+        roles: roles.iter().map(|r| (*r).to_owned()).collect(),
+        ..MemberInput::default()
+    };
+    let save = |from: &str, expect: u64, members: Vec<MemberInput>| Request::CrewSave {
+        from: from.to_owned(),
+        project: Some(f.work.clone()),
+        expect,
+        members,
+    };
+    let read = || Request::Crew {
+        project: Some(f.work.clone()),
+    };
+
+    // An agent may read the team and may not save it.
+    let (code, why) = refused(
+        d.handle(save(
+            f.agent.id.as_str(),
+            0,
+            vec![member("writer", "codex", &[])],
+        ))
+        .await,
+    );
+    assert_eq!(code, ErrorCode::Forbidden);
+    assert_eq!(why, "a project's team is the person's to change");
+    assert_eq!(shown(d.handle(read()).await).revision, 0);
+    // The request is one the socket holds to the person's own process:
+    // it changes something and names the person. The read is neither.
+    let persons = save(HUMAN, 0, vec![]);
+    assert!(crate::daemon::mutates(&persons));
+    assert!(crate::daemon::person::acting(&persons).contains(&HUMAN.to_owned()));
+    assert!(!crate::daemon::mutates(&read()));
+
+    let first = shown(
+        d.handle(save(
+            HUMAN,
+            0,
+            vec![
+                member("writer", "claude-code", &["implementer"]),
+                member("reviewer", "codex", &["reviewer"]),
+            ],
+        ))
+        .await,
+    );
+    assert_eq!(first.revision, 1);
+    let (writer, reviewer) = (first.members[0].clone(), first.members[1].clone());
+
+    // The same edit again was made against nothing saved: refused, and
+    // what is saved stays.
+    let (code, why) = refused(
+        d.handle(save(HUMAN, 0, vec![member("only", "codex", &[])]))
+            .await,
+    );
+    assert_eq!(code, ErrorCode::Conflict);
+    assert!(why.contains("revision 1 is saved now"), "{why}");
+    assert_eq!(shown(d.handle(read()).await).members.len(), 2);
+
+    // The reviewer is kept by its id; the writer is taken out and another
+    // `writer` added: a new member, under the old name.
+    let second = shown(
+        d.handle(save(
+            HUMAN,
+            1,
+            vec![
+                reviewer.input(),
+                member("writer", "codex", &["implementer"]),
+            ],
+        ))
+        .await,
+    );
+    assert_eq!(second.revision, 2);
+    assert_eq!(second.members[0].id, reviewer.id);
+    assert_eq!(second.members[1].name, "writer");
+    assert_ne!(second.members[1].id, writer.id);
+    assert!(second.same_vendor, "both on Codex now");
+
+    // A role that is not the project's, and one the person has taken out
+    // of the palette since.
+    let (code, why) = refused(
+        d.handle(save(HUMAN, 2, vec![member("writer", "codex", &["review"])]))
+            .await,
+    );
+    assert_eq!(code, ErrorCode::Invalid);
+    assert!(
+        why.contains("the project has no role called `review`"),
+        "{why}"
+    );
+    assert!(matches!(
+        d.handle(Request::RoleDelete {
+            from: HUMAN.into(),
+            project: Some(f.work.clone()),
+            role: "tester".into(),
+        })
+        .await,
+        Response::Ok
+    ));
+    let (code, why) = refused(
+        d.handle(save(HUMAN, 2, vec![member("writer", "codex", &["tester"])]))
+            .await,
+    );
+    assert_eq!(code, ErrorCode::Invalid);
+    assert!(why.contains("no role called `tester`"), "{why}");
+    assert_eq!(
+        shown(d.handle(read()).await).revision,
+        2,
+        "a refusal saves nothing"
+    );
+
+    // A runtime that cannot be told its first words is not a member's.
+    let (code, why) = refused(
+        d.handle(save(HUMAN, 2, vec![member("writer", "gemini-cli", &[])]))
+            .await,
+    );
+    assert_eq!(code, ErrorCode::Invalid);
+    assert!(
+        why.contains("cannot be told what to do while idle"),
+        "{why}"
+    );
+}
