@@ -5,6 +5,7 @@
 //! card's history as documents, and to say what changed.
 use super::*;
 use agentdocker_core::board::{self, Board, Lane, rank};
+use agentdocker_core::hold::{Claim, Evidence, Hold, Presence, Step};
 use agentdocker_core::protocol::{BatchCard, TASKS_LIMIT, TASKS_LIMIT_MAX, TASKS_PAGE_BYTES};
 use agentdocker_core::task::{
     Comment, NewTask, Task, TaskAction, TaskEdit, TaskEntry, TaskError, TaskId,
@@ -15,6 +16,8 @@ use chrono::DateTime;
 #[cfg(test)]
 mod board_tests;
 mod catalog;
+#[cfg(test)]
+mod hold_tests;
 mod memory;
 mod memory_mirror;
 mod plans;
@@ -407,16 +410,25 @@ impl State {
         }
     }
 
-    /// The live exclusive `task:<id>` lease on a card, by its holder:
-    /// the holding. A shared claim on the card, made by hand, is not a
-    /// hold — it excludes nobody, so it entitles nobody to the card.
-    fn task_hold(&self, task: &Task, holder: &AgentId) -> Option<Lease> {
-        let resource = task_resource(task);
-        self.leases
-            .holders_of(&resource)
-            .into_iter()
-            .find(|l| &l.holder == holder && l.mode == LeaseMode::Exclusive)
-            .cloned()
+    /// What a card's hold is derived from, as the card stands: the leases
+    /// on its `task:` resource, and the presence of the agent it names now,
+    /// from the registry. Read again whenever the card's assignee changes.
+    pub(super) fn evidence_of(&self, task: &Task) -> CardEvidence {
+        let presence = match task
+            .assignee
+            .as_ref()
+            .map(|holder| self.registry.get(holder))
+        {
+            Some(Some(record)) if record.status.is_live() => Presence::Live,
+            Some(Some(_)) => Presence::Ended,
+            Some(None) => Presence::Forgotten,
+            None => Presence::Unknown,
+        };
+        CardEvidence {
+            leases: self.task_holds(task),
+            holder: task.assignee.clone(),
+            presence,
+        }
     }
 
     /// Every live lease on a card: its holder's, and any taken by hand.
@@ -714,13 +726,36 @@ impl State {
     }
 }
 
+/// What a card's hold is derived from in the daemon ([`State::evidence_of`]).
+pub(super) struct CardEvidence {
+    leases: Vec<Lease>,
+    holder: Option<AgentId>,
+    presence: Presence,
+}
+
+impl CardEvidence {
+    pub(super) fn at(&self, now: DateTime<Utc>) -> Evidence<'_> {
+        Evidence {
+            leases: &self.leases,
+            holder: self.holder.as_ref(),
+            presence: self.presence,
+            now,
+        }
+    }
+}
+
 fn refused(error: TaskError) -> Response {
     refused_with(error, None)
 }
 
-/// A refusal by the card's rule, with what the caller can do about a hold
-/// that has lapsed: the plain pull that met it is told to name the holder.
-fn refused_with(error: TaskError, lapsed: Option<&AgentId>) -> Response {
+/// A refusal by the card's rule. A card somebody holds says the hold it
+/// found and the step past it: `details` keeps `assignee` and `column`,
+/// says `hold` only where it is true (`live` while the named holder's
+/// exclusive lease is live, `lapsed` while a worked card names a holder
+/// without one), and adds the claim's `state`, its `holder` and `until`,
+/// and the `step`. `hold` is the card's as the refusing operation derived
+/// it; a plain pull that met a lapsed hold is told to name the holder.
+fn refused_with(error: TaskError, hold: Option<(&Hold, Lapse)>) -> Response {
     let code = match &error {
         TaskError::Invalid(_) | TaskError::Cycle => ErrorCode::Invalid,
         TaskError::Taken { .. } => ErrorCode::Conflict,
@@ -728,24 +763,28 @@ fn refused_with(error: TaskError, lapsed: Option<&AgentId>) -> Response {
         TaskError::Archived => ErrorCode::Invalid,
     };
     let (message, details) = match &error {
-        TaskError::Taken { assignee, column } => {
+        TaskError::Taken {
+            assignee,
+            column,
+            claim,
+            step,
+        } => {
             let mut details = serde_json::json!({
                 "assignee": assignee,
                 "column": column,
             });
+            if let Some(word) = hold.and_then(|(hold, _)| hold.lease_word()) {
+                details["hold"] = serde_json::json!(word);
+            }
+            claim_details(&mut details, claim, step);
+            let lapsed = hold
+                .filter(|(_, lapse)| *lapse == Lapse::Hint)
+                .and_then(|(hold, _)| hold.lapsed());
             let message = match lapsed {
-                Some(holder) => {
-                    details["hold"] = serde_json::json!("lapsed");
-                    format!(
-                        "{error}, whose hold has lapsed; to take it over, pull again with take_over_from naming {holder}"
-                    )
-                }
-                None => {
-                    if assignee.is_some() {
-                        details["hold"] = serde_json::json!("live");
-                    }
-                    error.to_string()
-                }
+                Some(holder) => format!(
+                    "{error}, whose hold has lapsed; to take it over, pull again with take_over_from naming {holder}"
+                ),
+                None => format!("{error}; {}", step.sentence()),
             };
             (message, Some(details))
         }
@@ -753,6 +792,17 @@ fn refused_with(error: TaskError, lapsed: Option<&AgentId>) -> Response {
             error.to_string(),
             Some(serde_json::json!({ "cycle": true })),
         ),
+        TaskError::Archived => {
+            let mut details = serde_json::json!({});
+            let claim = hold
+                .map(|(hold, _)| hold.claim.clone())
+                .unwrap_or(Claim::Archived { holder: None });
+            claim_details(&mut details, &claim, &Step::Unarchive);
+            (
+                format!("{error}; {}", Step::Unarchive.sentence()),
+                Some(details),
+            )
+        }
         _ => (error.to_string(), None),
     };
     Response::Error {
@@ -762,16 +812,39 @@ fn refused_with(error: TaskError, lapsed: Option<&AgentId>) -> Response {
     }
 }
 
+/// Whether a refusal of a lapsed hold says how to take it over: a plain
+/// pull is told, a take-over that named the wrong holder is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lapse {
+    Hint,
+    Quiet,
+}
+
+/// The claim a refusal found and the step past it, added to its details.
+fn claim_details(details: &mut serde_json::Value, claim: &Claim, step: &Step) {
+    details["state"] = serde_json::json!(claim.word());
+    if let Some(holder) = claim.holder() {
+        details["holder"] = serde_json::json!(holder);
+    }
+    if let Claim::Held { until, .. } = claim {
+        details["until"] = serde_json::json!(until);
+    }
+    details["step"] = serde_json::json!(step.word());
+}
+
 /// An agent's change to a card it no longer holds: the lease lapsed.
-fn hold_lapsed(task: &Task) -> Response {
+fn hold_lapsed(task: &Task, hold: &Hold) -> Response {
+    let mut details = serde_json::json!({
+        "assignee": task.assignee,
+        "column": task.column,
+        "hold": "lapsed",
+    });
+    let step = Step::past(&hold.claim);
+    claim_details(&mut details, &hold.claim, &step);
     Response::Error {
         code: ErrorCode::Forbidden,
         message: "your hold on the card has lapsed; pull it again with take_over_from naming yourself before moving it".to_string(),
-        details: Some(serde_json::json!({
-            "assignee": task.assignee,
-            "column": task.column,
-            "hold": "lapsed",
-        })),
+        details: Some(details),
     }
 }
 
@@ -1133,7 +1206,8 @@ impl Daemon {
                     .filter(|t| t.board.as_deref().unwrap_or(board::MAIN) == board.slug)
                     .cloned()
                     .collect();
-                let pick = board.next_ready(&on_board, &agent, open);
+                let claim_of = |card: &Task| Hold::of(card, &state.evidence_of(card).at(now)).claim;
+                let pick = board.next_ready(&on_board, &agent, claim_of, open);
                 match pick.card {
                     Some(card) => card.clone(),
                     None => {
@@ -1156,28 +1230,19 @@ impl Daemon {
         // A waiting card still naming an agent that has ended, as one its
         // holder moved back before leaving does: named, it is free, and the
         // pull says whom it was taken from. A working card keeps its holder
-        // until a take-over names them.
-        let ended = task.assignee.clone().filter(|holder| {
-            named
-                && task.column.waiting()
-                && !state
-                    .registry
-                    .get(holder)
-                    .is_some_and(|record| record.status.is_live())
-        });
-        if ended.is_some() {
-            task.assignee = None;
-        }
-        let held = task
-            .assignee
-            .as_ref()
-            .and_then(|a| state.task_hold(&task, a));
+        // until a take-over names them. First, so a wait declared over
+        // finds it free; what follows reads the card as it then stands.
+        let ended = task.free_if_left(named, &state.evidence_of(&task).at(now));
+        let evidence = state.evidence_of(&task);
+        let hold = Hold::of(&task, &evidence.at(now));
+        let held = hold.holder_lease().cloned();
         // A lease held by somebody the card does not name — a claim made
         // by hand — keeps it as any lease keeps a resource.
-        let by_hand: Vec<Lease> = state
-            .task_holds(&task)
-            .into_iter()
+        let by_hand: Vec<Lease> = hold
+            .leases
+            .iter()
             .filter(|l| l.holder != agent && Some(&l.holder) != task.assignee.as_ref())
+            .cloned()
             .collect();
         if !by_hand.is_empty() {
             return lease_error(LeaseError::Conflict {
@@ -1185,10 +1250,6 @@ impl Daemon {
                 held_by: by_hand,
             });
         }
-        let lapsed = task
-            .assignee
-            .clone()
-            .filter(|_| held.is_none() && task.column.working());
         let from_lane = task.lane_on(&board).slug.clone();
         // What the card waited on, and what the taker says happened.
         let mut unblocked: Option<(String, String)> = None;
@@ -1257,13 +1318,13 @@ impl Daemon {
                             "an agent says a card's wait is over in its own project",
                         );
                     }
-                    match task.unblock(reason) {
+                    match task.unblock(reason, &evidence.at(now)) {
                         Ok(was) => unblocked = Some((was, reason.trim().to_owned())),
-                        Err(error) => return refused_with(error, lapsed.as_ref()),
+                        Err(error) => return refused_with(error, Some((&hold, Lapse::Hint))),
                     }
                 }
-                if let Err(error) = task.pull(&agent, &board, named, now) {
-                    return refused_with(error, lapsed.as_ref());
+                if let Err(error) = task.pull(&agent, &board, named, &evidence.at(now), now) {
+                    return refused_with(error, Some((&hold, Lapse::Hint)));
                 }
                 None
             }
@@ -1272,16 +1333,11 @@ impl Daemon {
                     Ok(id) => id,
                     Err(response) => return *response,
                 };
-                if lapsed.as_ref() != Some(&from) {
-                    // The hold is live, or the card names somebody else,
-                    // or sits where a take-over does not apply.
-                    return refused(TaskError::Taken {
-                        assignee: task.assignee.clone(),
-                        column: task.column,
-                    });
-                }
-                if let Err(error) = task.take_over(&agent, &from, now) {
-                    return refused(error);
+                // The hold is live, or the card names somebody else, or
+                // sits where a take-over does not apply: refused, without
+                // the lapsed hint a plain pull is given.
+                if let Err(error) = task.take_over(&agent, &from, &evidence.at(now), now) {
+                    return refused_with(error, Some((&hold, Lapse::Quiet)));
                 }
                 Some(from)
             }
@@ -1382,13 +1438,20 @@ impl Daemon {
     /// and the card is pulled again by name before it moves. A card that
     /// has ended, or waits, holds no lease to lapse. The person needs no
     /// hold.
-    fn agent_hold(state: &State, task: &Task, actor: &Actor) -> Result<(), Box<Response>> {
-        if actor.human || !task.column.working() {
+    fn agent_hold(
+        state: &State,
+        task: &Task,
+        actor: &Actor,
+        now: DateTime<Utc>,
+    ) -> Result<(), Box<Response>> {
+        if actor.human {
             return Ok(());
         }
+        // The caller's own claim, whatever else holds a lease on the card.
+        let hold = Hold::of(task, &state.evidence_of(task).at(now));
         let holder = AgentId::from(actor.id.clone());
-        if task.assignee.as_ref() == Some(&holder) && state.task_hold(task, &holder).is_none() {
-            return Err(Box::new(hold_lapsed(task)));
+        if hold.lapsed() == Some(&holder) {
+            return Err(Box::new(hold_lapsed(task, &hold)));
         }
         Ok(())
     }
@@ -1440,7 +1503,7 @@ impl Daemon {
                 "an agent moves cards in its own project",
             );
         }
-        if let Err(response) = Self::agent_hold(&state, &task, &actor) {
+        if let Err(response) = Self::agent_hold(&state, &task, &actor, now) {
             return *response;
         }
         let board = match state.board_of(&task) {
@@ -1616,7 +1679,7 @@ impl Daemon {
             Ok(task) => task,
             Err(response) => return *response,
         };
-        if let Err(response) = Self::agent_hold(&state, &task, &actor) {
+        if let Err(response) = Self::agent_hold(&state, &task, &actor, now) {
             return *response;
         }
         // An edit made against an older reading never writes over a newer one.
@@ -1823,7 +1886,7 @@ impl Daemon {
             Ok(task) => task,
             Err(response) => return *response,
         };
-        if let Err(response) = Self::agent_hold(&state, &task, &actor) {
+        if let Err(response) = Self::agent_hold(&state, &task, &actor, now) {
             return *response;
         }
         let already = task.archived_at.is_some();

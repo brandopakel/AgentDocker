@@ -917,10 +917,7 @@ fn rewrite_document(doc: &Document, kept: &AgentId, old: &AgentId) -> Result<Val
             // column and timestamps are not identity references. This does not
             // grant or renew a lease: the normal resume and pull guards apply.
             let mut task: agentdocker_core::Task = serde_json::from_value(doc.value.clone())?;
-            optional(&mut task.assignee, kept, old);
-            if task.created_by == old.as_str() {
-                task.created_by = kept.to_string();
-            }
+            task.repair_identity(old, kept);
             serde_json::to_value(task)?
         }
         "question" => {

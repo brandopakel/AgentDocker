@@ -82,11 +82,9 @@ impl State {
             .filter(|t| task.blocked_by.contains(&t.id) && t.open())
             .map(Task::handle)
             .collect();
-        Some(if task.assignee.is_some() || !task.open() {
-            Response::error(
-                ErrorCode::Conflict,
-                "the card is held, ended or archived; an agent starts on a card nobody holds",
-            )
+        let hold = Hold::of(task, &self.evidence_of(task).at(Utc::now()));
+        Some(if hold.claim != Claim::Free {
+            start_refused(task, &hold)
         } else if !waits.is_empty() {
             Response::Error {
                 code: ErrorCode::Conflict,
@@ -843,8 +841,9 @@ impl Daemon {
                 now,
             )));
         }
-        task.assignee = Some(agent.id.clone());
-        task.updated_at = now;
+        if let Err(error) = task.start(&agent.id, &state.evidence_of(&task).at(now), now) {
+            return super::refused(error);
+        }
         if let Some(rule) = &start.rule {
             task.fired.push(rule.id.clone());
             kinds.push(EventKind::RuleFired {
@@ -889,6 +888,44 @@ impl Daemon {
         }
         state.tell_holder(&start.from, &agent.id, &task, rule::start_prompt(&task));
         Response::Agent { agent }
+    }
+}
+
+/// Why an agent is not started on a card somebody has: the claim it
+/// found, in its own words, and the step past it, with the details a
+/// pull's refusal gives. Always `conflict`, as a rule start has always
+/// answered a card that is not free.
+fn start_refused(task: &Task, hold: &Hold) -> Response {
+    let found = match &hold.claim {
+        Claim::Free => "the card is free".to_owned(),
+        Claim::Held { holder, until } => format!(
+            "the card is held by {holder} until {}",
+            until.format("%Y-%m-%d %H:%M UTC")
+        ),
+        Claim::Lapsed { holder, .. } => format!("the card names {holder}, whose hold has lapsed"),
+        Claim::Named { holder, presence } if presence.gone() => {
+            format!("the card names {holder}, whose session has ended")
+        }
+        Claim::Named { holder, .. } => format!("the card names {holder}"),
+        Claim::Ended { .. } => format!("the card has ended ({})", task.column),
+        Claim::Archived { .. } => "the card is archived".to_owned(),
+    };
+    let step = Step::past(&hold.claim);
+    let mut details = serde_json::json!({
+        "assignee": task.assignee,
+        "column": task.column,
+    });
+    if let Some(word) = hold.lease_word() {
+        details["hold"] = serde_json::json!(word);
+    }
+    super::claim_details(&mut details, &hold.claim, &step);
+    Response::Error {
+        code: ErrorCode::Conflict,
+        message: format!(
+            "{found}; an agent starts on a card nobody holds; {}",
+            step.sentence()
+        ),
+        details: Some(details),
     }
 }
 

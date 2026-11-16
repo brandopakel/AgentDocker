@@ -3,7 +3,7 @@
 //! What a rule does is the daemon's; whether and when it acts is here.
 use crate::board::{Board, BoardError, NAME_CHARS};
 use crate::task::{COMMENT_CHARS, Task};
-use crate::{Column, ProjectId, TaskId};
+use crate::{ProjectId, TaskId};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -234,11 +234,11 @@ pub fn start_prompt(task: &Task) -> String {
 /// (`open_blocker` says which are), nothing off the board. What a pull
 /// asks of a card, so a start never takes one a pull would refuse.
 pub fn startable(task: &Task, open_blocker: impl Fn(&TaskId) -> bool) -> bool {
-    task.assignee.is_none()
-        && task.archived_at.is_none()
-        && !matches!(task.column, Column::Done | Column::Cancelled)
-        && task.external_blocker.trim().is_empty()
-        && !task.blocked_by.iter().any(open_blocker)
+    // A card's claim is free only when it names nobody and is open and on
+    // the board, which no lease or presence changes: none is needed here.
+    let free = crate::hold::Hold::of(task, &crate::hold::Evidence::none(task.updated_at)).claim
+        == crate::hold::Claim::Free;
+    free && task.external_blocker.trim().is_empty() && !task.blocked_by.iter().any(open_blocker)
 }
 
 #[cfg(test)]
