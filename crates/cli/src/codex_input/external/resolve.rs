@@ -153,11 +153,15 @@ fn readback_next(phase: Phase, project: bool, look: &Look) -> String {
 }
 
 /// What `--start-queued` would meet now, as far as the review can tell.
-fn start_next(phase: Phase, shared: bool, project: bool, look: &Look) -> String {
+///
+/// `transmitted` is the evidence, not the phase: an intent that may have
+/// been transmitted answers the same way once a receipt stands beside it,
+/// when the phase reads `Received`.
+fn start_next(phase: Phase, transmitted: bool, shared: bool, project: bool, look: &Look) -> String {
     if !shared {
         return format!("refused: {}", queued_start::NEEDS_SHARED_SERVER);
     }
-    if let Phase::StartTransmitted { .. } = phase {
+    if transmitted {
         return "reports only: with the intent's confirmation it answers that the start was already attempted, and starts nothing".to_owned();
     }
     if let Err(why) = phase.start() {
@@ -271,7 +275,13 @@ fn preview(ledger: &Ledger, project: bool, look: &Look) -> Result<Value> {
                 "next": {
                     "standing": standing(phase, look),
                     "confirm_read": readback_next(phase, project, look),
-                    "start_queued": start_next(phase, shared, project, look),
+                    "start_queued": start_next(
+                        phase,
+                        attempt.start.as_ref().is_some_and(|start| start.may_have_transmitted()),
+                        shared,
+                        project,
+                        look,
+                    ),
                 },
             }))
         })
@@ -1520,6 +1530,25 @@ mod tests {
                 let asked = daemon(&world.binding.socket, world.agent.clone());
                 let mut fake = codex(Vec::new()).await;
                 let before = world.stored();
+                // The review says what the command will answer, from the
+                // intent it retains, whatever the phase reads.
+                let shown = ask(&world, &mut ledger, &mut fake, None).await.unwrap();
+                assert_eq!(
+                    shown["pending"]["phase"],
+                    if received {
+                        "received"
+                    } else {
+                        "start possibly transmitted"
+                    }
+                );
+                assert!(
+                    shown["pending"]["next"]["start_queued"]
+                        .as_str()
+                        .unwrap()
+                        .starts_with("reports only"),
+                    "received={received}: {}",
+                    shown["pending"]["next"]
+                );
                 let answer = ask(
                     &world,
                     &mut ledger,
@@ -1531,7 +1560,7 @@ mod tests {
                 assert_eq!(answer["already_attempted"], true, "received={received}");
                 assert_eq!(answer["queued_start"], intent.id.as_str());
                 assert_eq!(world.stored(), before);
-                assert_eq!(kinds(&asked), ["inspect"]);
+                assert_eq!(kinds(&asked), ["inspect", "inspect"]);
                 assert!(fake.methods().is_empty());
             }
         }
