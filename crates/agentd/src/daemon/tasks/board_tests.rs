@@ -2719,11 +2719,6 @@ async fn a_project_is_shown_a_proposed_team_until_the_person_saves_one() {
     );
 }
 
-/// Only the person saves a team, and an edit names the revision it was
-/// made against. A member kept by its id stays that member; one taken out
-/// and another added under its name is a new member. A role is one of the
-/// palette as it is at the save.
-#[cfg(unix)]
 /// A proposal is accepted for the project it was shown for and no other.
 /// Two projects on one machine are proposed the same members, so a key
 /// that named the members alone let one project's proposal be saved as
@@ -2731,6 +2726,7 @@ async fn a_project_is_shown_a_proposed_team_until_the_person_saves_one() {
 /// folder. The key names its project; the other project refuses it and
 /// saves nothing, and what is installed changing still refuses it where
 /// it was shown.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_proposal_is_accepted_only_for_the_project_it_was_shown_for() {
     let f = fixture().await;
@@ -2788,6 +2784,11 @@ async fn a_proposal_is_accepted_only_for_the_project_it_was_shown_for() {
     assert_eq!(shown(d.handle(read(&other)).await).revision, 1);
 }
 
+/// Only the person saves a team, and an edit names the revision it was
+/// made against. A member kept by its id stays that member; one taken out
+/// and another added under its name is a new member. A role is one of the
+/// palette as it is at the save.
+#[cfg(unix)]
 #[tokio::test]
 async fn only_the_person_saves_a_team_and_an_edit_names_its_revision() {
     use agentdocker_core::crew::MemberInput;
