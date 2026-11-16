@@ -749,7 +749,10 @@ command.
   every read gives up (`Remote::give_up`): the ask that is out is no longer
   awaited, so its late answer is not taken, and a failure on the page goes,
   since a lost connection has no second banner; the value as last read stays,
-  and `Msg::Connected` asks again for what is on view. A session's changes
+  and `Msg::Connected` asks again for what is on view. The board's further
+  pages, which answer by their request number and not through the read, are
+  retired in the same place: a page that answers after the link went is not
+  added, and **Show more** does not wait for it. A session's changes
   are one read about the selected session, and only that session's are asked
   for. The board's further pages are added to what was read and keep their
   own request numbers beside the read; usage shares one read between identical
