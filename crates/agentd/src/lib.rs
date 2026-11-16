@@ -285,6 +285,13 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 info!(lock = %lock_path.display(), "another agentd holds the lock; exiting");
                 return Ok(());
             };
+            // Who took the lock, for a client looking without taking it:
+            // a hint beside the lock, never its authority, so a failure to
+            // write it decides nothing.
+            #[cfg(unix)]
+            if let Err(error) = agentdocker_host::presence::publish(&lock) {
+                warn!(lock = %lock_path.display(), %error, "cannot record this daemon as the lock's owner");
+            }
             Some(lock)
         }
     };
@@ -309,6 +316,10 @@ async fn serve(args: Args) -> anyhow::Result<()> {
         Some(handover) => {
             let listener = handover.tokio_listener()?;
             let restricted = handover.tokio_restricted()?;
+            // A copy of the lock's descriptor, to record this process as its
+            // owner once the transfer is accepted; closing the copy keeps
+            // the lock.
+            let owned_lock = handover.lock.try_clone().ok();
             daemon.hold(daemon::reload::Held {
                 listener: handover.listener,
                 lock: handover.lock,
@@ -333,6 +344,17 @@ async fn serve(args: Args) -> anyhow::Result<()> {
                 .await;
                 anyhow::bail!("take-over refused: {reason}");
             }
+            // Accepted: this process owns the lock now. Recording it is
+            // best-effort and after the fact; a failure rolls nothing back,
+            // and readers take the predecessor's or a partial record as a
+            // hint of no weight.
+            if let Some(lock) = &owned_lock {
+                use std::os::fd::AsFd;
+                if let Err(error) = agentdocker_host::presence::publish_fd(lock.as_fd()) {
+                    warn!(%error, "cannot record this daemon as the lock's owner after the take-over");
+                }
+            }
+            drop(owned_lock);
             // The bindings' releases are held before the predecessor is told
             // and lets go of its own pins: a retained version with a dormant
             // or restarting controller must never be unpinned in between.

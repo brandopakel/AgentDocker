@@ -321,6 +321,15 @@ fn a_renamed_reload_candidate_is_started_as_the_daemon() {
         ],
     );
     let before = fixture.daemon.id();
+    // The lock's owner record: written by the daemon that took the lock,
+    // through the descriptor that holds it, and by a successor once its
+    // take-over is accepted.
+    let lock = socket.with_extension("lock");
+    let recorded = |lock: &Path| -> Option<u64> {
+        let text = std::fs::read_to_string(lock).ok()?;
+        serde_json::from_str::<serde_json::Value>(text.trim()).ok()?["pid"].as_u64()
+    };
+    assert_eq!(recorded(&lock), Some(u64::from(before)));
     let response = rpc(&socket, serde_json::json!({"op": "reload"})).unwrap();
     assert_eq!(response["type"], "ok", "{response}");
     // The predecessor leaves once the successor serves.
@@ -335,6 +344,11 @@ fn a_renamed_reload_candidate_is_started_as_the_daemon() {
     let pong = rpc(&socket, serde_json::json!({"op": "ping"})).unwrap();
     let successor = pong["pid"].as_u64().unwrap();
     assert_ne!(successor, u64::from(before));
+    assert_eq!(
+        recorded(&lock),
+        Some(successor),
+        "the successor recorded itself"
+    );
     let started = arguments_of(successor);
     assert!(
         started.ends_with("/candidate daemon run --take-over 3"),
