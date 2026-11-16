@@ -15,6 +15,7 @@ mod icons;
 mod interaction;
 mod link;
 mod logos;
+mod menu;
 mod messages;
 mod naming;
 mod navigation;
@@ -49,6 +50,7 @@ use chrono::Utc;
 
 use crate::client::{Client, RemoteError};
 use crate::terminal::{Status, Terminal};
+use menu::Menu;
 
 /// How often agents, leases and discovered processes are re-read.
 const REFRESH: Duration = Duration::from_secs(2);
@@ -2185,6 +2187,8 @@ impl App {
                     match result {
                         Ok(id) => {
                             self.shell.launch = false;
+                            // The dialog's Model or Effort menu goes with it.
+                            self.close_menu();
                             self.shell.selected = Some(id.clone());
                             // Its changes, as for a session chosen by hand.
                             self.request_review(&id);
