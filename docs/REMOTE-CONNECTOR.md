@@ -56,7 +56,9 @@ beside the grant for the person to read.
   the Funnel is confirmed undone, so it is never open unrecorded. A set that
   fails is undone only if the port then points at this connector's own
   address; one it cannot confirm stays recorded. A Funnel a killed connector
-  left is cleared by the next start before anything else, but only while
+  left is cleared by the next start before anything else, but only while no
+  process runs under its recorded pid (a process that has since been given
+  that pid keeps the start from checking it) and while
   `tailscale serve status` still points it at the recorded address: one
   pointed elsewhere since is somebody else's and is left alone, and one that
   cannot be read or cleared stops the start, keeping its record, with the

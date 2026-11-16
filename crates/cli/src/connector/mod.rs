@@ -2014,9 +2014,9 @@ fn tunnel_left_lines(left: &agentdocker_host::connector::TunnelLeft) -> Vec<Stri
     use agentdocker_host::connector::TunnelProcess;
     let mut lines = Vec::new();
     if let Some(funnel) = &left.funnel {
-        let (port, target) = (funnel.https_port, &funnel.target);
+        let (port, target, pid) = (funnel.https_port, &funnel.target, funnel.pid);
         lines.push(format!(
-            "  A Tailscale Funnel was recorded for port {port} and target {target} (set or attempted), and may still publish it. The next start checks and clears it only if port {port} still points at {target}. To clear it yourself, check `tailscale serve status` first, and run `tailscale funnel --https={port} off` only if port {port} still points at {target}."
+            "  A Tailscale Funnel was recorded for port {port} and target {target} (set or attempted), and may still publish it. The next start checks and clears it only while no process runs under its recorded pid ({pid}), and only if port {port} still points at {target}. To clear it yourself, check `tailscale serve status` first, and run `tailscale funnel --https={port} off` only if port {port} still points at {target}."
         ));
     }
     match &left.process {
@@ -3119,6 +3119,13 @@ mod tests {
         let lines = tunnel_left_lines(&left);
         assert!(
             lines[0].contains("recorded for port 8443 and target 127.0.0.1:9 (set or attempted)"),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains(
+                "The next start checks and clears it only while no process runs under its recorded pid (1), and only if port 8443 still points at 127.0.0.1:9."
+            ),
             "{}",
             lines[0]
         );
