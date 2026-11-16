@@ -267,6 +267,26 @@ control does, its id or its accessible label:
   A project row's **⋯** shows only under the pointer, on the selected row and
   while its menu is open; elsewhere it is drawn transparent but stays a
   control for the keyboard and assistive technology.
+- **One menu.** Which menu is open is one value, `shell::State::menu`
+  (`menu::Menu`: More, the launch tools, a project's, Open in…, an agent's
+  roles, the launch dialog's Model or Effort, the board's tag filter, the open
+  card's). Opening one (`App::open_menu`, `App::toggle_menu`) puts it in the
+  place of whatever was open, so there is never a second, the board's two
+  included, which are drawn in the page and float nowhere (`Menu::floats`
+  tells them from the rest for the focus rules above). Everything that closes
+  menus calls the one `App::close_menu`: going to another screen, another
+  project, Back and Forward, selecting a session, a notification's route,
+  opening the palette, opening or closing the launch dialog, and Escape. And
+  so that no way to another screen is missed, the function every move passes
+  through (`App::navigating`) closes the menu that was open when the move
+  began if the move ends on another screen: a session's terminal opening and
+  closing set the screen themselves, as does the terminal the window opens
+  later for a launched or reconnected session. A menu the move opened where it
+  arrived stays. What
+  a menu held of its own goes with it (the name being typed in a project's
+  menu; in an agent's roles, the palette being edited and the delete pressed
+  once). An open card closes its own menu and no other. On the board, Escape
+  still closes one thing per press, the open menu first.
 - **Type.** IBM Plex Sans is bundled (`crates/ui/src/fonts/`, Regular, Medium
   and SemiBold, SIL Open Font License; the license text ships beside the files
   and belongs in the app bundle's licenses). It is the default face, so weights
@@ -307,7 +327,9 @@ control does, its id or its accessible label:
   keys are read by a wrapper at the window root because a focused field
   otherwise types the *k* and keeps Escape. The window is always the first
   layer of one stack, with the launch dialog and the palette as optional
-  layers over it, so opening either resets nothing underneath.
+  layers over it, so opening either resets nothing underneath but the open
+  menu, which closes: a menu does not float over a layer nor wait open under
+  one.
 - **Back and Forward** (`app/navigation.rs`). Two arrow buttons beside the
   mark (`history-back`, `history-forward`, read as *Back* and *Forward*, the
   chevron glyphs) go through the window's places; each is disabled while
@@ -727,7 +749,10 @@ command.
   every read gives up (`Remote::give_up`): the ask that is out is no longer
   awaited, so its late answer is not taken, and a failure on the page goes,
   since a lost connection has no second banner; the value as last read stays,
-  and `Msg::Connected` asks again for what is on view. A session's changes
+  and `Msg::Connected` asks again for what is on view. The board's further
+  pages, which answer by their request number and not through the read, are
+  retired in the same place: a page that answers after the link went is not
+  added, and **Show more** does not wait for it. A session's changes
   are one read about the selected session, and only that session's are asked
   for. The board's further pages are added to what was read and keep their
   own request numbers beside the read; usage shares one read between identical

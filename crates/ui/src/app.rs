@@ -15,6 +15,7 @@ mod icons;
 mod interaction;
 mod link;
 mod logos;
+mod menu;
 mod messages;
 mod naming;
 mod navigation;
@@ -49,6 +50,7 @@ use chrono::Utc;
 
 use crate::client::{Client, RemoteError};
 use crate::terminal::{Status, Terminal};
+use menu::Menu;
 
 /// How often agents, leases and discovered processes are re-read.
 const REFRESH: Duration = Duration::from_secs(2);
@@ -2185,6 +2187,8 @@ impl App {
                     match result {
                         Ok(id) => {
                             self.shell.launch = false;
+                            // The dialog's Model or Effort menu goes with it.
+                            self.close_menu();
                             self.shell.selected = Some(id.clone());
                             // Its changes, as for a session chosen by hand.
                             self.request_review(&id);
@@ -2892,6 +2896,15 @@ impl App {
     /// the service is back (`Msg::Connected`).
     fn give_up_reads(&mut self) {
         self.tasks.give_up();
+        // The board's asks that are out go with its read. A further page
+        // is taken through `board_asks` and added to the board as read,
+        // not through the read's own answer, so it is retired here: a
+        // page that answers late is not added and its failure is not
+        // said, and **Show more** is not left waiting for it.
+        self.board_asks.clear();
+        if let Some(board) = self.tasks.value_mut() {
+            board.pending_more = None;
+        }
         self.todo.give_up();
         self.card.give_up();
         self.branch_review.give_up();

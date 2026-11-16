@@ -404,7 +404,8 @@ pub(super) struct State {
     pub selected: Option<String>,
     pub search: String,
     pub session_filter: super::sessions::Filter,
-    pub more: bool,
+    /// The one menu that is open, if one is (`menu::Menu`).
+    pub menu: Option<super::menu::Menu>,
     pub terminal_opening: bool,
     /// The usage screen's window and grouping: this window's, not saved.
     pub usage_since: &'static str,
@@ -435,16 +436,13 @@ pub(super) struct State {
     pub board_dense: bool,
     /// Tags a card must all carry to show.
     pub board_tags: BTreeSet<String>,
-    pub tags_menu: bool,
     /// A link being added to the open card.
     pub link_kind: Option<agentdocker_core::LinkKind>,
     pub link_target: String,
-    pub card_menu: Option<CardMenu>,
     pub tag_draft: String,
-    /// The agent whose roles menu is open, and whether it is editing the
-    /// project's palette there: a new role's name, and the role whose
-    /// delete was pressed once, when.
-    pub roles_menu: Option<String>,
+    /// In the open roles menu: whether it is editing the project's
+    /// palette there (a new role's name), and the role whose delete was
+    /// pressed once, when.
     pub roles_editing: bool,
     pub role_draft: String,
     pub role_delete: Option<(String, std::time::Instant)>,
@@ -470,12 +468,8 @@ pub(super) struct State {
     pub add_path: String,
     pub adding: bool,
     pub launch: bool,
-    /// The Launch agent split button's menu of tools is open.
-    pub launch_menu: bool,
     /// The editors installed here, found once as the window opens.
     pub editors: Vec<agentdocker_core::editor::Editor>,
-    /// The **Open in…** menu that is open, if one is.
-    pub editor_menu: Option<EditorMenu>,
     pub launch_runtime: Option<String>,
     /// What the new agent is asked to do, sent as its first message once
     /// it is launched. Kept like a draft until then.
@@ -492,8 +486,6 @@ pub(super) struct State {
     /// What the chosen tool offers here for both, read off the UI thread,
     /// by the tool it was read for.
     pub launch_choices: Option<(String, agentdocker_core::model_choice::ModelChoices)>,
-    /// The model or effort menu that is open.
-    pub launch_choice_menu: Option<ChoiceMenu>,
     /// Invalidates choice reads made for an earlier tool.
     launch_choices_generation: u64,
     /// Provider input is on for supported new sessions by default. The launch
@@ -545,8 +537,6 @@ pub(super) struct State {
     /// toggled it, until then automatic (open while one of them has a
     /// live session).
     pub temporary_open: Option<bool>,
-    /// The project row whose menu is open.
-    pub project_menu: Option<PathBuf>,
     /// The project row under the pointer: its menu button shows only
     /// there, on the selected row and while its menu is open.
     pub rail_hover: Option<PathBuf>,
@@ -1796,12 +1786,7 @@ impl App {
 
     /// Whether a menu floats over the page.
     fn menu_open(&self) -> bool {
-        self.shell.more
-            || self.shell.launch_menu
-            || self.shell.project_menu.is_some()
-            || self.shell.editor_menu.is_some()
-            || self.shell.roles_menu.is_some()
-            || self.shell.launch_choice_menu.is_some()
+        self.shell.menu.as_ref().is_some_and(Menu::floats)
     }
 
     /// Focus a menu's first entry when the menu was opened from the
@@ -2063,9 +2048,9 @@ impl App {
             }
             Message::Navigate(screen) => {
                 self.screen = screen;
-                self.shell.more = false;
-                self.shell.launch_menu = false;
-                self.shell.editor_menu = None;
+                // No menu is left open behind the screen, to be found open
+                // on coming back to it.
+                self.close_menu();
                 if screen == Screen::Chat {
                     self.open_project_chat();
                 }
@@ -2225,7 +2210,7 @@ impl App {
                 self.shell.selected = Some(id.clone());
                 self.request_review(&id);
                 self.shell.session_details = false;
-                self.shell.editor_menu = None;
+                self.close_menu();
                 self.shell.review_delivery = false;
                 self.shell.session_message = false;
             }
@@ -2485,7 +2470,9 @@ impl App {
                     self.shell.board_tags.insert(tag);
                 }
             }
-            Message::TagsMenu => self.shell.tags_menu = !self.shell.tags_menu,
+            Message::TagsMenu => {
+                self.toggle_menu(Menu::Tags);
+            }
             Message::TodoDone(task) => {
                 // Ticked: to its board's Done, wherever that is.
                 self.send(Cmd::TaskMove {
@@ -2582,7 +2569,7 @@ impl App {
                 }
             }
             Message::CardPlan(plan) => {
-                self.shell.card_menu = None;
+                self.close_menu();
                 if let Some(detail) = self.card.value() {
                     let task = detail.task.id.to_string();
                     self.board_act(Request::TaskUpdate {
@@ -2633,7 +2620,7 @@ impl App {
             }
             Message::FilePicked(None) => {}
             Message::FileAttach(file) => {
-                self.shell.card_menu = None;
+                self.close_menu();
                 self.link_file(file, false);
             }
             Message::FileUnlink(file) => self.link_file(file, true),
@@ -2690,16 +2677,16 @@ impl App {
                         .as_ref()
                         .is_some_and(|id| self.card_startable(id))
                 {
-                    self.shell.card_menu = None;
+                    self.close_menu();
                 } else {
-                    self.shell.card_menu = (self.shell.card_menu != Some(menu)).then_some(menu);
+                    self.toggle_menu(Menu::Card(menu));
                     if menu == CardMenu::Start && self.runtimes.is_empty() {
                         self.send(Cmd::Runtimes);
                     }
                 }
             }
             Message::StartAgent(runtime) => {
-                self.shell.card_menu = None;
+                self.close_menu();
                 if let Some(id) = self.task_open.as_ref().filter(|id| self.card_startable(id)) {
                     let workdir = self.selected_project_root().map(PathBuf::from);
                     self.board_act(Request::TaskStart {
@@ -2751,8 +2738,8 @@ impl App {
                 }
             }
             Message::RolesMenu(agent) => {
-                if self.shell.roles_menu.as_deref() == Some(agent.as_str()) {
-                    self.shell.roles_menu = None;
+                if self.shell.roles_menu() == Some(agent.as_str()) {
+                    self.close_menu();
                 } else {
                     // Its project's palette, read if it has not been asked for.
                     if let Some(root) = self.project_of(&agent)
@@ -2772,11 +2759,9 @@ impl App {
                             || "roles-edit".to_owned(),
                             |role| format!("role-pick-{agent}-{role}"),
                         );
-                    self.shell.roles_menu = Some(agent);
+                    self.open_menu(Menu::Roles(agent));
                     tasks.push(self.menu_focus("session-roles", first));
                 }
-                self.shell.roles_editing = false;
-                self.shell.role_delete = None;
             }
             Message::RoleToggle(agent, role) => {
                 let held = self
@@ -3270,11 +3255,8 @@ impl App {
                 }
             }
             Message::ProjectMenu(path) => {
-                let open = self.shell.project_menu.as_ref() == Some(&path);
                 let key = path.display().to_string();
-                self.shell.project_menu = (!open).then_some(path);
-                self.shell.project_rename = None;
-                if !open {
+                if self.toggle_menu(Menu::Project(path)) {
                     tasks.push(self.menu_focus(
                         &format!("project-menu-{key}"),
                         format!("project-rename-start-{key}"),
@@ -3303,7 +3285,7 @@ impl App {
                 {
                     self.shell.changed();
                 }
-                self.shell.project_menu = None;
+                self.close_menu();
             }
             Message::ProjectPin(path) => {
                 if let Some(entry) = self
@@ -3316,7 +3298,7 @@ impl App {
                     entry.pinned = !entry.pinned;
                     self.shell.changed();
                 }
-                self.shell.project_menu = None;
+                self.close_menu();
             }
             Message::ProjectRemove(path) => {
                 let was_selected = self.shell.catalog.selected.as_ref() == Some(&path);
@@ -3334,8 +3316,7 @@ impl App {
                     // person is told why.
                     Err(error) => self.say(error.to_string()),
                 }
-                self.shell.project_menu = None;
-                self.shell.project_rename = None;
+                self.close_menu();
             }
             Message::SendSession(id) => {
                 if self.link.is_up()
@@ -3358,8 +3339,7 @@ impl App {
                 self.confirm_stop = None;
             }
             Message::More => {
-                self.shell.more = !self.shell.more;
-                if self.shell.more {
+                if self.toggle_menu(Menu::More) {
                     tasks.push(self.menu_focus("project-more", "project-tab-Journal".to_owned()));
                 }
             }
@@ -3412,7 +3392,7 @@ impl App {
             }
             Message::SessionDetails => {
                 self.shell.session_details = !self.shell.session_details;
-                self.shell.editor_menu = None;
+                self.close_menu();
             }
             Message::ReviewChanges(id) => self.request_review(&id),
             Message::ToggleDiffFile(path) => {
@@ -3937,8 +3917,7 @@ impl App {
             }
             Message::CancelRename => self.shell.renaming = None,
             Message::LaunchMenu => {
-                self.shell.launch_menu = !self.shell.launch_menu;
-                if self.shell.launch_menu
+                if self.toggle_menu(Menu::LaunchTools)
                     && let Some(first) = self.runtimes.iter().find(|r| r.cli.is_some())
                 {
                     let first = format!("launch-with-{}", first.name);
@@ -3961,7 +3940,7 @@ impl App {
                 return Task::batch([select, launch]);
             }
             Message::LaunchWith(runtime) => {
-                self.shell.launch_menu = false;
+                self.close_menu();
                 let open = if self.shell.launch {
                     Task::none()
                 } else {
@@ -3971,12 +3950,15 @@ impl App {
                 return Task::batch([open, chosen]);
             }
             Message::OpenLaunch => {
-                self.shell.launch_menu = false;
+                self.close_menu();
                 if !self.shell.launch {
                     return self.update(Message::ShowLaunch);
                 }
             }
             Message::ShowLaunch => {
+                // Opening the dialog closes any menu, so none floats over
+                // it; closing it takes its Model or Effort menu with it.
+                self.close_menu();
                 self.shell.launch = !self.shell.launch;
                 self.shell.launch_channel = matches!(
                     self.shell.launch_runtime.as_deref(),
@@ -4017,7 +3999,7 @@ impl App {
                 if self.shell.launch_runtime.as_deref() != Some(runtime.as_str()) {
                     self.shell.launch_model = None;
                     self.shell.launch_effort = None;
-                    self.shell.launch_choice_menu = None;
+                    self.close_menu();
                 }
                 self.shell.launch_runtime = Some(runtime.clone());
                 tasks.push(self.refresh_codex_trust());
@@ -4111,7 +4093,10 @@ impl App {
                 }
             }
             Message::LaunchChoiceMenu(menu) => {
-                self.shell.launch_choice_menu = menu;
+                match menu {
+                    Some(which) => self.open_menu(Menu::LaunchChoice(which)),
+                    None => self.close_menu(),
+                }
                 if let Some(which) = menu {
                     let key = match which {
                         ChoiceMenu::Model => "model",
@@ -4124,12 +4109,12 @@ impl App {
             }
             Message::LaunchModel(model) => {
                 self.shell.launch_model = model;
-                self.shell.launch_choice_menu = None;
+                self.close_menu();
                 self.settle_effort();
             }
             Message::LaunchEffort(effort) => {
                 self.shell.launch_effort = effort;
-                self.shell.launch_choice_menu = None;
+                self.close_menu();
             }
             Message::LaunchChannel(on) => self.shell.launch_channel = on,
             Message::LaunchWorktree(on) => self.shell.launch_worktree = on,
@@ -4249,8 +4234,7 @@ impl App {
             }
             Message::EditorsFound(editors) => self.shell.editors = editors,
             Message::EditorMenu(place) => {
-                self.shell.editor_menu = (self.shell.editor_menu != Some(place)).then_some(place);
-                if self.shell.editor_menu.is_some()
+                if self.toggle_menu(Menu::Editor(place))
                     && let Some(first) = self.editor_choices().first()
                 {
                     let first = format!("open-in-{}", first.kind);
@@ -4262,7 +4246,7 @@ impl App {
                 }
             }
             Message::OpenIn(kind, folder) => {
-                self.shell.editor_menu = None;
+                self.close_menu();
                 if let Some(editor) = self.choose_editor(&kind) {
                     self.say(format!("Opening in {}…", editor.name));
                     tasks.push(open_in_editor(editor, folder));
@@ -4526,18 +4510,19 @@ impl App {
                         // Not a place, and the one key that ends a
                         // route outright: the wait, the mark, the search.
                         self.shell.route.end();
-                        self.shell.project_menu = None;
-                        self.shell.project_rename = None;
+                        // The open menu closes, whichever it is. One of
+                        // the board's own is the innermost thing there,
+                        // and this press closes nothing else on the board.
+                        let board_menu = self.shell.menu.as_ref().is_some_and(|m| !m.floats());
+                        self.close_menu();
                         self.shell.selected = None;
                         self.shell.launch = false;
                         self.shell.adding = false;
-                        self.shell.more = false;
                         if self.screen == Screen::Board {
                             // The board's open things close, one press each
                             // from the innermost.
-                            if self.shell.card_menu.is_some() || self.shell.tags_menu {
-                                self.shell.card_menu = None;
-                                self.shell.tags_menu = false;
+                            if board_menu {
+                                // Closed above.
                             } else if self.shell.quick_add.is_some() {
                                 self.shell.quick_add = None;
                             } else if self.task_open.is_some() {
@@ -5169,8 +5154,7 @@ impl App {
     /// The project whose palette the open roles menu edits.
     fn roles_project(&self) -> Option<String> {
         self.shell
-            .roles_menu
-            .as_deref()
+            .roles_menu()
             .and_then(|agent| self.project_of(agent))
     }
 
@@ -5445,7 +5429,7 @@ impl App {
         self.shell.selected = Some(chosen.clone());
         // Its changes, as for a session chosen by hand.
         self.request_review(&chosen);
-        self.shell.more = false;
+        self.close_menu();
         self.confirm_stop = None;
         self.screen = Screen::Questions;
         let sender = target.agent.as_str();
@@ -7463,10 +7447,10 @@ mod tests {
         assert!(app.shell.board_dense);
         app.shell.board_query = "login".into();
         app.shell.quick_add = Some("ready".into());
-        app.shell.card_menu = Some(CardMenu::Start);
+        app.shell.menu = Some(Menu::Card(CardMenu::Start));
         let esc = || keyboard::Key::Named(keyboard::key::Named::Escape);
         press(&mut app, esc());
-        assert!(app.shell.card_menu.is_none());
+        assert!(app.shell.card_menu().is_none());
         assert!(app.shell.quick_add.is_some(), "one at a time");
         press(&mut app, esc());
         assert!(app.shell.quick_add.is_none());
@@ -7712,6 +7696,242 @@ mod tests {
         );
     }
 
+    /// Every kind of menu there is.
+    fn each_menu() -> Vec<Menu> {
+        vec![
+            Menu::More,
+            Menu::LaunchTools,
+            Menu::Project("/work/a".into()),
+            Menu::Editor(EditorMenu::Project),
+            Menu::Editor(EditorMenu::Session),
+            Menu::Roles("agent-1".into()),
+            Menu::LaunchChoice(ChoiceMenu::Model),
+            Menu::Tags,
+            Menu::Card(CardMenu::Plan),
+        ]
+    }
+
+    /// Whatever closes menus closes whichever is open. Each of these
+    /// named the menus it remembered: going to another screen left a
+    /// project's menu, an agent's roles, the launch dialog's Model and
+    /// the board's two open, and they were found open on coming back;
+    /// the palette opened over five of them; the launch dialog over all.
+    #[test]
+    fn whatever_closes_menus_closes_whichever_is_open() {
+        let escape = |app: &mut App| {
+            let key = keyboard::Key::Named(keyboard::key::Named::Escape);
+            let _ = app.update(Message::Event(iced::Event::Keyboard(
+                keyboard::Event::KeyPressed {
+                    key: key.clone(),
+                    modified_key: key,
+                    physical_key: keyboard::key::Physical::Unidentified(
+                        keyboard::key::NativeCode::Unidentified,
+                    ),
+                    location: keyboard::Location::Standard,
+                    modifiers: keyboard::Modifiers::default(),
+                    text: None,
+                    repeat: false,
+                },
+            )));
+        };
+        type Close<'a> = (&'a str, &'a dyn Fn(&mut App));
+        let closers: [Close; 7] = [
+            ("going to another screen", &|app| {
+                let _ = app.update(Message::Navigate(Screen::Agents));
+            }),
+            ("going to the board", &|app| {
+                let _ = app.update(Message::Navigate(Screen::Board));
+            }),
+            ("opening the palette", &|app| {
+                let _ = app.update(Message::CommandPalette);
+            }),
+            ("opening the launch dialog", &|app| {
+                let _ = app.update(Message::ShowLaunch);
+            }),
+            ("selecting a session", &|app| {
+                let _ = app.update(Message::SelectSession("agent-2".into()));
+            }),
+            ("another project", &|app| app.reset_session_view()),
+            ("Escape", &escape),
+        ];
+        for menu in each_menu() {
+            for (what, close) in closers {
+                let (mut app, _commands, _messages) = app();
+                app.shell.menu = Some(menu.clone());
+                app.shell.project_rename = Some(("/work/a".into(), "typed".into()));
+                close(&mut app);
+                assert_eq!(app.shell.menu, None, "{what} left {menu:?} open");
+                assert_eq!(
+                    app.shell.project_rename, None,
+                    "{what}: what the menu held goes with it"
+                );
+            }
+        }
+    }
+
+    /// A live session AgentDocker started in a terminal of its own, to
+    /// attach to in a test.
+    fn live_tty_session(id: &str, started: chrono::DateTime<Utc>) -> AgentRecord {
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "claude-code".into(),
+                tty: true,
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        agent.id = id.into();
+        agent.status = agentdocker_core::AgentStatus::Running;
+        agent.process_started_at = Some(started);
+        agent
+    }
+
+    /// A session's terminal opens and closes without `Message::Navigate`:
+    /// the handlers set the screen themselves. A menu open on Agents was
+    /// carried along, hidden while the terminal was on view and drawn
+    /// again on the way back. Whatever makes the move, a menu does not
+    /// arrive on another screen.
+    #[test]
+    fn a_menu_does_not_follow_a_session_into_its_terminal_and_back() {
+        let (mut app, _commands, _messages) = app();
+        app.link.open();
+        app.agents.push(live_tty_session("agent-1", Utc::now()));
+        app.screen = Screen::Agents;
+        app.shell.selected = Some("agent-1".into());
+
+        let _ = app.update(Message::RolesMenu("agent-1".into()));
+        assert_eq!(app.shell.roles_menu(), Some("agent-1"));
+        app.shell.roles_editing = true;
+        let _ = app.update(Message::Attach("agent-1".into()));
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.menu, None, "not carried into the terminal");
+        assert!(!app.shell.roles_editing, "nor what it held");
+        let _ = app.update(Message::Detach);
+        assert_eq!(app.screen, Screen::Agents);
+        assert_eq!(app.shell.menu, None, "and not found open on the way back");
+
+        // The other way: a menu open while the terminal is on view does
+        // not come back to Agents with the person.
+        let _ = app.update(Message::Attach("agent-1".into()));
+        app.shell.menu = Some(Menu::More);
+        let _ = app.update(Message::Detach);
+        assert_eq!(app.shell.menu, None);
+
+        // A menu opened where no move is made stays open.
+        let _ = app.update(Message::RolesMenu("agent-1".into()));
+        let _ = app.update(Message::Attach("no-such-session".into()));
+        assert_eq!(app.screen, Screen::Agents, "nothing to attach to");
+        assert_eq!(app.shell.roles_menu(), Some("agent-1"));
+    }
+
+    /// The terminal the window opens for the person later, when the
+    /// session they reconnected is listed, is a move like any other: the
+    /// menu they opened while waiting does not go with them.
+    #[test]
+    fn a_menu_opened_while_a_reconnect_is_out_does_not_follow_into_its_terminal() {
+        let (mut app, _commands, messages) = app();
+        app.link.open();
+        app.screen = Screen::Agents;
+        let started = Utc::now();
+        messages
+            .send(Msg::Reconnected(Ok(("agent-1".into(), Some(started)))))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.attach_when_listed.is_some());
+        assert_eq!(
+            app.screen,
+            Screen::Agents,
+            "its terminal waits for the list"
+        );
+
+        // While the reply is out the person opens the session's roles.
+        let _ = app.update(Message::RolesMenu("agent-1".into()));
+        assert_eq!(app.shell.roles_menu(), Some("agent-1"));
+        app.shell.roles_editing = true;
+
+        messages
+            .send(Msg::Agents(
+                vec![live_tty_session("agent-1", started)],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.screen, Screen::Terminal, "the terminal opened");
+        assert_eq!(app.shell.menu, None, "without the menu");
+        assert!(!app.shell.roles_editing);
+        let _ = app.update(Message::Detach);
+        assert_eq!(app.screen, Screen::Agents);
+        assert_eq!(app.shell.menu, None, "which is not found open after");
+    }
+
+    /// There is one menu. Opening another puts it in the first one's
+    /// place, the board's own two included: they are drawn in the page
+    /// and no press outside closes them, so either could stay open beside
+    /// any other, and two floating menus could be opened from the
+    /// keyboard.
+    #[test]
+    fn opening_a_menu_closes_the_one_that_was_open() {
+        let (mut app, _commands, _messages) = app();
+        let _ = app.update(Message::More);
+        assert!(app.shell.menu_is(&Menu::More));
+        let _ = app.update(Message::LaunchMenu);
+        assert!(app.shell.menu_is(&Menu::LaunchTools), "More gave way");
+        let _ = app.update(Message::TagsMenu);
+        assert!(app.shell.menu_is(&Menu::Tags));
+        let _ = app.update(Message::EditorMenu(EditorMenu::Project));
+        assert!(
+            app.shell.menu_is(&Menu::Editor(EditorMenu::Project)),
+            "the board's tag filter gave way to a floating menu"
+        );
+        let _ = app.update(Message::RolesMenu("agent-1".into()));
+        assert_eq!(app.shell.roles_menu(), Some("agent-1"));
+        let _ = app.update(Message::ProjectMenu("/work/a".into()));
+        assert_eq!(
+            app.shell.project_menu(),
+            Some(std::path::Path::new("/work/a"))
+        );
+        // Pressed again, a menu closes, and nothing is open.
+        let _ = app.update(Message::ProjectMenu("/work/a".into()));
+        assert_eq!(app.shell.menu, None);
+    }
+
+    /// The launch dialog's Model and Effort menus are the dialog's: it
+    /// closed and left one open, to be found open when the dialog was
+    /// opened again.
+    #[test]
+    fn the_launch_dialog_closes_with_its_own_menu() {
+        let (mut app, _commands, _messages) = app();
+        let _ = app.update(Message::ShowLaunch);
+        assert!(app.shell.launch);
+        let _ = app.update(Message::LaunchChoiceMenu(Some(ChoiceMenu::Model)));
+        assert!(app.shell.menu_is(&Menu::LaunchChoice(ChoiceMenu::Model)));
+        let _ = app.update(Message::LaunchChoiceMenu(Some(ChoiceMenu::Effort)));
+        assert!(
+            app.shell.menu_is(&Menu::LaunchChoice(ChoiceMenu::Effort)),
+            "one of the two at a time"
+        );
+        let _ = app.update(Message::ShowLaunch);
+        assert!(!app.shell.launch);
+        assert_eq!(app.shell.menu, None, "closed with the dialog");
+        let _ = app.update(Message::ShowLaunch);
+        assert!(app.shell.launch);
+        assert_eq!(app.shell.menu, None, "and not found open in it");
+    }
+
+    /// A card's menu is the card's, and closes with it; a menu that is
+    /// not the card's is not the card's to close.
+    #[test]
+    fn closing_a_card_closes_its_menu_and_no_other() {
+        let (mut app, _commands, _messages) = app();
+        app.shell.menu = Some(Menu::Card(CardMenu::Attach));
+        app.close_card();
+        assert_eq!(app.shell.menu, None);
+        app.shell.menu = Some(Menu::Tags);
+        app.close_card();
+        assert!(app.shell.menu_is(&Menu::Tags), "the tag filter stays");
+    }
+
     #[test]
     fn a_menu_opened_by_pointer_keeps_focus_and_navigation_closes_the_launch_menu() {
         let (mut app, _commands, _messages) = app();
@@ -7719,7 +7939,7 @@ mod tests {
         let _ = app.update(Message::Pressed("project-more".into()));
         assert_eq!(app.shell.pressed.as_deref(), Some("project-more"));
         let _ = app.update(Message::More);
-        assert!(app.shell.more);
+        assert!(app.shell.menu_is(&Menu::More));
         let _ = app.update(Message::Event(iced::Event::Keyboard(
             keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Tab),
@@ -7736,12 +7956,12 @@ mod tests {
         assert_eq!(app.shell.pressed, None, "the keyboard is back in charge");
         // The Launch agent menu never outlives the screen it opened on.
         let _ = app.update(Message::LaunchMenu);
-        assert!(app.shell.launch_menu);
+        assert!(app.shell.menu_is(&Menu::LaunchTools));
         let _ = app.update(Message::Navigate(Screen::Settings));
-        assert!(!app.shell.launch_menu);
+        assert!(!app.shell.menu_is(&Menu::LaunchTools));
         let _ = app.update(Message::LaunchMenu);
         app.reset_session_view();
-        assert!(!app.shell.launch_menu);
+        assert!(!app.shell.menu_is(&Menu::LaunchTools));
     }
 
     /// Choosing an editor opens the folder in it — Launch Services given
@@ -7757,10 +7977,10 @@ mod tests {
         );
         let folder = PathBuf::from("/work/alpha");
         let _ = app.update(Message::EditorMenu(EditorMenu::Project));
-        assert_eq!(app.shell.editor_menu, Some(EditorMenu::Project));
+        assert!(app.shell.menu_is(&Menu::Editor(EditorMenu::Project)));
         let saved = app.shell.generation;
         let _ = app.update(Message::OpenIn("rustrover".into(), folder.clone()));
-        assert_eq!(app.shell.editor_menu, None);
+        assert_eq!(app.shell.menu, None);
         assert_eq!(app.shell.catalog.editor.as_deref(), Some("rustrover"));
         assert_ne!(app.shell.generation, saved, "the choice is saved");
         assert_eq!(app.status, "Opening in RustRover…");
@@ -7785,12 +8005,12 @@ mod tests {
         assert!(app.status.is_empty(), "nothing opened");
 
         let _ = app.update(Message::EditorMenu(EditorMenu::Session));
-        assert_eq!(app.shell.editor_menu, Some(EditorMenu::Session));
+        assert!(app.shell.menu_is(&Menu::Editor(EditorMenu::Session)));
         let _ = app.update(Message::EditorMenu(EditorMenu::Session));
-        assert_eq!(app.shell.editor_menu, None);
+        assert_eq!(app.shell.menu, None);
         let _ = app.update(Message::EditorMenu(EditorMenu::Project));
         let _ = app.update(Message::Navigate(Screen::Settings));
-        assert_eq!(app.shell.editor_menu, None);
+        assert_eq!(app.shell.menu, None);
 
         let _ = app.update(Message::EditorOpened(
             Err("Could not open Zed: gone".into()),
@@ -8110,6 +8330,113 @@ mod tests {
     /// on its way, whichever order the replies come in, so the board
     /// never folds back; choosing another project and back forgets the
     /// old asks; the window keeps five pages and then asks for no more.
+    /// The service goes while a further page of the board is out. A first
+    /// page answers through the board's read, which gives up with the
+    /// link; a further page is taken by its request number alone, so it
+    /// was still added to the board when it answered late, or its failure
+    /// said at the window's foot, and **Show more** went on reading
+    /// *Loading…* for it.
+    #[test]
+    fn a_page_of_the_board_out_when_the_service_goes_is_given_up_with_the_board() {
+        use crate::app::link::Report;
+        let (mut app, requests, messages) = app();
+        app.link.open();
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
+        app.shell.catalog.remember(alpha.clone(), true).unwrap();
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        app.screen = Screen::Board;
+        let root = alpha.root.display().to_string();
+        let page = |from: usize, count: usize| {
+            (from..from + count)
+                .map(|i| card_in(&format!("{i:012x}"), &alpha.root, "card"))
+                .collect::<Vec<_>>()
+        };
+        let limit = agentdocker_core::protocol::TASKS_LIMIT;
+        let cards = |app: &App| app.tasks.value().map_or(0, |b| b.cards.len());
+        let gone = |messages: &SyncSender<Msg>| {
+            messages
+                .send(Msg::Disconnected(Report::Stream, "gone".into()))
+                .unwrap();
+        };
+
+        // A board read, with more to show, and the next page asked for.
+        app.request_tasks();
+        let (first, _, _) = board_asks(&requests).pop().expect("asked");
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                first,
+                Ok((page(0, limit), true, Vec::new())),
+            ))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TasksMore);
+        let (more, offset, _) = board_asks(&requests).pop().expect("asked for more");
+        assert_eq!(offset, limit);
+        assert!(app.tasks.value().unwrap().loading_more());
+
+        // The service goes while that page is out.
+        gone(&messages);
+        app.drain();
+        assert!(app.board_asks.is_empty(), "no ask of the board is out");
+        assert!(
+            !app.tasks.value().unwrap().loading_more(),
+            "Show more is not left waiting"
+        );
+        assert_eq!(cards(&app), limit, "the board as last read stays");
+
+        // The page answers late, with cards and then with a failure:
+        // neither is taken.
+        app.status.clear();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                more,
+                Ok((page(limit, 3), false, Vec::new())),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                more,
+                Err("cannot reach the service".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), limit, "the late page is not added");
+        assert!(
+            app.status.is_empty(),
+            "nor its failure said: {}",
+            app.status
+        );
+
+        // Back: the board is read again, and Show more works again.
+        messages.send(Msg::Connected(Report::Stream)).unwrap();
+        app.drain();
+        let (again, _, _) = board_asks(&requests).pop().expect("read again");
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                again,
+                Ok((page(0, limit), true, Vec::new())),
+            ))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TasksMore);
+        let (next, offset, _) = board_asks(&requests).pop().expect("asked for more again");
+        assert_eq!(offset, limit);
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                next,
+                Ok((page(limit, 3), false, Vec::new())),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), limit + 3, "this page is added");
+    }
+
     #[test]
     fn the_board_shows_more_a_page_at_a_time_and_stays_expanded_through_a_refresh() {
         let (mut app, requests, messages) = app();
@@ -8339,7 +8666,7 @@ mod tests {
         app.shell.catalog.remember(beta.clone(), false).unwrap();
         let root = alpha.root.clone();
         let _ = app.update(Message::ProjectMenu(root.clone()));
-        assert_eq!(app.shell.project_menu.as_ref(), Some(&root));
+        assert_eq!(app.shell.project_menu(), Some(root.as_path()));
         let _ = app.update(Message::ProjectRenameStart(root.clone()));
         assert_eq!(
             app.shell.project_rename,
@@ -8348,7 +8675,7 @@ mod tests {
         let _ = app.update(Message::ProjectRenameDraft("Alpha project".into()));
         let _ = app.update(Message::ProjectRenameSubmit);
         assert_eq!(app.shell.catalog.projects[0].name(), "Alpha project");
-        assert!(app.shell.project_menu.is_none(), "saving closes the menu");
+        assert!(app.shell.project_menu().is_none(), "saving closes the menu");
         // Opening the menu again and renaming to nothing goes back to the folder.
         let _ = app.update(Message::ProjectMenu(root.clone()));
         let _ = app.update(Message::ProjectRenameStart(root.clone()));
@@ -13613,7 +13940,7 @@ mod tests {
             let _ = app.update(Message::LinkTarget(second.id.to_string()));
             let _ = app.update(Message::CardMenu(CardMenu::Plan));
             assert_eq!(
-                (app.shell.link_kind, app.shell.card_menu),
+                (app.shell.link_kind, app.shell.card_menu()),
                 (Some(agentdocker_core::LinkKind::Task), Some(CardMenu::Plan))
             );
 
@@ -13643,7 +13970,7 @@ mod tests {
                 (None, ""),
                 "{route}: the next card's link form is closed and empty"
             );
-            assert_eq!(app.shell.card_menu, None, "{route}: and so is its menu");
+            assert_eq!(app.shell.card_menu(), None, "{route}: and so is its menu");
         }
     }
 

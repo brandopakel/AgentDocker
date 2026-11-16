@@ -1453,7 +1453,7 @@ impl App {
                 Some(Message::More),
                 more_selected,
             );
-            let more_menu = self.shell.more.then(|| self.more_menu(c));
+            let more_menu = self.shell.menu_is(&Menu::More).then(|| self.more_menu(c));
             tabs = tabs.push(
                 crate::controls::popover(more_tab, more_menu)
                     .width(232.0)
@@ -1693,7 +1693,7 @@ impl App {
         let path = entry.project.root.clone();
         let selected = project_page && self.selected_root() == Some(path.as_path());
         let name = entry.name();
-        let menu_open = self.shell.project_menu.as_deref() == Some(path.as_path());
+        let menu_open = self.shell.project_menu() == Some(path.as_path());
         let hovered = self.shell.rail_hover.as_deref() == Some(path.as_path());
         let live = self.live_in(&path);
         let done = self.shell.unviewed_in(&self.agents, &path);
@@ -2231,7 +2231,7 @@ impl App {
             return None;
         }
         let id = agent.id.to_string();
-        let open = self.shell.roles_menu.as_deref() == Some(id.as_str());
+        let open = self.shell.roles_menu() == Some(id.as_str());
         let names = self.role_names(agent);
         let trigger = tip(
             custom_sized(
@@ -2623,7 +2623,7 @@ impl App {
             icon(Icon::ChevronDown, c.on_primary, 12.0),
             ready.then_some(Message::LaunchMenu),
         );
-        let menu = self.shell.launch_menu.then(|| {
+        let menu = self.shell.menu_is(&Menu::LaunchTools).then(|| {
             let mut items = column![].spacing(1).width(Fill);
             for runtime in self.runtimes.iter().filter(|r| r.cli.is_some()) {
                 let binary = runtime
@@ -2748,8 +2748,10 @@ impl App {
         if editors.len() == 1 {
             return Some(trigger);
         }
-        let menu =
-            (self.shell.editor_menu == Some(place)).then(|| self.open_in_menu(folder, enabled, c));
+        let menu = self
+            .shell
+            .menu_is(&Menu::Editor(place))
+            .then(|| self.open_in_menu(folder, enabled, c));
         Some(
             crate::controls::popover(trigger, menu)
                 .width(220.0)
@@ -4053,7 +4055,7 @@ impl App {
         choices: &'a agentdocker_core::model_choice::ModelChoices,
         c: Colors,
     ) -> Element<'a, Message> {
-        let open = self.shell.launch_choice_menu == Some(which);
+        let open = self.shell.menu_is(&Menu::LaunchChoice(which));
         let (word, key, chosen, default, options): (_, _, _, _, Vec<(String, String)>) = match which
         {
             super::shell::ChoiceMenu::Model => (
@@ -4619,7 +4621,7 @@ mod tests {
         assert!(view.control(&format!("role-pick-{id}-reviewer")).is_none());
 
         let _ = app.update(Message::RolesMenu(id.clone()));
-        assert_eq!(app.shell.roles_menu.as_deref(), Some(id.as_str()));
+        assert_eq!(app.shell.roles_menu(), Some(id.as_str()));
         // The menu is an overlay over the inspector: read on its own.
         let view = seen(app.roles_menu(&agent, c));
         let pick = view
@@ -5184,7 +5186,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let _ = app.update(Message::CardMenu(CardMenu::Start));
-        assert_eq!(app.shell.card_menu, None);
+        assert_eq!(app.shell.card_menu(), None);
         let _ = app.update(Message::StartAgent("codex".into()));
         assert!(take_starts().is_empty());
 
@@ -5193,7 +5195,7 @@ mod tests {
         app.card.value_mut().unwrap().blockers[0].column = Column::Done;
         let (_, _, action) = start(&app).expect("closed prerequisite permits Start");
         let _ = app.update(action.unwrap());
-        assert_eq!(app.shell.card_menu, Some(CardMenu::Start));
+        assert_eq!(app.shell.card_menu(), Some(CardMenu::Start));
         let _ = app.update(Message::StartAgent("codex".into()));
         assert_eq!(take_starts(), vec![dependent.id.to_string()]);
 
@@ -5203,7 +5205,7 @@ mod tests {
         assert!(start(&app).is_none());
         let _ = app.update(Message::StartAgent("codex".into()));
         assert!(take_starts().is_empty());
-        assert_eq!(app.shell.card_menu, None);
+        assert_eq!(app.shell.card_menu(), None);
         app.card.value_mut().unwrap().blockers.clear();
         assert!(
             start(&app).is_none(),

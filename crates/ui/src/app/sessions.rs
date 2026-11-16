@@ -16,10 +16,8 @@ impl App {
         self.shell.session_filter = Filter::Current;
         self.shell.session_details = false;
         self.shell.needs_you_expanded = false;
-        self.shell.more = false;
+        self.close_menu();
         self.shell.launch = false;
-        self.shell.launch_menu = false;
-        self.shell.editor_menu = None;
         self.confirm_stop = None;
     }
 
