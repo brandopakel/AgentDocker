@@ -137,7 +137,7 @@ fn tool(argv: &[&str]) -> Result<String> {
 }
 
 /// The full id of the commit `reference` names here.
-fn commit(reference: &str) -> Result<String> {
+pub(crate) fn commit(reference: &str) -> Result<String> {
     tool(&[
         "git",
         "rev-parse",
@@ -163,7 +163,11 @@ fn checkout_root() -> Result<PathBuf> {
 /// person (by the `user` name or by their record's id, as
 /// `AGENTDOCKER_AGENT_ID=$(agentdocker me)` sets it) this checkout's;
 /// an agent's own the daemon knows.
-async fn project(client: &Client, named: Option<String>, agent: &str) -> Result<Option<String>> {
+pub(crate) async fn project(
+    client: &Client,
+    named: Option<String>,
+    agent: &str,
+) -> Result<Option<String>> {
     if named.is_some() {
         return Ok(named);
     }

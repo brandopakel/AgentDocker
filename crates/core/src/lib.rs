@@ -132,6 +132,7 @@ pub mod recovery;
 pub mod review;
 pub mod send_readiness;
 pub mod session;
+pub mod verification;
 pub use recovery::{Checkpoint, Recovery, Validation};
 pub use send_readiness::{RecipientReadiness, SendIssue, SendReadiness};
 

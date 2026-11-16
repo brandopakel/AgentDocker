@@ -48,6 +48,14 @@ python3 scripts/build_storage.py
 campaign_dir="$(mktemp -d "${TMPDIR:-/tmp}/verify-campaign.XXXXXX")"
 campaign_lease=""
 campaign_agent="${AGENTDOCKER_AGENT_ID:-}"
+# Who the run is for, captured before the session's variables go and
+# before a temporary agent may stand in to hold the slot: that one is the
+# runner, never this.
+record_by="$campaign_agent"
+record_eligible=""
+record_mode=""
+record_step=0
+nextest_config=()
 campaign_socket="${AGENTDOCKER_SOCKET:-}"
 campaign_home="${AGENTDOCKER_HOME:-}"
 campaign_transient=""
@@ -230,6 +238,7 @@ storage_report() {
     || echo "verify.sh: the cache report is unavailable; python3 scripts/build_storage.py --prune --dry-run says why" >&2
 }
 campaign_end() {
+  record_run "$1"
   [ -n "$campaign_ran" ] && storage_report
   campaign_ran=""
   if [ -n "$campaign_renew_pid" ]; then
@@ -292,6 +301,7 @@ step() {
     return 75
   fi
   campaign_ran=1
+  record_step_start "$@"
   "$@" &
   local child=$! status=0
   echo "$child" > "$campaign_dir/step"
@@ -301,6 +311,7 @@ step() {
     campaign_kill_tree "$child"
     wait "$child" 2>/dev/null || true
     rm -f "$campaign_dir/step"
+    record_step_end 75
     echo "verify.sh: the build slot was lost; stopped: $*" >&2
     return 75
   fi
@@ -309,10 +320,58 @@ step() {
   if [ -e "$campaign_dir/lost" ]; then
     # The helper ended the child; what the child started goes too.
     campaign_kill_tree "$child"
+    record_step_end 75
     echo "verify.sh: the build slot was lost during: $*" >&2
     return 75
   fi
+  record_step_end "$status"
   return "$status"
+}
+# Each step of a recorded run, as it ran: its place, its start and end,
+# its command and its status. Writing it never changes the step.
+record_step_start() {
+  [ -n "$record_eligible" ] || return 0
+  record_step=$((record_step + 1))
+  { printf 'start\t%s\t%s' "$record_step" "$(date +%s)"; printf '\t%s' "$@"; printf '\n'; } \
+    >> "$campaign_dir/steps.tsv" 2>/dev/null || true
+}
+record_step_end() {
+  [ -n "$record_eligible" ] || return 0
+  printf 'end\t%s\t%s\t%s\n' "$record_step" "$(date +%s)" "$1" \
+    >> "$campaign_dir/steps.tsv" 2>/dev/null || true
+}
+# Run a command with its standard error also copied to a file: the copy
+# never changes what reaches the terminal, and the status is the
+# command's own. Run as a step, so in a subshell of its own.
+record_stderr() {
+  local copy="$1"
+  shift
+  set +e +o pipefail
+  exec 3>&1
+  "$@" 2>&1 1>&3 3>&- | tee "$copy" >&2 2>/dev/null
+  local statuses=("${PIPESTATUS[@]}")
+  exec 3>&-
+  return "${statuses[0]}"
+}
+# The Python suite, its summary kept for a recorded run's counts.
+installer_suite() {
+  if [ -n "$record_eligible" ]; then
+    step record_stderr "$campaign_dir/installer.err" python3 -m unittest discover -s tests
+  else
+    step python3 -m unittest discover -s tests
+  fi
+}
+# The run, recorded with the daemon the slot was negotiated with: once
+# (a second end records nothing), bounded, before the slot goes, and never
+# changing the run's status.
+record_run() {
+  [ -n "$record_eligible" ] || return 0
+  record_eligible=""
+  local args=(finish --dir "$campaign_dir" --mode "$record_mode" --exit "$1")
+  [ -z "$record_by" ] || args+=(--by "$record_by")
+  [ -z "$campaign_transient" ] || args+=(--runner "$campaign_transient")
+  [ -z "$campaign_socket" ] || args+=(--socket "$campaign_socket")
+  python3 scripts/gate_record.py "${args[@]}" </dev/null || true
 }
 # The tools a mode needs beyond cargo itself, looked for before the build
 # slot is taken and before anything compiles: a machine without one would
@@ -362,6 +421,22 @@ case "${1:-check}" in
   fuzz) require_tools fuzz cargo-fuzz nightly ;;
 esac
 campaign_start "${1:-check}"
+# A gate run is recorded only when it negotiated the slot with the
+# person's daemon (`on`, or a named lease): a nested, CI, private-home or
+# daemon-less run is not, and neither is any other mode.
+record_mode="${1:-check}"
+case "$record_mode" in
+  check|quick|test)
+    if [ -n "$campaign_renew_pid" ] && [ -f scripts/gate_record.py ] \
+        && python3 scripts/gate_record.py start --dir "$campaign_dir" </dev/null; then
+      record_eligible=1
+      # The run's own nextest store, so its report is its own. Without it
+      # the checked-in policy runs as it is and no counts are recorded.
+      if python3 scripts/gate_record.py nextest-config --dir "$campaign_dir" </dev/null; then
+        nextest_config=(--config-file "$campaign_dir/nextest.toml")
+      fi
+    fi ;;
+esac
 # The fuzz workspace has a lockfile of its own, outside the workspace the
 # other steps resolve, so a dependency added to a crate it builds leaves
 # it stale with nothing here to notice. Resolving it locked takes a moment
@@ -384,9 +459,9 @@ case "${1:-check}" in
     step cargo fmt --all --check
     fuzz_lock_current
     step cargo clippy --locked --workspace --all-targets -- -D warnings
-    step cargo nextest run --locked --workspace --profile ci
+    step cargo nextest run --locked --workspace --profile ci ${nextest_config[@]+"${nextest_config[@]}"}
     step cargo test --locked --workspace --doc
-    step python3 -m unittest discover -s tests
+    installer_suite
     ;;
   quick)
     # The short gate for a change on a branch that has already passed
@@ -408,6 +483,10 @@ case "${1:-check}" in
     fi
     step cargo fmt --all --check
     fuzz_lock_current
+    # What this quick run measures against, as a full commit.
+    if [ -n "$record_eligible" ]; then
+      git rev-parse --verify --quiet "$base^{commit}" > "$campaign_dir/base" 2>/dev/null || true
+    fi
     # The selection is a checked step of its own: a Git or Cargo failure
     # stops the run, and only a successful empty answer means nothing to test.
     step python3 scripts/touched_crates.py --base "$base" --output "$campaign_dir/packages" \
@@ -423,14 +502,14 @@ case "${1:-check}" in
       echo "verify.sh quick: no workspace package changed since ${base:0:12}; no Cargo build, Clippy or tests run" >&2
     else
       step cargo clippy --locked "${selectors[@]}" --all-targets -- -D warnings
-      step cargo nextest run --locked "${selectors[@]}" --profile ci
+      step cargo nextest run --locked "${selectors[@]}" --profile ci ${nextest_config[@]+"${nextest_config[@]}"}
       if [ "${#doc_selectors[@]}" -eq 0 ]; then
         echo "verify.sh quick: no selected package has a library target, so there are no doctests to run" >&2
       else
         step cargo test --locked "${doc_selectors[@]}" --doc
       fi
     fi
-    step python3 -m unittest discover -s tests
+    installer_suite
     ;;
   package)
     # What a release needs beyond `check`: every crate packages, and the
@@ -440,7 +519,7 @@ case "${1:-check}" in
     step cargo build --locked --workspace --release
     ;;
   test)
-    step cargo nextest run --locked --workspace --profile ci
+    step cargo nextest run --locked --workspace --profile ci ${nextest_config[@]+"${nextest_config[@]}"}
     step cargo test --locked --workspace --doc
     ;;
   coverage)
@@ -562,3 +641,7 @@ PY
     ;;
   *) echo 'usage: bash scripts/verify.sh [check|quick|package|test|coverage|bench|fuzz]' >&2; exit 2 ;;
 esac
+# A recorded mode that reached here ran every step it was to run.
+if [ -n "$record_eligible" ]; then
+  : > "$campaign_dir/completed" 2>/dev/null || true
+fi
