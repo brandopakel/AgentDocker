@@ -1513,6 +1513,13 @@ pub fn delivery(recipients: &[agentdocker_core::delivery::Recipient]) {
     table(&["AGENT", "WHERE IT STANDS", "QUEUED", "TAKEN"], &rows);
 }
 
+/// The command a branch that is ready is merged with, as the review's
+/// hint prints it. A function so that a test can hold it to a command the
+/// CLI has: it named `agentdocker merge`, which never existed.
+pub fn merge_hint(agent: impl std::fmt::Display, head: &str) -> String {
+    format!("agentdocker merge-branch {agent} --head {head}")
+}
+
 /// An agent's branch against the main checkout's: what it brings, and
 /// what stops a merge now, then the diff when asked.
 pub fn review(review: &agentdocker_core::review::Review, patch: bool) {
@@ -1552,9 +1559,8 @@ pub fn review(review: &agentdocker_core::review::Review, patch: bool) {
     let blockers = review.blockers();
     if blockers.is_empty() {
         println!(
-            "Ready to merge: `agentdocker merge {} --head {}`",
-            review.agent,
-            review.head.clone().unwrap_or_default()
+            "Ready to merge: `{}`",
+            merge_hint(&review.agent, review.head.as_deref().unwrap_or_default())
         );
     } else {
         for blocker in blockers {
