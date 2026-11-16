@@ -23,8 +23,13 @@ pub struct Args {
 
 #[derive(clap::Subcommand)]
 enum Action {
-    /// Save the proposed team as this project's.
-    Accept,
+    /// Save the proposed team as this project's: the one whose key you
+    /// were shown. A team proposed since, from other runtimes, is refused.
+    Accept {
+        /// The proposal's key, as `agentdocker team` printed it.
+        #[arg(value_name = "KEY")]
+        proposal: String,
+    },
     /// Add a member to the team.
     Add(AddArgs),
     /// Take a member out of the team, by its name.
@@ -89,19 +94,14 @@ pub async fn run(client: &Client, args: Args) -> Result<()> {
             let from = sender::resolve(client, None)
                 .await?
                 .unwrap_or_else(|| HUMAN.into());
-            let now = read(client, &project).await?;
             let request = match action {
-                Action::Accept => {
-                    let Some(proposal) = now.proposal.clone() else {
-                        bail!("{}", nothing_to_accept(&now));
-                    };
-                    Request::CrewAccept {
-                        from,
-                        project: project.clone(),
-                        proposal,
-                    }
-                }
+                // What is accepted is what the person was shown: the key
+                // they typed goes to the daemon as it is. The team is not
+                // read again here, or a proposal made since from other
+                // runtimes would be saved unseen under its own key.
+                Action::Accept { proposal } => accept(from, project.clone(), proposal),
                 Action::Add(add) => {
+                    let now = read(client, &project).await?;
                     let mut members = kept(&now);
                     members.push(MemberInput {
                         id: None,
@@ -122,6 +122,7 @@ pub async fn run(client: &Client, args: Args) -> Result<()> {
                     }
                 }
                 Action::Rm { name } => {
+                    let now = read(client, &project).await?;
                     let members = kept(&now);
                     if now.revision == 0 || !members.iter().any(|m| m.name == name) {
                         bail!("{}", no_such_member(&now, &name));
@@ -154,13 +155,21 @@ fn kept(view: &CrewView) -> Vec<MemberInput> {
     view.members.iter().map(MemberView::input).collect()
 }
 
-fn nothing_to_accept(view: &CrewView) -> String {
-    match (&view.unavailable, view.revision) {
-        (Some(why), _) => format!("there is no team to accept: {why}"),
-        (None, revision) => format!(
-            "the project has a team saved (revision {revision}); change it with `agentdocker team add` and `agentdocker team rm`"
-        ),
+/// The request that accepts a proposal: the key the person typed, as it
+/// is. The daemon holds it to the proposal there is now and refuses
+/// another.
+fn accept(from: String, project: Option<String>, proposal: String) -> Request {
+    Request::CrewAccept {
+        from,
+        project,
+        proposal,
     }
+}
+
+/// The command that accepts the proposal a person is looking at, with its
+/// key, quoted for a shell.
+fn accept_command(key: &str) -> String {
+    format!("agentdocker team accept '{key}'")
 }
 
 fn no_such_member(view: &CrewView, name: &str) -> String {
@@ -233,13 +242,14 @@ pub fn text(view: &CrewView) -> String {
     }
     if view.same_vendor {
         out.push_str(
-            "Every member runs on one vendor: nobody's work is reviewed by another vendor's model.\n",
+            "Every member runs on one vendor's runtime: no member's work is reviewed on another vendor's.\n",
         );
     }
-    if view.proposal.is_some() {
-        out.push_str(
-            "Accept it with `agentdocker team accept`, or build your own with `agentdocker team add`.\n",
-        );
+    if let Some(key) = &view.proposal {
+        out.push_str(&format!(
+            "Accept this one with `{}`, or build your own with `agentdocker team add`.\n",
+            accept_command(key)
+        ));
     }
     out
 }
@@ -295,7 +305,7 @@ mod tests {
             "No team is saved for this project. Proposed, from what is installed here:\n\
              \x20 writer     claude-code (anthropic)   implementer   own worktree\n\
              \x20 reviewer   codex (openai)            reviewer\n\
-             Accept it with `agentdocker team accept`, or build your own with `agentdocker team add`.\n"
+             Accept this one with `agentdocker team accept 'writer=claude-code:implementer,reviewer=codex:reviewer'`, or build your own with `agentdocker team add`.\n"
         );
 
         let saved = view(2, vec![writer.clone(), reviewer.clone()]);
@@ -318,7 +328,7 @@ mod tests {
             "{said}"
         );
         assert!(said.ends_with(
-            "Every member runs on one vendor: nobody's work is reviewed by another vendor's model.\n"
+            "Every member runs on one vendor's runtime: no member's work is reviewed on another vendor's.\n"
         ));
 
         assert_eq!(
@@ -355,12 +365,68 @@ mod tests {
             no_such_member(&saved, "checker"),
             "the team has no member called `checker`; its members are writer"
         );
-        assert!(nothing_to_accept(&saved).contains("has a team saved (revision 1)"));
-        let mut nothing = view(0, vec![]);
-        nothing.unavailable = Some("no runtime is installed".into());
-        assert_eq!(
-            nothing_to_accept(&nothing),
-            "there is no team to accept: no runtime is installed"
+    }
+
+    /// The real command tree, on a thread with room for it.
+    fn parsed(words: Vec<String>) -> Result<crate::Cli, clap::Error> {
+        use clap::Parser;
+        std::thread::Builder::new()
+            .stack_size(256 << 20)
+            .spawn(move || crate::Cli::try_parse_from(words))
+            .unwrap()
+            .join()
+            .unwrap()
+    }
+
+    /// What is accepted is what was shown. The command a person is given
+    /// carries the key of the proposal they are looking at; typed back, it
+    /// is that key the daemon is sent, and accepting names a key or is
+    /// not a command at all. It used to read the team again and send
+    /// whatever was proposed by then.
+    #[test]
+    fn accepting_sends_the_key_the_person_was_shown() {
+        let key = "writer=claude-code:implementer,reviewer=codex:reviewer";
+        let mut proposed = view(
+            0,
+            vec![member(
+                "writer",
+                "claude-code",
+                Some("Anthropic"),
+                &["implementer"],
+            )],
         );
+        proposed.proposal = Some(key.into());
+        let said = text(&proposed);
+        let command = said
+            .split('`')
+            .find(|part| part.starts_with("agentdocker team accept "))
+            .expect("the proposal is shown with the command that accepts it");
+        assert_eq!(command, accept_command(key));
+
+        // The command as a shell would hand it over, through the real
+        // command tree, to the request it makes.
+        let words = shlex::split(command).unwrap();
+        assert_eq!(words.last().map(String::as_str), Some(key));
+        let cli = parsed(words).expect("the command a person is given parses");
+        let crate::Command::Team(args) = cli.command else {
+            panic!("it is the team command");
+        };
+        let Some(Action::Accept { proposal }) = args.action else {
+            panic!("it accepts");
+        };
+        let request = accept("user".into(), Some("/work/app".into()), proposal);
+        let Request::CrewAccept { proposal, from, .. } = request else {
+            panic!("it is the accept request");
+        };
+        assert_eq!((proposal.as_str(), from.as_str()), (key, "user"));
+
+        // Without a key there is nothing to accept: the command does not
+        // go and find one.
+        let bare = parsed(
+            ["agentdocker", "team", "accept"]
+                .map(str::to_owned)
+                .to_vec(),
+        );
+        assert!(bare.is_err(), "accepting names the proposal it accepts");
     }
 }

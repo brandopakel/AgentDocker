@@ -165,8 +165,8 @@ pub struct Proposed {
 pub struct Proposal {
     pub key: String,
     pub members: Vec<Proposed>,
-    /// Both members run on one vendor: the review is not by another's
-    /// model.
+    /// Both members run on one vendor's runtime. It says which runtime,
+    /// not which model: a runtime can be pointed at another's model.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub same_vendor: bool,
 }
@@ -404,19 +404,25 @@ pub fn save(
     })
 }
 
-/// Where a member's session stands. Nothing starts one yet, so there is
-/// one answer; it is a word of its own so that a reader matches on it.
+/// Where a member's session stands. Nothing starts one yet, so the daemon
+/// has one answer; it is a word of its own so that a reader matches on it.
+///
+/// A standing a reader does not know, from a newer daemon, or one that is
+/// missing, is `Unknown`: it is shown as unknown, never as not started.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Standing {
-    #[default]
     NotStarted,
+    #[default]
+    #[serde(other)]
+    Unknown,
 }
 
 impl Standing {
     pub fn word(self) -> &'static str {
         match self {
             Standing::NotStarted => "not started",
+            Standing::Unknown => "unknown",
         }
     }
 }
@@ -484,8 +490,9 @@ pub struct CrewView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unavailable: Option<String>,
     pub members: Vec<MemberView>,
-    /// Two members or more, and every one on the same vendor: nobody's
-    /// work is reviewed by another vendor's model.
+    /// Two members or more, and every one on the same vendor's runtime.
+    /// It says which runtime each runs on, not which vendor's model did
+    /// any piece of work.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub same_vendor: bool,
 }
@@ -847,6 +854,24 @@ mod tests {
             serde_json::to_value(Standing::NotStarted).unwrap(),
             "not_started"
         );
+        // A standing this build does not know, and one that is missing,
+        // are unknown: never read as not started.
+        assert_eq!(
+            serde_json::from_value::<Standing>(serde_json::json!("stopping")).unwrap(),
+            Standing::Unknown
+        );
+        let mut member =
+            serde_json::to_value(&view(&ProjectId::from("project"), Some(&crew), &[]).members[0])
+                .unwrap();
+        assert_eq!(member["standing"], "not_started");
+        member.as_object_mut().unwrap().remove("standing");
+        assert_eq!(
+            serde_json::from_value::<MemberView>(member)
+                .unwrap()
+                .standing,
+            Standing::Unknown
+        );
+        assert_eq!(Standing::Unknown.word(), "unknown");
     }
 
     fn known(triples: &[(&str, &str, bool)]) -> Vec<Known> {
