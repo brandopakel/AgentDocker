@@ -97,7 +97,16 @@ pub enum Owner {
 
 /// Read the owner record of the lock at `path`, creating nothing.
 pub fn owner(path: &Path) -> Owner {
-    let file = match std::fs::OpenOptions::new().read(true).open(path) {
+    use std::os::unix::fs::OpenOptionsExt;
+    // Opened without waiting on a special file (a FIFO's open waits for a
+    // writer) and without following a link; whether it is a file is then
+    // asked of the opened descriptor itself, so nothing put there in place
+    // of the record can hold a look up.
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
+        .open(path)
+    {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Owner::None,
         Err(error) => {
@@ -106,6 +115,19 @@ pub fn owner(path: &Path) -> Owner {
             };
         }
     };
+    match file.metadata() {
+        Ok(meta) if meta.is_file() => {}
+        Ok(_) => {
+            return Owner::Unknown {
+                why: format!("{} is not a regular file", path.display()),
+            };
+        }
+        Err(error) => {
+            return Owner::Unknown {
+                why: format!("cannot read {}: {error}", path.display()),
+            };
+        }
+    }
     let mut bytes = Vec::new();
     if let Err(error) = file.take(MAX_RECORD + 1).read_to_end(&mut bytes) {
         return Owner::Unknown {
@@ -237,6 +259,22 @@ fn classify(line: &[u8]) -> Endpoint {
     }
 }
 
+/// The answer once its frame is complete or too large: a line of at most
+/// [`MAX_ANSWER`] bytes, measured before it is read, so padding past the
+/// bound never passes for a pong.
+fn framed(answer: &[u8]) -> Option<Endpoint> {
+    match answer.iter().position(|b| *b == b'\n') {
+        Some(end) if end <= MAX_ANSWER => Some(classify(&answer[..end])),
+        Some(_) => Some(Endpoint::Garbled {
+            why: "the answer is larger than any pong".to_owned(),
+        }),
+        None if answer.len() > MAX_ANSWER => Some(Endpoint::Garbled {
+            why: "the answer is larger than any pong".to_owned(),
+        }),
+        None => None,
+    }
+}
+
 /// Read one line of at most [`MAX_ANSWER`] bytes from `read`, which returns
 /// `Ok(0)` at the end of the stream; `Err(TimedOut)` when time runs out.
 fn read_answer(mut read: impl FnMut(&mut [u8]) -> io::Result<usize>) -> Endpoint {
@@ -251,13 +289,8 @@ fn read_answer(mut read: impl FnMut(&mut [u8]) -> io::Result<usize>) -> Endpoint
             }
             Ok(n) => {
                 answer.extend_from_slice(&chunk[..n]);
-                if let Some(end) = answer.iter().position(|b| *b == b'\n') {
-                    return classify(&answer[..end]);
-                }
-                if answer.len() > MAX_ANSWER {
-                    return Endpoint::Garbled {
-                        why: "the answer is larger than any pong".to_owned(),
-                    };
+                if let Some(ended) = framed(&answer) {
+                    return ended;
                 }
             }
             Err(error)
@@ -284,13 +317,103 @@ fn left(deadline: Instant) -> Option<Duration> {
         .filter(|left| !left.is_zero())
 }
 
+/// A listener whose queue is full, or a connect the deadline ran out on:
+/// something is there and is not taking connections.
+pub fn busy(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    )
+}
+
+fn set_flag(
+    fd: std::os::fd::RawFd,
+    get: libc::c_int,
+    set: libc::c_int,
+    flag: libc::c_int,
+    on: bool,
+) -> io::Result<()> {
+    // SAFETY: fcntl reads and sets scalar flags on a descriptor we own.
+    let flags = unsafe { libc::fcntl(fd, get) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let flags = if on { flags | flag } else { flags & !flag };
+    // SAFETY: as above.
+    if unsafe { libc::fcntl(fd, set, flags) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Connect to the socket at `socket` without waiting past `deadline`. An
+/// ordinary connect to a listener whose queue is full waits on Linux for
+/// room, however long that takes; this one never waits past the deadline:
+/// a full queue is `WouldBlock`, and the deadline `TimedOut` ([`busy`]).
+pub fn connect_within(socket: &Path, deadline: Instant) -> io::Result<crate::ipc::BlockingStream> {
+    use nix::errno::Errno;
+    use nix::sys::socket::{UnixAddr, connect, getsockopt, sockopt::SocketError};
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    let address = UnixAddr::new(socket).map_err(io::Error::from)?;
+    // SAFETY: socket() takes only scalar arguments.
+    let raw = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if raw < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: `raw` is a descriptor this function has just made and alone owns.
+    let fd = unsafe { OwnedFd::from_raw_fd(raw) };
+    set_flag(raw, libc::F_GETFD, libc::F_SETFD, libc::FD_CLOEXEC, true)?;
+    set_flag(raw, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK, true)?;
+    match connect(fd.as_raw_fd(), &address) {
+        Ok(()) => {}
+        Err(Errno::EINPROGRESS) => {
+            loop {
+                let Some(time) = left(deadline) else {
+                    return Err(io::ErrorKind::TimedOut.into());
+                };
+                let mut wanted = libc::pollfd {
+                    fd: raw,
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                let ms = i32::try_from(time.as_millis().max(1)).unwrap_or(i32::MAX);
+                // SAFETY: one pollfd, owned here, for the length given.
+                match unsafe { libc::poll(&mut wanted, 1, ms) } {
+                    0 => return Err(io::ErrorKind::TimedOut.into()),
+                    n if n > 0 => break,
+                    _ => {
+                        let error = io::Error::last_os_error();
+                        if error.kind() != io::ErrorKind::Interrupted {
+                            return Err(error);
+                        }
+                    }
+                }
+            }
+            match getsockopt(&fd, SocketError) {
+                Ok(0) => {}
+                Ok(code) => return Err(io::Error::from_raw_os_error(code)),
+                Err(errno) => return Err(io::Error::from(errno)),
+            }
+        }
+        Err(Errno::EAGAIN) => {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "the listener's queue is full",
+            ));
+        }
+        Err(errno) => return Err(io::Error::from(errno)),
+    }
+    set_flag(raw, libc::F_GETFL, libc::F_SETFL, libc::O_NONBLOCK, false)?;
+    Ok(crate::ipc::BlockingStream::from(fd))
+}
+
 /// Ask the socket `ping`, every step within `deadline`. Blocking: for a
 /// caller off any async executor.
 pub fn endpoint_blocking(socket: &Path, deadline: Instant) -> Endpoint {
-    use crate::ipc::BlockingStream;
-    let mut stream = match BlockingStream::connect(socket) {
+    let mut stream = match connect_within(socket, deadline) {
         Ok(stream) => stream,
         Err(error) if absent(&error) => return Endpoint::Absent,
+        Err(error) if busy(&error) => return Endpoint::Silent,
         Err(error) => {
             return Endpoint::Unreachable {
                 error: error.to_string(),
@@ -324,6 +447,8 @@ pub async fn endpoint(socket: &Path, deadline: Instant) -> Endpoint {
     let mut stream = match tokio::time::timeout(time, Stream::connect(socket)).await {
         Err(_) => return Endpoint::Silent,
         Ok(Err(error)) if absent(&error) => return Endpoint::Absent,
+        // A full queue: something is there and not taking connections.
+        Ok(Err(error)) if busy(&error) => return Endpoint::Silent,
         Ok(Err(error)) => {
             return Endpoint::Unreachable {
                 error: error.to_string(),
@@ -353,13 +478,8 @@ pub async fn endpoint(socket: &Path, deadline: Instant) -> Endpoint {
             }
             Ok(Ok(n)) => {
                 answer.extend_from_slice(&chunk[..n]);
-                if let Some(end) = answer.iter().position(|b| *b == b'\n') {
-                    return classify(&answer[..end]);
-                }
-                if answer.len() > MAX_ANSWER {
-                    return Endpoint::Garbled {
-                        why: "the answer is larger than any pong".to_owned(),
-                    };
+                if let Some(ended) = framed(&answer) {
+                    return ended;
                 }
             }
             Ok(Err(_)) => {
@@ -698,6 +818,98 @@ mod tests {
             .line(),
         );
         assert_eq!(owner(&lock), Owner::Gone { pid });
+    }
+
+    /// A listener whose queue is full never holds a connect past its
+    /// deadline: Linux would make an ordinary connect wait for room; this
+    /// one says busy (or, where the kernel refuses, absent) in time, and
+    /// the look reads it as not answering, never as ready.
+    #[test]
+    fn a_full_queue_is_answered_within_the_deadline() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("full.sock");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        let mut held = Vec::new();
+        let mut refused = false;
+        for _ in 0..4096 {
+            let started = Instant::now();
+            match connect_within(&socket, Instant::now() + Duration::from_millis(200)) {
+                Ok(stream) => held.push(stream),
+                Err(error) => {
+                    assert!(
+                        busy(&error) || absent(&error),
+                        "a full queue is busy or refused: {error}"
+                    );
+                    refused = true;
+                }
+            }
+            assert!(started.elapsed() < Duration::from_secs(2), "bounded");
+            if refused {
+                break;
+            }
+        }
+        assert!(refused, "the queue filled");
+        let started = Instant::now();
+        let endpoint = endpoint_blocking(&socket, Instant::now() + Duration::from_millis(300));
+        assert!(started.elapsed() < Duration::from_secs(2), "bounded");
+        assert!(
+            matches!(endpoint, Endpoint::Silent | Endpoint::Absent),
+            "{endpoint:?}"
+        );
+    }
+
+    /// A FIFO put where the owner record belongs is read as unknown at once,
+    /// with no writer and with a silent one, and left as it was.
+    #[test]
+    fn a_fifo_in_place_of_the_record_never_holds_a_look() {
+        use std::os::unix::fs::FileTypeExt;
+        let dir = tempfile::tempdir().unwrap();
+        let lock = dir.path().join("agentd.lock");
+        let path = std::ffi::CString::new(lock.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: a NUL-terminated path and a mode.
+        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        let look = |lock: std::path::PathBuf| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                let _ = tx.send(owner(&lock));
+            });
+            rx.recv_timeout(Duration::from_secs(5))
+                .expect("the look came back in time")
+        };
+        assert!(matches!(look(lock.clone()), Owner::Unknown { .. }));
+        // A writer that stays silent.
+        let _writer = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock)
+            .unwrap();
+        assert!(matches!(look(lock.clone()), Owner::Unknown { .. }));
+        assert!(std::fs::metadata(&lock).unwrap().file_type().is_fifo());
+    }
+
+    /// A valid pong padded past the frame bound before its newline is not
+    /// a pong, through either reader.
+    #[tokio::test]
+    async fn padding_past_the_bound_is_not_a_pong() {
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("padded.sock");
+        let padded: &'static str = Box::leak(
+            format!(
+                "{{\"type\":\"pong\",\"version\":\"1\",\"uptime_secs\":0}}{}\n",
+                " ".repeat(MAX_ANSWER + 1)
+            )
+            .into_boxed_str(),
+        );
+        let _padded = listener(&socket, Some(padded));
+        let bound = || Instant::now() + Duration::from_secs(2);
+        assert!(matches!(
+            endpoint_blocking(&socket, bound()),
+            Endpoint::Garbled { .. }
+        ));
+        assert!(matches!(
+            endpoint(&socket, bound()).await,
+            Endpoint::Garbled { .. }
+        ));
     }
 
     /// Observing a missing or empty home creates nothing in it.

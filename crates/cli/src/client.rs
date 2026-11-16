@@ -189,18 +189,31 @@ impl Client {
             }
             let look = (Instant::now() + presence::ANSWER_WITHIN).min(deadline);
             let observation = presence::observe(&self.socket, &lock_path, look).await;
+            let time_left = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|rest| !rest.is_zero());
             match presence::next(&observation) {
-                Next::Connect => match Stream::connect(&self.socket).await {
-                    Ok(stream) => {
-                        child.0.take();
-                        return Ok(stream);
-                    }
-                    // Gone again between the look and the connection.
-                    Err(err) if absent(&err) => {}
-                    Err(err) => {
-                        return Err(err).with_context(|| {
-                            format!("cannot reach agentd at {}", self.socket.display())
-                        });
+                // The connection the caller gets, inside the same deadline:
+                // a listener that stopped taking connections since the look
+                // is waited on only until then.
+                Next::Connect => match time_left {
+                    None => {}
+                    Some(rest) => {
+                        match tokio::time::timeout(rest, Stream::connect(&self.socket)).await {
+                            Ok(Ok(stream)) => {
+                                child.0.take();
+                                return Ok(stream);
+                            }
+                            // Gone or busy again between the look and the
+                            // connection, or out of time: look again, or end.
+                            Err(_) => {}
+                            Ok(Err(err)) if absent(&err) || presence::busy(&err) => {}
+                            Ok(Err(err)) => {
+                                return Err(err).with_context(|| {
+                                    format!("cannot reach agentd at {}", self.socket.display())
+                                });
+                            }
+                        }
                     }
                 },
                 Next::Fail => bail!(
@@ -208,8 +221,10 @@ impl Client {
                     self.socket.display(),
                     observation.words()
                 ),
+                // Nothing is started once the wait has run out.
                 Next::Spawn
-                    if child.0.is_none()
+                    if time_left.is_some()
+                        && child.0.is_none()
                         && spawned_at.is_none_or(|at| at.elapsed() >= presence::RESPAWN_AFTER) =>
                 {
                     prepare_home(home, &lock_path)?;

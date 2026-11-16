@@ -66,6 +66,19 @@ const START_COOLDOWN: Duration = Duration::from_secs(15);
 /// When the last start attempt was made, whichever thread made it.
 static LAST_SPAWN: Mutex<Option<Instant>> = Mutex::new(None);
 
+/// Admit one start of the daemon for the whole window: refused when
+/// another was admitted within [`START_COOLDOWN`].
+#[cfg(unix)]
+fn admit_start(socket: &Path) -> Result<()> {
+    if !may_spawn() {
+        bail!(
+            "agentd is not listening at {} (a start was attempted moments ago)",
+            socket.display()
+        );
+    }
+    Ok(())
+}
+
 /// Whether this caller may try to start the daemon now.
 fn may_spawn() -> bool {
     let mut last = LAST_SPAWN.lock().unwrap_or_else(|e| e.into_inner());
@@ -261,28 +274,31 @@ impl Client {
     /// whole window, whichever thread asks.
     #[cfg(unix)]
     fn start(&self) -> Result<Stream> {
-        self.start_with(START_TIMEOUT, || {
-            if !may_spawn() {
-                bail!(
-                    "agentd is not listening at {} (a start was attempted moments ago)",
-                    self.socket.display()
-                );
-            }
-            spawn_agentd(&self.socket, &self.home)
-        })
+        self.start_with(
+            START_TIMEOUT,
+            || admit_start(&self.socket),
+            || spawn_agentd(&self.socket, &self.home),
+        )
     }
 
-    /// [`Client::start`], with the start's deadline and its way of spawning
-    /// a daemon given: what the tests stand in for.
+    /// [`Client::start`], with its deadline, its admission and its way of
+    /// spawning given: what the tests stand in for. A start is admitted
+    /// once ([`admit_start`], one per [`START_COOLDOWN`] for the whole
+    /// window), at its first spawn; a spawn again after our child exited as
+    /// a duplicate belongs to the same admitted start, spaced by
+    /// [`presence::RESPAWN_AFTER`] inside the same deadline.
     #[cfg(unix)]
     fn start_with(
         &self,
         timeout: Duration,
+        admit: impl FnOnce() -> Result<()>,
         mut spawn: impl FnMut() -> Result<Child>,
     ) -> Result<Stream> {
         use agentdocker_host::presence::{self, Next};
         let lock_path = paths::daemon_lock(&self.home, &self.socket);
         let deadline = Instant::now() + timeout;
+        let mut admit = Some(admit);
+        let mut spawned_at: Option<Instant> = None;
         let mut child = StartingChild(None);
         loop {
             check_socket(&self.socket)?;
@@ -296,8 +312,14 @@ impl Client {
             }
             let look = (Instant::now() + presence::ANSWER_WITHIN).min(deadline);
             let observation = presence::observe_blocking(&self.socket, &lock_path, look);
+            let time_left = deadline
+                .checked_duration_since(Instant::now())
+                .filter(|rest| !rest.is_zero());
             match presence::next(&observation) {
-                Next::Connect => match Stream::connect(&self.socket) {
+                // Inside the same deadline: a listener that stopped taking
+                // connections since the look is waited on only until then.
+                Next::Connect if time_left.is_none() => {}
+                Next::Connect => match presence::connect_within(&self.socket, deadline) {
                     Ok(stream) => {
                         // The app stays open, so reap our detached daemon if
                         // it later exits.
@@ -308,7 +330,7 @@ impl Client {
                         }
                         return Ok(stream);
                     }
-                    Err(err) if absent(&err) => {}
+                    Err(err) if absent(&err) || presence::busy(&err) => {}
                     Err(err) => {
                         return Err(err).with_context(|| {
                             format!("cannot reach agentd at {}", self.socket.display())
@@ -320,7 +342,15 @@ impl Client {
                     self.socket.display(),
                     observation.words()
                 ),
-                Next::Spawn if child.0.is_none() => {
+                // Nothing is started once the wait has run out.
+                Next::Spawn
+                    if time_left.is_some()
+                        && child.0.is_none()
+                        && spawned_at.is_none_or(|at| at.elapsed() >= presence::RESPAWN_AFTER) =>
+                {
+                    if let Some(admit) = admit.take() {
+                        admit()?;
+                    }
                     if let Some(parent) = lock_path.parent() {
                         if parent == paths::socket_dir(&self.home) && parent != self.home {
                             dirs::ensure_private_dir(parent)?;
@@ -329,6 +359,7 @@ impl Client {
                         }
                     }
                     child.0 = Some(spawn()?);
+                    spawned_at = Some(Instant::now());
                 }
                 Next::Spawn | Next::Wait => {}
             }
@@ -695,13 +726,35 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let socket = tmp.path().join("sock");
         let client = Client::isolated(socket.clone());
+        // An expired wait admits nothing and starts nothing.
+        let (mut admitted, mut spawned) = (0, 0);
+        let error = client
+            .start_with(
+                Duration::ZERO,
+                || {
+                    admitted += 1;
+                    Ok(())
+                },
+                || {
+                    spawned += 1;
+                    Ok(Command::new("/bin/sleep").arg("30").spawn()?)
+                },
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("did not come up"), "{error}");
+        assert_eq!((admitted, spawned), (0, 0));
+        // A wait that runs out after its spawn reaps the child it owns.
         let mut pid = 0;
         let error = client
-            .start_with(Duration::ZERO, || {
-                let child = Command::new("/bin/sleep").arg("30").spawn()?;
-                pid = child.id() as i32;
-                Ok(child)
-            })
+            .start_with(
+                Duration::from_millis(100),
+                || Ok(()),
+                || {
+                    let child = Command::new("/bin/sleep").arg("30").spawn()?;
+                    pid = child.id() as i32;
+                    Ok(child)
+                },
+            )
             .unwrap_err();
         assert!(error.to_string().contains("did not come up"), "{error}");
         // SAFETY: the PID belongs to the child started above; signal 0 only probes.
@@ -712,9 +765,11 @@ mod tests {
         );
 
         let error = client
-            .start_with(Duration::from_secs(2), || {
-                Ok(Command::new("/bin/sh").args(["-c", "exit 7"]).spawn()?)
-            })
+            .start_with(
+                Duration::from_secs(2),
+                || Ok(()),
+                || Ok(Command::new("/bin/sh").args(["-c", "exit 7"]).spawn()?),
+            )
             .unwrap_err();
         assert!(
             error.to_string().contains("exited during startup"),
@@ -725,12 +780,16 @@ mod tests {
         // reaped in the background when it exits later.
         let mut serving = None;
         let stream = client
-            .start_with(Duration::from_secs(2), || {
-                let child = Command::new("/bin/sleep").arg("30").spawn()?;
-                pid = child.id() as i32;
-                serving = Some(answering(&socket));
-                Ok(child)
-            })
+            .start_with(
+                Duration::from_secs(2),
+                || Ok(()),
+                || {
+                    let child = Command::new("/bin/sleep").arg("30").spawn()?;
+                    pid = child.id() as i32;
+                    serving = Some(answering(&socket));
+                    Ok(child)
+                },
+            )
             .unwrap();
         // SAFETY: only this test's still-running child is probed and terminated.
         let alive = unsafe { libc::kill(pid, 0) };
@@ -747,6 +806,59 @@ mod tests {
             -1,
             "the background waiter reaps a later exit"
         );
+        drop(stream);
+        drop(serving);
+    }
+
+    /// A start is admitted once for the whole window; our child exiting as
+    /// a duplicate leaves the same admitted start to spawn again once the
+    /// holder has gone, 250 ms on and inside its own deadline, while another
+    /// start in the meantime is refused by the cooldown.
+    #[test]
+    fn a_duplicate_is_retried_within_its_admitted_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let socket = tmp.path().join("sock");
+        let client = Client::isolated(socket.clone());
+        let mut spawns: Vec<Instant> = Vec::new();
+        let mut serving = None;
+        let mut second = None;
+        let mut pid = 0;
+        let stream = client
+            .start_with(
+                Duration::from_secs(3),
+                || admit_start(&socket),
+                || {
+                    spawns.push(Instant::now());
+                    if spawns.len() == 1 {
+                        // Another thread's start while ours is admitted.
+                        second = Some(admit_start(&socket));
+                        // A duplicate: another daemon held the lock, and is
+                        // gone again before it listened.
+                        Ok(Command::new("/bin/sh").args(["-c", "exit 0"]).spawn()?)
+                    } else {
+                        serving = Some(answering(&socket));
+                        let child = Command::new("/bin/sleep").arg("30").spawn()?;
+                        pid = child.id() as i32;
+                        Ok(child)
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(spawns.len(), 2, "one retry after the duplicate");
+        assert!(
+            spawns[1] - spawns[0] >= agentdocker_host::presence::RESPAWN_AFTER,
+            "no early retry"
+        );
+        let refused = second.expect("the other start was tried").unwrap_err();
+        assert!(refused.to_string().contains("moments ago"), "{refused}");
+        // SAFETY: only this test's still-running child is terminated.
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while unsafe { libc::kill(pid, 0) } == 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
         drop(stream);
         drop(serving);
     }
