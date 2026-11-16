@@ -107,6 +107,65 @@ pub struct ProviderAvailability {
     /// try the provider again (`retry_at`); none once a turn goes through.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub retries: u32,
+    /// Who ended the block, where the evidence says: written only with a
+    /// recovery, never with a block or a lift. Absent from a record kept
+    /// before it was, which says nothing of who.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleared_by: Option<ClearedBy>,
+}
+
+/// Who ended a provider block, as the evidence that ended it says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClearedBy {
+    /// A recovery report: a provider success signal, as a session reported
+    /// it, whichever path sent it. It says nothing of a turn.
+    Provider,
+    /// The person resumed delivery.
+    Person,
+    /// A word from a newer daemon.
+    #[serde(other)]
+    Unknown,
+}
+
+/// Where a provider block stands, derived from what is stored: blocked,
+/// lifted by the daemon to try the provider again, or over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProviderStanding<'a> {
+    /// The block stands since `since`. `retry_at` is when the daemon lifts
+    /// it to try again (an agent's own transient failure only);
+    /// `failed_retries` how many lifts before it failed in turn.
+    Blocked {
+        issue: &'a ProviderIssue,
+        since: DateTime<Utc>,
+        retry_at: Option<DateTime<Utc>>,
+        failed_retries: u32,
+    },
+    /// The daemon lifted a transient block at `lifted_at` to try the
+    /// provider again, the `attempt`th time in a row; nothing has said
+    /// yet whether it went through. `blocked_at` names the block lifted.
+    Retrying {
+        blocked_at: Option<DateTime<Utc>>,
+        lifted_at: DateTime<Utc>,
+        attempt: u32,
+    },
+    /// Over. `blocked_at` names the block it ended, where kept; `by` who
+    /// ended it, where the evidence said.
+    Recovered {
+        blocked_at: Option<DateTime<Utc>>,
+        by: Option<ClearedBy>,
+    },
+}
+
+impl ProviderStanding<'_> {
+    /// Its word, as a refusal's `details.standing` says it.
+    pub fn word(&self) -> &'static str {
+        match self {
+            Self::Blocked { .. } => "blocked",
+            Self::Retrying { .. } => "retrying",
+            Self::Recovered { .. } => "recovered",
+        }
+    }
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -123,6 +182,78 @@ pub const RETRY_LONGEST: chrono::Duration = chrono::Duration::minutes(30);
 pub const RETRY_FAILED_WITHIN: chrono::Duration = chrono::Duration::minutes(10);
 
 impl ProviderAvailability {
+    /// A block, observed at `observed_at` under the process started at
+    /// `generation`, after `failed_retries` lifts that failed in turn.
+    pub fn blocked(
+        generation: DateTime<Utc>,
+        observed_at: DateTime<Utc>,
+        issue: ProviderIssue,
+        failed_retries: u32,
+    ) -> Self {
+        Self {
+            process_started_at: generation,
+            observed_at,
+            issue: Some(issue),
+            cleared_observation: None,
+            retries: failed_retries,
+            cleared_by: None,
+        }
+    }
+
+    /// The daemon's lift of `previous` at `now`, to try the provider
+    /// again: a retry, never a recovery, so nobody is said to have ended
+    /// anything.
+    pub fn lifted(previous: &Self, now: DateTime<Utc>) -> Self {
+        Self {
+            process_started_at: previous.process_started_at,
+            observed_at: now,
+            issue: None,
+            cleared_observation: Some(previous.observed_at),
+            retries: previous.retries.saturating_add(1),
+            cleared_by: None,
+        }
+    }
+
+    /// The end of the block observed at `blocked_at`, by `by`.
+    pub fn recovered(
+        generation: DateTime<Utc>,
+        observed_at: DateTime<Utc>,
+        blocked_at: DateTime<Utc>,
+        by: ClearedBy,
+    ) -> Self {
+        Self {
+            process_started_at: generation,
+            observed_at,
+            issue: None,
+            cleared_observation: Some(blocked_at),
+            retries: 0,
+            cleared_by: Some(by),
+        }
+    }
+
+    /// Where it stands. The issue wins; without one, a positive retry
+    /// count is a lift not yet proved, even in a record that names no
+    /// block; anything else is over, with whoever ended it where kept.
+    pub fn standing(&self) -> ProviderStanding<'_> {
+        match &self.issue {
+            Some(issue) => ProviderStanding::Blocked {
+                issue,
+                since: self.observed_at,
+                retry_at: self.retry_at(),
+                failed_retries: self.retries,
+            },
+            None if self.retries > 0 => ProviderStanding::Retrying {
+                blocked_at: self.cleared_observation,
+                lifted_at: self.observed_at,
+                attempt: self.retries,
+            },
+            None => ProviderStanding::Recovered {
+                blocked_at: self.cleared_observation,
+                by: self.cleared_by,
+            },
+        }
+    }
+
     /// When the daemon lifts this block to try the provider again: only an
     /// agent's own transport failure, with no reset time from the provider
     /// and no account it shares. A limit, a sign-in or an unknown failure
@@ -175,15 +306,145 @@ pub fn provider_block<'a>(
 mod tests {
     use super::*;
 
+    /// A block's standing is derived from what is stored: the issue wins;
+    /// without one, a positive retry count is a lift no turn has proved,
+    /// even in a record that names no block; anything else is over, with
+    /// whoever ended it where the record kept it, and nothing invented
+    /// where it did not.
+    #[test]
+    fn a_blocks_standing_is_derived_from_what_is_stored() {
+        let at = DateTime::from_timestamp(1000, 0).unwrap();
+        let later = at + chrono::Duration::minutes(2);
+        let issue = ProviderIssue::local(ProviderIssueKind::Transport);
+        let blocked = ProviderAvailability::blocked(at, at, issue.clone(), 2);
+        assert_eq!(
+            blocked.standing(),
+            ProviderStanding::Blocked {
+                issue: &issue,
+                since: at,
+                retry_at: blocked.retry_at(),
+                failed_retries: 2,
+            }
+        );
+        assert_eq!(
+            blocked.cleared_by, None,
+            "a block clears whoever ended an earlier one"
+        );
+        let lifted = ProviderAvailability::lifted(&blocked, later);
+        assert_eq!(
+            (
+                lifted.process_started_at,
+                lifted.cleared_observation,
+                lifted.retries,
+                lifted.cleared_by
+            ),
+            (at, Some(at), 3, None),
+            "a lift keeps its generation, names the block, counts, and ends nothing"
+        );
+        assert_eq!(
+            lifted.standing(),
+            ProviderStanding::Retrying {
+                blocked_at: Some(at),
+                lifted_at: later,
+                attempt: 3,
+            }
+        );
+        let mut saturated = blocked.clone();
+        saturated.retries = u32::MAX;
+        assert_eq!(
+            ProviderAvailability::lifted(&saturated, later).retries,
+            u32::MAX
+        );
+        for by in [ClearedBy::Provider, ClearedBy::Person] {
+            assert_eq!(
+                ProviderAvailability::recovered(at, later, at, by).standing(),
+                ProviderStanding::Recovered {
+                    blocked_at: Some(at),
+                    by: Some(by),
+                }
+            );
+        }
+        // Legacy and mixed records: nothing is invented.
+        let mut legacy = ProviderAvailability::recovered(at, later, at, ClearedBy::Person);
+        legacy.cleared_by = None;
+        assert_eq!(
+            legacy.standing(),
+            ProviderStanding::Recovered {
+                blocked_at: Some(at),
+                by: None,
+            }
+        );
+        let mut nameless = lifted.clone();
+        nameless.cleared_observation = None;
+        assert!(matches!(
+            nameless.standing(),
+            ProviderStanding::Retrying {
+                blocked_at: None,
+                attempt: 3,
+                ..
+            }
+        ));
+        let mut reconciled = legacy.clone();
+        reconciled.cleared_observation = None;
+        assert_eq!(
+            reconciled.standing(),
+            ProviderStanding::Recovered {
+                blocked_at: None,
+                by: None,
+            }
+        );
+        let mut both = blocked.clone();
+        both.cleared_by = Some(ClearedBy::Provider);
+        assert!(
+            matches!(both.standing(), ProviderStanding::Blocked { .. }),
+            "the issue wins"
+        );
+        assert_eq!(
+            [
+                blocked.standing().word(),
+                lifted.standing().word(),
+                legacy.standing().word()
+            ],
+            ["blocked", "retrying", "recovered"]
+        );
+    }
+
+    /// Who ended a block travels as a word, is absent from a record kept
+    /// before it was, and a word from a newer daemon reads as unknown.
+    #[test]
+    fn who_ended_a_block_reads_older_and_newer_records() {
+        let at = DateTime::from_timestamp(1000, 0).unwrap();
+        let older = serde_json::json!({
+            "process_started_at": at,
+            "observed_at": at,
+            "issue": null,
+            "cleared_observation": at,
+        });
+        let record: ProviderAvailability = serde_json::from_value(older.clone()).unwrap();
+        assert_eq!(record.cleared_by, None);
+        assert_eq!(
+            serde_json::to_value(&record).unwrap(),
+            older,
+            "written back unchanged"
+        );
+        let mut newer = older;
+        newer["cleared_by"] = serde_json::json!("a_newer_cause");
+        let record: ProviderAvailability = serde_json::from_value(newer).unwrap();
+        assert_eq!(record.cleared_by, Some(ClearedBy::Unknown));
+        for (by, word) in [
+            (ClearedBy::Provider, "provider"),
+            (ClearedBy::Person, "person"),
+        ] {
+            let record = ProviderAvailability::recovered(at, at, at, by);
+            assert_eq!(serde_json::to_value(&record).unwrap()["cleared_by"], word);
+        }
+    }
+
     #[test]
     fn only_an_agents_own_transport_failure_is_retried_and_each_retry_waits_longer() {
         let at = DateTime::from_timestamp(1000, 0).unwrap();
-        let block = |kind, retries| ProviderAvailability {
-            process_started_at: at,
-            observed_at: at,
-            issue: Some(ProviderIssue::local(kind)),
-            cleared_observation: None,
-            retries,
+        let block = |kind, retries| {
+            ProviderAvailability::blocked(at, at, ProviderIssue::local(kind), retries)
         };
         assert_eq!(
             block(ProviderIssueKind::Transport, 0).retry_at(),
@@ -266,13 +527,7 @@ mod tests {
         let mut a = AgentRecord::new(crate::AgentSpec::default(), false, now);
         let mut issue = ProviderIssue::local(ProviderIssueKind::Rate);
         issue.reset_at = Some(now);
-        a.provider_availability = Some(ProviderAvailability {
-            process_started_at: now,
-            observed_at: now,
-            issue: Some(issue),
-            cleared_observation: None,
-            retries: 0,
-        });
+        a.provider_availability = Some(ProviderAvailability::blocked(now, now, issue, 0));
         a.process_started_at = Some(now + chrono::Duration::days(1));
         assert!(provider_block(&a, [&a]).is_some());
         a.provider_availability.as_mut().unwrap().issue = None;
@@ -301,13 +556,8 @@ mod tests {
             source.spec.provider = provider.map(String::from);
             peer.spec.provider = source.spec.provider.clone();
             assert!(!issue.valid_for(&source));
-            source.provider_availability = Some(ProviderAvailability {
-                process_started_at: now,
-                observed_at: now,
-                issue: Some(issue.clone()),
-                cleared_observation: None,
-                retries: 0,
-            });
+            source.provider_availability =
+                Some(ProviderAvailability::blocked(now, now, issue.clone(), 0));
             assert!(provider_block(&source, [&source, &peer]).is_some());
             assert!(provider_block(&peer, [&source, &peer]).is_none());
         }

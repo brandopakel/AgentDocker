@@ -3470,15 +3470,12 @@ mod tests {
         }
         let mut me = agent("claude-01234567", true);
         let blocked_at = Utc::now();
-        me.provider_availability = Some(agentdocker_core::ProviderAvailability {
-            process_started_at: me.process_started_at.unwrap(),
-            observed_at: blocked_at,
-            issue: Some(agentdocker_core::ProviderIssue::local(
-                agentdocker_core::ProviderIssueKind::Usage,
-            )),
-            cleared_observation: None,
-            retries: 0,
-        });
+        me.provider_availability = Some(agentdocker_core::ProviderAvailability::blocked(
+            me.process_started_at.unwrap(),
+            blocked_at,
+            agentdocker_core::ProviderIssue::local(agentdocker_core::ProviderIssueKind::Usage),
+            0,
+        ));
         let backend = Mock::with(vec![
             Response::Agent { agent: me },
             Response::Leases { leases: vec![] },
@@ -3514,15 +3511,12 @@ mod tests {
             return;
         }
         let mut me = agent("claude-01234567", true);
-        me.provider_availability = Some(agentdocker_core::ProviderAvailability {
-            process_started_at: me.process_started_at.unwrap(),
-            observed_at: Utc::now(),
-            issue: Some(agentdocker_core::ProviderIssue::local(
-                agentdocker_core::ProviderIssueKind::Usage,
-            )),
-            cleared_observation: None,
-            retries: 0,
-        });
+        me.provider_availability = Some(agentdocker_core::ProviderAvailability::blocked(
+            me.process_started_at.unwrap(),
+            Utc::now(),
+            agentdocker_core::ProviderIssue::local(agentdocker_core::ProviderIssueKind::Usage),
+            0,
+        ));
         let backend = Mock::with(vec![
             Response::Agent { agent: me },
             Response::error(ErrorCode::Internal, "release transaction failed"),

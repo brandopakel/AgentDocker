@@ -282,13 +282,12 @@ mod tests {
             received_at: None,
             typing_until: None,
         });
-        limited.provider_availability = Some(ProviderAvailability {
-            process_started_at: now,
-            observed_at: now,
-            issue: Some(ProviderIssue::local(ProviderIssueKind::Usage)),
-            cleared_observation: None,
-            retries: 0,
-        });
+        limited.provider_availability = Some(ProviderAvailability::blocked(
+            now,
+            now,
+            ProviderIssue::local(ProviderIssueKind::Usage),
+            0,
+        ));
         app.agents.push(limited.clone());
         app.shell.unfocused = true;
         app.activity
@@ -442,13 +441,12 @@ mod tests {
         let now = Utc::now();
         limited.status = AgentStatus::Exited { code: Some(1) };
         limited.process_started_at = Some(now);
-        limited.provider_availability = Some(ProviderAvailability {
-            process_started_at: now,
-            observed_at: now,
-            issue: Some(ProviderIssue::local(ProviderIssueKind::Usage)),
-            cleared_observation: None,
-            retries: 0,
-        });
+        limited.provider_availability = Some(ProviderAvailability::blocked(
+            now,
+            now,
+            ProviderIssue::local(ProviderIssueKind::Usage),
+            0,
+        ));
         app.agents.push(limited.clone());
         assert!(app.delivery_needs_you(&app.agents[0]));
         assert!(app.session_records(Filter::NeedsInput).is_empty());

@@ -10425,16 +10425,15 @@ async fn send_readiness_reports_only_queued_recipients_and_never_receipts() {
         let agent = state.registry.get_mut(&unrelated.id).unwrap();
         // Finished sources still carry shared-quota blocks.
         agent.status = AgentStatus::Exited { code: Some(1) };
-        agent.provider_availability = Some(agentdocker_core::ProviderAvailability {
-            process_started_at: Utc::now(),
-            observed_at: Utc::now(),
-            cleared_observation: None,
-            issue: Some(agentdocker_core::ProviderIssue {
+        agent.provider_availability = Some(agentdocker_core::ProviderAvailability::blocked(
+            Utc::now(),
+            Utc::now(),
+            agentdocker_core::ProviderIssue {
                 quota_group: Some("shared".into()),
                 ..agentdocker_core::ProviderIssue::local(agentdocker_core::ProviderIssueKind::Usage)
-            }),
-            retries: 0,
-        });
+            },
+            0,
+        ));
     }
     let Response::Sent {
         recipient_readiness: Some(report),

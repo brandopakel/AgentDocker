@@ -1,7 +1,43 @@
 //! Persist availability before suppressing provider input. Inspecting an inbox
 //! and acknowledging a proven receipt remain possible while delivery waits.
 use super::*;
-use agentdocker_core::{ProviderAvailability, ProviderReport, provider_block};
+use agentdocker_core::{
+    ClearedBy, ProviderAvailability, ProviderReport, ProviderStanding, provider_block,
+};
+
+/// Where a refused report or resume found the block, and the step that
+/// works: the observation it holds is said, never offered to be named
+/// instead, since a success seen for one block is no evidence for another.
+fn standing_details(previous: Option<&ProviderAvailability>, step: &str) -> serde_json::Value {
+    let mut details = serde_json::json!({ "step": step });
+    match previous.map(ProviderAvailability::standing) {
+        None => details["standing"] = serde_json::json!("none"),
+        Some(standing) => {
+            details["standing"] = serde_json::json!(standing.word());
+            match standing {
+                ProviderStanding::Blocked { since, .. } => {
+                    details["since"] = serde_json::json!(since);
+                }
+                ProviderStanding::Retrying { blocked_at, .. }
+                | ProviderStanding::Recovered { blocked_at, .. } => {
+                    if let Some(blocked_at) = blocked_at {
+                        details["blocked_at"] = serde_json::json!(blocked_at);
+                    }
+                }
+            }
+        }
+    }
+    details
+}
+
+/// Two reports at one instant cannot be ordered: the later one waits.
+fn same_instant(previous: &ProviderAvailability) -> Response {
+    Response::Error {
+        code: ErrorCode::Conflict,
+        message: "provider reports conflict at the same observation time".to_owned(),
+        details: Some(standing_details(Some(previous), "wait")),
+    }
+}
 
 impl State {
     pub(super) fn delivery_queue(&mut self, reference: &str) -> Response {
@@ -57,6 +93,7 @@ impl State {
             );
         }
         let previous = record.provider_availability.as_ref();
+        let standing = previous.map(ProviderAvailability::standing);
         let state = match report {
             ProviderReport::Blocked { issue } => {
                 if !issue.valid_for(&record) {
@@ -65,74 +102,70 @@ impl State {
                         "provider quota scope must match this agent's explicit provider, membership and model",
                     );
                 }
-                if previous.is_some_and(|p| {
-                    p.issue.as_ref() == Some(&issue) && p.process_started_at == generation
-                }) {
+                if previous.is_some_and(|p| p.process_started_at == generation)
+                    && matches!(standing, Some(ProviderStanding::Blocked { issue: same, .. }) if *same == issue)
+                {
                     return Response::Ok; // Repeated limit signals do not create a notification/event storm.
                 }
                 // A failure soon after an automatic retry is that retry
                 // failing: the next one waits longer.
-                let retries = previous
-                    .filter(|p| {
-                        p.issue.is_none()
-                            && p.retries > 0
-                            && observed_at - p.observed_at
-                                < agentdocker_core::provider::RETRY_FAILED_WITHIN
-                    })
-                    .map_or(0, |p| p.retries);
-                ProviderAvailability {
-                    process_started_at: generation,
-                    observed_at,
-                    issue: Some(issue),
-                    cleared_observation: None,
-                    retries,
-                }
+                let failed_retries = match standing {
+                    Some(ProviderStanding::Retrying {
+                        lifted_at, attempt, ..
+                    }) if observed_at - lifted_at
+                        < agentdocker_core::provider::RETRY_FAILED_WITHIN =>
+                    {
+                        attempt
+                    }
+                    _ => 0,
+                };
+                ProviderAvailability::blocked(generation, observed_at, issue, failed_retries)
             }
-            ProviderReport::Recovered { blocked_at } => {
-                if let Some(p) = previous
-                    .filter(|p| p.issue.is_none() && p.cleared_observation == Some(blocked_at))
-                {
-                    // Already clear. A lift for a retry that a turn has now
-                    // proved ends the count; anything else is a repeat.
-                    if p.retries == 0 {
-                        return Response::Ok;
+            // A recovery report ends a block, or a lift the daemon made to
+            // try again, as the provider's success: whichever path sent it,
+            // it says nothing of a turn.
+            ProviderReport::Recovered { blocked_at } => match standing {
+                Some(ProviderStanding::Retrying {
+                    blocked_at: Some(lifted),
+                    ..
+                }) if lifted == blocked_at => {
+                    let previous = previous.expect("a standing has a record");
+                    if observed_at <= previous.observed_at {
+                        return same_instant(previous);
                     }
-                    let state = ProviderAvailability {
-                        process_started_at: generation,
+                    let state = ProviderAvailability::recovered(
+                        generation,
                         observed_at,
-                        issue: None,
-                        cleared_observation: Some(blocked_at),
-                        retries: 0,
-                    };
-                    if observed_at <= p.observed_at {
-                        return Response::error(
-                            ErrorCode::Conflict,
-                            "provider reports conflict at the same observation time",
-                        );
-                    }
+                        blocked_at,
+                        ClearedBy::Provider,
+                    );
                     record.provider_availability = Some(state.clone());
                     return self.persist_provider(record, state, false, now);
                 }
-                if !previous.is_some_and(|p| p.issue.is_some() && p.observed_at == blocked_at) {
-                    return Response::error(
-                        ErrorCode::Conflict,
-                        "provider limit changed; inspect the current state before resuming",
-                    );
+                // Already over: a repeat, which keeps whoever ended it.
+                Some(ProviderStanding::Recovered {
+                    blocked_at: Some(ended),
+                    ..
+                }) if ended == blocked_at => return Response::Ok,
+                Some(ProviderStanding::Blocked { since, .. }) if since == blocked_at => {
+                    ProviderAvailability::recovered(
+                        generation,
+                        observed_at,
+                        blocked_at,
+                        ClearedBy::Provider,
+                    )
                 }
-                ProviderAvailability {
-                    process_started_at: generation,
-                    observed_at,
-                    issue: None,
-                    cleared_observation: Some(blocked_at),
-                    retries: 0,
+                _ => {
+                    return Response::Error {
+                        code: ErrorCode::Conflict,
+                        message: "provider limit changed; inspect the current state, and report recovery only from fresh evidence of it".to_owned(),
+                        details: Some(standing_details(previous, "reconcile")),
+                    };
                 }
-            }
+            },
         };
-        if previous.is_some_and(|p| observed_at == p.observed_at) {
-            return Response::error(
-                ErrorCode::Conflict,
-                "provider reports conflict at the same observation time",
-            );
+        if let Some(previous) = previous.filter(|p| observed_at == p.observed_at) {
+            return same_instant(previous);
         }
         record.provider_availability = Some(state.clone());
         self.persist_provider(record, state, false, now)
@@ -150,29 +183,38 @@ impl State {
         };
         let mut record = self.registry.get(&id).expect("resolved").clone();
         let Some(previous) = record.provider_availability.as_ref() else {
-            return Response::error(
-                ErrorCode::Conflict,
-                "this agent has no recorded provider block",
-            );
+            return Response::Error {
+                code: ErrorCode::Conflict,
+                message: "this agent has no recorded provider block".to_owned(),
+                details: Some(standing_details(None, "nothing_to_resume")),
+            };
         };
-        if previous.issue.is_none() && previous.cleared_observation == Some(blocked_at) {
-            return Response::Ok;
-        }
-        if previous.issue.is_none()
-            || previous.observed_at != blocked_at
-            || now <= previous.observed_at
-        {
-            return Response::error(
-                ErrorCode::Conflict,
-                "provider limit changed; review the new limit before resuming",
-            );
-        }
-        let state = ProviderAvailability {
-            process_started_at: previous.process_started_at,
-            observed_at: now,
-            issue: None,
-            cleared_observation: Some(blocked_at),
-            retries: 0,
+        let state = match previous.standing() {
+            // Already lifted or over for that block: nothing to do, and
+            // nothing written, so whoever ended it stays said.
+            ProviderStanding::Retrying {
+                blocked_at: Some(ended),
+                ..
+            }
+            | ProviderStanding::Recovered {
+                blocked_at: Some(ended),
+                ..
+            } if ended == blocked_at => return Response::Ok,
+            ProviderStanding::Blocked { since, .. } if since == blocked_at && now > since => {
+                ProviderAvailability::recovered(
+                    previous.process_started_at,
+                    now,
+                    blocked_at,
+                    ClearedBy::Person,
+                )
+            }
+            _ => {
+                return Response::Error {
+                    code: ErrorCode::Conflict,
+                    message: "provider limit changed; review the new limit before resuming: resuming it is a new decision".to_owned(),
+                    details: Some(standing_details(Some(previous), "review")),
+                };
+            }
         };
         record.provider_availability = Some(state.clone());
         self.persist_provider(record, state, true, now)
@@ -198,13 +240,7 @@ impl State {
             .collect();
         for mut record in due {
             let previous = record.provider_availability.clone().expect("due");
-            let state = ProviderAvailability {
-                process_started_at: previous.process_started_at,
-                observed_at: now,
-                issue: None,
-                cleared_observation: Some(previous.observed_at),
-                retries: previous.retries.saturating_add(1),
-            };
+            let state = ProviderAvailability::lifted(&previous, now);
             record.provider_availability = Some(state.clone());
             let _ = self.persist_provider(record, state, false, now);
         }
@@ -281,6 +317,212 @@ mod tests {
             ProviderReport::Blocked { issue },
             at,
         )
+    }
+
+    fn recover(
+        state: &mut State,
+        agent: &AgentRecord,
+        blocked_at: DateTime<Utc>,
+        at: DateTime<Utc>,
+    ) -> Response {
+        state.report_provider(
+            agent.id.as_str(),
+            agent.process_started_at.unwrap(),
+            at,
+            ProviderReport::Recovered { blocked_at },
+            at,
+        )
+    }
+
+    fn availability(state: &State, agent: &AgentRecord) -> ProviderAvailability {
+        state
+            .registry
+            .get(&agent.id)
+            .unwrap()
+            .provider_availability
+            .clone()
+            .unwrap()
+    }
+
+    /// The refusal's message and details, or a panic naming what came.
+    fn refusal(response: Response) -> (String, serde_json::Value) {
+        match response {
+            Response::Error {
+                code: ErrorCode::Conflict,
+                message,
+                details,
+            } => (message, details.unwrap_or_default()),
+            other => panic!("not a conflict: {other:?}"),
+        }
+    }
+
+    /// Who ended a block is what the evidence says, never what came before:
+    /// a recovery report ends a block or a lift alike as the provider's
+    /// success, whichever path sent it; a resume is the person's; a lift
+    /// ends nothing; a repeat writes nothing, so the first word stands, and
+    /// a resume of a lift is the same no-op it always was.
+    #[test]
+    fn who_ended_a_block_is_what_the_evidence_says() {
+        use agentdocker_core::provider::RETRY_FIRST;
+        let (_dir, daemon, agent, now) = fixture("codex");
+        let mut state = lock(&daemon.state);
+        let start = now - Duration::seconds(9);
+        // A recovery report against a standing block.
+        assert!(matches!(
+            block(&mut state, &agent, ProviderIssue::local(Kind::Usage), start),
+            Response::Ok
+        ));
+        assert!(matches!(
+            recover(&mut state, &agent, start, start + Duration::seconds(1)),
+            Response::Ok
+        ));
+        assert_eq!(
+            availability(&state, &agent).cleared_by,
+            Some(ClearedBy::Provider)
+        );
+        // Repeated: nothing written, the word stands.
+        let seq = state.next_seq;
+        assert!(matches!(
+            recover(&mut state, &agent, start, start + Duration::seconds(2)),
+            Response::Ok
+        ));
+        assert_eq!(state.next_seq, seq);
+        assert_eq!(
+            availability(&state, &agent).cleared_by,
+            Some(ClearedBy::Provider)
+        );
+
+        // A recovery report against the daemon's lift: the provider's, not a turn's.
+        let failed = start + Duration::seconds(3);
+        assert!(matches!(
+            block(
+                &mut state,
+                &agent,
+                ProviderIssue::local(Kind::Transport),
+                failed
+            ),
+            Response::Ok
+        ));
+        let lifted_at = failed + RETRY_FIRST;
+        state.retry_providers(lifted_at);
+        let lifted = availability(&state, &agent);
+        assert_eq!(
+            (lifted.retries, lifted.cleared_by),
+            (1, None),
+            "a lift ends nothing"
+        );
+        // A person's resume of the lift: the same no-op as ever.
+        let seq = state.next_seq;
+        assert!(matches!(
+            state.resume_provider(agent.id.as_str(), failed, lifted_at + Duration::seconds(1)),
+            Response::Ok
+        ));
+        assert_eq!(
+            (state.next_seq, availability(&state, &agent)),
+            (seq, lifted)
+        );
+        let proved = lifted_at + Duration::seconds(1);
+        assert!(matches!(
+            state.report_provider(
+                agent.id.as_str(),
+                agent.process_started_at.unwrap(),
+                proved,
+                ProviderReport::Recovered { blocked_at: failed },
+                proved
+            ),
+            Response::Ok
+        ));
+        let over = availability(&state, &agent);
+        assert_eq!(
+            (over.retries, over.cleared_by),
+            (0, Some(ClearedBy::Provider))
+        );
+        drop(state);
+
+        // A person's resume of a standing block.
+        let (_dir, daemon, agent, now) = fixture("claude");
+        let mut state = lock(&daemon.state);
+        let at = now - Duration::seconds(5);
+        assert!(matches!(
+            block(&mut state, &agent, ProviderIssue::local(Kind::Rate), at),
+            Response::Ok
+        ));
+        assert!(matches!(
+            state.resume_provider(agent.id.as_str(), at, now),
+            Response::Ok
+        ));
+        assert_eq!(
+            availability(&state, &agent).cleared_by,
+            Some(ClearedBy::Person)
+        );
+        // A legacy record with no word keeps none through a repeat.
+        let mut record = state.registry.get(&agent.id).unwrap().clone();
+        record.provider_availability.as_mut().unwrap().cleared_by = None;
+        *state.registry.get_mut(&agent.id).unwrap() = record;
+        assert!(matches!(
+            state.resume_provider(agent.id.as_str(), at, now),
+            Response::Ok
+        ));
+        assert_eq!(availability(&state, &agent).cleared_by, None);
+    }
+
+    /// A stale recovery or resume is refused with what was found and a
+    /// step that asks for fresh evidence or a fresh decision, never one
+    /// that offers the current observation to be named instead; nothing
+    /// changes. Two reports at one instant wait; no record has nothing to
+    /// resume.
+    #[test]
+    fn a_stale_recovery_is_refused_with_a_step_for_fresh_evidence() {
+        let (_dir, daemon, agent, now) = fixture("codex");
+        let mut state = lock(&daemon.state);
+        // No record yet.
+        let (message, details) = refusal(state.resume_provider(agent.id.as_str(), now, now));
+        assert!(message.contains("no recorded provider block"), "{message}");
+        assert_eq!(details["standing"], "none");
+        assert_eq!(details["step"], "nothing_to_resume");
+
+        // Success seen for block A; block B supersedes it; A's report is late.
+        let a = now - Duration::seconds(9);
+        let b = now - Duration::seconds(5);
+        assert!(matches!(
+            block(&mut state, &agent, ProviderIssue::local(Kind::Usage), a),
+            Response::Ok
+        ));
+        assert!(matches!(
+            block(&mut state, &agent, ProviderIssue::local(Kind::Rate), b),
+            Response::Ok
+        ));
+        let before = availability(&state, &agent);
+        let seq = state.next_seq;
+        let (message, details) =
+            refusal(recover(&mut state, &agent, a, now - Duration::seconds(1)));
+        assert!(message.contains("fresh evidence"), "{message}");
+        assert_eq!(details["standing"], "blocked");
+        assert_eq!(details["step"], "reconcile");
+        assert_eq!(
+            details["since"],
+            serde_json::json!(b),
+            "said as what was found"
+        );
+        let (message, details) = refusal(state.resume_provider(agent.id.as_str(), a, now));
+        assert!(message.contains("a new decision"), "{message}");
+        assert_eq!(details["standing"], "blocked");
+        assert_eq!(details["step"], "review");
+        assert_eq!(
+            (state.next_seq, availability(&state, &agent)),
+            (seq, before),
+            "nothing changed"
+        );
+
+        // Two reports at one instant: the later waits.
+        let (message, details) = refusal(block(
+            &mut state,
+            &agent,
+            ProviderIssue::local(Kind::Usage),
+            b,
+        ));
+        assert!(message.contains("same observation time"), "{message}");
+        assert_eq!(details["step"], "wait");
     }
 
     /// A transport failure is retried, not waited on for ever: the block is

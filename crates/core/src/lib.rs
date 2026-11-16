@@ -45,7 +45,8 @@ pub mod task;
 pub mod team;
 pub mod timing;
 pub use provider::{
-    ProviderAvailability, ProviderIssue, ProviderIssueKind, ProviderReport, provider_block,
+    ClearedBy, ProviderAvailability, ProviderIssue, ProviderIssueKind, ProviderReport,
+    ProviderStanding, provider_block,
 };
 pub use team::{Team, TeamMembership, TeamRole, Teammate};
 pub mod registry;
