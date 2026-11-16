@@ -1154,6 +1154,32 @@ pub mod tmux {
             assert!(matches!(missing, Launch::NotStarted { .. }), "{missing:?}");
         }
 
+        /// Through the real runner: a client that printed a valid launch
+        /// line and then more than the output bound on stderr keeps its
+        /// line, so the pane is still known.
+        #[cfg(unix)]
+        #[test]
+        fn a_line_survives_an_overflowing_client() {
+            // printf reads `\t` and `\n` in its format; `%` is doubled.
+            let format = LINE
+                .replace('%', "%%")
+                .replace('\t', "\\t")
+                .replace('\n', "\\n");
+            let script = format!("printf '{format}'; head -c 5000000 /dev/zero >&2");
+            let argv = ["/bin/sh".to_owned(), "-c".to_owned(), script];
+            let observed = crate::command::run_observed(Path::new("/"), &argv, LAUNCH_DEADLINE);
+            assert!(matches!(observed, Observed::Lost { .. }), "{observed:?}");
+            assert_eq!(
+                classify(observed),
+                Launch::Indeterminate {
+                    pane: Some(launched()),
+                    output: None,
+                    why: "tmux was started and its answer was lost (command output exceeded 4 MiB)"
+                        .to_owned(),
+                }
+            );
+        }
+
         /// A removal's answer, read strictly from each form it can take.
         #[test]
         fn a_removal_is_read_from_the_whole_answer() {

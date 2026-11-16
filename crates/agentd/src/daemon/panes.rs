@@ -100,14 +100,8 @@ impl Daemon {
                 .ensure_watched(&record, super::WATCHER_LAUNCH_TIMEOUT)
                 .await
         {
-            self.mark_exited(
-                &record.id,
-                AgentStatus::Failed {
-                    reason: reason.clone(),
-                },
-            );
-            self.cleanup_isolate(&record).await;
-            return Response::error(ErrorCode::Unavailable, reason);
+            let answer = Response::error(ErrorCode::Unavailable, reason.clone());
+            return self.end_before_tmux(&record, &reason, answer).await;
         }
 
         let mut env = record.spec.env.clone();
@@ -129,14 +123,9 @@ impl Daemon {
         self.refresh_policy_for(record.project.as_ref());
         let refused = lock(&self.state).run_refusal(&record);
         if let Some(response) = refused {
-            self.mark_exited(
-                &record.id,
-                AgentStatus::Failed {
-                    reason: "tmux launch refused by admission policy".into(),
-                },
-            );
-            self.cleanup_isolate(&record).await;
-            return response;
+            return self
+                .end_before_tmux(&record, "tmux launch refused by admission policy", response)
+                .await;
         }
 
         // The launch and its process's birth, read at once in the worker:
@@ -165,6 +154,37 @@ impl Daemon {
         });
         self.finish_launch(&record, launch, born, Arc::new(TmuxCleanup))
             .await
+    }
+
+    /// End a launch's record before tmux was asked, answering `answer` when
+    /// the end committed. Nothing reached tmux, so the checkout goes only
+    /// then; an end not kept answers the store's or fence's refusal and
+    /// keeps the record and its checkout.
+    async fn end_before_tmux(
+        self: &Arc<Self>,
+        record: &AgentRecord,
+        reason: &str,
+        answer: Response,
+    ) -> Response {
+        let end = lock(&self.state).end_launch(&record.id, record, reason);
+        let ended = matches!(end, LaunchEnd::Ended);
+        let mut facts = serde_json::json!({ "launch": "not_started", "end": end.word() });
+        if record.spec.isolate {
+            let removed = ended && self.cleanup_isolate(record).await;
+            facts["isolate"] = if removed { "removed" } else { "kept" }.into();
+        }
+        if ended {
+            return with_facts(answer, facts, None);
+        }
+        facts["step"] = "inspect".into();
+        let mut said = format!("{reason}; nothing reached tmux, and {}", end.said());
+        if let Some(path) = kept_checkout(record) {
+            said.push_str(&format!("; the checkout at {path} is kept"));
+        }
+        match end {
+            LaunchEnd::Refused(refusal) => with_facts(*refusal, facts, Some(&said)),
+            _ => with_facts(answer, facts, Some(&said)),
+        }
     }
 
     /// The launch's end, from its outcome: the record started, or ended
@@ -332,11 +352,23 @@ impl Daemon {
             "pane": launched.pane,
             "server": {"socket": launched.socket, "pid": launched.server.pid, "started": launched.server.started},
             "removal": removal_facts(&removal),
+            "step": "inspect",
         });
         if record.spec.isolate {
             facts["isolate"] = "kept".into();
         }
-        with_facts(updated, facts)
+        let mut said = vec![
+            "its start could not be recorded, and its command may have run".to_owned(),
+            removal_said(launched, &removal),
+        ];
+        if let Some(path) = kept_checkout(record) {
+            said.push(format!("the checkout at {path} is kept"));
+        }
+        said.push(inspect_said(
+            Some(launched),
+            &tmux::session_name(&record.spec.name),
+        ));
+        with_facts(updated, facts, Some(&said.join("; ")))
     }
 }
 
@@ -445,15 +477,15 @@ impl LaunchEnd {
     /// was refused, else `code` and `message`; the launch's facts added.
     fn refusal_or(self, code: ErrorCode, message: String, facts: serde_json::Value) -> Response {
         match self {
-            Self::Refused(refusal) => with_facts(*refusal, facts),
-            _ => with_facts(Response::error(code, message), facts),
+            Self::Refused(refusal) => with_facts(*refusal, facts, Some(&message)),
+            _ => with_facts(Response::error(code, message), facts, None),
         }
     }
 }
 
 /// `response` with `facts` added to its details, keeping every detail it
-/// already carries.
-fn with_facts(response: Response, facts: serde_json::Value) -> Response {
+/// already carries, and `said` after its own message.
+fn with_facts(response: Response, facts: serde_json::Value, said: Option<&str>) -> Response {
     let Response::Error {
         code,
         message,
@@ -472,6 +504,10 @@ fn with_facts(response: Response, facts: serde_json::Value) -> Response {
             merged.entry(key).or_insert(value);
         }
     }
+    let message = match said {
+        Some(said) => format!("{message}; {said}"),
+        None => message,
+    };
     Response::Error {
         code,
         message,
@@ -515,25 +551,7 @@ fn indeterminate_message(
 ) -> String {
     let mut said = vec![format!("{why}; the launch may have run")];
     match (pane, removal) {
-        (Some(launched), Some(removal)) => {
-            let (id, socket) = (&launched.pane, launched.socket.display());
-            said.push(match removal {
-                tmux::Removal::Removed => format!("its pane {id} was removed at {socket}"),
-                tmux::Removal::Gone => format!("its pane {id} is gone from its server at {socket}"),
-                tmux::Removal::NotReached { now: None } => format!(
-                    "its server was not reached: no server answers at {socket}, so nothing was removed"
-                ),
-                tmux::Removal::NotReached { now: Some(_) } => format!(
-                    "its server was not reached: another server answers at {socket}, so nothing was removed"
-                ),
-                tmux::Removal::Mismatch { pid } => format!(
-                    "pane {id} now holds another process (pid {pid}), so it was left alone"
-                ),
-                tmux::Removal::Unknown { why } => {
-                    format!("whether its pane {id} was removed is not known ({why})")
-                }
-            });
-        }
+        (Some(launched), Some(removal)) => said.push(removal_said(launched, removal)),
         _ => said.push("tmux named no pane, so nothing was removed".to_owned()),
     }
     match leader {
@@ -551,12 +569,7 @@ fn indeterminate_message(
     if !matches!(end, LaunchEnd::Ended) {
         said.push(end.said());
     }
-    let checkout = record
-        .spec
-        .workdir
-        .as_ref()
-        .filter(|_| record.spec.isolate)
-        .map(|path| path.display().to_string());
+    let checkout = kept_checkout(record);
     if let Some(path) = &checkout {
         said.push(format!("the checkout at {path} is kept"));
     }
@@ -571,18 +584,55 @@ fn indeterminate_message(
         }
         said.push(step);
     } else {
-        said.push(match pane {
-            Some(launched) => format!(
-                "inspect the tmux server now at that socket (`tmux -S {} ls`), which may not be this launch's, before deciding what to do",
-                tmux::shell_quoted(&launched.socket.display().to_string())
-            ),
-            None => format!(
-                "the tmux server it used is not known: check `tmux ls`, and if a session named {} is there, review it before deciding what to do",
-                tmux::shell_quoted(session)
-            ),
-        });
+        said.push(inspect_said(pane, session));
     }
     said.join("; ")
+}
+
+/// What one removal found, said.
+fn removal_said(launched: &tmux::Launched, removal: &tmux::Removal) -> String {
+    let (id, socket) = (&launched.pane, launched.socket.display());
+    match removal {
+        tmux::Removal::Removed => format!("its pane {id} was removed at {socket}"),
+        tmux::Removal::Gone => format!("its pane {id} is gone from its server at {socket}"),
+        tmux::Removal::NotReached { now: None } => format!(
+            "its server was not reached: no server answers at {socket}, so nothing was removed"
+        ),
+        tmux::Removal::NotReached { now: Some(_) } => format!(
+            "its server was not reached: another server answers at {socket}, so nothing was removed"
+        ),
+        tmux::Removal::Mismatch { pid } => {
+            format!("pane {id} now holds another process (pid {pid}), so it was left alone")
+        }
+        tmux::Removal::Unknown { why } => {
+            format!("whether its pane {id} was removed is not known ({why})")
+        }
+    }
+}
+
+/// Where to look next when nothing is proven: the endpoint now at the
+/// launch's socket, or, with no pane named, the unknown server.
+fn inspect_said(pane: Option<&tmux::Launched>, session: &str) -> String {
+    match pane {
+        Some(launched) => format!(
+            "inspect the tmux server now at that socket (`tmux -S {} ls`), which may not be this launch's, before deciding what to do",
+            tmux::shell_quoted(&launched.socket.display().to_string())
+        ),
+        None => format!(
+            "the tmux server it used is not known: check `tmux ls`, and if a session named {} is there, review it before deciding what to do",
+            tmux::shell_quoted(session)
+        ),
+    }
+}
+
+/// An isolated launch's own checkout, when it has one.
+fn kept_checkout(record: &AgentRecord) -> Option<String> {
+    record
+        .spec
+        .workdir
+        .as_ref()
+        .filter(|_| record.spec.isolate)
+        .map(|path| path.display().to_string())
 }
 
 impl State {
@@ -1096,6 +1146,19 @@ mod tests {
             } else {
                 assert_eq!(stand_in.calls(), ["born", "remove"], "{case}");
                 assert_eq!(facts["removal"]["result"], "removed", "{case}");
+                assert_eq!(facts["step"], "inspect", "{case}");
+                assert!(
+                    message.contains(&format!("the checkout at {} is kept", path.display())),
+                    "{case}: {message}"
+                );
+                assert!(
+                    message.contains("`tmux -S '/tmp/tmux-test/default' ls`"),
+                    "{case}: {message}"
+                );
+                assert!(
+                    !message.contains("attach") && !message.contains("tried again"),
+                    "{case}"
+                );
             }
         }
     }
@@ -1223,6 +1286,119 @@ mod tests {
                 );
             } else {
                 assert!(message.contains("had already ended"), "{message}");
+            }
+        }
+    }
+
+    /// The two exits after the record exists and before tmux is asked (a
+    /// watcher that will not attach, a policy refusing at the last check)
+    /// end the record durably: the checkout goes only when that end was
+    /// kept, and a refused end answers the store's refusal and keeps the
+    /// record and its checkout, offering no retry.
+    #[tokio::test]
+    async fn an_exit_before_tmux_removes_the_checkout_only_with_a_kept_end() {
+        if !tmux::available() {
+            return;
+        }
+        for (exit, refused) in [
+            ("watcher", false),
+            ("watcher", true),
+            ("policy", false),
+            ("policy", true),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let repo = dir.path().join("repo");
+            std::fs::create_dir(&repo).unwrap();
+            if !(git(&repo, &["init", "-q"])
+                && git(&repo, &["commit", "-q", "--allow-empty", "-m", "root"]))
+            {
+                return;
+            }
+            let daemon =
+                Arc::new(Daemon::open(dir.path().join("state"), dir.path().join("sock")).unwrap());
+            let responder = if exit == "watcher" {
+                daemon.watcher_off("cannot start".into());
+                None
+            } else {
+                // The policy changes while the checkout is watched, so the
+                // launch is refused at its last check, after the record.
+                let (tx, mut rx) = tokio::sync::mpsc::channel::<WatcherAttachment>(1);
+                daemon.set_watcher_attach(tx);
+                let policy = Arc::clone(&daemon);
+                Some(tokio::spawn(async move {
+                    let request = rx.recv().await.unwrap();
+                    std::fs::write(
+                        policy.home.join("policy.toml"),
+                        "[[rule]]\ndeny = [\"run:**\"]\n",
+                    )
+                    .unwrap();
+                    policy.reload_policies();
+                    request.ack.send(Ok(())).unwrap();
+                }))
+            };
+            if refused {
+                lock(&daemon.state)
+                    .store
+                    .reject_event_for_test("agent_exited");
+            }
+            let spec = AgentSpec {
+                name: "pane-exit".into(),
+                command: vec!["sleep".into(), "300".into()],
+                workdir: Some(repo.clone()),
+                isolate: true,
+                in_pane: true,
+                ..Default::default()
+            };
+            let response = daemon.handle(Request::Run { spec }).await;
+            if let Some(task) = responder {
+                task.await.unwrap();
+            }
+            let case = format!("{exit}, refused end {refused}");
+            let (code, message, facts) = details(&response);
+            let record = {
+                let state = lock(&daemon.state);
+                let id = state
+                    .registry
+                    .resolve("pane-exit")
+                    .unwrap_or_else(|error| panic!("{case}: the record was made: {error}"));
+                state.registry.get(&id).cloned().unwrap()
+            };
+            let worktree = record.spec.workdir.clone().unwrap();
+            assert_ne!(worktree, repo, "{case}: isolated");
+            let cleaned = daemon
+                .recent_events(200)
+                .iter()
+                .any(|event| matches!(event.kind, EventKind::WorktreeCleanup { .. }));
+            if refused {
+                assert_eq!(code, ErrorCode::StorageUnavailable, "{case}: {message}");
+                assert_eq!(facts["end"], "refused", "{case}");
+                assert_eq!(facts["isolate"], "kept", "{case}");
+                assert_eq!(facts["step"], "inspect", "{case}");
+                assert!(daemon.is_live(&record.id), "{case}: no end was kept");
+                assert_eq!(exits(&daemon, &record.id), 0, "{case}");
+                assert!(
+                    worktree.exists() && !cleaned,
+                    "{case}: the checkout is kept"
+                );
+                assert!(
+                    message.contains(&format!("the checkout at {} is kept", worktree.display())),
+                    "{case}: {message}"
+                );
+                assert!(!message.contains("tried again"), "{case}: {message}");
+            } else {
+                let ordinary = if exit == "watcher" {
+                    ErrorCode::Unavailable
+                } else {
+                    ErrorCode::Forbidden
+                };
+                assert_eq!(code, ordinary, "{case}: {message}");
+                assert_eq!(facts["end"], "committed", "{case}");
+                assert_eq!(facts["isolate"], "removed", "{case}");
+                assert!(!daemon.is_live(&record.id), "{case}");
+                assert!(
+                    !worktree.exists() && cleaned,
+                    "{case}: the checkout is gone"
+                );
             }
         }
     }

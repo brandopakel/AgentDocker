@@ -262,8 +262,9 @@ pub enum Observed {
     NotRun(io::Error),
     /// It was started and its end was not learned: it ran past its bound and
     /// was stopped, its wait failed, or its output was too large to read.
-    /// `stdout` holds what it had written by its bound (at most
-    /// [`LOST_OUTPUT`] bytes), and is empty when nothing could be read.
+    /// `stdout` holds what it had written (at most [`LOST_OUTPUT`] bytes),
+    /// whichever way its end was lost, and is empty when nothing could be
+    /// read.
     Lost { error: io::Error, stdout: String },
     /// It ended and said how.
     Exited(Output),
@@ -275,6 +276,14 @@ pub const LOST_OUTPUT: u64 = 64 * 1024;
 /// [`run`], observed ([`Observed`]): the same bounds and group cleanup.
 pub fn run_observed(root: &Path, argv: &[String], timeout: Duration) -> Observed {
     observe(root, argv, timeout, &[])
+}
+
+/// A started command whose end was lost, with what it had written.
+fn lost(log: &mut std::fs::File, error: io::Error) -> Observed {
+    let stdout = read_from_start(log, LOST_OUTPUT)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default();
+    Observed::Lost { error, stdout }
 }
 
 /// Up to `limit` bytes of a file from its start.
@@ -292,10 +301,6 @@ fn observe(
     timeout: Duration,
     environment: &[(&str, Option<&std::ffi::OsStr>)],
 ) -> Observed {
-    let lost = |error: io::Error| Observed::Lost {
-        error,
-        stdout: String::new(),
-    };
     let Some(program) = argv.first() else {
         return Observed::NotRun(io::Error::other("empty command"));
     };
@@ -349,27 +354,22 @@ fn observe(
                 break status;
             }
             Ok(None) => {}
-            Err(error) => return lost(error),
+            Err(error) => return lost(&mut log, error),
         }
         if started.elapsed() >= timeout {
             // What it wrote by its bound, read before the group is stopped.
-            let stdout = read_from_start(&mut log, LOST_OUTPUT)
-                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
-                .unwrap_or_default();
-            return Observed::Lost {
-                error: io::Error::other(format!("command timed out after {timeout:?}")),
-                stdout,
-            };
+            let error = io::Error::other(format!("command timed out after {timeout:?}"));
+            return lost(&mut log, error);
         }
         let written = log
             .metadata()
             .and_then(|log| Ok(log.len().saturating_add(errors.metadata()?.len())));
         match written {
             Ok(written) if written > 4 * 1024 * 1024 => {
-                return lost(io::Error::other("command output exceeded 4 MiB"));
+                return lost(&mut log, io::Error::other("command output exceeded 4 MiB"));
             }
             Ok(_) => {}
-            Err(error) => return lost(error),
+            Err(error) => return lost(&mut log, error),
         }
         std::thread::sleep(pause);
         pause = (pause * 2).min(Duration::from_millis(10));
@@ -392,7 +392,7 @@ fn observe(
     };
     match read() {
         Ok(output) => Observed::Exited(output),
-        Err(error) => lost(error),
+        Err(error) => lost(&mut log, error),
     }
 }
 

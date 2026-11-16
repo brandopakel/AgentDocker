@@ -191,6 +191,14 @@ pub(crate) struct DocumentTransition {
     pub closes: Option<MessageId>,
 }
 
+/// Whether `response` is the refusal `failure` names: an error of its code.
+fn same_refusal(failure: &Response, response: &Response) -> bool {
+    matches!(
+        (failure, response),
+        (Response::Error { code: a, .. }, Response::Error { code: b, .. }) if a == b
+    )
+}
+
 /// What became of one attempt to end a run ([`State::end_run`]).
 #[must_use]
 pub(super) enum RunEnded {
@@ -2229,7 +2237,13 @@ impl Daemon {
             // fence skipped meanwhile is not their failure.
             return response;
         }
-        lock(&self.state).write_failure().unwrap_or(response)
+        match lock(&self.state).write_failure() {
+            // The answer already is that refusal, with what the request
+            // adds to it (a launch's evidence and next step): kept.
+            Some(failure) if same_refusal(&failure, &response) => response,
+            Some(failure) => failure,
+            None => response,
+        }
     }
 
     /// This request has written what it will write and is about to wait.
