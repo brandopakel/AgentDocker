@@ -201,6 +201,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::FileLink { from, .. }
         | R::FileDelete { from, .. } => Some(from),
         R::Subscribe { agent, .. } => agent.as_mut(),
+        R::RecordGateRun { agent, .. } => agent.as_mut(),
         R::Answer { from, .. } => from.as_mut(),
         // A memory read names its reader, which decides what a memory said
         // only to some roles is read by; one that names nobody reads what is
@@ -303,6 +304,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::Channels { .. }
         | R::ChannelPrune { .. }
         | R::ReviewGate { .. }
+        | R::GateRuns { .. }
         | R::AttachInput { .. }
         | R::AttachResize { .. }
         | R::JournalPrune { .. }

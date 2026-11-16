@@ -58,6 +58,7 @@ mod containers;
 mod contests;
 mod conversations;
 mod discovery;
+mod gate_runs;
 mod handoff;
 pub(crate) mod herdr;
 pub mod humans;
@@ -308,6 +309,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::WorktreeDiff { .. }
             | Request::ReviewBranch { .. }
             | Request::ReviewGate { .. }
+            | Request::GateRuns { .. }
             | Request::List { .. }
             | Request::Inspect { .. }
             | Request::Restarts { .. }
@@ -3532,6 +3534,19 @@ impl Daemon {
                 reason,
             } => {
                 self.supersede_verdict(&agent, project, &verdict, reason)
+                    .await
+            }
+            Request::RecordGateRun { agent, runner, run } => {
+                self.record_gate_run(agent, runner, run).await
+            }
+            Request::GateRuns {
+                agent,
+                project,
+                branch,
+                head,
+                limit,
+            } => {
+                self.gate_runs(agent.as_deref(), project, branch, head, limit)
                     .await
             }
             Request::JournalPrune {

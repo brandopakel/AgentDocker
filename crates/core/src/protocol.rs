@@ -1769,6 +1769,37 @@ pub enum Request {
         #[serde(default)]
         note: Option<String>,
     },
+    /// Record a local gate run (`scripts/verify.sh check`, `quick` or
+    /// `test`) as its runner reported it. `agent` is the caller the run
+    /// was started for, when it was known: absent, the run's `by` is
+    /// unstated, never the person. `runner` is the temporary agent the run
+    /// registered to hold the build slot, kept apart from `agent`. The same
+    /// `run_key` with the same report and requester answers the first
+    /// record; with anything else, `conflict`. Answers `gate_run`.
+    RecordGateRun {
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        runner: Option<String>,
+        run: crate::verification::GateRunReport,
+    },
+    /// The recorded local gate runs, newest first, of `agent`'s project (or
+    /// `project`), for a branch or a head when given. Only the
+    /// newest 500 of a project are kept, so absence proves nothing.
+    /// Answers `gate_runs`.
+    GateRuns {
+        /// The caller, whose project is read when `project` is absent.
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        project: Option<String>,
+        #[serde(default)]
+        branch: Option<String>,
+        #[serde(default)]
+        head: Option<String>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     /// Whether a branch at a commit may land: approved at exactly that
     /// commit by a holder of `role` (`reviewer` when absent) or the person,
     /// with nobody asking for changes. A departed reviewer's request for
@@ -2094,6 +2125,14 @@ pub enum Response {
     },
     CodeVerdict {
         verdict: crate::gate::CodeVerdict,
+    },
+    GateRun {
+        run: crate::verification::GateRun,
+    },
+    GateRuns {
+        runs: Vec<crate::verification::GateRun>,
+        /// How many runs a project keeps: older ones are gone.
+        retained: usize,
     },
     ReviewGate {
         gate: crate::gate::Gate,
