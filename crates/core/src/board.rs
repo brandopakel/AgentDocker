@@ -335,14 +335,18 @@ impl Board {
     }
 
     /// The card an agent pulls when it names none: the first in the pull
-    /// source, in board order, that is free or already the caller's and
+    /// source, in board order, whose claim names nobody or the caller and
     /// is not blocked, by an outside blocker or by an open card it waits
-    /// on. `open_blocker` says whether a card id names a card that is
-    /// still open (neither done, cancelled nor archived).
+    /// on. `claim_of` gives a card's claim ([`crate::hold::Hold`]);
+    /// `open_blocker` says whether a card id names a card that is still
+    /// open (neither done, cancelled nor archived). A lease taken on a
+    /// card by hand does not pass it by here: the pull that takes it
+    /// meets that lease.
     pub fn next_ready<'t>(
         &self,
         cards: &'t [Task],
         caller: &AgentId,
+        claim_of: impl Fn(&Task) -> crate::hold::Claim,
         open_blocker: impl Fn(&TaskId) -> bool,
     ) -> Pick<'t> {
         let mut pick = Pick::default();
@@ -353,7 +357,7 @@ impl Board {
         ready.sort_by(|a, b| order(a, b));
         for card in ready {
             pick.total += 1;
-            if card.assignee.as_ref().is_some_and(|a| a != caller) {
+            if claim_of(card).holder().is_some_and(|a| a != caller) {
                 pick.held += 1;
                 continue;
             }
@@ -621,6 +625,7 @@ mod tests {
         let board = Board::main(ProjectId::from("p"), "p", now());
         let me = AgentId::from("me".to_owned());
         let other = AgentId::from("other".to_owned());
+        let claim = |t: &Task| crate::hold::Hold::of(t, &crate::hold::Evidence::none(now())).claim;
         let mut first = card(&board, "first", "ready");
         first.rank = "1".into();
         first.assignee = Some(other.clone());
@@ -642,17 +647,17 @@ mod tests {
             backlog,
             blocker.clone(),
         ];
-        let pick = board.next_ready(&cards, &me, |id| *id == blocker.id);
+        let pick = board.next_ready(&cards, &me, claim, |id| *id == blocker.id);
         assert_eq!(pick.card.map(|t| t.title.as_str()), Some("fourth"));
         assert_eq!((pick.total, pick.held, pick.blocked), (4, 1, 2));
         // Once the blocker is done, the third goes first.
-        let pick = board.next_ready(&cards, &me, |_| false);
+        let pick = board.next_ready(&cards, &me, claim, |_| false);
         assert_eq!(pick.card.map(|t| t.title.as_str()), Some("third"));
         // A card already the caller's is the caller's to pull again.
         let mut mine = fourth;
         mine.rank = "0".into();
         mine.assignee = Some(me.clone());
-        let pick = board.next_ready(std::slice::from_ref(&mine), &me, |_| false);
+        let pick = board.next_ready(std::slice::from_ref(&mine), &me, claim, |_| false);
         assert_eq!(pick.card.map(|t| t.title.as_str()), Some("fourth"));
     }
 

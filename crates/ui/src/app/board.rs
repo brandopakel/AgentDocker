@@ -27,6 +27,7 @@ use crate::controls::{
     Kind, button as action, custom_sized, ghost, input_enabled, input_submitting, primary,
 };
 use agentdocker_core::board::{self, DueState, Owner};
+use agentdocker_core::hold::{Claim, Evidence, Hold, Presence};
 use agentdocker_core::task::TaskAction;
 use agentdocker_core::timing::Stats;
 use agentdocker_core::{CardTimes, Column, Lane, Priority, Size, Task, TaskId};
@@ -1174,19 +1175,46 @@ impl App {
         let id = task.id.clone();
         let open = self.task_open.as_ref() == Some(&id);
         let lane = board.lane_of(task);
-        // The holding is the task:<id> lease: while the assignee holds it
-        // the card is theirs; once it has lapsed the card is still theirs
-        // by name but the next agent to pull it takes it over.
+        // The card's hold (core `Hold`), from this view's task:<id> leases
+        // and agent records: while the assignee's lease lives the card is
+        // theirs; once it has lapsed the card is still theirs by name but
+        // the next agent to pull it takes it over. A view, so a holder
+        // missing from the records is unknown, never taken to have ended.
         let resource = format!("task:{id}");
-        let holder = task.assignee.as_ref().map(|a| {
-            let held = self.leases.iter().any(|l| {
-                l.resource.as_str() == resource
-                    && &l.holder == a
-                    && l.mode == agentdocker_core::LeaseMode::Exclusive
-            });
-            (self.name_of(a.as_str()), held, a.as_str())
+        let leases: Vec<agentdocker_core::Lease> = self
+            .leases
+            .iter()
+            .filter(|l| l.resource.as_str() == resource)
+            .cloned()
+            .collect();
+        let presence = task.assignee.as_ref().map_or(Presence::Unknown, |a| {
+            match self.agents.iter().find(|r| &r.id == a) {
+                Some(r) if r.status.is_live() => Presence::Live,
+                Some(_) => Presence::Ended,
+                None => Presence::Unknown,
+            }
         });
-        let lapsed = |held: bool| !held && task.column.working();
+        let hold = Hold::of(
+            task,
+            &Evidence {
+                leases: &leases,
+                holder: task.assignee.as_ref(),
+                presence,
+                now: chrono::Utc::now(),
+            },
+        );
+        let lapsed = hold.lapsed().is_some();
+        let left = matches!(
+            hold.claim,
+            Claim::Named {
+                presence: Presence::Ended,
+                ..
+            }
+        );
+        let holder = hold
+            .claim
+            .holder()
+            .map(|a| (self.name_of(a.as_str()), a.as_str()));
         let today = chrono::Local::now().date_naive();
         // The foot is one line of chips that wraps in a narrow lane.
         let mut foot = row![].spacing(5).align_y(Center);
@@ -1241,7 +1269,7 @@ impl App {
             words.push(task.tags.join(", "));
         }
         match &holder {
-            Some((name, held, agent)) => {
+            Some((name, agent)) => {
                 let record = self.agents.iter().find(|r| r.id.as_str() == *agent);
                 // Who holds it, and where they stand; a lapsed hold says
                 // so in its own chip.
@@ -1250,7 +1278,7 @@ impl App {
                     name.clone(),
                     c,
                 ));
-                if lapsed(*held) {
+                if lapsed {
                     foot = foot.push(super::chip::chip(
                         format!("task-holder-{id}"),
                         Some(Icon::Alert),
@@ -1301,10 +1329,13 @@ impl App {
         // reader — and the smoke — hear the card whole.
         let mut label = format!("{} {}", task.handle(), task.title);
         match &holder {
-            Some((name, held, _)) if lapsed(*held) => {
+            Some((name, _)) if lapsed => {
                 label.push_str(&format!(" — {name}'s, not being worked on"));
             }
-            Some((name, _, _)) => label.push_str(&format!(" — held by {name}")),
+            Some((name, _)) if left => {
+                label.push_str(&format!(" — {name}'s, left when it ended"));
+            }
+            Some((name, _)) => label.push_str(&format!(" — held by {name}")),
             None if lane.slug == board.pull_source => label.push_str(" — unassigned"),
             None => {}
         }
@@ -2608,6 +2639,111 @@ mod tests {
             .expect("the Done button");
         assert_eq!(done.1, format!("Done: {}", card.handle()));
         assert!(row.texts.iter().any(|t| t == "Done"), "the word is shown");
+    }
+
+    /// A card says its hold as the core claim does, from this view's
+    /// leases and agent records: a worked card without its holder's lease
+    /// is not being worked on; a waiting card whose holder's record has
+    /// ended was left; a live lease or a live holder holds it; and a
+    /// holder the records do not show is never said to have ended.
+    #[test]
+    fn a_card_says_its_hold_as_its_claim_does() {
+        let (commands, _requests) = crate::app::queue::channel();
+        let (_messages, results) = std::sync::mpsc::sync_channel(crate::app::MESSAGE_CAPACITY);
+        let mut app = App::bare(commands, results);
+        app.link.open();
+        let project = agentdocker_core::ProjectRef::directory("/work/orchard");
+        let board = agentdocker_core::Board::from_template(
+            project.id(),
+            board::MAIN,
+            "Main",
+            "classic",
+            "ORC",
+            chrono::Utc::now(),
+        )
+        .unwrap();
+        let record = |id: &str, live: bool| {
+            let mut agent = agentdocker_core::AgentRecord::new(
+                agentdocker_core::AgentSpec {
+                    name: id.into(),
+                    ..Default::default()
+                },
+                false,
+                chrono::Utc::now(),
+            );
+            agent.id = id.into();
+            if !live {
+                agent.status = agentdocker_core::AgentStatus::Exited { code: Some(0) };
+            }
+            agent
+        };
+        app.agents = vec![record("agent-1", true), record("agent-2", false)];
+        let card = |column: Column, holder: &str| {
+            let mut card = Task::new(
+                project.id(),
+                "Ship it",
+                "",
+                Some(column),
+                "user",
+                Vec::new(),
+                chrono::Utc::now(),
+            )
+            .unwrap();
+            card.column = column;
+            card.lane = board.first(column).map(|lane| lane.slug.clone());
+            card.assignee = Some(holder.into());
+            card
+        };
+        let c = Colors::new(false);
+        let label = |app: &App, card: &Task| {
+            let view = seen(app.card(card, &board, false, c));
+            let label = view
+                .control(&format!("task-{}", card.id))
+                .unwrap()
+                .1
+                .clone();
+            (label, view.texts)
+        };
+        // Worked, no lease: not being worked on.
+        let lapsed = card(Column::InProgress, "agent-1");
+        let (words, texts) = label(&app, &lapsed);
+        assert!(words.contains("not being worked on"), "{words}");
+        assert!(
+            texts.iter().any(|t| t == "Not being worked on"),
+            "{texts:?}"
+        );
+        // Worked, with the holder's lease: held.
+        app.leases = vec![agentdocker_core::Lease {
+            id: agentdocker_core::LeaseId::generate(),
+            resource: agentdocker_core::ResourceKey::new(format!("task:{}", lapsed.id)),
+            holder: "agent-1".into(),
+            mode: agentdocker_core::LeaseMode::Exclusive,
+            acquired_at: chrono::Utc::now(),
+            held_since: None,
+            change_seq: None,
+            expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+            note: None,
+            amount: 0,
+            automatic: false,
+            actor: None,
+        }];
+        let (words, texts) = label(&app, &lapsed);
+        assert!(words.contains("held by"), "{words}");
+        assert!(
+            !texts.iter().any(|t| t == "Not being worked on"),
+            "{texts:?}"
+        );
+        app.leases.clear();
+        // Waiting, its holder's record ended: left.
+        let (words, _) = label(&app, &card(Column::Ready, "agent-2"));
+        assert!(words.contains("left when it ended"), "{words}");
+        // Waiting, a live holder: held by them.
+        let (words, _) = label(&app, &card(Column::Ready, "agent-1"));
+        assert!(words.contains("held by"), "{words}");
+        // A holder this view has no record of: never said to have ended.
+        let (words, _) = label(&app, &card(Column::Backlog, "agent-9"));
+        assert!(!words.contains("ended"), "{words}");
+        assert!(words.contains("held by"), "{words}");
     }
 
     /// Time is words: a span reads as minutes, hours or days.

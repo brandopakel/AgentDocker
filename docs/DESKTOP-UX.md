@@ -647,7 +647,10 @@ lease: a card whose holder's lease has lapsed — expired, released, or the
 agent gone — carries a *Not being worked on* chip; nobody takes it by a
 plain pull, only by naming that holder (`pull_task` with `take_over_from`)
 or by **Hand to**, which ends the old hold and gives a running agent the
-card's lease in one step. A move back to a waiting lane, or to Done or
+card's lease in one step. The card's hold is the core's own claim, read
+from the app's leases and agent records: a waiting card whose holder's
+record has ended is read out as left (*agent-1's, left when it ended*), and
+a holder the app has no record of is never said to have ended. A move back to a waiting lane, or to Done or
 Cancelled, ends the hold. The board reads again on every board or card
 event, and when the service comes back while it is on view. Read for the
 first time it says *Reading…*; when it could not be read it says so (*The

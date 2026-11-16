@@ -5,6 +5,7 @@
 //! mutex is what makes a pull atomic; this module is the rules, and
 //! `board` the lanes they are drawn in.
 use crate::board::{Board, Lane};
+use crate::hold::{Claim, Evidence, Hold, Step};
 use crate::{AgentId, ProjectId};
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -335,10 +336,13 @@ pub enum TaskError {
     /// Words out of bounds, or a reference that cannot be.
     Invalid(&'static str),
     /// A pull of a card somebody already holds, or that is not in the
-    /// pull source.
+    /// pull source: with the claim the refusing operation found and the
+    /// hold-related step past it, as that operation sees it.
     Taken {
         assignee: Option<AgentId>,
         column: Column,
+        claim: crate::hold::Claim,
+        step: crate::hold::Step,
     },
     /// A change to what the card says, or to its place on or off the
     /// board's record, by somebody who is neither its assignee nor the
@@ -354,13 +358,20 @@ impl std::fmt::Display for TaskError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TaskError::Invalid(reason) => f.write_str(reason),
-            TaskError::Taken {
-                assignee: Some(who),
-                ..
-            } => write!(f, "the card is held by {who}"),
-            TaskError::Taken { column, .. } => {
-                write!(f, "the card is not ready to pull; it is in {column}")
-            }
+            // Said from the claim the refusing operation found: a card
+            // that only names somebody is not said to be held.
+            TaskError::Taken { claim, column, .. } => match claim {
+                Claim::Held { holder, .. } | Claim::Lapsed { holder, .. } => {
+                    write!(f, "the card is held by {holder}")
+                }
+                Claim::Named { holder, presence } if presence.gone() => {
+                    write!(f, "the card names {holder}, whose session has ended")
+                }
+                Claim::Named { holder, .. } => write!(f, "the card names {holder}"),
+                Claim::Free | Claim::Ended { .. } | Claim::Archived { .. } => {
+                    write!(f, "the card is not ready to pull; it is in {column}")
+                }
+            },
             TaskError::NotYours => f.write_str(
                 "only the card's assignee or the person changes what it says; an agent takes a card nobody holds by pulling it by name",
             ),
@@ -534,6 +545,7 @@ impl Task {
         agent: &AgentId,
         board: &Board,
         named: bool,
+        evidence: &Evidence,
         now: DateTime<Utc>,
     ) -> Result<(), TaskError> {
         if self.archived_at.is_some() {
@@ -550,9 +562,26 @@ impl Task {
             Some(holder) => holder == agent && in_source,
         };
         if !reachable || !free {
+            // The hold decides the step where there is one: naming the
+            // card would only meet it again.
+            let claim = Hold::of(self, evidence).claim;
+            let step = if !free {
+                match &claim {
+                    Claim::Named { holder, .. } if holder == agent => Step::MoveToSource {
+                        lane: board.pull_source.clone(),
+                    },
+                    other => Step::past(other),
+                }
+            } else if self.open() {
+                Step::PullByName
+            } else {
+                Step::Reopen
+            };
             return Err(TaskError::Taken {
                 assignee: self.assignee.clone(),
                 column: self.column,
+                claim,
+                step,
             });
         }
         if !self.external_blocker.trim().is_empty() {
@@ -580,7 +609,7 @@ impl Task {
     /// free would wait for the person for good. A card that names a
     /// holder is not freed this way; what it says is its holder's to
     /// change, or the person's.
-    pub fn unblock(&mut self, reason: &str) -> Result<String, TaskError> {
+    pub fn unblock(&mut self, reason: &str, evidence: &Evidence) -> Result<String, TaskError> {
         if self.archived_at.is_some() {
             return Err(TaskError::Archived);
         }
@@ -596,9 +625,12 @@ impl Task {
             ));
         }
         if self.assignee.is_some() {
+            let claim = Hold::of(self, evidence).claim;
             return Err(TaskError::Taken {
                 assignee: self.assignee.clone(),
                 column: self.column,
+                step: Step::past(&claim),
+                claim,
             });
         }
         let was = self.external_blocker.trim().to_owned();
@@ -614,28 +646,95 @@ impl Task {
     /// Explicit recovery of a card whose holder's lease lapsed: the taker
     /// names whom it expects to take the card from — its holder, or
     /// itself, re-taking its own lapsed hold — and the card passes where
-    /// it sits, in progress or review. Whether the hold has in fact
-    /// lapsed is the daemon's to check, from the lease, before this; a
-    /// card that names somebody else, or sits in another column, is
-    /// refused so a stale expectation never takes a card.
+    /// it sits, in progress or review. The hold is derived here, from the
+    /// card as it stands and the leases on it, so a stale expectation
+    /// never takes a card: one whose hold is live, that names somebody
+    /// else, or that sits in another column is refused, and an archived
+    /// card whose hold lapsed is refused as archived.
     pub fn take_over(
         &mut self,
         agent: &AgentId,
         from: &AgentId,
+        evidence: &Evidence,
         now: DateTime<Utc>,
     ) -> Result<(), TaskError> {
-        if self.archived_at.is_some() {
-            return Err(TaskError::Archived);
-        }
-        if !self.column.working() || self.assignee.as_ref() != Some(from) {
+        let hold = Hold::of(self, evidence);
+        if hold.lapsed() != Some(from) {
+            let step = match &hold.claim {
+                // Named by a holder that is gone: a pull by name takes it.
+                Claim::Named { presence, .. } if presence.gone() && self.column.waiting() => {
+                    Step::PullByName
+                }
+                other => Step::past(other),
+            };
             return Err(TaskError::Taken {
                 assignee: self.assignee.clone(),
                 column: self.column,
+                claim: hold.claim,
+                step,
+            });
+        }
+        if self.archived_at.is_some() {
+            return Err(TaskError::Archived);
+        }
+        self.assignee = Some(agent.clone());
+        self.updated_at = now;
+        Ok(())
+    }
+
+    /// A waiting card (Backlog or Ready) still naming an agent that is
+    /// gone, as one its holder moved back before leaving does: named, it
+    /// is free, and whom it named is answered, for the pull to say whom it
+    /// was taken from. Done before anything else a pull does to the card,
+    /// so a wait declared over (`unblock`) finds it free. A working card
+    /// keeps its holder until a take-over names them, and a Blocked one
+    /// keeps it as it always has. Presence counts only as read for the
+    /// agent the card names now.
+    pub fn free_if_left(&mut self, named: bool, evidence: &Evidence) -> Option<AgentId> {
+        let left = self.assignee.clone().filter(|holder| {
+            named
+                && self.column.waiting()
+                && evidence.holder == Some(holder)
+                && evidence.presence.gone()
+        })?;
+        self.assignee = None;
+        Some(left)
+    }
+
+    /// An agent started on the card by a rule: the card is free, as a rule
+    /// start asks ([`crate::rule::startable`]), derived here from the card
+    /// as it stands, and becomes the agent's. Where it sits is the
+    /// caller's to have moved first.
+    pub fn start(
+        &mut self,
+        agent: &AgentId,
+        evidence: &Evidence,
+        now: DateTime<Utc>,
+    ) -> Result<(), TaskError> {
+        let claim = Hold::of(self, evidence).claim;
+        if claim != Claim::Free {
+            return Err(TaskError::Taken {
+                assignee: self.assignee.clone(),
+                column: self.column,
+                step: Step::past(&claim),
+                claim,
             });
         }
         self.assignee = Some(agent.clone());
         self.updated_at = now;
         Ok(())
+    }
+
+    /// One agent's record kept for another's, as an identity repair finds
+    /// them the same: whom the card names and who filed it. Nothing else
+    /// changes; no lease is granted or renewed by it.
+    pub fn repair_identity(&mut self, old: &AgentId, kept: &AgentId) {
+        if self.assignee.as_ref() == Some(old) {
+            self.assignee = Some(kept.clone());
+        }
+        if self.created_by == old.as_str() {
+            self.created_by = kept.to_string();
+        }
     }
 
     /// Move the card to a lane: anybody in its project may, the person
@@ -1000,6 +1099,13 @@ impl TaskEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hold::Presence;
+
+    /// No leases and no word of anybody's presence: a card's claim from
+    /// the card alone.
+    fn no_evidence() -> Evidence<'static> {
+        Evidence::none(Utc::now())
+    }
 
     fn board() -> Board {
         Board::main(ProjectId::from("p"), "p", Utc::now())
@@ -1153,7 +1259,9 @@ mod tests {
             card
         };
         let mut backlog = in_lane("backlog");
-        backlog.pull(&a, &board, true, Utc::now()).unwrap();
+        backlog
+            .pull(&a, &board, true, &no_evidence(), Utc::now())
+            .unwrap();
         assert_eq!(
             (backlog.assignee.as_ref(), backlog.column),
             (Some(&a), Column::InProgress)
@@ -1164,7 +1272,9 @@ mod tests {
                 .unwrap()
         );
         let mut review = in_lane("review");
-        review.pull(&b, &board, true, Utc::now()).unwrap();
+        review
+            .pull(&b, &board, true, &no_evidence(), Utc::now())
+            .unwrap();
         assert_eq!(
             (review.assignee.as_ref(), review.column),
             (Some(&b), Column::Review)
@@ -1172,22 +1282,254 @@ mod tests {
         // Held by another, ended, or archived: not taken by name either.
         let mut held = in_lane("backlog");
         held.assignee = Some(a.clone());
-        assert!(held.pull(&b, &board, true, Utc::now()).is_err());
+        assert!(
+            held.pull(&b, &board, true, &no_evidence(), Utc::now())
+                .is_err()
+        );
         // Nor by its own holder once that hold lapsed: that is a take-over.
         let mut lapsed = in_lane("in_progress");
         lapsed.assignee = Some(a.clone());
-        assert!(lapsed.pull(&a, &board, true, Utc::now()).is_err());
+        assert!(
+            lapsed
+                .pull(&a, &board, true, &no_evidence(), Utc::now())
+                .is_err()
+        );
         let mut done = in_lane("done");
-        assert!(done.pull(&b, &board, true, Utc::now()).is_err());
+        assert!(
+            done.pull(&b, &board, true, &no_evidence(), Utc::now())
+                .is_err()
+        );
         let mut archived = in_lane("backlog");
         archived.archived_at = Some(Utc::now());
         assert_eq!(
-            archived.pull(&b, &board, true, Utc::now()).unwrap_err(),
+            archived
+                .pull(&b, &board, true, &no_evidence(), Utc::now())
+                .unwrap_err(),
             TaskError::Archived
         );
         // Looking for work, the agent still takes only from the source.
         let mut skipped = in_lane("backlog");
-        assert!(skipped.pull(&b, &board, false, Utc::now()).is_err());
+        assert!(
+            skipped
+                .pull(&b, &board, false, &no_evidence(), Utc::now())
+                .is_err()
+        );
+    }
+
+    /// A refused pull says the hold-related step from where the card sits,
+    /// whom it names and whether it was named: the same holder and
+    /// presence give different steps in the pull source, a second Ready
+    /// lane, Backlog and Blocked. A gone holder frees a named Backlog or
+    /// Ready card first, never a Blocked one; blockers still apply.
+    #[test]
+    fn a_refused_pull_says_the_step_from_where_the_card_sits() {
+        let now = Utc::now();
+        let mut board = board();
+        board.lanes.push(Lane::new(
+            "later",
+            "Later",
+            Column::Ready,
+            crate::board::Owner::Any,
+        ));
+        board.lanes.push(Lane::new(
+            "blocked",
+            "Blocked",
+            Column::Blocked,
+            crate::board::Owner::Any,
+        ));
+        let a = AgentId::from("a".to_owned());
+        let b = AgentId::from("b".to_owned());
+        let at = |slug: &str, assignee: Option<&AgentId>| {
+            let mut card = ready_card();
+            card.place(board.lane(slug).unwrap(), now);
+            card.assignee = assignee.cloned();
+            card
+        };
+        let of = |presence: Presence| Evidence {
+            leases: &[],
+            holder: Some(&a),
+            presence,
+            now,
+        };
+        // (lane, names a?, caller, named, presence) -> the pull's outcome
+        let pull = |slug: &str, named_a: bool, caller: &AgentId, named: bool, presence| {
+            let mut card = at(slug, named_a.then_some(&a));
+            let freed = card.free_if_left(named, &of(presence));
+            let evidence = of(presence);
+            let outcome = card
+                .pull(caller, &board, named, &evidence, now)
+                .map(|()| freed.clone());
+            (outcome, card)
+        };
+        let step = |outcome: Result<Option<AgentId>, TaskError>| match outcome {
+            Err(TaskError::Taken { step, .. }) => Some(step),
+            Ok(_) => None,
+            Err(other) => panic!("{other:?}"),
+        };
+        let source = Step::MoveToSource {
+            lane: "ready".to_owned(),
+        };
+        // The caller's own card: pulled again in the source, moved there
+        // first from anywhere else.
+        assert_eq!(step(pull("ready", true, &a, false, Presence::Live).0), None);
+        assert_eq!(
+            step(pull("later", true, &a, true, Presence::Live).0),
+            Some(source.clone())
+        );
+        assert_eq!(
+            step(pull("backlog", true, &a, true, Presence::Live).0),
+            Some(source.clone())
+        );
+        assert_eq!(
+            step(pull("blocked", true, &a, true, Presence::Live).0),
+            Some(source)
+        );
+        // Another's live holder: released, wherever it waits.
+        for slug in ["ready", "later", "backlog", "blocked"] {
+            assert_eq!(
+                step(pull(slug, true, &b, true, Presence::Live).0),
+                Some(Step::Release),
+                "{slug}"
+            );
+        }
+        // A gone holder: a named Backlog or Ready card is free, and says
+        // whom it was taken from; a Blocked one is not; an unnamed pull
+        // takes nothing outside the source.
+        for slug in ["ready", "later", "backlog"] {
+            let (outcome, card) = pull(slug, true, &b, true, Presence::Ended);
+            assert_eq!(outcome.unwrap(), Some(a.clone()), "{slug}");
+            assert_eq!(card.assignee.as_ref(), Some(&b));
+        }
+        assert_eq!(
+            step(pull("blocked", true, &b, true, Presence::Forgotten).0),
+            Some(Step::Release)
+        );
+        assert_eq!(
+            step(pull("backlog", false, &b, false, Presence::Unknown).0),
+            Some(Step::PullByName)
+        );
+        // Being worked without the holder's lease: taken over by name.
+        assert_eq!(
+            step(pull("in_progress", true, &b, true, Presence::Live).0),
+            Some(Step::TakeOverFrom { holder: a.clone() })
+        );
+        // Ended: reopened first.
+        assert_eq!(
+            step(pull("done", true, &b, true, Presence::Live).0),
+            Some(Step::Reopen)
+        );
+        assert_eq!(
+            step(pull("done", false, &b, true, Presence::Unknown).0),
+            Some(Step::Reopen)
+        );
+        // A live lease: wait.
+        let mut held = at("in_progress", Some(&a));
+        let lease = crate::lease::Lease {
+            id: crate::lease::LeaseId::generate(),
+            resource: crate::lease::ResourceKey::new(format!("task:{}", held.id)),
+            holder: a.clone(),
+            mode: crate::lease::LeaseMode::Exclusive,
+            acquired_at: now,
+            held_since: None,
+            change_seq: None,
+            expires_at: now + chrono::Duration::hours(1),
+            note: None,
+            amount: 0,
+            automatic: false,
+            actor: None,
+        };
+        let leases = [lease.clone()];
+        let evidence = Evidence {
+            leases: &leases,
+            holder: Some(&a),
+            presence: Presence::Live,
+            now,
+        };
+        assert_eq!(
+            step(held.pull(&b, &board, true, &evidence, now).map(|()| None)),
+            Some(Step::Wait {
+                until: Some(lease.expires_at)
+            })
+        );
+        // Blockers still apply to a free card: not a hold, no step.
+        let mut waiting = at("ready", None);
+        waiting.external_blocker = "vendor".into();
+        assert!(matches!(
+            waiting.pull(&b, &board, true, &of(Presence::Unknown), now),
+            Err(TaskError::Invalid(_))
+        ));
+    }
+
+    /// A take-over and a start derive the hold from the card as it stands:
+    /// an expectation formed before the card changed takes nothing.
+    #[test]
+    fn a_take_over_or_start_reads_the_card_as_it_stands() {
+        let now = Utc::now();
+        let a = AgentId::from("a".to_owned());
+        let b = AgentId::from("b".to_owned());
+        let c = AgentId::from("c".to_owned());
+        let mut card = ready_card();
+        card.place(&lane("in_progress"), now);
+        card.assignee = Some(a.clone());
+        // It changed hands to c since a was seen lapsed: naming a takes nothing.
+        card.assignee = Some(c.clone());
+        let stale = Evidence {
+            leases: &[],
+            holder: Some(&a),
+            presence: Presence::Ended,
+            now,
+        };
+        assert!(matches!(
+            card.take_over(&b, &a, &stale, now),
+            Err(TaskError::Taken { claim: Claim::Lapsed { ref holder, presence: Presence::Unknown }, .. }) if holder == &c
+        ));
+        assert_eq!(card.assignee.as_ref(), Some(&c));
+        // A start takes only a free card.
+        assert!(matches!(
+            card.start(&b, &no_evidence(), now),
+            Err(TaskError::Taken { .. })
+        ));
+        let mut free = ready_card();
+        free.start(&b, &no_evidence(), now).unwrap();
+        assert_eq!(free.assignee.as_ref(), Some(&b));
+        // An archived card whose hold lapsed is refused as archived, once
+        // the name is right; the wrong name is refused as taken first.
+        let mut archived = ready_card();
+        archived.place(&lane("in_progress"), now);
+        archived.assignee = Some(a.clone());
+        archived.archived_at = Some(now);
+        assert_eq!(
+            archived.take_over(&b, &a, &no_evidence(), now).unwrap_err(),
+            TaskError::Archived
+        );
+        assert!(matches!(
+            archived.take_over(&b, &c, &no_evidence(), now),
+            Err(TaskError::Taken { .. })
+        ));
+    }
+
+    /// An identity repair rewrites whom the card names and who filed it,
+    /// and nothing else.
+    #[test]
+    fn an_identity_repair_rewrites_only_the_names() {
+        let old = AgentId::from("old".to_owned());
+        let kept = AgentId::from("kept".to_owned());
+        let mut card = ready_card();
+        card.assignee = Some(old.clone());
+        card.created_by = old.to_string();
+        let before = card.clone();
+        card.repair_identity(&old, &kept);
+        assert_eq!(card.assignee.as_ref(), Some(&kept));
+        assert_eq!(card.created_by, "kept");
+        let mut expected = before;
+        expected.assignee = Some(kept.clone());
+        expected.created_by = "kept".into();
+        assert_eq!(card, expected);
+        let mut other = ready_card();
+        other.assignee = Some(AgentId::from("third".to_owned()));
+        let untouched = other.clone();
+        other.repair_identity(&old, &kept);
+        assert_eq!(other, untouched);
     }
 
     /// One pull, from the pull source, by the first taker; the second is
@@ -1199,70 +1541,100 @@ mod tests {
         let mut card = ready_card();
         let a = AgentId::from("a".to_owned());
         let b = AgentId::from("b".to_owned());
-        card.pull(&a, &board, false, Utc::now()).unwrap();
+        card.pull(&a, &board, false, &no_evidence(), Utc::now())
+            .unwrap();
         assert_eq!(
             (card.assignee.as_ref(), card.column, card.lane.as_deref()),
             (Some(&a), Column::InProgress, Some("in_progress"))
         );
         assert_eq!(
-            card.pull(&b, &board, false, Utc::now()).unwrap_err(),
+            card.pull(&b, &board, false, &no_evidence(), Utc::now())
+                .unwrap_err(),
             TaskError::Taken {
                 assignee: Some(a.clone()),
-                column: Column::InProgress
+                column: Column::InProgress,
+                claim: Claim::Lapsed {
+                    holder: a.clone(),
+                    presence: Presence::Unknown
+                },
+                step: Step::TakeOverFrom { holder: a.clone() },
             }
         );
         let mut backlog = ready_card();
         backlog.column = Column::Backlog;
         assert_eq!(
-            backlog.pull(&b, &board, false, Utc::now()).unwrap_err(),
+            backlog
+                .pull(&b, &board, false, &no_evidence(), Utc::now())
+                .unwrap_err(),
             TaskError::Taken {
                 assignee: None,
-                column: Column::Backlog
+                column: Column::Backlog,
+                claim: Claim::Free,
+                step: Step::PullByName,
             }
         );
         // Back in Ready by its holder, still named theirs: theirs to pull.
         let mut stranded = ready_card();
         stranded.assignee = Some(a.clone());
-        stranded.pull(&a, &board, false, Utc::now()).unwrap();
+        stranded
+            .pull(&a, &board, false, &no_evidence(), Utc::now())
+            .unwrap();
         assert_eq!(stranded.column, Column::InProgress);
         // Waiting on something off the board: not pulled.
         let mut waiting = ready_card();
         waiting.external_blocker = "vendor".into();
-        assert!(waiting.pull(&a, &board, false, Utc::now()).is_err());
+        assert!(
+            waiting
+                .pull(&a, &board, false, &no_evidence(), Utc::now())
+                .is_err()
+        );
         // Whoever takes it may say the wait is over, and only with a
         // reason: the wait is cleared, what it was comes back to be kept,
         // and the card is then pulled like any other.
         for no_reason in ["", "   "] {
             assert!(matches!(
-                waiting.unblock(no_reason),
+                waiting.unblock(no_reason, &no_evidence()),
                 Err(TaskError::Invalid(_))
             ));
         }
         assert!(matches!(
-            waiting.unblock(&"x".repeat(UNBLOCK_REASON_CHARS + 1)),
+            waiting.unblock(&"x".repeat(UNBLOCK_REASON_CHARS + 1), &no_evidence()),
             Err(TaskError::Invalid(_))
         ));
         assert_eq!(
             waiting.external_blocker, "vendor",
             "refusals change nothing"
         );
-        assert_eq!(waiting.unblock(" the vendor shipped ").unwrap(), "vendor");
+        assert_eq!(
+            waiting
+                .unblock(" the vendor shipped ", &no_evidence())
+                .unwrap(),
+            "vendor"
+        );
         assert!(waiting.external_blocker.is_empty());
-        waiting.pull(&a, &board, false, Utc::now()).unwrap();
+        waiting
+            .pull(&a, &board, false, &no_evidence(), Utc::now())
+            .unwrap();
         assert_eq!(waiting.assignee.as_ref(), Some(&a));
         // Nothing to clear; and a card that names a holder is its holder's.
         assert!(matches!(
-            ready_card().unblock("nothing was in the way"),
+            ready_card().unblock("nothing was in the way", &no_evidence()),
             Err(TaskError::Invalid(_))
         ));
         let mut held = ready_card();
         held.external_blocker = "vendor".into();
         held.assignee = Some(b.clone());
         assert_eq!(
-            held.unblock("the vendor shipped").unwrap_err(),
+            held.unblock("the vendor shipped", &no_evidence())
+                .unwrap_err(),
             TaskError::Taken {
                 assignee: Some(b.clone()),
-                column: Column::Ready
+                column: Column::Ready,
+                claim: Claim::Named {
+                    holder: b.clone(),
+                    presence: Presence::Unknown
+                },
+                step: Step::Release,
             }
         );
         assert_eq!(held.external_blocker, "vendor");
@@ -1271,24 +1643,34 @@ mod tests {
         // name passes the card where it sits — including to its own
         // holder, re-taking a lapsed hold.
         assert_eq!(
-            backlog.take_over(&b, &a, Utc::now()).unwrap_err(),
+            backlog
+                .take_over(&b, &a, &no_evidence(), Utc::now())
+                .unwrap_err(),
             TaskError::Taken {
                 assignee: None,
-                column: Column::Backlog
+                column: Column::Backlog,
+                claim: Claim::Free,
+                step: Step::PullByName,
             }
         );
         card.move_to("a", false, &lane("review"), Utc::now())
             .unwrap();
         assert_eq!(
-            card.take_over(&b, &b, Utc::now()).unwrap_err(),
+            card.take_over(&b, &b, &no_evidence(), Utc::now())
+                .unwrap_err(),
             TaskError::Taken {
                 assignee: Some(a.clone()),
-                column: Column::Review
+                column: Column::Review,
+                claim: Claim::Lapsed {
+                    holder: a.clone(),
+                    presence: Presence::Unknown
+                },
+                step: Step::TakeOverFrom { holder: a.clone() },
             }
         );
-        card.take_over(&a, &a, Utc::now()).unwrap();
+        card.take_over(&a, &a, &no_evidence(), Utc::now()).unwrap();
         assert_eq!(card.assignee.as_ref(), Some(&a), "re-taken by its holder");
-        card.take_over(&b, &a, Utc::now()).unwrap();
+        card.take_over(&b, &a, &no_evidence(), Utc::now()).unwrap();
         assert_eq!(
             (card.assignee.as_ref(), card.column),
             (Some(&b), Column::Review),
@@ -1305,7 +1687,8 @@ mod tests {
         let mut card = ready_card();
         card.lane = Some("approved".into());
         let a = AgentId::from("a".to_owned());
-        card.pull(&a, &board, false, Utc::now()).unwrap();
+        card.pull(&a, &board, false, &no_evidence(), Utc::now())
+            .unwrap();
         assert_eq!(
             (card.column, card.lane.as_deref()),
             (Column::InProgress, Some("analyst"))
@@ -1332,7 +1715,8 @@ mod tests {
         let board = board();
         let mut card = ready_card();
         let a = AgentId::from("a".to_owned());
-        card.pull(&a, &board, false, Utc::now()).unwrap();
+        card.pull(&a, &board, false, &no_evidence(), Utc::now())
+            .unwrap();
         assert!(
             card.move_to("b", false, &lane("review"), Utc::now())
                 .unwrap(),
@@ -1352,7 +1736,8 @@ mod tests {
             (Some(&a), Column::Ready),
             "put back by its assignee, it stays theirs"
         );
-        card.pull(&a, &board, false, Utc::now()).unwrap();
+        card.pull(&a, &board, false, &no_evidence(), Utc::now())
+            .unwrap();
         card.move_to("b", false, &lane("ready"), Utc::now())
             .unwrap();
         assert_eq!(
@@ -1360,7 +1745,8 @@ mod tests {
             (None, Column::Ready),
             "put back by another agent, it is released"
         );
-        card.pull(&a, &board, false, Utc::now()).unwrap();
+        card.pull(&a, &board, false, &no_evidence(), Utc::now())
+            .unwrap();
         card.move_to("b", false, &lane("done"), Utc::now()).unwrap();
         assert_eq!(
             card.assignee.as_ref(),
@@ -1375,7 +1761,8 @@ mod tests {
             "released for the next taker"
         );
         let b = AgentId::from("b".to_owned());
-        card.pull(&b, &board, false, Utc::now()).unwrap();
+        card.pull(&b, &board, false, &no_evidence(), Utc::now())
+            .unwrap();
         // Edits: the holder edits words, the person reassigns; an archived
         // card is done with.
         assert_eq!(
@@ -1451,7 +1838,8 @@ mod tests {
             TaskError::Archived
         );
         assert_eq!(
-            card.pull(&b, &board, false, Utc::now()).unwrap_err(),
+            card.pull(&b, &board, false, &no_evidence(), Utc::now())
+                .unwrap_err(),
             TaskError::Archived
         );
         assert_eq!(
