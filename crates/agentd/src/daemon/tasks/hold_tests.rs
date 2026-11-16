@@ -196,9 +196,9 @@ fn refusal(response: Response) -> (ErrorCode, String, serde_json::Value) {
 
 /// Every refusal of a held card says what it found and the step past it,
 /// keeping `assignee` and `column`, and says `hold` only where it is
-/// true: `live` for a live lease of the named holder, `lapsed` for a
-/// worked card without one, and nothing for a card that only names
-/// somebody, has ended or is archived.
+/// true, as a lease fact beside the claim: `live` for a live lease of the
+/// named holder, `lapsed` for a worked card without one, and nothing for
+/// a card that only names somebody without a lease, as here.
 #[tokio::test]
 async fn a_refusal_says_the_hold_it_found_and_the_step_past_it() {
     let board = Board::new().await;
@@ -491,9 +491,10 @@ async fn a_rule_start_says_the_claim_it_found() {
             .start_refusal(&task)
             .expect("refused")
     };
+    // A start's step is the person's: free the card, whatever holds it.
     for (task, state, step) in [
-        (&named, "named", "release"),
-        (&held, "held", "wait"),
+        (&named, "named", "clear_assignment"),
+        (&held, "held", "clear_assignment"),
         (&ended, "ended", "reopen"),
         (&archived, "archived", "unarchive"),
     ] {
@@ -510,10 +511,105 @@ async fn a_rule_start_says_the_claim_it_found() {
     let (_, message, details) = refusal(refused(&held));
     assert_eq!(details["state"], "lapsed");
     assert_eq!(details["hold"], "lapsed");
+    assert_eq!(details["step"], "clear_assignment");
     assert!(message.contains("whose hold has lapsed"), "{message}");
+    assert!(!message.contains("take_over_from"), "{message}");
     let free = board.card("Free", Column::Ready, "").await;
     let free = board.stored(&free);
     assert!(lock(&board.daemon.state).start_refusal(&free).is_none());
+}
+
+/// The person's start on a card whose hold lapsed is refused with the
+/// person's own step; once the person does it — moves the card to a
+/// waiting lane — the start is no longer refused for a hold. A pull still
+/// gets the take-over.
+#[tokio::test]
+async fn a_refused_start_names_the_persons_step_and_it_works() {
+    let board = Board::new().await;
+    board.agent("alice").await;
+    board.agent("bob").await;
+    let task = board.card("Port the parser", Column::Ready, "").await;
+    assert!(matches!(
+        board.pull("alice", &task, None).await,
+        Response::TaskDetail { .. }
+    ));
+    board.release_all("alice").await;
+    let start = || {
+        board.ask(serde_json::json!({
+            "op": "task_start",
+            "from": HUMAN,
+            "task": task.id.to_string(),
+            "runtime": "no-such-runtime",
+        }))
+    };
+    let (code, message, details) = refusal(start().await);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert_eq!(details["state"], "lapsed");
+    assert_eq!(details["step"], "clear_assignment");
+    assert!(message.contains("waiting lane"), "{message}");
+    let (_, _, details) = refusal(board.pull("bob", &task, None).await);
+    assert_eq!(
+        details["step"], "take_over_from",
+        "a pull is still told the take-over"
+    );
+    assert!(matches!(
+        board.put(HUMAN, &task, Column::Ready).await,
+        Response::Task { .. }
+    ));
+    assert_eq!(
+        board.stored(&task).assignee,
+        None,
+        "the person's move freed it"
+    );
+    let started = start().await;
+    assert!(
+        !matches!(&started, Response::Error { message, .. } if message.contains("an agent starts on a card nobody holds")),
+        "{started:?}"
+    );
+}
+
+/// `hold` is a lease fact beside the claim, not a part of it: an ended
+/// card whose holder took a lease by hand says `ended` and `live`; an
+/// archived card still being worked, its hold lapsed, says `archived` and
+/// `lapsed` to a take-over naming the wrong holder.
+#[tokio::test]
+async fn the_lease_word_stands_beside_an_ended_or_archived_claim() {
+    let board = Board::new().await;
+    board.agent("alice").await;
+    board.agent("bob").await;
+    board.agent("carol").await;
+    let done = board.card("Shipped", Column::Ready, "").await;
+    assert!(matches!(
+        board.pull("alice", &done, None).await,
+        Response::TaskDetail { .. }
+    ));
+    assert!(matches!(
+        board.put(HUMAN, &done, Column::Done).await,
+        Response::Task { .. }
+    ));
+    assert!(matches!(
+        board.claim("alice", &done, "exclusive", None).await,
+        Response::Lease { .. }
+    ));
+    let (code, _, details) = refusal(board.pull("bob", &done, None).await);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert_eq!(details["state"], "ended");
+    assert_eq!(details["hold"], "live");
+
+    let worked = board.card("Shelved", Column::Ready, "").await;
+    assert!(matches!(
+        board.pull("alice", &worked, None).await,
+        Response::TaskDetail { .. }
+    ));
+    board.release_all("alice").await;
+    let archived = board
+        .ask(serde_json::json!({"op": "task_archive", "agent": HUMAN, "task": worked.id.to_string()}))
+        .await;
+    assert!(matches!(archived, Response::Ok), "{archived:?}");
+    let (code, _, details) = refusal(board.pull("bob", &worked, Some("carol")).await);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert_eq!(details["state"], "archived");
+    assert_eq!(details["hold"], "lapsed");
 }
 
 /// A pull with no card named picks as it always has: the first card in

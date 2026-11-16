@@ -910,7 +910,7 @@ fn start_refused(task: &Task, hold: &Hold) -> Response {
         Claim::Ended { .. } => format!("the card has ended ({})", task.column),
         Claim::Archived { .. } => "the card is archived".to_owned(),
     };
-    let step = Step::past(&hold.claim);
+    let step = Step::to_start(&hold.claim);
     let mut details = serde_json::json!({
         "assignee": task.assignee,
         "column": task.column,

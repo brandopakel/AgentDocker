@@ -235,6 +235,10 @@ pub enum Step {
     Release,
     /// Done or cancelled: move it to an open lane first.
     Reopen,
+    /// Before a start: the person frees the card, moving it to a waiting
+    /// lane or clearing its assignee. A start takes only a card nobody
+    /// holds, so no hold of anybody's is waited out or taken over for it.
+    ClearAssignment,
     /// Off the board: the person brings it back.
     Unarchive,
 }
@@ -249,6 +253,7 @@ impl Step {
             Step::Wait { .. } => "wait",
             Step::Release => "release",
             Step::Reopen => "reopen",
+            Step::ClearAssignment => "clear_assignment",
             Step::Unarchive => "unarchive",
         }
     }
@@ -272,7 +277,27 @@ impl Step {
             Step::Wait { until: None } => "its hold is live; wait, or ask its holder".to_owned(),
             Step::Release => "a project member moving it to a waiting lane releases it, or the person hands it on".to_owned(),
             Step::Reopen => "move it to an open lane first".to_owned(),
+            Step::ClearAssignment => {
+                "move it to a waiting lane or clear its assignee first: a start takes only a card nobody holds".to_owned()
+            }
             Step::Unarchive => "only the person brings it back".to_owned(),
+        }
+    }
+
+    /// The step past a claim that refuses a start. Only the person starts
+    /// an agent on a card, and a start takes only a free card, so whoever
+    /// the card names — held, lapsed or only named, ended or not — is
+    /// cleared first: the person's move to a waiting lane does that, and
+    /// ends any lease with it. A take-over or a wait would leave the card
+    /// assigned, and the start refused again.
+    pub fn to_start(claim: &Claim) -> Step {
+        match claim {
+            Claim::Archived { .. } => Step::Unarchive,
+            Claim::Ended { holder: None } | Claim::Free => Step::Reopen,
+            Claim::Named { .. }
+            | Claim::Held { .. }
+            | Claim::Lapsed { .. }
+            | Claim::Ended { holder: Some(_) } => Step::ClearAssignment,
         }
     }
 
