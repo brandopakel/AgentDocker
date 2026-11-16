@@ -1121,10 +1121,10 @@ again. The MCP `claim` tool takes the same `wait_secs` and `priority`.
 ### Let an agent work in its own checkout
 
 ```sh
-agentdocker run --isolate --as reviewer -- claude
+agentdocker run --isolate --name reviewer -- claude
 agentdocker worktree-diff --as reviewer
 agentdocker validate --as reviewer -- cargo test
-agentdocker integrate --as reviewer --source <worktree> --validation <id>
+agentdocker integrate --as reviewer <worktree> --validation <id>
 ```
 
 `integrate` refuses without a passing validation from that checkout, run
@@ -1134,10 +1134,10 @@ uncommitted for you to read.
 ### Hand work from one agent to the next
 
 ```sh
-agentdocker checkpoint --as agent-1 --task "router rewrite" \
-  --next-steps "finish the error mapping"
-agentdocker handoff --as agent-1 --to agent-2
-agentdocker resume --as agent-2        # inspect, then --accept
+agentdocker checkpoint --as agent-1 router --task "router rewrite" \
+  --next "finish the error mapping"
+agentdocker handoff --as agent-1 agent-2
+agentdocker resume --as agent-2 <checkpoint>   # inspect, then --acknowledge
 ```
 
 The receiving agent gets the checkpoint, the leases, what was read, what

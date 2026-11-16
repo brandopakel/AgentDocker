@@ -400,3 +400,77 @@ fn a_crlf_checkout_parses_the_same_as_an_lf_one() {
         paragraphs(section(&connector, "## Tools"))
     );
 }
+
+/// The `agentdocker …` lines of the `sh` blocks under one heading of the
+/// guide, each split as a shell would split it: a line ending in a
+/// backslash is joined to the next, a trailing ` # …` comment is dropped,
+/// and a `<placeholder>` is one word.
+fn recipe_lines(doc: &str, heading: &str) -> Vec<Vec<String>> {
+    let start = doc
+        .find(heading)
+        .unwrap_or_else(|| panic!("the guide has no section `{heading}`"));
+    let rest = &doc[start + heading.len()..];
+    let end = rest.find("\n### ").unwrap_or(rest.len());
+    let (mut lines, mut pending, mut in_block) = (Vec::new(), String::new(), false);
+    for line in rest[..end].lines() {
+        let line = line.trim();
+        if line.starts_with("```") {
+            in_block = !in_block && line == "```sh";
+            continue;
+        }
+        if !in_block {
+            continue;
+        }
+        let body = line.split(" # ").next().unwrap_or(line).trim();
+        if let Some(body) = body.strip_suffix('\\') {
+            pending.push_str(body);
+            pending.push(' ');
+            continue;
+        }
+        pending.push_str(body);
+        let command = std::mem::take(&mut pending);
+        if command.starts_with("agentdocker ") {
+            let command = command.replace(['<', '>'], "");
+            lines.push(shlex::split(&command).expect("a recipe line splits as a shell splits it"));
+        }
+    }
+    lines
+}
+
+/// The two recipes that were wrong, held to the commands as they parse:
+/// `run --as`, `integrate --source`, `checkpoint --next-steps` with no
+/// key, `handoff --to` and `resume --accept` were each a line a person
+/// would copy and have refused.
+#[test]
+fn the_guides_checkout_and_handoff_recipes_are_commands_that_parse() {
+    let guide = guide();
+    let mut recipes = Vec::new();
+    for heading in [
+        "### Let an agent work in its own checkout",
+        "### Hand work from one agent to the next",
+    ] {
+        let lines = recipe_lines(&guide, heading);
+        assert!(lines.len() >= 3, "{heading}: {lines:?}");
+        recipes.extend(lines);
+    }
+    with_cli(move |cli| {
+        for words in recipes {
+            if let Err(error) = cli.clone().try_get_matches_from(&words) {
+                panic!("the guide's `{}` does not parse: {error}", words.join(" "));
+            }
+        }
+    });
+}
+
+/// A hint the CLI prints is a command it has.
+#[test]
+fn the_merge_hint_is_a_command_that_parses() {
+    let hint = crate::format::merge_hint("agent-1", "0123abc");
+    assert!(hint.starts_with("agentdocker merge-branch "), "{hint}");
+    let words: Vec<String> = hint.split_whitespace().map(str::to_owned).collect();
+    with_cli(move |cli| {
+        cli.clone()
+            .try_get_matches_from(&words)
+            .unwrap_or_else(|error| panic!("`{}` does not parse: {error}", words.join(" ")));
+    });
+}
