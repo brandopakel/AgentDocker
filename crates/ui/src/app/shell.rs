@@ -8110,6 +8110,113 @@ mod tests {
     /// on its way, whichever order the replies come in, so the board
     /// never folds back; choosing another project and back forgets the
     /// old asks; the window keeps five pages and then asks for no more.
+    /// The service goes while a further page of the board is out. A first
+    /// page answers through the board's read, which gives up with the
+    /// link; a further page is taken by its request number alone, so it
+    /// was still added to the board when it answered late, or its failure
+    /// said at the window's foot, and **Show more** went on reading
+    /// *Loading…* for it.
+    #[test]
+    fn a_page_of_the_board_out_when_the_service_goes_is_given_up_with_the_board() {
+        use crate::app::link::Report;
+        let (mut app, requests, messages) = app();
+        app.link.open();
+        let dir = tempfile::tempdir().unwrap();
+        let alpha = agentdocker_core::ProjectRef::directory(dir.path().join("alpha"));
+        app.shell.catalog.remember(alpha.clone(), true).unwrap();
+        app.shell.catalog.selected = Some(alpha.root.clone());
+        app.screen = Screen::Board;
+        let root = alpha.root.display().to_string();
+        let page = |from: usize, count: usize| {
+            (from..from + count)
+                .map(|i| card_in(&format!("{i:012x}"), &alpha.root, "card"))
+                .collect::<Vec<_>>()
+        };
+        let limit = agentdocker_core::protocol::TASKS_LIMIT;
+        let cards = |app: &App| app.tasks.value().map_or(0, |b| b.cards.len());
+        let gone = |messages: &SyncSender<Msg>| {
+            messages
+                .send(Msg::Disconnected(Report::Stream, "gone".into()))
+                .unwrap();
+        };
+
+        // A board read, with more to show, and the next page asked for.
+        app.request_tasks();
+        let (first, _, _) = board_asks(&requests).pop().expect("asked");
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                first,
+                Ok((page(0, limit), true, Vec::new())),
+            ))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TasksMore);
+        let (more, offset, _) = board_asks(&requests).pop().expect("asked for more");
+        assert_eq!(offset, limit);
+        assert!(app.tasks.value().unwrap().loading_more());
+
+        // The service goes while that page is out.
+        gone(&messages);
+        app.drain();
+        assert!(app.board_asks.is_empty(), "no ask of the board is out");
+        assert!(
+            !app.tasks.value().unwrap().loading_more(),
+            "Show more is not left waiting"
+        );
+        assert_eq!(cards(&app), limit, "the board as last read stays");
+
+        // The page answers late, with cards and then with a failure:
+        // neither is taken.
+        app.status.clear();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                more,
+                Ok((page(limit, 3), false, Vec::new())),
+            ))
+            .unwrap();
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                more,
+                Err("cannot reach the service".into()),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), limit, "the late page is not added");
+        assert!(
+            app.status.is_empty(),
+            "nor its failure said: {}",
+            app.status
+        );
+
+        // Back: the board is read again, and Show more works again.
+        messages.send(Msg::Connected(Report::Stream)).unwrap();
+        app.drain();
+        let (again, _, _) = board_asks(&requests).pop().expect("read again");
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                again,
+                Ok((page(0, limit), true, Vec::new())),
+            ))
+            .unwrap();
+        app.drain();
+        let _ = app.update(Message::TasksMore);
+        let (next, offset, _) = board_asks(&requests).pop().expect("asked for more again");
+        assert_eq!(offset, limit);
+        messages
+            .send(Msg::Tasks(
+                root.clone(),
+                next,
+                Ok((page(limit, 3), false, Vec::new())),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(cards(&app), limit + 3, "this page is added");
+    }
+
     #[test]
     fn the_board_shows_more_a_page_at_a_time_and_stays_expanded_through_a_refresh() {
         let (mut app, requests, messages) = app();

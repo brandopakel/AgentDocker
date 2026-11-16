@@ -2892,6 +2892,15 @@ impl App {
     /// the service is back (`Msg::Connected`).
     fn give_up_reads(&mut self) {
         self.tasks.give_up();
+        // The board's asks that are out go with its read. A further page
+        // is taken through `board_asks` and added to the board as read,
+        // not through the read's own answer, so it is retired here: a
+        // page that answers late is not added and its failure is not
+        // said, and **Show more** is not left waiting for it.
+        self.board_asks.clear();
+        if let Some(board) = self.tasks.value_mut() {
+            board.pending_more = None;
+        }
         self.todo.give_up();
         self.card.give_up();
         self.branch_review.give_up();
