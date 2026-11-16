@@ -137,6 +137,19 @@ impl<T> Remote<T> {
         self.read = Read::Unasked;
     }
 
+    /// The service went. The read that is out is not waited for: its
+    /// answer, whenever it comes, is not taken. What the last read
+    /// failed with goes too: the window already says the service is
+    /// away, and a page does not say it a second time. What was last
+    /// read stays, and what is on view is asked for again when the
+    /// service is back.
+    pub fn give_up(&mut self) {
+        self.read = match self.last {
+            Some(_) => Read::Done,
+            None => Read::Unasked,
+        };
+    }
+
     /// What a view draws.
     pub fn seen(&self) -> Seen<'_, T> {
         let last = self.last.as_ref();
@@ -224,6 +237,11 @@ impl<K: PartialEq, T> About<K, T> {
         self.subject.as_ref() == Some(subject) && self.read.answer(ask, result)
     }
 
+    /// The service went ([`Remote::give_up`]).
+    pub fn give_up(&mut self) {
+        self.read.give_up();
+    }
+
     /// What a view draws of `subject`: never asked, when what there is
     /// is about another.
     pub fn of<Q>(&self, subject: &Q) -> Seen<'_, T>
@@ -263,6 +281,57 @@ impl<K: PartialEq, T> About<K, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// When the service goes, a read that is out is given up: the page
+    /// stops saying it is being read, its late answer is not taken, and
+    /// a failure already on the page goes, with what was last read kept.
+    #[test]
+    fn a_read_given_up_is_not_waited_for_and_keeps_what_was_read() {
+        // Out, with nothing read yet.
+        let mut list: Remote<&str> = Remote::default();
+        let out = list.ask();
+        list.give_up();
+        assert_eq!(list.seen(), Seen::Unasked, "not being read any more");
+        assert!(!list.answer(out, Ok("late")), "its answer is not taken");
+        assert!(!list.answer(out, Err("the service is away".into())));
+        assert_eq!(list.seen(), Seen::Unasked);
+
+        // Out, behind a value: the value stays, as read.
+        let first = list.ask();
+        list.answer(first, Ok("read"));
+        let refresh = list.ask();
+        list.give_up();
+        assert_eq!(list.seen(), Seen::Ready(&"read"));
+        assert!(!list.answer(refresh, Err("the service is away".into())));
+        assert_eq!(list.seen(), Seen::Ready(&"read"), "no failure is put up");
+
+        // A failure already on the page goes; the value stays.
+        let failing = list.ask();
+        list.answer(failing, Err("cannot reach the service".into()));
+        assert!(list.seen().error().is_some());
+        list.give_up();
+        assert_eq!(list.seen(), Seen::Ready(&"read"));
+        // And with nothing read, a failure leaves nothing asked.
+        let mut never: Remote<&str> = Remote::default();
+        let ask = never.ask();
+        never.answer(ask, Err("cannot reach the service".into()));
+        never.give_up();
+        assert_eq!(never.seen(), Seen::Unasked);
+
+        // The next ask is a new one, and its answer is taken.
+        let back = list.ask();
+        assert!(list.answer(back, Ok("read again")));
+        assert_eq!(list.seen(), Seen::Ready(&"read again"));
+
+        // A keyed read gives up the same way, and keeps its subject.
+        let mut changes: About<&str, &str> = About::default();
+        let ask = changes.ask("a");
+        changes.answer(&"a", ask, Ok("a's diff"));
+        let again = changes.ask("a");
+        changes.give_up();
+        assert_eq!(changes.of("a"), Seen::Ready(&"a's diff"));
+        assert!(!changes.answer(&"a", again, Ok("late")));
+    }
 
     /// What is shown of a subject is only what was read about it, and
     /// asking about another forgets the first.

@@ -2068,6 +2068,11 @@ impl App {
                         }
                         if let Some(selected) = self.shell.selected.clone() {
                             self.request_review(&selected);
+                            // Its log too, while its delivery review is
+                            // open: the read that was out was given up.
+                            if self.shell.review_delivery {
+                                self.request_session_log(selected);
+                            }
                         }
                         if self.screen == Screen::Board {
                             self.request_tasks();
@@ -2087,10 +2092,12 @@ impl App {
                         self.restarts_owed = false;
                         self.restarts_in_flight = None;
                         // A page asked for will not come: a notification's
-                        // search ends rather than wait on it, and a usage
-                        // read on its way is not waited for either — the
-                        // next request is not deduplicated against it.
+                        // search ends rather than wait on it, and nothing
+                        // that was being read is waited for either. Usage's
+                        // next request is not deduplicated against the read
+                        // that was out.
                         self.shell.route.end_search();
+                        self.give_up_reads();
                         self.usage_out = None;
                     }
                 }
@@ -2876,6 +2883,20 @@ impl App {
     pub(crate) fn request_card(&mut self, task: agentdocker_core::TaskId) {
         let ask = self.card.ask();
         self.send(Cmd::TaskDetail(task, ask));
+    }
+
+    /// The service went: every read gives up the ask it has out and the
+    /// failure it shows (`Remote::give_up`). The rail says the service is
+    /// away, so no page says it a second time; what each read last
+    /// brought stays on view, and what is on view is asked for again when
+    /// the service is back (`Msg::Connected`).
+    fn give_up_reads(&mut self) {
+        self.tasks.give_up();
+        self.todo.give_up();
+        self.card.give_up();
+        self.branch_review.give_up();
+        self.session_log.give_up();
+        self.usage.give_up();
     }
 
     /// Read every project's open cards, for To-do.

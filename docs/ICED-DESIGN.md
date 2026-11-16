@@ -723,7 +723,11 @@ command.
   back an older value or land on the card or session that was open before. A
   read the queue folds into one already waiting is answered by that one, whose
   ask the queue hands back (`queue::Sent::Merged`). A command the queue
-  refuses is a failed read, said in the read's own place. A session's changes
+  refuses is a failed read, said in the read's own place. When the link goes
+  every read gives up (`Remote::give_up`): the ask that is out is no longer
+  awaited, so its late answer is not taken, and a failure on the page goes,
+  since a lost connection has no second banner; the value as last read stays,
+  and `Msg::Connected` asks again for what is on view. A session's changes
   are one read about the selected session, and only that session's are asked
   for. The board's further pages are added to what was read and keep their
   own request numbers beside the read; usage shares one read between identical
