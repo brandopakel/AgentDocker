@@ -21,11 +21,13 @@ pub(crate) mod windows;
 pub const LABEL: &str = "dev.agentdocker.connector";
 pub const UNIT: &str = "agentdocker-connector.service";
 
+/// The status file as written: Windows' `connector status` reads it; on
+/// macOS and Linux it reads the connector's state instead.
+#[cfg(any(windows, test))]
+pub use agentdocker_host::connector::read_status;
 /// What a serving connector writes about itself lives in the host crate,
 /// because the desktop reads it too.
-pub use agentdocker_host::connector::{
-    Serving, TunnelStatus, clear_status, read_status, write_status,
-};
+pub use agentdocker_host::connector::{Serving, TunnelStatus, clear_status, write_status};
 
 /// The service's files and commands, from the executable, the state home
 /// and the arguments `serve` was given.
@@ -825,8 +827,10 @@ mod tests {
                 provider: "cloudflared".into(),
                 pid: Some(4243),
                 name: None,
+                started_at: None,
             }),
             allowlist_prefixes: 1,
+            process_started_at: None,
         };
         write_status(dir.path(), &serving).unwrap();
         #[cfg(unix)]

@@ -52,11 +52,13 @@ beside the grant for the person to read.
   carries ciphertext and connection metadata only. A port that already
   serves something else is refused, never
   taken over. The Funnel is recorded in `connector/funnel.json` (its pid,
-  port and loopback address) before it is set, and the record goes only once
+  port and loopback address, with its process's start time) before it is set, and the record goes only once
   the Funnel is confirmed undone, so it is never open unrecorded. A set that
   fails is undone only if the port then points at this connector's own
   address; one it cannot confirm stays recorded. A Funnel a killed connector
-  left is cleared by the next start before anything else, but only while
+  left is cleared by the next start before anything else, but only while no
+  process runs under its recorded pid (a process that has since been given
+  that pid keeps the start from checking it) and while
   `tailscale serve status` still points it at the recorded address: one
   pointed elsewhere since is somebody else's and is left alone, and one that
   cannot be read or cleared stops the start, keeping its record, with the
@@ -266,7 +268,7 @@ precise semantics and events.
 | Command | What it does |
 | --- | --- |
 | `connector serve [--public-url <https://…>] [--authorize-url <url>] [--tunnel tailscale [--tunnel-port 443\|8443\|10000] [--tailscale <path>] \| --tunnel cloudflared [--tunnel-name <name>] [--cloudflared <path>]] [--bind 127.0.0.1:0] [--project <path>] [--allow-callback <url>]… [--allow-from <cidr>\|anthropic\|openai\|@<file>]… [--client-ip-header <name>]` | Serve every project on this machine; `--project` is the one proposed first at consent. Prints the MCP URL, the admitted addresses and the vendors' setup steps, and the pairing code only to a terminal (a service's stderr is its log, which never gets it), and writes `$AGENTDOCKER_HOME/connector/serve.json` (created 0600; `agentdocker_host::connector::Serving`, which the desktop reads too) with the same for `status`, rewritten whenever the code is replaced. Plain `http://` is accepted only for a loopback host, for a trial without a tunnel. `--authorize-url` publishes another origin as the `authorization_endpoint` alone, for a tunnel whose host a browser cannot load; checked the same way. |
-| `connector status` | Whether a connector is serving here: its address, the consent address when it differs, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many connector agents the daemon holds live. |
+| `connector status` | Where the connector stands, read from its files without creating or locking anything (`agentdocker_host::connector::state`, macOS and Linux): serving, with its address, the consent address when it differs, listening socket, pairing code, proposed project, tunnel, admitted prefixes, and how many connector agents the daemon holds live; starting, when the recorded connector process is alive and has published no serving status, or none that is confirmed; stopped, with what it may have left (a Funnel recorded, set or attempted, and how to check its target before clearing it, or a tunnel process still running); unknown, when a record cannot be read or a recorded process's identity cannot be told; or nothing here. |
 | `connector install <serve arguments> [--dry-run]` | Run the connector as a login service — a launchd agent (`dev.agentdocker.connector`) or a systemd user unit (on Windows, a login task, described below) — with those arguments, `AGENTDOCKER_HOME` and a PATH that includes where cloudflared was found; its log is `$AGENTDOCKER_HOME/connector/serve.log`. A quick tunnel gets a new hostname at every start and says so. |
 | `connector enable <serve arguments> [--dry-run]` | Install/start a new login service or start its byte-identical definition. A synced temporary file is published atomically without replacement; exact comparison refuses symlinks or different existing settings. Failed staging leaves no partial definition to block retry. The desktop uses this conservative entry point; `install` remains the explicit replacement command. |
 | `connector uninstall [--dry-run]` | Stop and remove the service. On Linux, stop/disable runs while the definition exists; a stop or disable failure preserves the installed definition for diagnosis and retry. Those failures are tolerated when the definition was already missing. Systemd reload runs after removal. |
@@ -326,7 +328,8 @@ trigger network refreshes or change their existing configuration.
   open-world calls — ChatGPT's *Allow low-risk actions* default — lets the
   reads through and asks for the writes; nothing here is open-world but
   `validate`, which runs a command.
-- The desktop's Tools screen reads `serve.json` (with its process alive) and
+- Every record names its process by pid and start time (`serve.json` for the connector and its tunnel process, `funnel.json`, and `serve.lock`, where the serving process records itself when it takes the lock), so a process given a dead one's pid is never taken for it; a record from an older version, with no start time, says nothing certain of a live pid. The record beside the lock is a hint about a process, never a reading of the lock, and stopping and cleanup use the same rules as before.
+- The desktop's Tools screen reads `serve.json` (with its process alive, by pid and start time) and
   says on each in-browser runtime's card whether the connector is serving, its
   MCP URL, the pairing code and where to add it. On macOS and Linux, the browser
   runtime Details card also offers **Enable with Tailscale** or **Enable with

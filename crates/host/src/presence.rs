@@ -95,80 +95,108 @@ pub enum Owner {
     Unknown { why: String },
 }
 
-/// Read the owner record of the lock at `path`, creating nothing.
-pub fn owner(path: &Path) -> Owner {
+/// Read a small file without blocking, following a link or creating
+/// anything: `Ok(None)` when it is missing; `Err` when it is unreadable,
+/// not a regular file (asked of the opened descriptor, so a FIFO put there
+/// never holds the read), or larger than `max` bytes.
+pub fn read_small(path: &Path, max: u64) -> Result<Option<Vec<u8>>, String> {
     use std::os::unix::fs::OpenOptionsExt;
-    // Opened without waiting on a special file (a FIFO's open waits for a
-    // writer) and without following a link; whether it is a file is then
-    // asked of the opened descriptor itself, so nothing put there in place
-    // of the record can hold a look up.
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
         .open(path)
     {
         Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Owner::None,
-        Err(error) => {
-            return Owner::Unknown {
-                why: format!("cannot read {}: {error}", path.display()),
-            };
-        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
     };
     match file.metadata() {
         Ok(meta) if meta.is_file() => {}
-        Ok(_) => {
-            return Owner::Unknown {
-                why: format!("{} is not a regular file", path.display()),
-            };
-        }
-        Err(error) => {
-            return Owner::Unknown {
-                why: format!("cannot read {}: {error}", path.display()),
-            };
-        }
+        Ok(_) => return Err(format!("{} is not a regular file", path.display())),
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
     }
     let mut bytes = Vec::new();
-    if let Err(error) = file.take(MAX_RECORD + 1).read_to_end(&mut bytes) {
-        return Owner::Unknown {
-            why: format!("cannot read {}: {error}", path.display()),
-        };
+    file.take(max + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    if bytes.len() as u64 > max {
+        return Err(format!(
+            "{} is larger than any record written there",
+            path.display()
+        ));
     }
-    if bytes.len() as u64 > MAX_RECORD {
-        return Owner::Unknown {
-            why: "the owner record is larger than any daemon writes".to_owned(),
-        };
-    }
+    Ok(Some(bytes))
+}
+
+/// The owner record of the lock at `path`: `Ok(None)` when there is no
+/// file or it is empty (no record was ever written: no evidence either
+/// way), `Err` when it cannot be read or is not a record.
+pub fn owner_record(path: &Path) -> Result<Option<OwnerRecord>, String> {
+    let Some(bytes) = read_small(path, MAX_RECORD)? else {
+        return Ok(None);
+    };
     let text = String::from_utf8_lossy(&bytes);
     let text = text.trim();
     if text.is_empty() {
-        return Owner::Unknown {
-            why: "no owner record".to_owned(),
-        };
+        return Ok(None);
     }
-    let Ok(record) = serde_json::from_str::<OwnerRecord>(text) else {
-        return Owner::Unknown {
-            why: "the owner record cannot be read".to_owned(),
-        };
-    };
-    match alive(record.pid) {
-        Some(false) => Owner::Gone { pid: record.pid },
-        None => Owner::Unknown {
-            why: format!("whether pid {} lives cannot be told", record.pid),
+    serde_json::from_str::<OwnerRecord>(text)
+        .map(Some)
+        .map_err(|_| "the owner record cannot be read".to_owned())
+}
+
+/// Whether a recorded process is the one recorded, by its pid and birth.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Liveness {
+    /// Alive, and started when recorded.
+    Live,
+    /// Positively gone: no process has the pid, or the one that has it
+    /// started at another time.
+    Gone,
+    /// Nothing certain: alive with no birth recorded, or a birth that
+    /// cannot be read, or whether the pid lives cannot be told.
+    Unknown { why: String },
+}
+
+/// [`Liveness`] of the process recorded as `pid`, started at `started_at`.
+/// No such process proves it gone even without a birth.
+pub fn liveness(pid: u32, started_at: Option<DateTime<Utc>>) -> Liveness {
+    match alive(pid) {
+        Some(false) => Liveness::Gone,
+        None => Liveness::Unknown {
+            why: format!("whether pid {pid} lives cannot be told"),
         },
-        Some(true) => match (record.started_at, crate::procinfo::start_time(record.pid)) {
-            (Some(recorded), Some(now)) if recorded == now => Owner::Live {
-                pid: record.pid,
-                started_at: recorded,
-            },
+        Some(true) => match (started_at, crate::procinfo::start_time(pid)) {
+            (Some(recorded), Some(now)) if recorded == now => Liveness::Live,
             // The pid was given to another process since.
-            (Some(_), Some(_)) => Owner::Gone { pid: record.pid },
-            _ => Owner::Unknown {
-                why: format!(
-                    "pid {} is alive but when it started cannot be read",
-                    record.pid
-                ),
+            (Some(_), Some(_)) => Liveness::Gone,
+            (None, _) => Liveness::Unknown {
+                why: format!("pid {pid} is alive and no start time was recorded for it"),
             },
+            (Some(_), None) => Liveness::Unknown {
+                why: format!("pid {pid} is alive but when it started cannot be read"),
+            },
+        },
+    }
+}
+
+/// Read the owner record of the lock at `path`, creating nothing.
+pub fn owner(path: &Path) -> Owner {
+    match owner_record(path) {
+        Err(why) => Owner::Unknown { why },
+        Ok(None) => match read_small(path, MAX_RECORD) {
+            Ok(None) => Owner::None,
+            _ => Owner::Unknown {
+                why: "no owner record".to_owned(),
+            },
+        },
+        Ok(Some(record)) => match liveness(record.pid, record.started_at) {
+            Liveness::Live => Owner::Live {
+                pid: record.pid,
+                started_at: record.started_at.expect("live needs a recorded birth"),
+            },
+            Liveness::Gone => Owner::Gone { pid: record.pid },
+            Liveness::Unknown { why } => Owner::Unknown { why },
         },
     }
 }

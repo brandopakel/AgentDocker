@@ -1690,12 +1690,16 @@ async fn serve(
         default_project: default_project.as_ref().map(|p| p.root.clone()),
         pairing_code: pairing.clone(),
         started_at: Utc::now(),
+        // The tunnel's own birth, read now that it is ours, so a later
+        // process given its pid is never taken for it.
         tunnel: tunnel.as_ref().map(|t| service::TunnelStatus {
             provider: t.provider.to_owned(),
             pid: t.pid(),
             name: t.name.clone(),
+            started_at: t.pid().and_then(agentdocker_host::procinfo::start_time),
         }),
         allowlist_prefixes: prefixes,
+        process_started_at: agentdocker_host::procinfo::start_time(pid),
     };
     let connector = Arc::new(
         Connector::new(
@@ -1838,14 +1842,21 @@ async fn serve(
 fn claim_home(home: &Path) -> Result<agentdocker_host::lock::Lock> {
     let dir = home.join("connector");
     std::fs::create_dir_all(&dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    agentdocker_host::lock::try_exclusive(&dir.join("serve.lock"))
+    let lock = agentdocker_host::lock::try_exclusive(&agentdocker_host::connector::lock_path(home))
         .with_context(|| format!("cannot lock {}", dir.display()))?
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "a connector already serves from {}; `agentdocker connector status` says which, and it stops before another starts",
                 home.display()
             )
-        })
+        })?;
+    // Who holds it, for `connector status` while the tunnel opens: a hint
+    // beside the lock, never its authority, so a failure decides nothing.
+    #[cfg(unix)]
+    if let Err(error) = agentdocker_host::presence::publish(&lock) {
+        eprintln!("agentdocker connector: could not record this process as the connector: {error}");
+    }
+    Ok(lock)
 }
 
 /// The Funnel a connector that is gone left recorded. A live connector's
@@ -1943,6 +1954,86 @@ fn shutdown_signal() -> ShutdownFuture {
 }
 
 /// What is serving here, from the status file and the process table.
+/// `connector status` on macOS and Linux: where the connector stands
+/// ([`agentdocker_host::connector::state`]), said as what its files show.
+#[cfg(unix)]
+async fn status(client: &Client) -> Result<()> {
+    use agentdocker_host::connector::{ConnectorState, Evidence};
+    let home = agentdocker_host::dirs::home();
+    match agentdocker_host::connector::state(&home) {
+        ConnectorState::Absent => {
+            eprintln!(
+                "no connector is serving here; `agentdocker connector serve` or `connector install`"
+            );
+            Ok(())
+        }
+        ConnectorState::Starting { pid, from } => {
+            match from {
+                Evidence::Owner => eprintln!(
+                    "The recorded connector process (pid {pid}) is alive; no serving status from it has been published or confirmed."
+                ),
+                Evidence::Funnel => eprintln!(
+                    "The connector process that recorded a Funnel (pid {pid}) is alive; no serving status from it has been published or confirmed."
+                ),
+            }
+            Ok(())
+        }
+        ConnectorState::Serving(serving) => print_serving(client, &serving).await,
+        ConnectorState::Stopped { last, tunnel_left } => {
+            match &last {
+                Some(serving) => eprintln!(
+                    "the connector that started {} (pid {}) is not running; its last address was {}",
+                    crate::format::ago(serving.started_at),
+                    serving.pid,
+                    serving.public_url
+                ),
+                None => eprintln!("no connector is running here"),
+            }
+            for line in tunnel_left_lines(&tunnel_left) {
+                eprintln!("{line}");
+            }
+            Ok(())
+        }
+        ConnectorState::Unknown { why, last } => {
+            eprintln!("whether a connector runs here cannot be told ({why})");
+            if let Some(serving) = last {
+                eprintln!(
+                    "  its last recorded address was {} (pid {})",
+                    serving.public_url, serving.pid
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+/// What a stopped connector may have left open, in words that claim no more
+/// than its records show.
+#[cfg(unix)]
+fn tunnel_left_lines(left: &agentdocker_host::connector::TunnelLeft) -> Vec<String> {
+    use agentdocker_host::connector::TunnelProcess;
+    let mut lines = Vec::new();
+    if let Some(funnel) = &left.funnel {
+        let (port, target, pid) = (funnel.https_port, &funnel.target, funnel.pid);
+        lines.push(format!(
+            "  A Tailscale Funnel was recorded for port {port} and target {target} (set or attempted), and may still publish it. The next start checks and clears it only while no process runs under its recorded pid ({pid}), and only if port {port} still points at {target}. To clear it yourself, check `tailscale serve status` first, and run `tailscale funnel --https={port} off` only if port {port} still points at {target}."
+        ));
+    }
+    match &left.process {
+        TunnelProcess::None => {}
+        TunnelProcess::Live { provider, pid } => {
+            lines.push(format!(
+                "  {provider} (pid {pid}), its tunnel, is still running"
+            ));
+        }
+        TunnelProcess::Unknown { provider, pid, why } => lines.push(format!(
+            "  {provider} (pid {pid}), its tunnel: whether it still runs cannot be told ({why})"
+        )),
+    }
+    lines
+}
+
+#[cfg(windows)]
 async fn status(client: &Client) -> Result<()> {
     let home = agentdocker_host::dirs::home();
     let Some(serving) = service::read_status(&home) else {
@@ -1961,6 +2052,11 @@ async fn status(client: &Client) -> Result<()> {
         );
         return Ok(());
     }
+    print_serving(client, &serving).await
+}
+
+/// A serving connector's lines, and how many of its consents are live.
+async fn print_serving(client: &Client, serving: &service::Serving) -> Result<()> {
     println!(
         "serving since {} (pid {})",
         crate::format::ago(serving.started_at),
@@ -2717,6 +2813,7 @@ mod tests {
             started_at: Utc::now(),
             tunnel: None,
             allowlist_prefixes: 0,
+            process_started_at: None,
         };
         let connector = connector
             .with_client_ip_header("x-forwarded-for")
@@ -3001,6 +3098,59 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// A stopped connector's Funnel is said as recorded, set or attempted,
+    /// and clearing it by hand starts by checking where the port points.
+    #[cfg(unix)]
+    #[test]
+    fn a_stopped_connectors_funnel_advice_checks_its_target_first() {
+        use agentdocker_host::connector::{FunnelRecord, TunnelLeft, TunnelProcess};
+        let left = TunnelLeft {
+            funnel: Some(FunnelRecord {
+                pid: 1,
+                https_port: 8443,
+                target: "127.0.0.1:9".into(),
+                process_started_at: None,
+            }),
+            process: TunnelProcess::Live {
+                provider: "cloudflared".into(),
+                pid: 77,
+            },
+        };
+        let lines = tunnel_left_lines(&left);
+        assert!(
+            lines[0].contains("recorded for port 8443 and target 127.0.0.1:9 (set or attempted)"),
+            "{}",
+            lines[0]
+        );
+        assert!(
+            lines[0].contains(
+                "The next start checks and clears it only while no process runs under its recorded pid (1), and only if port 8443 still points at 127.0.0.1:9."
+            ),
+            "{}",
+            lines[0]
+        );
+        assert!(lines[0].contains("check `tailscale serve status` first"));
+        assert!(lines[0].contains("only if port 8443 still points at 127.0.0.1:9"));
+        assert!(lines[1].contains("cloudflared (pid 77), its tunnel, is still running"));
+    }
+
+    /// A home a connector has just claimed reads as starting: its process
+    /// recorded itself beside the lock and has published no serving status.
+    #[cfg(unix)]
+    #[test]
+    fn a_claimed_home_reads_as_starting_until_its_status_is_published() {
+        use agentdocker_host::connector::{ConnectorState, Evidence};
+        let home = tempfile::tempdir().unwrap();
+        let _held = claim_home(home.path()).unwrap();
+        assert_eq!(
+            agentdocker_host::connector::state(home.path()),
+            ConnectorState::Starting {
+                pid: std::process::id(),
+                from: Evidence::Owner
+            }
+        );
+    }
+
     #[tokio::test]
     async fn a_stale_funnel_is_cleared_only_while_it_still_serves_the_stopped_connector() {
         let record = agentdocker_host::connector::FunnelRecord {
@@ -3008,6 +3158,7 @@ mod tests {
             pid: u32::MAX - 7,
             https_port: 443,
             target: "127.0.0.1:8765".into(),
+            process_started_at: None,
         };
         let calls = |dir: &Path| std::fs::read_to_string(dir.join("calls.log")).unwrap_or_default();
 
@@ -3075,6 +3226,7 @@ mod tests {
             pid,
             https_port: 8443,
             target: "127.0.0.1:8765".into(),
+            process_started_at: None,
         };
         assert_eq!(
             stale_funnel(home.path()),
