@@ -53,6 +53,13 @@ async fn admitted_message(client: &Client, ledger: &Ledger, message: &str) -> Re
     Ok(())
 }
 
+/// The start's refusals that the review can foresee, in one place so that
+/// what the review says and what the command answers are the same words.
+pub(super) const NEEDS_SHARED_SERVER: &str =
+    "explicit start requires the launcher-owned shared native server";
+pub(super) const NEEDS_PROJECT: &str = "queued start requires a project journal";
+pub(super) const ENTRY_UNAVAILABLE: &str = "the original native queue entry is unavailable";
+
 pub(super) async fn start(
     client: &Client,
     provider: &mut Provider,
@@ -63,10 +70,7 @@ pub(super) async fn start(
     operator: ProcessIdentity,
 ) -> Result<Value> {
     let binding = ledger.record().binding.clone();
-    ensure!(
-        binding.remote.is_some(),
-        "explicit start requires the launcher-owned shared native server"
-    );
+    ensure!(binding.remote.is_some(), NEEDS_SHARED_SERVER);
     let attempt = ledger
         .record()
         .attempt
@@ -89,15 +93,16 @@ pub(super) async fn start(
                 "notice":"The original start may have been transmitted. This call did not start or acknowledge input again; await its exact provider receipt."}));
         }
     }
+    // What the phase alone refuses, in the words the review gave. A start
+    // that may have been transmitted has answered above, a receipt beside
+    // it included; the digest and every live check follow, each time.
+    ledger.phase().start().map_err(anyhow::Error::msg)?;
     ensure!(
         ledger.start_confirmation()? == confirmation,
         "queued input or provider generation changed; review it again"
     );
     let current = identity(client, &binding).await?;
-    ensure!(
-        current.project.is_some(),
-        "queued start requires a project journal"
-    );
+    ensure!(current.project.is_some(), NEEDS_PROJECT);
     // This is the service's initialized connection, not a newly spawned
     // observer. Recheck its ownership without another initialize request.
     remote::reverify(binding.remote.as_ref().expect("checked remote"), &binding)?;
@@ -112,7 +117,7 @@ pub(super) async fn start(
             .await?
             .as_deref()
             == attempt.queued.as_deref(),
-        "the original native queue entry is unavailable"
+        ENTRY_UNAVAILABLE
     );
     let state = provider
         .request(
@@ -141,11 +146,7 @@ pub(super) async fn start(
     // can arrive; queue visibility is not permission to start paused work.
     admitted_message(client, ledger, message).await?;
     let current = identity(client, &binding).await?;
-    let project = current
-        .project
-        .as_ref()
-        .context("queued start requires a project journal")?
-        .id();
+    let project = current.project.as_ref().context(NEEDS_PROJECT)?.id();
     unpaused_project(call(client, Request::Pauses).await?, &project)?;
     let start = ledger.begin_queued_start(message, confirmation, note, operator.clone())?;
     ensure!(matches!(call(client, Request::JournalAdd {
