@@ -294,6 +294,7 @@ pub async fn funnel_tailscale(
             pid,
             https_port,
             target: target.clone(),
+            process_started_at: agentdocker_host::procinfo::start_time(pid),
         },
     )
     .context("cannot record the Funnel before setting it")?;

@@ -5967,6 +5967,7 @@ pub(crate) mod tests {
             started_at: Utc::now(),
             tunnel: None,
             allowlist_prefixes: 0,
+            process_started_at: None,
         };
         assert_eq!(
             in_browser_word(&runtime, 0, None),
