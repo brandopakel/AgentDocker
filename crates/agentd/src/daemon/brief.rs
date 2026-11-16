@@ -125,7 +125,7 @@ impl Daemon {
                 .find(|p| p.source == ProjectSource::Git)
                 .map(|p| p.dir().to_path_buf()),
         };
-        let deadline = std::time::Instant::now() + COLD_READ;
+        let deadline = std::time::Instant::now() + self.cold_read();
         let unlisted = self.list_project_checkouts(&project, &refs, deadline).await;
         // Checkouts nothing has read yet are read now, in what is left of
         // the time; those it does not reach are said to be unread.
@@ -180,6 +180,24 @@ impl Daemon {
         Response::Brief {
             brief: compose(&records, &reader),
         }
+    }
+
+    /// How long a brief gives git, in all, to list and read checkouts
+    /// nothing has read yet: [`COLD_READ`], or what a test set.
+    fn cold_read(&self) -> std::time::Duration {
+        #[cfg(test)]
+        if let Some(bound) = *lock(&self.cold_read) {
+            return bound;
+        }
+        COLD_READ
+    }
+
+    /// Bound a brief's cold reads in a test: a long bound where the test
+    /// is about what a read finds, none where it is about what a brief
+    /// says of a checkout it did not reach.
+    #[cfg(test)]
+    pub(crate) fn set_cold_read_for_test(&self, bound: std::time::Duration) {
+        *lock(&self.cold_read) = Some(bound);
     }
 
     /// The records of `project` a brief is chosen from: its agents, live
@@ -367,9 +385,11 @@ mod tests {
             .collect()
     }
 
-    /// A checkout nothing has read yet is read by the brief itself, within
-    /// its short budget: the reader's own uncommitted file is told, from
-    /// its own checkout, with when it was read.
+    /// A checkout nothing has read yet is read by the brief itself: the
+    /// reader's own uncommitted file is told, from its own checkout, with
+    /// when it was read. The bound a brief gives git is the machine's
+    /// business, not this test's: it is set long here, and what a brief
+    /// says of a checkout it did not reach in time is the next test's.
     #[tokio::test]
     async fn a_brief_reads_the_checkouts_nothing_has_read_yet() {
         let git = |dir: &std::path::Path, args: &[&str]| {
@@ -399,6 +419,7 @@ mod tests {
         std::fs::write(work.join("wip.txt"), "not yet").unwrap();
         let daemon =
             Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock")).unwrap());
+        daemon.set_cold_read_for_test(std::time::Duration::from_secs(120));
         let me = register(&daemon, "alice", &work).await;
         let read = brief(
             daemon
@@ -415,6 +436,44 @@ mod tests {
         assert_eq!(standing.dirty, ["wip.txt"]);
         assert_eq!(standing.branch.as_deref(), Some("main"));
         assert_eq!(read.checkouts_unread, 0);
+    }
+
+    /// A brief whose bound runs out before git answers still answers, at
+    /// once: the checkout it did not reach is counted as unread, never told
+    /// as clean or as read, and the listing it could not finish is said.
+    #[tokio::test]
+    async fn a_brief_whose_bound_runs_out_counts_the_checkout_unread() {
+        let dir = TempDir::new().unwrap();
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        if !git_ok(&work, &["init", "-q"]) {
+            return;
+        }
+        std::fs::write(work.join("kept.txt"), "kept").unwrap();
+        assert!(git_ok(&work, &["add", "-A"]) && git_ok(&work, &["commit", "-q", "-m", "one"]));
+        std::fs::write(work.join("wip.txt"), "not yet").unwrap();
+        let daemon =
+            Arc::new(Daemon::open(dir.path().to_path_buf(), dir.path().join("sock")).unwrap());
+        daemon.set_cold_read_for_test(std::time::Duration::ZERO);
+        let me = register(&daemon, "alice", &work).await;
+        let read = brief(
+            daemon
+                .handle(Request::Brief {
+                    from: me.id.to_string(),
+                    project: None,
+                })
+                .await,
+        );
+        assert!(read.checkouts.is_empty(), "{:?}", read.checkouts);
+        assert_eq!(read.checkouts_clean, 0);
+        assert_eq!(read.checkouts_unread, 1, "{read:?}");
+        assert!(
+            read.not_covered
+                .iter()
+                .any(|line| line.contains("git could not list them")),
+            "{:?}",
+            read.not_covered
+        );
     }
 
     /// `git` in `dir` with a fixed identity; whether it succeeded.

@@ -411,6 +411,11 @@ pub struct Daemon {
     /// across an await.
     #[cfg(test)]
     runtime_roots: Mutex<agentdocker_host::runtimes::Roots>,
+    /// A test's bound on a brief's cold reads in place of
+    /// `brief::COLD_READ`, so whether a test passes never rests on how
+    /// fast the machine runs git. Never held across an await.
+    #[cfg(test)]
+    cold_read: Mutex<Option<std::time::Duration>>,
     /// What was found of the processes that asked to act as the person.
     /// Never held with the state lock.
     peers: Mutex<person::Peers>,
@@ -1933,6 +1938,8 @@ impl Daemon {
             claim_hold: Mutex::new(None),
             #[cfg(test)]
             runtime_roots: Mutex::new(runtime_roots),
+            #[cfg(test)]
+            cold_read: Mutex::new(None),
             peers: Mutex::new(person::Peers::default()),
             person_check: std::env::var_os("AGENTDOCKER_PERSON_CHECK").is_none_or(|v| v != "off"),
             agent_check: std::env::var_os("AGENTDOCKER_AGENT_CHECK").is_none_or(|v| v != "off"),
