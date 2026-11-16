@@ -2187,9 +2187,11 @@ Current behaviour that the sections above do not already state, by area.
   questions — Needs you in the app, `agentdocker questions --me`, the
   notification — as a card from the sender quoting the message, and
   **Release** delivers it as sent while **Drop** discards it
-  (`agentdocker answer <card> Release`). Only `answer` decides: a reply to
-  the card (`send --reply-to <card>`) is refused, whatever it says, and
-  sends nothing. Cards nobody answers in a week drop their message. Nothing is written by default, and a session running
+  (`agentdocker answer <card> Release`). Only `answer` decides: a reply
+  that would answer the open card (`send --reply-to <card>` to its sender)
+  is refused, whatever it says, and sends nothing; once the card has
+  ended, or for a reply that would not answer it, the reply goes as an
+  ordinary message. Cards nobody answers in a week drop their message. Nothing is written by default, and a session running
   on this machine is never held or refused by it.
 
 ### Daemon
