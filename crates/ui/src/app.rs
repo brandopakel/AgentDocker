@@ -2865,7 +2865,14 @@ impl App {
 
     // ----- screens -------------------------------------------------------
 
+    /// Open a session's terminal in the window. Every way one opens
+    /// comes through here: the session's own **Open**, the native
+    /// terminal's answer that the session runs under AgentDocker, and the
+    /// terminal the window opens later for a launched or reconnected
+    /// session. So this is where a terminal that could not be opened
+    /// before stops being said: its terminal is open.
     fn attach(&mut self, agent: String, ctx: Wake) {
+        self.shell.alerts.clear(Source::Terminal);
         if let Some(client) = &self.client {
             self.terminal = Some(Terminal::attach(client.clone(), agent, ctx));
         }
