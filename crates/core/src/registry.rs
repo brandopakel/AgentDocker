@@ -507,13 +507,12 @@ mod tests {
         let mut registry = Registry::new();
         let mut blocked = record("blocked");
         blocked.status = AgentStatus::Exited { code: Some(1) };
-        blocked.provider_availability = Some(crate::ProviderAvailability {
-            process_started_at: blocked.created_at,
-            observed_at: blocked.created_at,
-            issue: Some(crate::ProviderIssue::local(crate::ProviderIssueKind::Usage)),
-            cleared_observation: None,
-            retries: 0,
-        });
+        blocked.provider_availability = Some(crate::ProviderAvailability::blocked(
+            blocked.created_at,
+            blocked.created_at,
+            crate::ProviderIssue::local(crate::ProviderIssueKind::Usage),
+            0,
+        ));
         let current = record("current");
         registry.insert(blocked.clone()).unwrap();
         registry.insert(current.clone()).unwrap();

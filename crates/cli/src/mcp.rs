@@ -5832,16 +5832,15 @@ mod tests {
         });
         let mut source = quota("source", "/work/beta");
         source.status = AgentStatus::Exited { code: Some(1) };
-        source.provider_availability = Some(ProviderAvailability {
-            process_started_at: now,
-            observed_at: now,
-            issue: Some(ProviderIssue {
+        source.provider_availability = Some(ProviderAvailability::blocked(
+            now,
+            now,
+            ProviderIssue {
                 quota_group: Some("shared".into()),
                 ..ProviderIssue::local(ProviderIssueKind::Usage)
-            }),
-            cleared_observation: None,
-            retries: 0,
-        });
+            },
+            0,
+        ));
         let mut gone = quota("gone", "/work/alpha");
         gone.status = AgentStatus::Exited { code: Some(0) };
         let mut me = quota("me", "/work/alpha");

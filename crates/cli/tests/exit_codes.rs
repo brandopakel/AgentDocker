@@ -247,16 +247,15 @@ fn ps_does_not_hide_a_quota_block_from_an_ended_session_outside_its_rows() {
     source.id = "hidden-source".into();
     source.spec.name = "not-a-visible-row".into();
     source.status = AgentStatus::Exited { code: Some(0) };
-    source.provider_availability = Some(ProviderAvailability {
-        process_started_at: now,
-        observed_at: now,
-        cleared_observation: None,
-        issue: Some(ProviderIssue {
+    source.provider_availability = Some(ProviderAvailability::blocked(
+        now,
+        now,
+        ProviderIssue {
             quota_group: Some("shared".into()),
             ..ProviderIssue::local(ProviderIssueKind::Usage)
-        }),
-        retries: 0,
-    });
+        },
+        0,
+    ));
     let (tmp, socket) = private_socket("quota");
     let daemon = FakeDaemon::serve_many(
         &socket,

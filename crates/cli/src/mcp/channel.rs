@@ -1400,15 +1400,14 @@ mod tests {
             Limited {
                 queue: old.backend,
                 blocked: Cell::new(true),
-                availability: agentdocker_core::ProviderAvailability {
-                    process_started_at: now,
-                    observed_at: now,
-                    issue: Some(agentdocker_core::ProviderIssue::local(
+                availability: agentdocker_core::ProviderAvailability::blocked(
+                    now,
+                    now,
+                    agentdocker_core::ProviderIssue::local(
                         agentdocker_core::ProviderIssueKind::Usage,
-                    )),
-                    cleared_observation: None,
-                    retries: 0,
-                },
+                    ),
+                    0,
+                ),
             },
             old.identity,
         );

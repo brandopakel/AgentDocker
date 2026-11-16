@@ -471,14 +471,25 @@ pub fn event_line(event: &Event) -> String {
         } => format!(
             "provider availability   {} {}",
             agent.short(),
-            availability.issue.as_ref().map_or(
-                if availability.retries > 0 {
-                    "retrying the provider"
-                } else {
-                    "delivery resumed"
+            match availability.standing() {
+                agentdocker_core::ProviderStanding::Blocked { issue, .. } => {
+                    issue.kind.label().to_owned()
+                }
+                agentdocker_core::ProviderStanding::Retrying { .. } => {
+                    "retrying the provider".to_owned()
+                }
+                agentdocker_core::ProviderStanding::Recovered { by, .. } => match by {
+                    Some(agentdocker_core::ClearedBy::Provider) => {
+                        "delivery resumed (recovery reported)".to_owned()
+                    }
+                    Some(agentdocker_core::ClearedBy::Person) => {
+                        "delivery resumed (resumed by the person)".to_owned()
+                    }
+                    Some(agentdocker_core::ClearedBy::Unknown) | None => {
+                        "delivery resumed".to_owned()
+                    }
                 },
-                |issue| issue.kind.label()
-            )
+            }
         ),
         EventKind::ContestOpened {
             contest,

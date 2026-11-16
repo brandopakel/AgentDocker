@@ -400,13 +400,12 @@ mod tests {
     fn repair_cannot_erase_an_unresolved_provider_limit() {
         let a = record("a", Some("session"));
         let mut b = record("b", Some("session"));
-        b.provider_availability = Some(crate::ProviderAvailability {
-            process_started_at: b.process_started_at.unwrap(),
-            observed_at: b.created_at,
-            issue: Some(crate::ProviderIssue::local(crate::ProviderIssueKind::Usage)),
-            cleared_observation: None,
-            retries: 0,
-        });
+        b.provider_availability = Some(crate::ProviderAvailability::blocked(
+            b.process_started_at.unwrap(),
+            b.created_at,
+            crate::ProviderIssue::local(crate::ProviderIssueKind::Usage),
+            0,
+        ));
         assert_eq!(
             repair_pair([&a, &b], &a.id, &b.id),
             Err("resolve provider availability before reconciling these records")

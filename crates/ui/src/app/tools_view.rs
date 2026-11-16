@@ -2914,13 +2914,12 @@ mod tests {
             word(&mut app, &agent),
             ("Receiving messages".to_owned(), None)
         );
-        agent.provider_availability = Some(ProviderAvailability {
-            process_started_at: birth,
-            observed_at: now,
-            issue: Some(ProviderIssue::local(ProviderIssueKind::Usage)),
-            cleared_observation: None,
-            retries: 0,
-        });
+        agent.provider_availability = Some(ProviderAvailability::blocked(
+            birth,
+            now,
+            ProviderIssue::local(ProviderIssueKind::Usage),
+            0,
+        ));
         assert_eq!(
             word(&mut app, &agent),
             ("Messages paused".to_owned(), connected.clone()),
