@@ -302,6 +302,7 @@ fn scan_bounded(
             snapshot_at: Some(as_of),
             completed_at: Some(Utc::now()),
             discovery_complete: true,
+            discovery_ended: true,
             pending_files: Some(0),
             pending_tail_files: Some(
                 files.iter().filter(|f| f.stop == Stop::PendingTail).count() as u64

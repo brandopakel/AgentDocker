@@ -233,6 +233,12 @@ pub struct Collection {
     pub snapshot_at: Option<DateTime<Utc>>,
     pub completed_at: Option<DateTime<Utc>>,
     pub discovery_complete: bool,
+    /// The walk of the roots has ended, complete or not. Without it a
+    /// walk under way and one that stopped early (a bound, a root that
+    /// could not be read) are the same fields. Written only when true; a
+    /// collection stored before it existed reads as a walk under way.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub discovery_ended: bool,
     pub pending_files: Option<u64>,
     pub pending_tail_files: Option<u64>,
     pub scope: Scope,
@@ -245,6 +251,98 @@ pub struct Collection {
     /// program holds, say); absent otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub otlp_error: Option<String>,
+}
+
+/// Where a collection stands, as one thing a person can be told.
+///
+/// It is derived ([`Collection::phase`]), not stored: what is stored is
+/// the state, the generation, the walk's two flags and the counts of
+/// files still to read, and the CLI and the app each read those their own
+/// way, the same way only because each wrote the same chain of
+/// conditions. Neither could tell a collection walking its roots from
+/// one whose walk had stopped early, and both called it unknown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CollectionPhase {
+    /// The configuration has collection switched off.
+    Off,
+    /// Switched on, and no pass has begun: at start, or after the roots
+    /// were changed.
+    Starting,
+    /// A pass is walking its roots for the files to read.
+    Discovering,
+    /// The walk ended early: a bound was reached or a root could not be
+    /// read. What was found is not all there is. It stands until the next
+    /// pass.
+    DiscoveryIncomplete,
+    /// The walk is complete and files are being read; how many are left,
+    /// when that is known.
+    Reading { files: Option<u64> },
+    /// Everything found has been read; when, if the collection says.
+    CaughtUp { at: Option<DateTime<Utc>> },
+    /// Not told: the report does not say whether collection is on (a
+    /// daemon from before `enabled`) and its state does not say either.
+    Unknown,
+}
+
+impl CollectionPhase {
+    /// The phase in a word, the same wherever it is said.
+    pub fn word(self) -> &'static str {
+        match self {
+            CollectionPhase::Off => "off",
+            CollectionPhase::Starting => "starting",
+            CollectionPhase::Discovering => "discovering",
+            CollectionPhase::DiscoveryIncomplete => "discovery incomplete",
+            CollectionPhase::Reading { .. } => "reading",
+            CollectionPhase::CaughtUp { .. } => "caught up",
+            CollectionPhase::Unknown => "unknown",
+        }
+    }
+
+    /// What the phase means for the totals, where its word does not say:
+    /// the same sentence in the CLI and the app.
+    pub fn note(self) -> Option<&'static str> {
+        match self {
+            CollectionPhase::DiscoveryIncomplete => Some(
+                "The walk of the roots stopped early, so some files may not be counted. The next pass walks them again.",
+            ),
+            _ => None,
+        }
+    }
+}
+
+impl Collection {
+    /// Where the collection stands. The one reading of its fields, for
+    /// every client.
+    pub fn phase(&self) -> CollectionPhase {
+        if self.enabled == Some(false) {
+            return CollectionPhase::Off;
+        }
+        match self.state {
+            CollectionState::CaughtUp => CollectionPhase::CaughtUp {
+                at: self.completed_at,
+            },
+            CollectionState::Scanning => CollectionPhase::Reading {
+                files: self.pending_files,
+            },
+            // No pass has got as far as reading. Which of the rest it is
+            // takes knowing that collection is on, and then how far the
+            // walk has got.
+            CollectionState::Unknown => match (self.enabled, self.discovery_generation) {
+                (None, _) => CollectionPhase::Unknown,
+                (Some(_), None) => CollectionPhase::Starting,
+                (Some(_), Some(_)) if !self.discovery_ended => CollectionPhase::Discovering,
+                (Some(_), Some(_)) if !self.discovery_complete => {
+                    CollectionPhase::DiscoveryIncomplete
+                }
+                // Not something the collector writes (a complete walk is
+                // stored as scanning in the same step); read as what a
+                // complete walk is followed by.
+                (Some(_), Some(_)) => CollectionPhase::Reading {
+                    files: self.pending_files,
+                },
+            },
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -470,5 +568,185 @@ mod tests {
         .unwrap();
         assert_eq!(older.cost_usd_micros, CounterReport::default());
         assert_eq!(older.cache_read_share_percent, None);
+    }
+
+    fn collection(
+        enabled: Option<bool>,
+        state: CollectionState,
+        generation: Option<u64>,
+        ended: bool,
+        complete: bool,
+    ) -> Collection {
+        Collection {
+            enabled,
+            state,
+            discovery_generation: generation,
+            discovery_ended: ended,
+            discovery_complete: complete,
+            ..Collection::default()
+        }
+    }
+
+    /// Where a collection stands is one reading of its fields. Each row
+    /// is a collection as the daemon answers it, and the phase a person
+    /// is told. The third and fourth rows were one row: a walk under way
+    /// and a walk that stopped early had the same fields.
+    #[test]
+    fn a_collections_phase_is_one_reading_of_its_fields() {
+        use CollectionPhase as P;
+        use CollectionState as S;
+        let at = "2026-01-02T03:04:05Z".parse::<DateTime<Utc>>().unwrap();
+        let reading = Collection {
+            pending_files: Some(7),
+            ..collection(Some(true), S::Scanning, Some(4), true, true)
+        };
+        let caught_up = Collection {
+            pending_files: Some(0),
+            completed_at: Some(at),
+            ..collection(Some(true), S::CaughtUp, Some(4), true, true)
+        };
+        let table = [
+            // Switched off: what the daemon answers is the default with
+            // `enabled` false.
+            (
+                collection(Some(false), S::Unknown, None, false, false),
+                P::Off,
+            ),
+            // On, and nothing collected yet; also what a change of roots
+            // answers until its first pass.
+            (
+                collection(Some(true), S::Unknown, None, false, false),
+                P::Starting,
+            ),
+            // A pass walking its roots.
+            (
+                collection(Some(true), S::Unknown, Some(4), false, false),
+                P::Discovering,
+            ),
+            // Its walk ended early.
+            (
+                collection(Some(true), S::Unknown, Some(4), true, false),
+                P::DiscoveryIncomplete,
+            ),
+            // The walk complete, files to read.
+            (reading.clone(), P::Reading { files: Some(7) }),
+            // A collection stored before `discovery_ended`, reading.
+            (
+                collection(Some(true), S::Scanning, Some(4), false, true),
+                P::Reading { files: None },
+            ),
+            (caught_up.clone(), P::CaughtUp { at: Some(at) }),
+            (
+                collection(Some(true), S::CaughtUp, Some(4), true, true),
+                P::CaughtUp { at: None },
+            ),
+            // A daemon from before `enabled`: its state is what it says,
+            // and without one nothing is told. It is not called off, and
+            // not called discovering on a generation alone.
+            (collection(None, S::Unknown, None, false, false), P::Unknown),
+            (
+                collection(None, S::Unknown, Some(4), false, false),
+                P::Unknown,
+            ),
+            (
+                collection(None, S::Unknown, Some(4), true, false),
+                P::Unknown,
+            ),
+            (
+                collection(None, S::Scanning, Some(4), false, true),
+                P::Reading { files: None },
+            ),
+            (
+                collection(None, S::CaughtUp, Some(4), false, true),
+                P::CaughtUp { at: None },
+            ),
+            // Not something the collector writes: a complete walk whose
+            // state has not moved on.
+            (
+                collection(Some(true), S::Unknown, Some(4), true, true),
+                P::Reading { files: None },
+            ),
+        ];
+        for (collection, phase) in &table {
+            assert_eq!(collection.phase(), *phase, "{collection:?}");
+        }
+
+        // Over every combination: off is the configuration's word and
+        // nothing else's, and unknown is said only of a report that does
+        // not say whether collection is on.
+        let mut words = std::collections::BTreeSet::new();
+        for enabled in [None, Some(false), Some(true)] {
+            for state in [S::Unknown, S::Scanning, S::CaughtUp] {
+                for generation in [None, Some(4)] {
+                    for ended in [false, true] {
+                        for complete in [false, true] {
+                            let phase =
+                                collection(enabled, state, generation, ended, complete).phase();
+                            assert_eq!(phase == P::Off, enabled == Some(false));
+                            assert_eq!(
+                                phase == P::Unknown,
+                                enabled.is_none() && state == S::Unknown
+                            );
+                            if enabled == Some(true) {
+                                assert_eq!(
+                                    matches!(phase, P::CaughtUp { .. }),
+                                    state == S::CaughtUp,
+                                    "caught up is the stored state's alone"
+                                );
+                            }
+                            words.insert(phase.word());
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            words.into_iter().collect::<Vec<_>>(),
+            [
+                "caught up",
+                "discovering",
+                "discovery incomplete",
+                "off",
+                "reading",
+                "starting",
+                "unknown"
+            ],
+            "every phase is reached, each with a word of its own"
+        );
+        // Only the phase whose word does not say what it means for the
+        // totals explains itself.
+        assert!(P::DiscoveryIncomplete.note().is_some());
+        for phase in [
+            P::Off,
+            P::Starting,
+            P::Discovering,
+            P::Reading { files: None },
+            P::CaughtUp { at: None },
+            P::Unknown,
+        ] {
+            assert_eq!(phase.note(), None);
+        }
+    }
+
+    /// The one new stored fact is additive: a collection without it is
+    /// read as before, and one whose walk has not ended is written as
+    /// before, so the stored document and the wire keep their shape.
+    #[test]
+    fn a_walks_end_is_an_additive_field() {
+        let before = serde_json::to_value(Collection::default()).unwrap();
+        assert!(before.get("discovery_ended").is_none());
+        let read: Collection = serde_json::from_value(before.clone()).unwrap();
+        assert!(!read.discovery_ended);
+        assert_eq!(read, Collection::default());
+
+        let ended = Collection {
+            discovery_ended: true,
+            ..Collection::default()
+        };
+        let wire = serde_json::to_value(&ended).unwrap();
+        assert_eq!(wire["discovery_ended"], serde_json::Value::Bool(true));
+        assert_eq!(serde_json::from_value::<Collection>(wire).unwrap(), ended);
+        // The stored state keeps its three words.
+        assert_eq!(before["state"], "unknown");
     }
 }

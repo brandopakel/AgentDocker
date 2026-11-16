@@ -1402,6 +1402,26 @@ fn telemetry_line(collection: &agentdocker_core::usage::report::Collection) -> O
     }
 }
 
+/// Where collection stands, in a line: its phase in core's word (the one
+/// the app's chip says), how far it has got, and over how many roots.
+fn collection_line(
+    collection: &agentdocker_core::usage::report::Collection,
+    now: DateTime<Utc>,
+) -> String {
+    use agentdocker_core::usage::report::CollectionPhase;
+    let phase = collection.phase();
+    let progress = match phase {
+        CollectionPhase::Reading { files: Some(files) } => format!(", {files} file(s) to read"),
+        CollectionPhase::CaughtUp { at: Some(at) } => format!(" {}", journal::ago(now, at)),
+        _ => String::new(),
+    };
+    let roots = match collection.scope.roots.len() {
+        0 => String::new(),
+        roots => format!(" ({roots} root(s))"),
+    };
+    format!("Collection: {}{progress}{roots}", phase.word())
+}
+
 /// The share of input read from the cache, `87%`, or `—` when the row
 /// cannot say.
 fn cache_share(percent: Option<u8>) -> String {
@@ -1558,7 +1578,7 @@ pub fn usage_report(
     report: &agentdocker_core::usage::report::Report,
     names: &std::collections::HashMap<String, String>,
 ) {
-    use agentdocker_core::usage::report::{CollectionState, Group};
+    use agentdocker_core::usage::report::{CollectionPhase, Group};
     let key = match report.by {
         Group::Agent => "AGENT",
         Group::Model => "MODEL",
@@ -1569,7 +1589,7 @@ pub fn usage_report(
         Group::Role => "ROLE",
     };
     let collection = &report.coverage.collection;
-    let off = collection.enabled == Some(false);
+    let off = collection.phase() == CollectionPhase::Off;
     if report.rows.is_empty() {
         // With the receiver taking events, collection being off is not why
         // there is nothing to show.
@@ -1674,34 +1694,10 @@ pub fn usage_report(
             );
         }
     }
-    let state = match collection.state {
-        CollectionState::Unknown if off => "off".to_owned(),
-        CollectionState::Unknown
-            if collection.enabled == Some(true) && collection.discovery_generation.is_none() =>
-        {
-            "starting".to_owned()
-        }
-        CollectionState::Unknown => "unknown".to_owned(),
-        CollectionState::Scanning => {
-            let pending = collection
-                .pending_files
-                .map(|n| format!(", {n} file(s) to read"))
-                .unwrap_or_default();
-            format!("scanning{pending}")
-        }
-        CollectionState::CaughtUp => match collection.completed_at {
-            Some(at) => format!("caught up {}", ago(at)),
-            None => "caught up".to_owned(),
-        },
-    };
-    println!(
-        "Collection: {state}{}",
-        if collection.scope.roots.is_empty() {
-            String::new()
-        } else {
-            format!(" ({} root(s))", collection.scope.roots.len())
-        }
-    );
+    println!("{}", collection_line(collection, Utc::now()));
+    if let Some(note) = collection.phase().note() {
+        println!("{note}");
+    }
     if let Some(line) = telemetry_line(collection) {
         println!("{line}");
     }
@@ -2158,6 +2154,80 @@ mod tests {
             super::telemetry_line(&collection).as_deref(),
             Some("Telemetry: taking Claude Code's events on 127.0.0.1:4318")
         );
+    }
+
+    /// The collection's line says its phase in core's word, in every
+    /// phase. A collection walking its roots was `unknown` here, as was
+    /// one whose walk had stopped early.
+    #[test]
+    fn the_collection_line_says_each_phase_in_its_word() {
+        use agentdocker_core::usage::report::{Collection, CollectionState, Scope};
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let line = |collection: &Collection| super::collection_line(collection, now);
+        let on = Collection {
+            enabled: Some(true),
+            ..Collection::default()
+        };
+        let walking = Collection {
+            discovery_generation: Some(2),
+            scope: Scope {
+                roots: vec!["/logs/a".into(), "/logs/b".into()],
+                formats: Vec::new(),
+            },
+            ..on.clone()
+        };
+        let reading = Collection {
+            state: CollectionState::Scanning,
+            discovery_ended: true,
+            discovery_complete: true,
+            ..walking.clone()
+        };
+        for (collection, said) in [
+            (
+                Collection {
+                    enabled: Some(false),
+                    ..Collection::default()
+                },
+                "Collection: off",
+            ),
+            (on.clone(), "Collection: starting"),
+            (walking.clone(), "Collection: discovering (2 root(s))"),
+            (
+                Collection {
+                    discovery_ended: true,
+                    ..walking.clone()
+                },
+                "Collection: discovery incomplete (2 root(s))",
+            ),
+            (reading.clone(), "Collection: reading (2 root(s))"),
+            (
+                Collection {
+                    pending_files: Some(7),
+                    ..reading.clone()
+                },
+                "Collection: reading, 7 file(s) to read (2 root(s))",
+            ),
+            (
+                Collection {
+                    state: CollectionState::CaughtUp,
+                    ..reading.clone()
+                },
+                "Collection: caught up (2 root(s))",
+            ),
+            (
+                Collection {
+                    state: CollectionState::CaughtUp,
+                    completed_at: Some(now - chrono::Duration::minutes(3)),
+                    ..reading.clone()
+                },
+                "Collection: caught up 3m ago (2 root(s))",
+            ),
+            (Collection::default(), "Collection: unknown"),
+        ] {
+            assert_eq!(line(&collection), said);
+        }
     }
 
     /// Rows name the agent or project when it is known and keep the ID
