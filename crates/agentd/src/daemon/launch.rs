@@ -674,12 +674,14 @@ impl Daemon {
         multiplexer::of(pid, &by_pid, reported)
     }
 
-    pub(super) async fn cleanup_isolate(&self, record: &AgentRecord) {
+    /// Remove an isolated launch's checkout when it is unchanged, and say
+    /// whether it was removed.
+    pub(super) async fn cleanup_isolate(&self, record: &AgentRecord) -> bool {
         if !record.spec.isolate {
-            return;
+            return false;
         }
         let Some(path) = &record.spec.workdir else {
-            return;
+            return false;
         };
         let (worktree_removed, branch_removed, reason) = worktrees::cleanup_unstarted(record).await;
         self.emit(EventKind::WorktreeCleanup {
@@ -689,6 +691,7 @@ impl Daemon {
             branch_removed,
             reason,
         });
+        worktree_removed
     }
 
     /// A linked worktree of the agent's repository, made for it in the

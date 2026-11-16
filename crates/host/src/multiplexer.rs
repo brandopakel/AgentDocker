@@ -377,8 +377,9 @@ mod tests {
 pub mod tmux {
     use std::collections::BTreeMap;
     use std::io;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
+    use std::time::Duration;
 
     /// A pane that now exists, and the process in it.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -458,45 +459,174 @@ pub mod tmux {
         usable().is_ok()
     }
 
-    /// tmux itself could not be started, so it asked the server for
-    /// nothing and nothing was started. Any other error from
-    /// [`new_session`] comes after a tmux client ran, when the server may
-    /// have made the session.
-    #[derive(Debug)]
-    pub struct Refused(pub String);
+    /// A tmux server by generation: its pid and the time it started, as tmux
+    /// reports them (`#{pid}`, `#{start_time}`). A server started later at
+    /// the same socket is another generation even with the same pid, and
+    /// pane ids are unique only within one generation.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Server {
+        pub pid: u32,
+        pub started: u64,
+    }
 
-    impl std::fmt::Display for Refused {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str(&self.0)
+    /// The pane a launch made, read from the one line `new-session -P`
+    /// printed ([`LAUNCH_FORMAT`]): the evidence a later removal is checked
+    /// against, at the server it names.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Launched {
+        /// `%<digits>`.
+        pub pane: String,
+        /// The pane's first process, which is the agent.
+        pub pid: u32,
+        pub server: Server,
+        pub session: String,
+        /// The server's socket, absolute.
+        pub socket: PathBuf,
+    }
+
+    impl Launched {
+        /// The pane as an agent's record keeps it.
+        pub fn pane(&self) -> Pane {
+            Pane {
+                id: self.pane.clone(),
+                session: self.session.clone(),
+                pid: self.pid,
+                socket: Some(self.socket.display().to_string()),
+            }
         }
     }
 
-    impl std::error::Error for Refused {}
+    /// What `new-session -P` prints: the pane, its process, the server's
+    /// generation, the session and the socket, tab-separated on one line.
+    pub const LAUNCH_FORMAT: &str =
+        "#{pane_id}\t#{pane_pid}\t#{pid}\t#{start_time}\t#{session_name}\t#{socket_path}";
 
-    /// The pane `new-session -P` made, from what a tmux client that ran
-    /// printed and how it ended. Any failure is an error and never a
-    /// refusal: the server may have made the session and started its
-    /// command even when the client says otherwise (an `after-new-session`
-    /// hook that failed after the pane was printed) or says nothing (a
-    /// client killed after the server accepted its command).
-    fn created_pane(success: bool, stdout: &[u8], stderr: &[u8]) -> io::Result<String> {
-        let id = String::from_utf8_lossy(stdout).trim().to_owned();
-        let why = String::from_utf8_lossy(stderr).trim().to_owned();
-        match (success, id.is_empty()) {
-            (true, false) => Ok(id),
-            (true, true) => Err(io::Error::other("tmux created a pane but did not name it")),
-            (false, true) => Err(io::Error::other(format!(
-                "tmux did not confirm the session: {why}"
-            ))),
-            (false, false) => Err(io::Error::other(format!(
-                "tmux made pane {id} but then reported a failure: {why}"
-            ))),
+    /// The most a launch's tmux client may take before its answer is taken
+    /// as lost.
+    pub const LAUNCH_DEADLINE: Duration = Duration::from_secs(30);
+
+    /// The most one removal may take.
+    pub const REMOVAL_DEADLINE: Duration = Duration::from_secs(5);
+
+    /// How long a removed pane's first process is given to end.
+    pub const LEADER_GRACE: Duration = Duration::from_secs(2);
+
+    /// Whether `text` is a pane id: `%` and digits.
+    fn is_pane_id(text: &str) -> bool {
+        text.strip_prefix('%')
+            .is_some_and(|digits| !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    /// A positive number of digits alone.
+    fn digits<T: std::str::FromStr + PartialEq + Default>(text: &str) -> Option<T> {
+        if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        text.parse().ok().filter(|value| *value != T::default())
+    }
+
+    /// The launch line, read strictly: exactly one line of the six fields,
+    /// or nothing. Hook output, several lines, a missing or malformed field
+    /// or a relative socket are not a pane, and never a target.
+    pub fn parse_launched(stdout: &str) -> Option<Launched> {
+        let line = stdout.strip_suffix('\n').unwrap_or(stdout);
+        if line.contains(['\n', '\r', '\0']) {
+            return None;
+        }
+        let mut fields = line.splitn(6, '\t');
+        let pane = fields.next().filter(|pane| is_pane_id(pane))?;
+        let pid = digits(fields.next()?)?;
+        let server = Server {
+            pid: digits(fields.next()?)?,
+            started: digits(fields.next()?)?,
+        };
+        let session = fields.next().filter(|session| !session.is_empty())?;
+        let socket = fields.next().filter(|socket| socket.starts_with('/'))?;
+        Some(Launched {
+            pane: pane.to_owned(),
+            pid,
+            server,
+            session: session.to_owned(),
+            socket: PathBuf::from(socket),
+        })
+    }
+
+    /// How a launch ended: nothing reached a server, the pane was made and
+    /// named, or a client ran and what it did is not known.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Launch {
+        /// No launch request reached a tmux server: the command was empty,
+        /// or tmux could not be started.
+        NotStarted { why: String },
+        /// The pane was made, and tmux named it.
+        Started(Launched),
+        /// A tmux client ran, so the server may have made the session and
+        /// started its command, whatever the client said. `pane` is the
+        /// pane when a valid launch line survived; `output` is what the
+        /// client printed when it was not one, bounded.
+        Indeterminate {
+            pane: Option<Launched>,
+            output: Option<String>,
+            why: String,
+        },
+    }
+
+    /// The most of a client's unreadable output kept for the message.
+    const SHOWN_OUTPUT: usize = 512;
+
+    fn line_or_output(stdout: &str) -> (Option<Launched>, Option<String>) {
+        match parse_launched(stdout) {
+            Some(launched) => (Some(launched), None),
+            None => {
+                let shown: String = stdout.trim().chars().take(SHOWN_OUTPUT).collect();
+                (None, (!shown.is_empty()).then_some(shown))
+            }
         }
     }
 
-    /// Whether `error` from [`new_session`] says nothing was started.
-    pub fn refused(error: &io::Error) -> bool {
-        error.get_ref().is_some_and(|inner| inner.is::<Refused>())
+    /// A launch's outcome from what became of its tmux client. Only a
+    /// client never started is [`Launch::NotStarted`]; a lost wait or read
+    /// is [`Launch::Indeterminate`], keeping a valid line it had printed.
+    pub fn classify(observed: crate::command::Observed) -> Launch {
+        use crate::command::Observed;
+        match observed {
+            Observed::NotRun(error) => Launch::NotStarted {
+                why: format!("tmux could not be run: {error}"),
+            },
+            Observed::Lost { error, stdout } => {
+                let (pane, output) = line_or_output(&stdout);
+                Launch::Indeterminate {
+                    pane,
+                    output,
+                    why: format!("tmux was started and its answer was lost ({error})"),
+                }
+            }
+            Observed::Exited(out) => {
+                let said = out.text.get(out.stdout.len()..).unwrap_or_default().trim();
+                let (pane, output) = line_or_output(&out.stdout);
+                match (out.success, pane) {
+                    (true, Some(launched)) => Launch::Started(launched),
+                    (true, None) => Launch::Indeterminate {
+                        pane: None,
+                        output,
+                        why: "tmux reported success but did not name the pane it made".to_owned(),
+                    },
+                    (false, Some(launched)) => Launch::Indeterminate {
+                        why: format!(
+                            "tmux made pane {} but then reported a failure: {said}",
+                            launched.pane
+                        ),
+                        pane: Some(launched),
+                        output: None,
+                    },
+                    (false, None) => Launch::Indeterminate {
+                        pane: None,
+                        output,
+                        why: format!("tmux did not confirm the session: {said}"),
+                    },
+                }
+            }
+        }
     }
 
     /// Start `command` in a new detached session named `session`, in
@@ -510,72 +640,265 @@ pub mod tmux {
         workdir: &Path,
         env: &BTreeMap<String, String>,
         command: &[String],
-    ) -> io::Result<Pane> {
+    ) -> Launch {
+        launch_with(
+            Path::new("tmux"),
+            None,
+            session,
+            workdir,
+            env,
+            command,
+            LAUNCH_DEADLINE,
+        )
+    }
+
+    /// [`new_session`] with `program` for tmux and, when `server` is given,
+    /// that named server (`-L`) instead of the default one.
+    pub fn launch_with(
+        program: &Path,
+        server: Option<&str>,
+        session: &str,
+        workdir: &Path,
+        env: &BTreeMap<String, String>,
+        command: &[String],
+        deadline: Duration,
+    ) -> Launch {
         if command.is_empty() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a pane needs a command to run",
-            ));
+            return Launch::NotStarted {
+                why: "a pane needs a command to run".to_owned(),
+            };
         }
-        let mut tmux = Command::new("tmux");
-        tmux.args(["new-session", "-d", "-P", "-F", "#{pane_id}"])
-            .args(["-s", session])
-            .arg("-c")
-            .arg(workdir);
+        let Some(workdir) = workdir.to_str() else {
+            return Launch::NotStarted {
+                why: "the working directory is not UTF-8, and tmux is handed it as text".to_owned(),
+            };
+        };
+        let mut argv = vec![program.display().to_string()];
+        if let Some(server) = server {
+            argv.extend(["-L".to_owned(), server.to_owned()]);
+        }
+        argv.extend(
+            [
+                "new-session",
+                "-d",
+                "-P",
+                "-F",
+                LAUNCH_FORMAT,
+                "-s",
+                session,
+                "-c",
+                workdir,
+            ]
+            .map(str::to_owned),
+        );
         for (key, value) in env {
-            tmux.arg("-e").arg(format!("{key}={value}"));
+            argv.extend(["-e".to_owned(), format!("{key}={value}")]);
         }
         // `--` so an agent's own flags are never read as tmux's.
-        tmux.arg("--").args(command);
-        // Only a tmux that could not be started at all sent the server
-        // nothing; once it runs, the server may have made the session
-        // whatever the client reports or however it ends.
-        let child = tmux
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                io::Error::other(Refused(format!("tmux could not be run: {error}")))
-            })?;
-        let output = child.wait_with_output()?;
-        let id = created_pane(output.status.success(), &output.stdout, &output.stderr)?;
-        let pid = pane_pid(&id)?;
-        Ok(Pane {
-            session: describe_pane(&id, "#{session_name}").unwrap_or_else(|_| session.to_owned()),
-            socket: describe_pane(&id, "#{socket_path}")
-                .ok()
-                .filter(|socket| socket.starts_with('/')),
-            id,
-            pid,
-        })
+        argv.push("--".to_owned());
+        argv.extend(command.iter().cloned());
+        classify(crate::command::run_observed(
+            Path::new("/"),
+            &argv,
+            deadline,
+        ))
     }
 
-    /// Remove only the pane this launch created, never a reused session name.
-    pub fn remove_owned_pane(pane: &Pane) -> io::Result<()> {
-        if pane_pid(&pane.id)? != pane.pid
-            || describe_pane(&pane.id, "#{session_name}")? != pane.session
-        {
-            return Err(io::Error::other("tmux pane identity changed"));
-        }
-        let output = Command::new("tmux")
-            .args(["kill-pane", "-t", &pane.id])
-            .output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "tmux could not remove owned pane: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        Ok(())
+    /// What one removal of a launched pane found, at the server the launch
+    /// named. Only [`Removal::Removed`] says this call removed it, and none
+    /// says anything of processes that outlive the pane.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Removal {
+        /// The launch's server answered, the pane held the launch's process,
+        /// and it was killed, checked and killed in one server command.
+        Removed,
+        /// The launch's server answered and has no such pane: pane ids are
+        /// never reused within a generation.
+        Gone,
+        /// The launch's server was not reached: no server answers at its
+        /// socket (`now: None`) or another generation does. Nothing was
+        /// killed, and this says nothing of the original pane, which may
+        /// still exist where its server is.
+        NotReached { now: Option<Server> },
+        /// The pane id is there with another process: not this launch's.
+        Mismatch { pid: u32 },
+        /// Not known: tmux could not be run, gave no answer in time (and may
+        /// have removed the pane), or answered in a form not read.
+        Unknown { why: String },
     }
 
-    /// The process tmux started in a pane. This is the agent's pid: what
-    /// `ps` will show, what liveness checks, and what `stop` signals.
-    pub fn pane_pid(pane: &str) -> io::Result<u32> {
-        describe_pane(pane, "#{pane_pid}")?
-            .parse()
-            .map_err(|_| io::Error::other("tmux reported a pane pid that is not a number"))
+    /// Remove the pane `launched` names, only while it is that launch's.
+    pub fn remove_launched(launched: &Launched) -> Removal {
+        remove_launched_with(Path::new("tmux"), launched, REMOVAL_DEADLINE)
+    }
+
+    /// [`remove_launched`] with `program` for tmux. One invocation at the
+    /// launch's socket: the server's generation, its panes, then an
+    /// `if-shell -F` whose condition is the whole identity (generation,
+    /// pane id, pane process) and whose branch kills the pane. tmux runs
+    /// one client's command list in one queue, and neither branch waits, so
+    /// nothing changes between the check and the kill. The pane id is in the
+    /// condition because `if-shell -t` does not fail on a missing pane.
+    pub fn remove_launched_with(
+        program: &Path,
+        launched: &Launched,
+        deadline: Duration,
+    ) -> Removal {
+        if !is_pane_id(&launched.pane) || !launched.socket.is_absolute() {
+            return Removal::Unknown {
+                why: "the launch named no pane at an absolute socket".to_owned(),
+            };
+        }
+        let pane = &launched.pane;
+        let expected = format!(
+            "{}/{}/{}/{}",
+            launched.server.pid, launched.server.started, pane, launched.pid
+        );
+        let argv: Vec<String> = vec![
+            program.display().to_string(),
+            "-S".to_owned(),
+            launched.socket.display().to_string(),
+            "display-message".to_owned(),
+            "-p".to_owned(),
+            "server #{pid} #{start_time}".to_owned(),
+            ";".to_owned(),
+            "list-panes".to_owned(),
+            "-a".to_owned(),
+            "-F".to_owned(),
+            "pane #{pane_id} #{pane_pid}".to_owned(),
+            ";".to_owned(),
+            "if-shell".to_owned(),
+            "-F".to_owned(),
+            "-t".to_owned(),
+            pane.clone(),
+            format!("#{{==:#{{pid}}/#{{start_time}}/#{{pane_id}}/#{{pane_pid}},{expected}}}"),
+            format!("kill-pane -t {pane} ; display-message -p removed"),
+            "display-message -p kept".to_owned(),
+        ];
+        read_removal(
+            launched,
+            crate::command::run_observed(Path::new("/"), &argv, deadline),
+        )
+    }
+
+    /// A removal's answer, read strictly: exit status, the server line, the
+    /// pane lines and the branch taken, and nothing else.
+    pub fn read_removal(launched: &Launched, observed: crate::command::Observed) -> Removal {
+        use crate::command::Observed;
+        let unknown = |why: String| Removal::Unknown { why };
+        let out = match observed {
+            Observed::NotRun(error) => return unknown(format!("tmux could not be run: {error}")),
+            Observed::Lost { error, .. } => {
+                return unknown(format!(
+                    "tmux gave no answer ({error}), and may have removed the pane"
+                ));
+            }
+            Observed::Exited(out) => out,
+        };
+        let said = out.text.get(out.stdout.len()..).unwrap_or_default().trim();
+        if !out.success {
+            if said.starts_with("no server running on") || said.starts_with("error connecting to") {
+                return Removal::NotReached { now: None };
+            }
+            return unknown(format!("tmux refused the removal: {said}"));
+        }
+        let mut lines = out.stdout.lines();
+        let server = lines.next().and_then(|line| {
+            let mut words = line.strip_prefix("server ")?.split(' ');
+            let server = Server {
+                pid: digits(words.next()?)?,
+                started: digits(words.next()?)?,
+            };
+            words.next().is_none().then_some(server)
+        });
+        let Some(server) = server else {
+            return unknown("tmux did not name its server".to_owned());
+        };
+        let mut listed = None;
+        let mut branch = None;
+        for line in lines {
+            if let Some(rest) = line.strip_prefix("pane ") {
+                let Some((id, pid)) = rest.split_once(' ') else {
+                    return unknown(format!("tmux listed a pane as {line:?}"));
+                };
+                let Some(pid) = digits::<u32>(pid).filter(|_| is_pane_id(id)) else {
+                    return unknown(format!("tmux listed a pane as {line:?}"));
+                };
+                if branch.is_some() {
+                    return unknown("tmux listed a pane after its answer".to_owned());
+                }
+                if id == launched.pane {
+                    listed = Some(pid);
+                }
+            } else if (line == "removed" || line == "kept") && branch.is_none() {
+                branch = Some(line == "removed");
+            } else {
+                return unknown(format!("tmux answered {line:?}"));
+            }
+        }
+        if server != launched.server {
+            return match branch {
+                Some(false) => Removal::NotReached { now: Some(server) },
+                _ => unknown("another server answered and the answer is not one read".to_owned()),
+            };
+        }
+        match (branch, listed) {
+            (Some(true), Some(pid)) if pid == launched.pid => Removal::Removed,
+            (Some(false), None) => Removal::Gone,
+            (Some(false), Some(pid)) if pid != launched.pid => Removal::Mismatch { pid },
+            _ => unknown("tmux's answer does not agree with itself".to_owned()),
+        }
+    }
+
+    /// Whether a launched pane's first process has ended.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub enum Leader {
+        Gone,
+        Live,
+        Unknown { why: String },
+    }
+
+    /// The first process of a launched pane, by its pid and the birth read
+    /// at launch, given up to `grace` to end. A birth not read at launch
+    /// leaves it unknown: tmux's server start time is not its birth.
+    #[cfg(unix)]
+    pub fn leader(
+        pid: u32,
+        born: Option<chrono::DateTime<chrono::Utc>>,
+        grace: Duration,
+    ) -> Leader {
+        use crate::presence::Liveness;
+        let Some(born) = born else {
+            return Leader::Unknown {
+                why: "its start time was not read at launch".to_owned(),
+            };
+        };
+        let until = std::time::Instant::now() + grace;
+        loop {
+            match crate::presence::liveness(pid, Some(born)) {
+                Liveness::Gone => return Leader::Gone,
+                Liveness::Unknown { why } => return Leader::Unknown { why },
+                Liveness::Live if std::time::Instant::now() >= until => return Leader::Live,
+                Liveness::Live => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }
+    }
+
+    /// No process identity is read here.
+    #[cfg(not(unix))]
+    pub fn leader(
+        _pid: u32,
+        _born: Option<chrono::DateTime<chrono::Utc>>,
+        _grace: Duration,
+    ) -> Leader {
+        Leader::Unknown {
+            why: "process identity is not read on this platform".to_owned(),
+        }
+    }
+
+    /// Single-quoted for a POSIX shell, for a command a message shows.
+    pub fn shell_quoted(text: &str) -> String {
+        format!("'{}'", text.replace('\'', "'\\''"))
     }
 
     /// The most a capture may take, unless the caller says otherwise.
@@ -686,20 +1009,6 @@ pub mod tmux {
         Ok(text)
     }
 
-    /// Ask tmux one thing about one pane.
-    fn describe_pane(pane: &str, format: &str) -> io::Result<String> {
-        let output = Command::new("tmux")
-            .args(["display-message", "-p", "-t", pane, format])
-            .output()?;
-        if !output.status.success() {
-            return Err(io::Error::other(format!(
-                "tmux could not describe pane {pane}: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    }
-
     /// A session name tmux will accept: it uses `.` and `:` in target
     /// syntax, so neither can appear in a name we then use as a target.
     pub fn session_name(agent: &str) -> String {
@@ -719,29 +1028,383 @@ pub mod tmux {
     mod tests {
         use super::*;
 
-        /// A refusal says nothing started; an error after tmux made the
-        /// pane (it did not name it, its pid could not be read) does not.
+        use crate::command::{Observed, Output};
+
+        const LINE: &str = "%12\t4321\t987\t1700000000\tprobe\t/tmp/tmux-1/default\n";
+
+        fn launched() -> Launched {
+            parse_launched(LINE).unwrap()
+        }
+
+        fn exited(success: bool, stdout: &str, stderr: &str) -> Observed {
+            Observed::Exited(Output {
+                success,
+                stdout: stdout.to_owned(),
+                text: format!("{stdout}{stderr}"),
+            })
+        }
+
+        fn lost(stdout: &str) -> Observed {
+            Observed::Lost {
+                error: io::Error::other("command timed out after 30s"),
+                stdout: stdout.to_owned(),
+            }
+        }
+
+        /// The launch line is read whole or not at all.
         #[test]
-        fn only_a_refusal_says_nothing_started() {
-            assert!(refused(&io::Error::other(Refused("no server".into()))));
-            assert!(!refused(&io::Error::other(
-                "tmux created a pane but did not name it"
-            )));
-            assert!(!refused(&io::Error::from(io::ErrorKind::NotFound)));
-            assert_eq!(created_pane(true, b"%3\n", b"").unwrap(), "%3");
-            // A client that ran and failed proves nothing about the server:
-            // one killed after the server accepted its command prints
-            // nothing, and that command ran.
-            let silent = created_pane(false, b"", b"").unwrap_err();
-            assert!(!refused(&silent), "{silent}");
-            let said_no = created_pane(false, b"", b"duplicate session: probe").unwrap_err();
-            assert!(!refused(&said_no), "{said_no}");
-            // The pane was made and printed, then an after-new-session hook
-            // failed and tmux exited 1: its command may be running.
-            let hooked = created_pane(false, b"%1\n", b"'exit 1' returned 1").unwrap_err();
-            assert!(!refused(&hooked), "{hooked}");
-            assert!(hooked.to_string().contains("%1"), "{hooked}");
-            assert!(!refused(&created_pane(true, b"\n", b"").unwrap_err()));
+        fn a_launch_line_is_read_strictly() {
+            assert_eq!(
+                launched(),
+                Launched {
+                    pane: "%12".into(),
+                    pid: 4321,
+                    server: Server {
+                        pid: 987,
+                        started: 1_700_000_000
+                    },
+                    session: "probe".into(),
+                    socket: "/tmp/tmux-1/default".into(),
+                }
+            );
+            for bad in [
+                "",
+                "%12",
+                "12\t4321\t987\t1700000000\tprobe\t/tmp/s",
+                "%1x\t4321\t987\t1700000000\tprobe\t/tmp/s",
+                "%12\t\t987\t1700000000\tprobe\t/tmp/s",
+                "%12\t0\t987\t1700000000\tprobe\t/tmp/s",
+                "%12\t4321\t987\t\tprobe\t/tmp/s",
+                "%12\t4321\t987\t1700000000\t\t/tmp/s",
+                "%12\t4321\t987\t1700000000\tprobe\trelative/s",
+                "%12\t4321\t987\t1700000000\tprobe\t/tmp/s\n%13\t1\t987\t1\tx\t/tmp/s",
+                "hook said hello\n%12\t4321\t987\t1700000000\tprobe\t/tmp/s",
+            ] {
+                assert_eq!(parse_launched(bad), None, "{bad:?}");
+            }
+        }
+
+        /// Only a client never started is not started; anything after a
+        /// client ran is indeterminate, keeping a valid line it printed.
+        #[test]
+        fn a_launch_is_classified_by_what_its_client_did() {
+            let not_run = classify(Observed::NotRun(io::Error::from(io::ErrorKind::NotFound)));
+            assert!(matches!(not_run, Launch::NotStarted { .. }), "{not_run:?}");
+            assert_eq!(
+                classify(exited(true, LINE, "")),
+                Launch::Started(launched())
+            );
+            // Success with no line, or with a line not read.
+            for stdout in ["", "\n", "%12\n", "hello from a hook\n"] {
+                let launch = classify(exited(true, stdout, ""));
+                assert!(
+                    matches!(&launch, Launch::Indeterminate { pane: None, .. }),
+                    "{stdout:?} {launch:?}"
+                );
+            }
+            let Launch::Indeterminate { output, .. } = classify(exited(true, "hello\n", "")) else {
+                panic!()
+            };
+            assert_eq!(output.as_deref(), Some("hello"));
+            // A failure after a valid line: the pane exists.
+            let hooked = classify(exited(false, LINE, "'exit 1' returned 1"));
+            let Launch::Indeterminate { pane, why, .. } = &hooked else {
+                panic!("{hooked:?}")
+            };
+            assert_eq!(pane.as_ref(), Some(&launched()));
+            assert!(
+                why.contains("%12") && why.contains("'exit 1' returned 1"),
+                "{why}"
+            );
+            // A failure with nothing printed proves nothing of the server.
+            let said_no = classify(exited(false, "", "duplicate session: probe"));
+            assert!(
+                matches!(&said_no, Launch::Indeterminate { pane: None, why, .. } if why.contains("duplicate session")),
+                "{said_no:?}"
+            );
+            // A lost answer keeps a valid line that arrived, or none.
+            assert!(matches!(
+                classify(lost(LINE)),
+                Launch::Indeterminate { pane: Some(_), .. }
+            ));
+            assert!(matches!(
+                classify(lost("")),
+                Launch::Indeterminate { pane: None, .. }
+            ));
+            // An empty command never reaches tmux.
+            let empty = launch_with(
+                Path::new("/nonexistent/tmux"),
+                None,
+                "s",
+                Path::new("/"),
+                &BTreeMap::new(),
+                &[],
+                LAUNCH_DEADLINE,
+            );
+            assert!(matches!(empty, Launch::NotStarted { .. }), "{empty:?}");
+            let missing = launch_with(
+                Path::new("/nonexistent/tmux"),
+                None,
+                "s",
+                Path::new("/"),
+                &BTreeMap::new(),
+                &["true".to_owned()],
+                LAUNCH_DEADLINE,
+            );
+            assert!(matches!(missing, Launch::NotStarted { .. }), "{missing:?}");
+        }
+
+        /// A removal's answer, read strictly from each form it can take.
+        #[test]
+        fn a_removal_is_read_from_the_whole_answer() {
+            let us = launched();
+            let read = |observed| read_removal(&us, observed);
+            let server = "server 987 1700000000\n";
+            assert_eq!(
+                read(exited(
+                    true,
+                    &format!("{server}pane %3 11\npane %12 4321\nremoved\n"),
+                    ""
+                )),
+                Removal::Removed
+            );
+            assert_eq!(
+                read(exited(true, &format!("{server}pane %3 11\nkept\n"), "")),
+                Removal::Gone
+            );
+            assert_eq!(
+                read(exited(true, &format!("{server}pane %12 55\nkept\n"), "")),
+                Removal::Mismatch { pid: 55 }
+            );
+            // Another generation at the socket: not reached, never gone.
+            assert_eq!(
+                read(exited(
+                    true,
+                    "server 990 1700000500\npane %12 4321\nkept\n",
+                    ""
+                )),
+                Removal::NotReached {
+                    now: Some(Server {
+                        pid: 990,
+                        started: 1_700_000_500
+                    })
+                }
+            );
+            for said in [
+                "no server running on /tmp/tmux-1/default",
+                "error connecting to /tmp/tmux-1/default (No such file or directory)",
+            ] {
+                assert_eq!(
+                    read(exited(false, "", said)),
+                    Removal::NotReached { now: None }
+                );
+            }
+            // Everything else is unknown, a timeout above all: it may have
+            // sent the kill.
+            for observed in [
+                lost(&format!("{server}pane %12 4321\n")),
+                Observed::NotRun(io::Error::from(io::ErrorKind::NotFound)),
+                exited(false, "", "unknown command: if-shell"),
+                exited(true, "", ""),
+                exited(true, server, ""),
+                exited(true, &format!("{server}pane %12 4321\nkept\n"), ""),
+                exited(true, &format!("{server}removed\n"), ""),
+                exited(
+                    true,
+                    &format!("{server}pane %12 4321\nremoved\nremoved\n"),
+                    "",
+                ),
+                exited(true, &format!("{server}pane %12 x\nkept\n"), ""),
+                exited(true, &format!("{server}hello\nkept\n"), ""),
+                exited(true, "server 990 1700000500\nremoved\n", ""),
+            ] {
+                let removal = read(observed);
+                assert!(matches!(removal, Removal::Unknown { .. }), "{removal:?}");
+            }
+        }
+
+        #[test]
+        fn a_shown_command_is_single_quoted() {
+            assert_eq!(shell_quoted("/tmp/a b"), "'/tmp/a b'");
+            assert_eq!(shell_quoted("it's"), "'it'\\''s'");
+        }
+
+        /// A private tmux server, killed and its socket removed on drop.
+        struct Private {
+            name: String,
+            /// The socket, from the first launch: the server may be gone
+            /// by the time it is cleaned up.
+            socket: std::cell::RefCell<Option<PathBuf>>,
+        }
+
+        impl Private {
+            fn new(tag: &str) -> Option<Self> {
+                available().then(|| Private {
+                    name: format!("agentdocker-test-{tag}-{}", std::process::id()),
+                    socket: std::cell::RefCell::new(None),
+                })
+            }
+            fn tmux(&self, args: &[&str]) -> std::process::Output {
+                Command::new("tmux")
+                    .args(["-L", &self.name])
+                    .args(args)
+                    .output()
+                    .unwrap()
+            }
+            fn launch(&self, session: &str) -> Launched {
+                let launch = launch_with(
+                    Path::new("tmux"),
+                    Some(&self.name),
+                    session,
+                    Path::new("/"),
+                    &BTreeMap::new(),
+                    &["sleep".to_owned(), "300".to_owned()],
+                    LAUNCH_DEADLINE,
+                );
+                match launch {
+                    Launch::Started(launched) => {
+                        self.socket
+                            .borrow_mut()
+                            .get_or_insert_with(|| launched.socket.clone());
+                        launched
+                    }
+                    other => panic!("{other:?}"),
+                }
+            }
+        }
+
+        impl Drop for Private {
+            fn drop(&mut self) {
+                let _ = self.tmux(&["kill-server"]);
+                if let Some(socket) = self.socket.borrow().as_ref() {
+                    let _ = std::fs::remove_file(socket);
+                }
+            }
+        }
+
+        /// On a private server: the launch's own pane is removed and its
+        /// process ends; a wrong process, a gone pane and a successor
+        /// server reusing the pane id and the session name are not touched.
+        #[test]
+        fn only_the_launchs_own_pane_is_removed() {
+            let Some(server) = Private::new("own") else {
+                return;
+            };
+            let _keep = server.launch("keep");
+            let ours = server.launch("probe");
+            let born = crate::procinfo::start_time(ours.pid);
+            let wrong = Launched {
+                pid: ours.pid + 1,
+                ..ours.clone()
+            };
+            assert!(matches!(
+                remove_launched(&wrong),
+                Removal::Mismatch { pid } if pid == ours.pid
+            ));
+            assert_eq!(remove_launched(&ours), Removal::Removed);
+            #[cfg(unix)]
+            assert_eq!(leader(ours.pid, born, LEADER_GRACE), Leader::Gone);
+            let _ = born;
+            assert_eq!(remove_launched(&ours), Removal::Gone);
+            // The server ends; a successor at the same socket reuses `%0`
+            // and the name.
+            let first = server.launch("again");
+            let _ = server.tmux(&["kill-server"]);
+            let successor = server.launch("again");
+            assert_eq!(successor.socket, first.socket);
+            assert_ne!(successor.server, first.server);
+            let reused = Launched {
+                pane: successor.pane.clone(),
+                ..first.clone()
+            };
+            assert_eq!(
+                remove_launched(&reused),
+                Removal::NotReached {
+                    now: Some(successor.server)
+                }
+            );
+            // The successor's own pane and process under the first server's
+            // generation: refused inside tmux, so the pane is not killed.
+            let wrong_generation = Launched {
+                server: first.server,
+                ..successor.clone()
+            };
+            assert_eq!(
+                remove_launched(&wrong_generation),
+                Removal::NotReached {
+                    now: Some(successor.server)
+                }
+            );
+            assert_eq!(remove_launched(&successor), Removal::Removed);
+        }
+
+        /// A socket moved aside and another server started at its path:
+        /// the recorded server is not reached there, and its pane survives
+        /// where its socket went.
+        #[test]
+        fn a_replaced_socket_reaches_another_server_and_kills_nothing() {
+            let Some(a) = Private::new("moved") else {
+                return;
+            };
+            let first = a.launch("probe");
+            let aside = first.socket.with_extension("aside");
+            std::fs::rename(&first.socket, &aside).unwrap();
+            // B is started at A's original path.
+            let started = Command::new("tmux")
+                .arg("-S")
+                .arg(&first.socket)
+                .args([
+                    "new-session",
+                    "-d",
+                    "-P",
+                    "-F",
+                    LAUNCH_FORMAT,
+                    "-s",
+                    "probe",
+                    "--",
+                    "sleep",
+                    "300",
+                ])
+                .output()
+                .unwrap();
+            let other = parse_launched(&String::from_utf8_lossy(&started.stdout)).unwrap();
+            assert!(matches!(
+                remove_launched(&first),
+                Removal::NotReached { now: Some(server) } if server == other.server
+            ));
+            // A's pane is still there, at the moved socket.
+            let still = Launched {
+                socket: aside.clone(),
+                ..first.clone()
+            };
+            assert_eq!(remove_launched(&still), Removal::Removed);
+            let _ = Command::new("tmux")
+                .arg("-S")
+                .arg(&first.socket)
+                .arg("kill-server")
+                .output();
+            let _ = Command::new("tmux")
+                .arg("-S")
+                .arg(&aside)
+                .arg("kill-server")
+                .output();
+            let _ = std::fs::remove_file(&first.socket);
+            let _ = std::fs::remove_file(&aside);
+            drop(a);
+        }
+
+        /// No server at the socket: not reached.
+        #[test]
+        fn no_server_at_the_socket_is_not_reached() {
+            let Some(server) = Private::new("none") else {
+                return;
+            };
+            let launched = server.launch("probe");
+            let _ = server.tmux(&["kill-server"]);
+            assert_eq!(
+                remove_launched(&launched),
+                Removal::NotReached { now: None }
+            );
         }
 
         #[test]
@@ -779,8 +1442,8 @@ pub mod tmux {
 
         #[test]
         fn a_pane_needs_a_command() {
-            let err = new_session("x", Path::new("/tmp"), &BTreeMap::new(), &[]).unwrap_err();
-            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            let launch = new_session("x", Path::new("/tmp"), &BTreeMap::new(), &[]);
+            assert!(matches!(launch, Launch::NotStarted { .. }), "{launch:?}");
         }
 
         /// Only a pane id at an absolute socket is captured: a target that

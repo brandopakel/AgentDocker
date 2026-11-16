@@ -191,6 +191,19 @@ pub(crate) struct DocumentTransition {
     pub closes: Option<MessageId>,
 }
 
+/// What became of one attempt to end a run ([`State::end_run`]).
+#[must_use]
+pub(super) enum RunEnded {
+    /// This call wrote the end and published its `agent_exited`.
+    Committed(AgentRecord),
+    /// Nothing was written: the store is unavailable, failed on this
+    /// write, or the write was fenced.
+    NotWritten,
+    /// The run had already ended (or there is no such record): it is as
+    /// found, and this call wrote nothing.
+    NotLive(Option<AgentRecord>),
+}
+
 /// What became of a write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[must_use]
@@ -4951,17 +4964,35 @@ impl State {
         status: AgentStatus,
         ending: Option<agentdocker_core::RunEnd>,
     ) -> Option<AgentRecord> {
+        match self.end_run(id, status, ending) {
+            RunEnded::Committed(record) => Some(record),
+            RunEnded::NotWritten => self.registry.get(id).cloned(),
+            RunEnded::NotLive(record) => record,
+        }
+    }
+
+    /// [`State::mark_ended`], saying whether this call wrote the end: only
+    /// [`RunEnded::Committed`] did, with its `agent_exited` published.
+    pub(super) fn end_run(
+        &mut self,
+        id: &AgentId,
+        status: AgentStatus,
+        ending: Option<agentdocker_core::RunEnd>,
+    ) -> RunEnded {
         // Called only after the owned process group has drained. A cancellation
         // can have made the registry terminal already; still retire its owner.
         self.supervised.remove(id);
         if self.storage_error.is_some() {
-            return self.registry.get(id).cloned();
+            return RunEnded::NotWritten;
         }
         if !self.is_live(id) {
-            return self.registry.get(id).cloned();
+            return RunEnded::NotLive(self.registry.get(id).cloned());
         }
         let now = Utc::now();
-        let mut record = self.registry.get(id)?.clone();
+        let Some(record) = self.registry.get(id) else {
+            return RunEnded::NotLive(None);
+        };
+        let mut record = record.clone();
         record.end_run(status.clone(), ending);
         record.finished_at.get_or_insert(now);
         record.last_seen = now;
@@ -5027,10 +5058,10 @@ impl State {
         );
         if committed != Persisted::Committed {
             self.journal_seq = previous_seq;
-            return self.registry.get(id).cloned();
+            return RunEnded::NotWritten;
         }
         info!(agent = %id.short(), name = %record.spec.name, %status, "agent finished");
-        Some(record)
+        RunEnded::Committed(record)
     }
 
     /// Seen, as one that read its own queue: the contact of a session with

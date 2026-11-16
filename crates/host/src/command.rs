@@ -226,6 +226,7 @@ pub fn is_batch_launcher(program: &Path) -> bool {
     })
 }
 
+#[derive(Debug)]
 pub struct Output {
     pub success: bool,
     /// Standard output only, for structured engine responses.
@@ -247,18 +248,73 @@ pub fn run_with_env(
     timeout: Duration,
     environment: &[(&str, Option<&std::ffi::OsStr>)],
 ) -> io::Result<Output> {
-    let program = argv
-        .first()
-        .ok_or_else(|| io::Error::other("empty command"))?;
-    let mut log = tempfile::tempfile()?;
-    let mut errors = tempfile::tempfile()?;
+    match observe(root, argv, timeout, environment) {
+        Observed::NotRun(error) | Observed::Lost { error, .. } => Err(error),
+        Observed::Exited(output) => Ok(output),
+    }
+}
+
+/// What became of one bounded command, for a caller that must tell a command
+/// that never ran apart from one whose end was lost.
+#[derive(Debug)]
+pub enum Observed {
+    /// It was never started: nothing it would have done was done.
+    NotRun(io::Error),
+    /// It was started and its end was not learned: it ran past its bound and
+    /// was stopped, its wait failed, or its output was too large to read.
+    /// `stdout` holds what it had written by its bound (at most
+    /// [`LOST_OUTPUT`] bytes), and is empty when nothing could be read.
+    Lost { error: io::Error, stdout: String },
+    /// It ended and said how.
+    Exited(Output),
+}
+
+/// The most of a lost command's output kept.
+pub const LOST_OUTPUT: u64 = 64 * 1024;
+
+/// [`run`], observed ([`Observed`]): the same bounds and group cleanup.
+pub fn run_observed(root: &Path, argv: &[String], timeout: Duration) -> Observed {
+    observe(root, argv, timeout, &[])
+}
+
+/// Up to `limit` bytes of a file from its start.
+fn read_from_start(file: &mut std::fs::File, limit: u64) -> io::Result<Vec<u8>> {
+    use std::io::{Seek, SeekFrom};
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.take(limit).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+fn observe(
+    root: &Path,
+    argv: &[String],
+    timeout: Duration,
+    environment: &[(&str, Option<&std::ffi::OsStr>)],
+) -> Observed {
+    let lost = |error: io::Error| Observed::Lost {
+        error,
+        stdout: String::new(),
+    };
+    let Some(program) = argv.first() else {
+        return Observed::NotRun(io::Error::other("empty command"));
+    };
+    let files = tempfile::tempfile().and_then(|log| {
+        let errors = tempfile::tempfile()?;
+        let (out, err) = (log.try_clone()?, errors.try_clone()?);
+        Ok((log, errors, out, err))
+    });
+    let (mut log, mut errors, out, err) = match files {
+        Ok(files) => files,
+        Err(error) => return Observed::NotRun(error),
+    };
     let mut command = Command::new(program);
     command
         .args(&argv[1..])
         .current_dir(root)
         .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(errors.try_clone()?);
+        .stdout(out)
+        .stderr(err);
     for (name, value) in environment {
         if let Some(value) = value {
             command.env(name, value);
@@ -276,53 +332,68 @@ pub fn run_with_env(
         wrapped.wrap(JobObject);
         wrapped
     };
-    let mut child = ChildGroup {
-        child: command.spawn()?,
-        reaped: false,
+    let mut child = match command.spawn() {
+        Ok(child) => ChildGroup {
+            child,
+            reaped: false,
+        },
+        Err(error) => return Observed::NotRun(error),
     };
     let started = Instant::now();
     // Short at first, so a quick command is not kept waiting on the poll.
     let mut pause = Duration::from_millis(1);
     let status = loop {
-        if let Some(status) = child.child.try_wait()? {
-            child.reaped = true;
-            break status;
+        match child.child.try_wait() {
+            Ok(Some(status)) => {
+                child.reaped = true;
+                break status;
+            }
+            Ok(None) => {}
+            Err(error) => return lost(error),
         }
         if started.elapsed() >= timeout {
-            return Err(io::Error::other(format!(
-                "command timed out after {timeout:?}"
-            )));
+            // What it wrote by its bound, read before the group is stopped.
+            let stdout = read_from_start(&mut log, LOST_OUTPUT)
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_default();
+            return Observed::Lost {
+                error: io::Error::other(format!("command timed out after {timeout:?}")),
+                stdout,
+            };
         }
-        if log
-            .metadata()?
-            .len()
-            .saturating_add(errors.metadata()?.len())
-            > 4 * 1024 * 1024
-        {
-            return Err(io::Error::other("command output exceeded 4 MiB"));
+        let written = log
+            .metadata()
+            .and_then(|log| Ok(log.len().saturating_add(errors.metadata()?.len())));
+        match written {
+            Ok(written) if written > 4 * 1024 * 1024 => {
+                return lost(io::Error::other("command output exceeded 4 MiB"));
+            }
+            Ok(_) => {}
+            Err(error) => return lost(error),
         }
         std::thread::sleep(pause);
         pause = (pause * 2).min(Duration::from_millis(10));
     };
-    use std::io::{Seek, SeekFrom};
-    log.seek(SeekFrom::Start(0))?;
-    let mut bytes = Vec::new();
-    log.take(4 * 1024 * 1024 + 1).read_to_end(&mut bytes)?;
-    if bytes.len() > 4 * 1024 * 1024 {
-        return Err(io::Error::other("command output exceeded 4 MiB"));
+    let mut read = || -> io::Result<Output> {
+        let bytes = read_from_start(&mut log, 4 * 1024 * 1024 + 1)?;
+        if bytes.len() > 4 * 1024 * 1024 {
+            return Err(io::Error::other("command output exceeded 4 MiB"));
+        }
+        let stderr = read_from_start(&mut errors, 4 * 1024 * 1024 + 1)?;
+        if bytes.len().saturating_add(stderr.len()) > 4 * 1024 * 1024 {
+            return Err(io::Error::other("command output exceeded 4 MiB"));
+        }
+        let stdout = String::from_utf8_lossy(&bytes).into_owned();
+        Ok(Output {
+            success: status.success(),
+            text: format!("{stdout}{}", String::from_utf8_lossy(&stderr)),
+            stdout,
+        })
+    };
+    match read() {
+        Ok(output) => Observed::Exited(output),
+        Err(error) => lost(error),
     }
-    errors.seek(SeekFrom::Start(0))?;
-    let mut stderr = Vec::new();
-    errors.take(4 * 1024 * 1024 + 1).read_to_end(&mut stderr)?;
-    if bytes.len().saturating_add(stderr.len()) > 4 * 1024 * 1024 {
-        return Err(io::Error::other("command output exceeded 4 MiB"));
-    }
-    let stdout = String::from_utf8_lossy(&bytes).into_owned();
-    Ok(Output {
-        success: status.success(),
-        text: format!("{stdout}{}", String::from_utf8_lossy(&stderr)),
-        stdout,
-    })
 }
 
 #[cfg(all(test, unix))]
