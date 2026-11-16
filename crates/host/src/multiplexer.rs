@@ -1277,6 +1277,21 @@ pub mod tmux {
                     .output()
                     .unwrap()
             }
+            /// End `server` and wait until its process is gone: a client
+            /// started while it is still exiting can reach it and be told
+            /// "server exited unexpectedly" instead of finding none.
+            fn end(&self, server: Server) {
+                let _ = self.tmux(&["kill-server"]);
+                let until = std::time::Instant::now() + Duration::from_secs(10);
+                while crate::procinfo::alive(server.pid) {
+                    assert!(
+                        std::time::Instant::now() < until,
+                        "the tmux server ({}) did not end",
+                        server.pid
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
             fn launch(&self, session: &str) -> Launched {
                 let launch = launch_with(
                     Path::new("tmux"),
@@ -1335,7 +1350,7 @@ pub mod tmux {
             // The server ends; a successor at the same socket reuses `%0`
             // and the name.
             let first = server.launch("again");
-            let _ = server.tmux(&["kill-server"]);
+            server.end(first.server);
             let successor = server.launch("again");
             assert_eq!(successor.socket, first.socket);
             assert_ne!(successor.server, first.server);
@@ -1426,7 +1441,7 @@ pub mod tmux {
                 return;
             };
             let launched = server.launch("probe");
-            let _ = server.tmux(&["kill-server"]);
+            server.end(launched.server);
             assert_eq!(
                 remove_launched(&launched),
                 Removal::NotReached { now: None }
