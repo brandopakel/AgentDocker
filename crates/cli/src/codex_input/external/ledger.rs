@@ -147,6 +147,151 @@ pub(super) struct Record {
     pub manual_reads: Vec<ManualRead>,
 }
 
+/// Where the pending input stands, read from the record alone: nothing is
+/// stored for it, so the ledger's form is as it was.
+///
+/// The record holds it as six optional fields and two markers inside them,
+/// and each reader (the receiver's loop, a hook's offer, the review, the
+/// readback and the explicit start) worked the state out from those for
+/// itself, not always alike. This is the one reading. It is a projection,
+/// not the evidence: a receipt can stand beside a start, a hook offer or a
+/// steer, and a reader that needs one of those still reads it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Phase {
+    /// Nothing is pending.
+    Empty,
+    /// Recorded before its queue add was written, and nothing since: the
+    /// add may or may not have reached Codex.
+    Prepared,
+    /// Codex acknowledged a native queue entry for it.
+    Queued,
+    /// Offered through a hook. Whether the hook's context was returned to
+    /// the session is not known without its receipt.
+    HookOffered,
+    /// An explicit start of its queue entry is recorded and its
+    /// transmission has not begun: the marker proves nothing was written
+    /// for the start. The input itself is already in the native queue.
+    StartPrepared,
+    /// The explicit start's write began, so it may have reached Codex;
+    /// `replied` when Codex answered it with a turn. Neither is a receipt.
+    StartTransmitted { replied: bool },
+    /// Recorded before its steer was written, and not answered.
+    SteerOffered,
+    /// The server accepted the steer into its turn, which is not proof the
+    /// session received it.
+    SteerAccepted,
+    /// A provider receipt is recorded; the receiver acknowledges it.
+    Received,
+    /// A manual readback is recorded and being reconciled; `journaled`
+    /// once its note is in the project's journal.
+    ManualRead { journaled: bool },
+}
+
+impl Phase {
+    /// The phase in words, for the person reviewing it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Phase::Empty => "nothing pending",
+            Phase::Prepared => "prepared",
+            Phase::Queued => "queued",
+            Phase::HookOffered => "hook offered",
+            Phase::StartPrepared => "start prepared",
+            Phase::StartTransmitted { replied: false } => "start possibly transmitted",
+            Phase::StartTransmitted { replied: true } => "start answered",
+            Phase::SteerOffered => "steer offered",
+            Phase::SteerAccepted => "steer accepted",
+            Phase::Received => "received",
+            Phase::ManualRead { journaled: false } => "manual readback pending",
+            Phase::ManualRead { journaled: true } => "manual readback journaled",
+        }
+    }
+
+    /// Whether a hook may take the input over: nothing has offered it yet
+    /// but, at most, the native queue.
+    pub fn open_to_a_hook(self) -> bool {
+        matches!(self, Phase::Empty | Phase::Prepared | Phase::Queued)
+    }
+
+    /// Whether the phase alone allows a manual readback, or the refusal's
+    /// words. Not the whole of the command: its digest, its journal and
+    /// the live queue are checked where it runs.
+    pub fn readback(self) -> std::result::Result<(), &'static str> {
+        match self {
+            Phase::HookOffered | Phase::ManualRead { .. } => Ok(()),
+            Phase::Empty => Err("no retained input to resolve"),
+            Phase::Received => Err("native receipt already exists; let the receiver reconcile it"),
+            Phase::Prepared
+            | Phase::Queued
+            | Phase::StartPrepared
+            | Phase::StartTransmitted { .. }
+            | Phase::SteerOffered
+            | Phase::SteerAccepted => Err("manual readback requires a retained hook offer"),
+        }
+    }
+
+    /// Whether the phase alone allows an explicit start of the queue
+    /// entry, or the refusal's words. Not the whole of the command: the
+    /// shared server, the digest and every live check are made where it
+    /// runs, each time.
+    pub fn start(self) -> std::result::Result<(), &'static str> {
+        match self {
+            Phase::Queued | Phase::StartPrepared => Ok(()),
+            Phase::Empty => Err("no retained native input to start"),
+            Phase::StartTransmitted { .. } => {
+                Err("this queued start may have been transmitted; await its original receipt")
+            }
+            Phase::Prepared | Phase::SteerOffered | Phase::SteerAccepted => {
+                Err("no verified native queue entry")
+            }
+            Phase::HookOffered | Phase::Received | Phase::ManualRead { .. } => {
+                Err("input already offered or received")
+            }
+        }
+    }
+}
+
+impl Record {
+    /// The pending input's phase. `validate` makes what it reads
+    /// exclusive except a receipt, which may stand beside the others and
+    /// is read before them.
+    pub fn phase(&self) -> Phase {
+        let Some(attempt) = &self.attempt else {
+            return Phase::Empty;
+        };
+        if let Some(read) = self.manual_reads.iter().find(|read| !read.acknowledged) {
+            return Phase::ManualRead {
+                journaled: read.journaled,
+            };
+        }
+        if attempt.receipt.is_some() {
+            return Phase::Received;
+        }
+        if let Some(start) = &attempt.start {
+            return if start.may_have_transmitted() {
+                Phase::StartTransmitted {
+                    replied: start.turn.is_some(),
+                }
+            } else {
+                Phase::StartPrepared
+            };
+        }
+        if let Some(steer) = &attempt.steer {
+            return if steer.accepted {
+                Phase::SteerAccepted
+            } else {
+                Phase::SteerOffered
+            };
+        }
+        if attempt.hook.is_some() {
+            Phase::HookOffered
+        } else if attempt.queued.is_some() {
+            Phase::Queued
+        } else {
+            Phase::Prepared
+        }
+    }
+}
+
 pub(super) struct Ledger {
     file: Durable,
     record: Record,
@@ -284,6 +429,11 @@ impl Ledger {
 
     pub fn record(&self) -> &Record {
         &self.record
+    }
+
+    /// Where the pending input stands ([`Phase`]).
+    pub fn phase(&self) -> Phase {
+        self.record.phase()
     }
 
     pub fn latest_receipt(&self) -> Option<&Receipt> {
@@ -1149,6 +1299,11 @@ mod tests {
             .unwrap();
         assert_eq!(migrated.id, intent.id);
         assert!(migrated.may_have_transmitted());
+        assert_eq!(
+            ledger.phase(),
+            Phase::StartTransmitted { replied: false },
+            "an intent from before the marker is read as possibly transmitted"
+        );
         assert!(ledger.queued_start_transmitting(&intent.id).is_err());
         assert!(
             ledger
@@ -1861,5 +2016,140 @@ mod tests {
         std::fs::remove_file(home.path().join("codex-queue/agent/delivery.json")).unwrap();
         assert!(Ledger::open(home.path(), new, Some(&accepted)).is_err());
         assert!(!home.path().join("codex-queue/agent/delivery.json").exists());
+    }
+
+    use super::super::testing::{PHASES, operator, receipt, steered, take_to};
+
+    fn taken_to(phase: Phase) -> (tempfile::TempDir, Ledger, Envelope) {
+        let home = tempfile::tempdir().unwrap();
+        let mut bound = binding(home.path());
+        bound.control = steered(phase);
+        let message = peer_message("phase fixture");
+        let mut ledger = Ledger::open(home.path(), bound, None).unwrap();
+        take_to(&mut ledger, &message, phase);
+        (home, ledger, message)
+    }
+
+    /// The pending input's phase is one reading of the record: each state
+    /// the receiver can leave it in, reached by the receiver's own calls,
+    /// has its phase and a word of its own, and since nothing is stored
+    /// for it a reopened ledger reads the same.
+    #[test]
+    fn the_pending_inputs_phase_is_one_reading_of_the_record() {
+        for phase in PHASES {
+            let (home, ledger, _) = taken_to(phase);
+            assert_eq!(ledger.phase(), phase);
+            let bound = ledger.record.binding.clone();
+            let stored = std::fs::read(ledger.file.path()).unwrap();
+            let written: serde_json::Value = serde_json::from_slice(&stored).unwrap();
+            assert!(
+                written.get("phase").is_none() && written["attempt"].get("phase").is_none(),
+                "nothing is stored for it"
+            );
+            drop(ledger);
+            let reopened = Ledger::open(home.path(), bound, None).unwrap();
+            assert_eq!(reopened.phase(), phase, "after a reopen");
+            assert_eq!(std::fs::read(reopened.file.path()).unwrap(), stored);
+        }
+        let words: std::collections::BTreeSet<_> = PHASES.iter().map(|p| p.word()).collect();
+        assert_eq!(words.len(), PHASES.len(), "each phase has its own word");
+    }
+
+    /// The phase is a projection, not the evidence: a receipt is read
+    /// before whatever it stands beside, and what it stands beside is
+    /// still there for the reader that needs it.
+    #[test]
+    fn a_receipt_is_read_before_what_it_stands_beside() {
+        for phase in [
+            Phase::Prepared,
+            Phase::Queued,
+            Phase::HookOffered,
+            Phase::StartPrepared,
+            Phase::StartTransmitted { replied: false },
+            Phase::StartTransmitted { replied: true },
+            Phase::SteerOffered,
+            Phase::SteerAccepted,
+        ] {
+            let (_home, mut ledger, _) = taken_to(phase);
+            ledger
+                .received(receipt(if steered(phase) { "turn-a" } else { "turn" }))
+                .unwrap();
+            assert_eq!(ledger.phase(), Phase::Received, "{phase:?}");
+            let attempt = ledger.record.attempt.as_ref().unwrap();
+            match phase {
+                Phase::HookOffered => assert!(attempt.hook.is_some()),
+                Phase::StartPrepared => {
+                    assert!(!attempt.start.as_ref().unwrap().may_have_transmitted());
+                }
+                Phase::StartTransmitted { replied } => {
+                    let start = attempt.start.as_ref().unwrap();
+                    assert!(start.may_have_transmitted());
+                    assert_eq!(start.turn.is_some(), replied);
+                }
+                Phase::SteerOffered | Phase::SteerAccepted => {
+                    assert_eq!(
+                        attempt.steer.as_ref().unwrap().accepted,
+                        phase == Phase::SteerAccepted
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// What a phase allows is said in one place, and the ledger's own
+    /// guards say the same: a hook may take the input over in exactly the
+    /// phases `offer_hook` accepts; a readback is allowed in exactly the
+    /// phase `begin_manual_read` accepts, and refused in its words; a start
+    /// is allowed only where `begin_queued_start` accepts it.
+    #[test]
+    fn what_a_phase_allows_is_what_the_ledgers_guards_allow() {
+        for phase in PHASES {
+            let open = matches!(phase, Phase::Empty | Phase::Prepared | Phase::Queued);
+            assert_eq!(phase.open_to_a_hook(), open, "{phase:?}");
+            if phase != Phase::Empty {
+                let (_home, mut ledger, message) = taken_to(phase);
+                let offered = ledger.offer_hook("another-hook", input(&message).unwrap(), None);
+                assert_eq!(offered.is_ok(), open, "{phase:?}");
+            }
+
+            let (_home, mut ledger, message) = taken_to(phase);
+            let confirmation = ledger.confirmation().unwrap_or_default();
+            let guard =
+                ledger.begin_manual_read(message.id.as_str(), &confirmation, "a note", operator());
+            match (phase, phase.readback()) {
+                // One is already begun: the command finds it by its
+                // confirmation and resumes it, and a second is refused.
+                (Phase::ManualRead { .. }, allowed) => {
+                    assert_eq!(allowed, Ok(()));
+                    assert_eq!(
+                        guard.unwrap_err().to_string(),
+                        "a manual readback is already pending"
+                    );
+                }
+                (_, Ok(())) => {
+                    guard.unwrap();
+                    assert_eq!(ledger.phase(), Phase::ManualRead { journaled: false });
+                }
+                (_, Err(why)) => assert_eq!(guard.unwrap_err().to_string(), why, "{phase:?}"),
+            }
+
+            let (_home, mut ledger, message) = taken_to(phase);
+            let confirmation = ledger.start_confirmation().unwrap_or_default();
+            let guard =
+                ledger.begin_queued_start(message.id.as_str(), &confirmation, "a note", operator());
+            match phase.start() {
+                Ok(()) => {
+                    assert!(!guard.unwrap().may_have_transmitted(), "{phase:?}");
+                    assert_eq!(ledger.phase(), Phase::StartPrepared);
+                }
+                Err(why) => {
+                    let refused = guard.unwrap_err().to_string();
+                    if matches!(phase, Phase::StartTransmitted { .. }) {
+                        assert_eq!(refused, why);
+                    }
+                }
+            }
+        }
     }
 }

@@ -15,6 +15,8 @@ mod receipts;
 mod remote;
 pub mod resolve;
 mod resume;
+#[cfg(test)]
+mod testing;
 pub mod upgrade;
 pub use bootstrap::{ensure_started, ensure_started_control};
 
@@ -27,7 +29,7 @@ use agentdocker_core::{
 use agentdocker_host::{dirs, procinfo};
 use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Utc};
-use ledger::{Binding, Ledger};
+use ledger::{Binding, Ledger, Phase};
 use serde_json::json;
 use std::{
     path::{Path, PathBuf},
@@ -312,13 +314,18 @@ async fn service(
     loop {
         let agent = identity(client, &ledger.record().binding).await?;
         let mut healthy = true;
-        if ledger.pending_manual_read().is_some() {
+        // Where the pending input stands decides this pass. The order is
+        // the one it has always had: a manual readback first, then a
+        // recorded receipt, then the exact receipt search, and only then
+        // what the phase waits on.
+        let phase = ledger.phase();
+        if matches!(phase, Phase::ManualRead { .. }) {
             resolve::reconcile(client, provider, ledger).await?;
             unseen_since = None;
             continue;
         }
         if let Some(attempt) = ledger.record().attempt.clone() {
-            if attempt.receipt.is_some() {
+            if phase == Phase::Received {
                 acknowledge(client, ledger).await?;
                 unseen_since = None;
                 continue;
@@ -329,43 +336,65 @@ async fn service(
                 ledger.received(receipt)?;
                 continue;
             }
-            if attempt.hook.is_some() {
-                healthy = false;
-                let since = unseen_since.get_or_insert_with(tokio::time::Instant::now);
-                ensure!(
-                    since.elapsed() < Duration::from_secs(30),
-                    "native hook offer lacks an exact provider receipt; retained without resubmission"
-                );
-            } else if let Some(steer) = &attempt.steer {
-                if control::still_running(provider, &thread, &steer.turn).await? {
-                    // The turn takes steered input at its next step; until
-                    // it ends, a missing receipt proves nothing either way.
-                    unseen_since = None;
-                } else {
+            match phase {
+                Phase::HookOffered => {
                     healthy = false;
                     let since = unseen_since.get_or_insert_with(tokio::time::Instant::now);
                     ensure!(
                         since.elapsed() < Duration::from_secs(30),
-                        "steered input has no exact receipt in the turn it was steered into; retained for reconciliation, automatic resubmission refused"
+                        "{}",
+                        unsettled(phase)
                     );
                 }
-            } else if let Some(id) = receipts::queued(provider, &thread, &attempt).await? {
-                if attempt.queued.as_deref() != Some(&id) {
-                    ledger.queued(&id)?;
+                Phase::SteerOffered | Phase::SteerAccepted => {
+                    let steer = attempt
+                        .steer
+                        .as_ref()
+                        .context("a steered input has no turn recorded")?;
+                    if control::still_running(provider, &thread, &steer.turn).await? {
+                        // The turn takes steered input at its next step; until
+                        // it ends, a missing receipt proves nothing either way.
+                        unseen_since = None;
+                    } else {
+                        healthy = false;
+                        let since = unseen_since.get_or_insert_with(tokio::time::Instant::now);
+                        ensure!(
+                            since.elapsed() < Duration::from_secs(30),
+                            "{}",
+                            unsettled(phase)
+                        );
+                    }
                 }
-                unseen_since = None;
-                // A verified pending entry belongs to the original TUI's
-                // scheduler. This read-only sidecar cannot prove live idleness:
-                // Codex may reconstruct a still-running turn as "interrupted".
-                // Keep reconciling the same entry, without pausing, resubmitting
-                // or acknowledging it just because time has elapsed.
-            } else {
-                healthy = false;
-                let since = unseen_since.get_or_insert_with(tokio::time::Instant::now);
-                ensure!(
-                    since.elapsed() < Duration::from_secs(30),
-                    "input has no native queue entry or provider receipt; retained for reconciliation, automatic resubmission refused"
-                );
+                // An explicit start changes nothing here: its entry is
+                // waited on as any queued entry is, and once the entry is
+                // gone only the receipt settles it.
+                Phase::Prepared
+                | Phase::Queued
+                | Phase::StartPrepared
+                | Phase::StartTransmitted { .. } => {
+                    if let Some(id) = receipts::queued(provider, &thread, &attempt).await? {
+                        if attempt.queued.as_deref() != Some(&id) {
+                            ledger.queued(&id)?;
+                        }
+                        unseen_since = None;
+                        // A verified pending entry belongs to the original TUI's
+                        // scheduler. This read-only sidecar cannot prove live idleness:
+                        // Codex may reconstruct a still-running turn as "interrupted".
+                        // Keep reconciling the same entry, without pausing, resubmitting
+                        // or acknowledging it just because time has elapsed.
+                    } else {
+                        healthy = false;
+                        let since = unseen_since.get_or_insert_with(tokio::time::Instant::now);
+                        ensure!(
+                            since.elapsed() < Duration::from_secs(30),
+                            "{}",
+                            unsettled(phase)
+                        );
+                    }
+                }
+                // Settled above, and named so that a new phase has to be
+                // given its place here.
+                Phase::Empty | Phase::Received | Phase::ManualRead { .. } => continue,
             }
         } else {
             let fresh = ledger.pristine()
@@ -522,6 +551,33 @@ async fn service(
             refresh(client, ledger, &mut last_refresh).await?;
         }
         wait_for_hook(hooks, resolve, client, provider, ledger, &origin).await?;
+    }
+}
+
+/// Why delivery pauses on an input that has stood thirty seconds without
+/// what would settle it, in the words of the phase it stands in. Each was
+/// reached after the exact receipt search found nothing, and none of them
+/// is permission to send the input again.
+fn unsettled(phase: Phase) -> &'static str {
+    match phase {
+        Phase::HookOffered => {
+            "native hook offer lacks an exact provider receipt; retained without resubmission"
+        }
+        Phase::SteerOffered => {
+            "the steer was not answered and its turn shows no exact receipt; retained for reconciliation, automatic resubmission refused"
+        }
+        Phase::SteerAccepted => {
+            "steered input has no exact receipt in the turn it was steered into; retained for reconciliation, automatic resubmission refused"
+        }
+        Phase::StartTransmitted { .. } => {
+            "an explicit queued start may have been transmitted and has no provider receipt; retained for reconciliation, never started again"
+        }
+        Phase::Queued | Phase::StartPrepared => {
+            "the recorded native queue entry is gone or was changed and no provider receipt was found; retained for reconciliation, automatic resubmission refused"
+        }
+        Phase::Prepared | Phase::Empty | Phase::Received | Phase::ManualRead { .. } => {
+            "input has no native queue entry or provider receipt; retained for reconciliation, automatic resubmission refused"
+        }
     }
 }
 

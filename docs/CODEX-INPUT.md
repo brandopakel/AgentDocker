@@ -228,6 +228,8 @@ offer blocks later messages until it is resolved.
 
 `agentdocker codex-queue-resolve --agent <id>` asks the owning receiver for a
 read-only preview of its complete retained envelope and a confirmation digest.
+The preview also says where the retained input stands and what each of the two
+commands below would meet (see *What the preview says of the input's state*).
 After actually reading that message, an operator can run:
 
 ```sh
@@ -298,12 +300,79 @@ receipt is still required before acknowledgement. A reply naming a turn is not a
 delivery receipt. The path never adds, deletes, reorders or repeats the queued
 submission to recover a lost reply: the original submission ID is the only thing
 started. A lost provider reply, a closed client, or a crash after the
-transmission marker leaves the intent retained as possibly transmitted, and the
-only ways forward are the ordinary exact provider receipt or an explicit
-manual-readback resolution. An explicit retry is permitted only before
-transmission has begun, and then reuses the persisted intent and repeats every
-live preflight check. The same generation-bound intent and reconciliation path
-applies on every platform.
+transmission marker leaves the intent retained as possibly transmitted. It then
+stays retained awaiting its ordinary exact provider receipt, and has no manual
+readback: a readback requires a retained hook offer, and an input with a start
+intent cannot be offered through a hook. An explicit retry is permitted only
+before transmission has begun, and then reuses the persisted intent and repeats
+every live preflight check. The same generation-bound intent and reconciliation
+path applies on every platform.
+
+#### What the preview says of the input's state
+
+The ledger stores no state word. The receiver derives one phase from the record,
+and its delivery loop, a hook's offer, the preview and the two commands all read
+that one phase. The preview's `pending` object carries it beside the keys it has
+always had (`message`, `envelope`, `confirmation`, `hook_offer`,
+`native_receipt`, `manual_read`, `queued_submission`, `start_confirmation`,
+`start_intent`, `steered`, unchanged), as three more:
+
+- `phase`: where the input stands.
+
+  | `phase` | Meaning |
+  |---|---|
+  | `prepared` | Recorded before its queue add was written, and nothing since. The add may or may not have reached Codex. |
+  | `queued` | Codex acknowledged a native queue entry for it. |
+  | `hook offered` | Offered through a hook. Whether the session received it is not known without its receipt. |
+  | `start prepared` | An explicit start is recorded and has not begun transmission. The input itself is already in the native queue. |
+  | `start possibly transmitted`, `start answered` | The explicit start's write began, so it may have reached Codex; *answered* when Codex replied with a turn. Neither is a receipt. |
+  | `steer offered` | Recorded before its steer was written, and not answered. |
+  | `steer accepted` | The server accepted the steer into its turn, which is not proof the session received it. |
+  | `received` | A provider receipt is recorded; the receiver acknowledges it. |
+  | `manual readback pending`, `manual readback journaled` | A manual readback is recorded and being finished. |
+
+- `queue`: what one read of the live native queue found of this input, in the
+  phases whose next step depends on it (`queued`, `start prepared`, `hook
+  offered` and a manual readback): *the recorded entry, unchanged*; *a matching
+  entry that is not the recorded one* (its text was edited, or it is under
+  another id); *no matching entry*; or *not established*, with why, when the read
+  failed, did not finish or found two entries for one input. It is `null` in the
+  other phases, where the queue is not read. The preview reads the whole queue
+  before it answers and writes nothing: a queue id it sees is not recorded.
+- `next`: `standing`, a sentence on what the input waits on, and for each
+  command, `confirm_read` and `start_queued`, one of:
+  - `eligible …`: the request is eligible from the retained record and that one
+    look. The command repeats every live check itself (the project and its
+    journal, the checkout, an idle conversation, the queue's head, the daemon's
+    admission, the entry again) and may refuse. A digest authorizes no skipped
+    check.
+  - `refused: …`, with the words the command itself answers. An explicit start
+    requires the recorded entry, unchanged, and the launcher-owned shared server;
+    a prepared start takes the same conditions when it is retried. A manual
+    readback requires a hook offer and is refused while anything matching is
+    still scheduled, a readback already begun included.
+  - `reports only`, for a start that may have been transmitted: with the
+    intent's confirmation the command answers that it was already attempted and
+    starts nothing.
+  - `not established …`, when the queue could not be read. The phase, the
+    envelope and the digests are still shown, and nothing is recommended.
+
+The preview makes no search for a receipt and no look at a turn. It says that no
+receipt is *recorded*, never that none exists, since the receiver's
+reconciliation may still find one; and it never says that a turn has ended.
+
+Several phases have no command that settles them: `prepared` with neither a
+queue entry nor a receipt, `queued` or `start prepared` whose recorded entry is
+gone or was edited, a start that may have been transmitted, and a steer with no
+receipt in its turn. The preview says so in `next`. Such an input stays retained
+for its exact provider receipt, and a missing receipt never authorizes sending it
+again.
+
+When delivery pauses on an input that has stood thirty seconds without what would
+settle it, the pause's reason names that phase: a hook offer lacking its receipt,
+a steer not answered or a steered input with no receipt in its turn, an explicit
+start that may have been transmitted, a recorded queue entry that is gone or was
+changed, or an input with neither queue entry nor receipt.
 
 The receiver ledger (current version 7) migrates versions 2 through 6 without
 changing their input or token. Versions before 5 cannot contain the immutable

@@ -259,16 +259,11 @@ async fn offer(
         // a different queue head now that its original attempt is gone.
         return Ok(None);
     }
-    if let Some(attempt) = &ledger.record().attempt {
-        // A previous uncertain hook must never be emitted again. The ordinary
-        // receipt loop will reconcile it before another message is offered.
-        if attempt.hook.is_some()
-            || attempt.receipt.is_some()
-            || attempt.start.is_some()
-            || attempt.steer.is_some()
-        {
-            return Ok(None);
-        }
+    // A previous uncertain hook must never be emitted again, nor an input a
+    // start or a steer has taken, nor one received or being read back. The
+    // ordinary receipt loop reconciles it before another message is offered.
+    if !ledger.phase().open_to_a_hook() {
+        return Ok(None);
     }
     let (messages, uncertain, answers_routed) = queue(client, ledger, Vec::new()).await?;
     let Some(envelope) = messages.first() else {
