@@ -235,6 +235,12 @@ impl App {
     /// control, Back and Forward, and the two the window finishes for the
     /// person later (a launched or reconnected session's terminal
     /// opening), which never pass through `update` as a message of theirs.
+    ///
+    /// The open menu is closed here too, for the same reason: a move that
+    /// ends on another screen does not take a menu with it, whatever made
+    /// the move. Some set the screen themselves and never pass through
+    /// `Message::Navigate`: a session's terminal opening and closing, and
+    /// the terminal the window opens for the person later.
     pub(super) fn navigating<T>(&mut self, record: bool, f: impl FnOnce(&mut Self) -> T) -> T {
         self.moving(record, true, f)
     }
@@ -252,9 +258,16 @@ impl App {
         }
         let leaves_route = leaves_route && self.shell.route != super::route::Route::Idle;
         let before = (record || leaves_route).then(|| self.person_at());
+        let (screen, menu) = (self.screen, self.shell.menu.clone());
         self.shell.history.busy = true;
         let out = f(self);
         self.shell.history.busy = false;
+        // The menu that was open when the move began does not arrive on
+        // another screen, to wait there hidden and be found open on the
+        // way back. One the move itself opened where it arrived stays.
+        if self.screen != screen && menu.is_some() && self.shell.menu == menu {
+            self.close_menu();
+        }
         if let Some(before) = before {
             let after = self.person_at();
             if leaves_route && before != after {

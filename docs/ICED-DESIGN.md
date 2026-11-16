@@ -276,7 +276,13 @@ control does, its id or its accessible label:
   tells them from the rest for the focus rules above). Everything that closes
   menus calls the one `App::close_menu`: going to another screen, another
   project, Back and Forward, selecting a session, a notification's route,
-  opening the palette, opening or closing the launch dialog, and Escape. What
+  opening the palette, opening or closing the launch dialog, and Escape. And
+  so that no way to another screen is missed, the function every move passes
+  through (`App::navigating`) closes the menu that was open when the move
+  began if the move ends on another screen: a session's terminal opening and
+  closing set the screen themselves, as does the terminal the window opens
+  later for a launched or reconnected session. A menu the move opened where it
+  arrived stays. What
   a menu held of its own goes with it (the name being typed in a project's
   menu; in an agent's roles, the palette being edited and the delete pressed
   once). An open card closes its own menu and no other. On the board, Escape

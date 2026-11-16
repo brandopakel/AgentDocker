@@ -1176,7 +1176,8 @@ and notarization; locally signed builds are explicit previews.
   or another project, going Back or Forward, selecting a session, opening the
   command palette or **Launch agent…**, and Escape each close the menu that is
   open, whichever it is: none is left open behind a screen to be found open on
-  coming back, and none under the palette or the dialog. The dialog's **Model**
+  coming back, and none under the palette or the dialog. That holds for every
+  way to another screen, a session's terminal opening and closing included. The dialog's **Model**
   and **Effort** menus close with the dialog.
 - **Launch agent…** takes the focus into its task field as it opens; nothing
   under the dialog's scrim keeps the focus or answers keys.
@@ -1193,8 +1194,11 @@ and notarization; locally signed builds are explicit previews.
 - Command/Ctrl+Shift+U goes to the next agent that needs you (questions, waits
   and failures first, then finished work you have not seen), round again at
   the end; **Next agent that needs you** in Jump to does the same.
-- Escape closes the open menu, deselects the session (which closes its panel
-  and details) and closes an add or launch form.
+- Escape goes to the innermost thing. A menu that floats over the page takes
+  it and closes, and nothing else happens on that press. Otherwise it closes
+  one of the board's own menus if one is open, deselects the session (which
+  closes its panel and details) and closes an add or launch form; on the
+  board it then closes one thing per press, in the order given there.
 - F6 moves focus out of terminal input. Control+] detaches.
 - Drag across terminal cells to select text. Command+C on macOS, or Ctrl+Shift+C
   elsewhere, copies the selection (the visible screen when no range is selected).

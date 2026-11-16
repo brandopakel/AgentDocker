@@ -7769,6 +7769,102 @@ mod tests {
         }
     }
 
+    /// A live session AgentDocker started in a terminal of its own, to
+    /// attach to in a test.
+    fn live_tty_session(id: &str, started: chrono::DateTime<Utc>) -> AgentRecord {
+        let mut agent = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                runtime: "claude-code".into(),
+                tty: true,
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        agent.id = id.into();
+        agent.status = agentdocker_core::AgentStatus::Running;
+        agent.process_started_at = Some(started);
+        agent
+    }
+
+    /// A session's terminal opens and closes without `Message::Navigate`:
+    /// the handlers set the screen themselves. A menu open on Agents was
+    /// carried along, hidden while the terminal was on view and drawn
+    /// again on the way back. Whatever makes the move, a menu does not
+    /// arrive on another screen.
+    #[test]
+    fn a_menu_does_not_follow_a_session_into_its_terminal_and_back() {
+        let (mut app, _commands, _messages) = app();
+        app.link.open();
+        app.agents.push(live_tty_session("agent-1", Utc::now()));
+        app.screen = Screen::Agents;
+        app.shell.selected = Some("agent-1".into());
+
+        let _ = app.update(Message::RolesMenu("agent-1".into()));
+        assert_eq!(app.shell.roles_menu(), Some("agent-1"));
+        app.shell.roles_editing = true;
+        let _ = app.update(Message::Attach("agent-1".into()));
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.menu, None, "not carried into the terminal");
+        assert!(!app.shell.roles_editing, "nor what it held");
+        let _ = app.update(Message::Detach);
+        assert_eq!(app.screen, Screen::Agents);
+        assert_eq!(app.shell.menu, None, "and not found open on the way back");
+
+        // The other way: a menu open while the terminal is on view does
+        // not come back to Agents with the person.
+        let _ = app.update(Message::Attach("agent-1".into()));
+        app.shell.menu = Some(Menu::More);
+        let _ = app.update(Message::Detach);
+        assert_eq!(app.shell.menu, None);
+
+        // A menu opened where no move is made stays open.
+        let _ = app.update(Message::RolesMenu("agent-1".into()));
+        let _ = app.update(Message::Attach("no-such-session".into()));
+        assert_eq!(app.screen, Screen::Agents, "nothing to attach to");
+        assert_eq!(app.shell.roles_menu(), Some("agent-1"));
+    }
+
+    /// The terminal the window opens for the person later, when the
+    /// session they reconnected is listed, is a move like any other: the
+    /// menu they opened while waiting does not go with them.
+    #[test]
+    fn a_menu_opened_while_a_reconnect_is_out_does_not_follow_into_its_terminal() {
+        let (mut app, _commands, messages) = app();
+        app.link.open();
+        app.screen = Screen::Agents;
+        let started = Utc::now();
+        messages
+            .send(Msg::Reconnected(Ok(("agent-1".into(), Some(started)))))
+            .unwrap();
+        app.drain();
+        assert!(app.shell.attach_when_listed.is_some());
+        assert_eq!(
+            app.screen,
+            Screen::Agents,
+            "its terminal waits for the list"
+        );
+
+        // While the reply is out the person opens the session's roles.
+        let _ = app.update(Message::RolesMenu("agent-1".into()));
+        assert_eq!(app.shell.roles_menu(), Some("agent-1"));
+        app.shell.roles_editing = true;
+
+        messages
+            .send(Msg::Agents(
+                vec![live_tty_session("agent-1", started)],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.screen, Screen::Terminal, "the terminal opened");
+        assert_eq!(app.shell.menu, None, "without the menu");
+        assert!(!app.shell.roles_editing);
+        let _ = app.update(Message::Detach);
+        assert_eq!(app.screen, Screen::Agents);
+        assert_eq!(app.shell.menu, None, "which is not found open after");
+    }
+
     /// There is one menu. Opening another puts it in the first one's
     /// place, the board's own two included: they are drawn in the page
     /// and no press outside closes them, so either could stay open beside
