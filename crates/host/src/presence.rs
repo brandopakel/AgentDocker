@@ -828,10 +828,16 @@ mod tests {
     fn a_full_queue_is_answered_within_the_deadline() {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("full.sock");
-        let _listener = UnixListener::bind(&socket).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        // The standard library listens with the system's maximum backlog,
+        // thousands on Linux, so its queue would not fill here; a second
+        // listen sets a backlog of one, on Linux and macOS alike.
+        // SAFETY: the descriptor is the listener's own, open while it lives.
+        let relisten = unsafe { libc::listen(std::os::fd::AsRawFd::as_raw_fd(&listener), 1) };
+        assert_eq!(relisten, 0, "{}", std::io::Error::last_os_error());
         let mut held = Vec::new();
         let mut refused = false;
-        for _ in 0..4096 {
+        for _ in 0..64 {
             let started = Instant::now();
             match connect_within(&socket, Instant::now() + Duration::from_millis(200)) {
                 Ok(stream) => held.push(stream),
