@@ -866,9 +866,9 @@ impl State {
         } else {
             (None, None)
         };
-        // Each says its own: the workspace's warning and the hooks' can
-        // stand together, where the second was dropped when the first
-        // was there.
+        // Each under its own source. Only one of the two is raised here:
+        // a workspace that could not be loaded turns saving off, and the
+        // exclusions are then not synced at all (the guard above).
         let mut alerts = super::alerts::Alerts::default();
         if let Some(error) = error {
             alerts.raise(Source::Workspace, error);
@@ -4217,10 +4217,10 @@ impl App {
                     // app's own whose process holds it is where it shows.
                     Ok(crate::native_terminal::Opened::InApp { pid, started_at }) => {
                         match self.in_app_session(pid, started_at) {
-                            Some(id) => {
-                                self.shell.alerts.clear(Source::Terminal);
-                                tasks.push(self.update(Message::Attach(id)));
-                            }
+                            // Its terminal opening clears the alert
+                            // (`attach`); an attach that is not taken
+                            // leaves it.
+                            Some(id) => tasks.push(self.update(Message::Attach(id))),
                             None => {
                                 self.shell.alerts.raise(
                                     Source::Terminal,
@@ -7976,6 +7976,88 @@ mod tests {
         );
         assert_eq!(app.shell.alerts.of(Source::Draft), None);
         assert_eq!(app.shell.alerts.of(Source::Workspace), Some(saving));
+    }
+
+    /// A terminal that could not be opened says so until the session's
+    /// terminal opens, whichever way it opens. Only the native terminal's
+    /// own answer cleared it: opened by the session's **Open**, or by the
+    /// window for a session just launched, the line stayed above a
+    /// terminal that was on view.
+    #[test]
+    fn a_terminals_alert_goes_whichever_way_its_terminal_opens() {
+        let (mut app, _commands, messages) = app();
+        app.link.open();
+        let started = Utc::now();
+        app.agents.push(live_tty_session("agent-1", started));
+        app.screen = Screen::Agents;
+        let failed = |app: &mut App| {
+            let _ = app.update(Message::NativeTerminalOpened(Err("no terminal app".into())));
+            assert_eq!(
+                app.shell.alerts.of(Source::Terminal),
+                Some("no terminal app")
+            );
+        };
+
+        // An attach that is not taken opens nothing, and leaves the line.
+        failed(&mut app);
+        let _ = app.update(Message::Attach("no-such-session".into()));
+        assert_ne!(app.screen, Screen::Terminal);
+        assert_eq!(
+            app.shell.alerts.of(Source::Terminal),
+            Some("no terminal app")
+        );
+
+        // The session's own terminal opening clears it.
+        let _ = app.update(Message::Attach("agent-1".into()));
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.alerts.of(Source::Terminal), None);
+        let _ = app.update(Message::Detach);
+
+        // So does the terminal the window opens later, for a session
+        // reconnected while the line stood.
+        failed(&mut app);
+        messages
+            .send(Msg::Reconnected(Ok(("agent-1".into(), Some(started)))))
+            .unwrap();
+        app.drain();
+        assert_eq!(
+            app.shell.alerts.of(Source::Terminal),
+            Some("no terminal app"),
+            "not before its terminal is open"
+        );
+        messages
+            .send(Msg::Agents(
+                vec![live_tty_session("agent-1", started)],
+                BTreeMap::new(),
+            ))
+            .unwrap();
+        app.drain();
+        assert_eq!(app.screen, Screen::Terminal);
+        assert_eq!(app.shell.alerts.of(Source::Terminal), None);
+        let _ = app.update(Message::Detach);
+
+        // The native terminal saying the session runs here, with no such
+        // session of the app's own: nothing opens, and it says so.
+        let _ = app.update(Message::NativeTerminalOpened(Ok(
+            crate::native_terminal::Opened::InApp {
+                pid: 4242,
+                started_at: started,
+            },
+        )));
+        assert_eq!(
+            app.shell.alerts.of(Source::Terminal),
+            Some(crate::native_terminal::IN_AGENTDOCKER)
+        );
+        // Another source's line is not the terminal's to clear.
+        app.shell
+            .alerts
+            .raise(Source::Editor, "Could not open Zed: gone");
+        let _ = app.update(Message::Attach("agent-1".into()));
+        assert_eq!(app.shell.alerts.of(Source::Terminal), None);
+        assert_eq!(
+            app.shell.alerts.of(Source::Editor),
+            Some("Could not open Zed: gone")
+        );
     }
 
     /// A session comes on view with its panels closed, whichever way it
