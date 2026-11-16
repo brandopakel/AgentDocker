@@ -81,11 +81,15 @@ fn saved(response: Response) -> Result<CrewView> {
     }
 }
 
+/// The project an invocation is about, as the daemon is told it: the one
+/// named, a path made whole, or the folder the command runs in.
+fn selected(project: Option<String>) -> String {
+    crate::project_selector(project.as_deref().unwrap_or("."))
+}
+
 pub async fn run(client: &Client, args: Args) -> Result<()> {
-    let project = Some(match args.project {
-        Some(project) => project,
-        None => std::env::current_dir()?.display().to_string(),
-    });
+    let asked = selected(args.project);
+    let project = Some(asked.clone());
     let shown = match args.action {
         None => read(client, &project).await?,
         Some(action) => {
@@ -141,7 +145,7 @@ pub async fn run(client: &Client, args: Args) -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&shown)?);
     } else {
-        print!("{}", text(&shown));
+        print!("{}", text(&shown, &asked));
     }
     Ok(())
 }
@@ -166,10 +170,18 @@ fn accept(from: String, project: Option<String>, proposal: String) -> Request {
     }
 }
 
-/// The command that accepts the proposal a person is looking at, with its
-/// key, quoted for a shell.
-fn accept_command(key: &str) -> String {
-    format!("agentdocker team accept '{key}'")
+/// The command that accepts the proposal a person is looking at: its
+/// key, and the project they asked about, each one shell word. It names
+/// the project because the command may be run from another folder than
+/// the one the team was read in; the key is this project's alone, so run
+/// without the project elsewhere it is refused, never saved there. None
+/// when the project cannot be written on one line.
+fn accept_command(key: &str, project: &str) -> Option<String> {
+    Some(format!(
+        "agentdocker team accept {} --project {}",
+        crate::gate::shell_word(key)?,
+        crate::gate::shell_word(project)?
+    ))
 }
 
 fn no_such_member(view: &CrewView, name: &str) -> String {
@@ -187,8 +199,10 @@ fn no_such_member(view: &CrewView, name: &str) -> String {
     }
 }
 
-/// The team for a person to read.
-pub fn text(view: &CrewView) -> String {
+/// The team for a person to read. `asked` is the project as this
+/// invocation named it to the daemon, which a command printed for the
+/// person to run names again.
+pub fn text(view: &CrewView, asked: &str) -> String {
     let mut out = String::new();
     if let Some(why) = &view.unavailable {
         out.push_str(&format!(
@@ -246,10 +260,14 @@ pub fn text(view: &CrewView) -> String {
         );
     }
     if let Some(key) = &view.proposal {
-        out.push_str(&format!(
-            "Accept this one with `{}`, or build your own with `agentdocker team add`.\n",
-            accept_command(key)
-        ));
+        match accept_command(key, asked) {
+            Some(command) => out.push_str(&format!(
+                "Accept this one with `{command}`, or build your own with `agentdocker team add`.\n"
+            )),
+            None => out.push_str(&format!(
+                "Accept this one with `agentdocker team accept` naming its key, `{key}`, and this project with --project, or build your own with `agentdocker team add`.\n"
+            )),
+        }
     }
     out
 }
@@ -299,18 +317,19 @@ mod tests {
         let reviewer = member("reviewer", "codex", Some("openai"), &["reviewer"]);
 
         let mut proposed = view(0, vec![writer.clone(), reviewer.clone()]);
-        proposed.proposal = Some("writer=claude-code:implementer,reviewer=codex:reviewer".into());
+        proposed.proposal =
+            Some("writer=claude-code:implementer,reviewer=codex:reviewer@project".into());
         assert_eq!(
-            text(&proposed),
+            text(&proposed, "/work/app"),
             "No team is saved for this project. Proposed, from what is installed here:\n\
              \x20 writer     claude-code (anthropic)   implementer   own worktree\n\
              \x20 reviewer   codex (openai)            reviewer\n\
-             Accept this one with `agentdocker team accept 'writer=claude-code:implementer,reviewer=codex:reviewer'`, or build your own with `agentdocker team add`.\n"
+             Accept this one with `agentdocker team accept writer=claude-code:implementer,reviewer=codex:reviewer@project --project /work/app`, or build your own with `agentdocker team add`.\n"
         );
 
         let saved = view(2, vec![writer.clone(), reviewer.clone()]);
         assert_eq!(
-            text(&saved),
+            text(&saved, "/work/app"),
             "Team (revision 2):\n\
              \x20 writer     claude-code (anthropic)   implementer   own worktree, not started\n\
              \x20 reviewer   codex (openai)            reviewer      not started\n"
@@ -321,7 +340,7 @@ mod tests {
         gone.vendor = None;
         let mut one = view(3, vec![writer.clone(), gone]);
         one.same_vendor = true;
-        let said = text(&one);
+        let said = text(&one, "/work/app");
         assert!(said.contains("reviewer   codex"), "{said}");
         assert!(
             said.contains("codex is not installed here, not started"),
@@ -332,14 +351,14 @@ mod tests {
         ));
 
         assert_eq!(
-            text(&view(4, vec![])),
+            text(&view(4, vec![]), "/work/app"),
             "Team (revision 4): no members. Add one with `agentdocker team add <name> --runtime <runtime>`.\n"
         );
 
         let mut nothing = view(0, vec![]);
         nothing.unavailable = Some("no runtime is installed".into());
         assert_eq!(
-            text(&nothing),
+            text(&nothing, "/work/app"),
             "No team is saved for this project, and none can be proposed: no runtime is installed.\n"
         );
     }
@@ -378,14 +397,17 @@ mod tests {
             .unwrap()
     }
 
-    /// What is accepted is what was shown. The command a person is given
-    /// carries the key of the proposal they are looking at; typed back, it
-    /// is that key the daemon is sent, and accepting names a key or is
-    /// not a command at all. It used to read the team again and send
-    /// whatever was proposed by then.
+    /// What is accepted is what was shown, where it was shown. The
+    /// command a person is given carries the key of the proposal they are
+    /// looking at and the project they asked about; typed back, from any
+    /// folder, it is that key and that project the daemon is sent, and
+    /// accepting names a key or is not a command at all. It used to read
+    /// the team again and send whatever was proposed by then; and then to
+    /// name no project, so that copied into another checkout it saved
+    /// that checkout's project instead.
     #[test]
-    fn accepting_sends_the_key_the_person_was_shown() {
-        let key = "writer=claude-code:implementer,reviewer=codex:reviewer";
+    fn accepting_sends_the_key_and_the_project_the_person_was_shown() {
+        let key = "writer=claude-code:implementer,reviewer=codex:reviewer@project-b";
         let mut proposed = view(
             0,
             vec![member(
@@ -396,29 +418,55 @@ mod tests {
             )],
         );
         proposed.proposal = Some(key.into());
-        let said = text(&proposed);
-        let command = said
-            .split('`')
-            .find(|part| part.starts_with("agentdocker team accept "))
-            .expect("the proposal is shown with the command that accepts it");
-        assert_eq!(command, accept_command(key));
+        // Asked about by a path with a space and a quote in it, from
+        // some other folder: the hardest thing the command must carry.
+        for asked in ["/work/b", "/work/it's here/b"] {
+            let said = text(&proposed, asked);
+            let command = said
+                .split('`')
+                .find(|part| part.starts_with("agentdocker team accept "))
+                .expect("the proposal is shown with the command that accepts it");
+            assert_eq!(Some(command), accept_command(key, asked).as_deref());
 
-        // The command as a shell would hand it over, through the real
-        // command tree, to the request it makes.
-        let words = shlex::split(command).unwrap();
-        assert_eq!(words.last().map(String::as_str), Some(key));
-        let cli = parsed(words).expect("the command a person is given parses");
-        let crate::Command::Team(args) = cli.command else {
-            panic!("it is the team command");
-        };
-        let Some(Action::Accept { proposal }) = args.action else {
-            panic!("it accepts");
-        };
-        let request = accept("user".into(), Some("/work/app".into()), proposal);
-        let Request::CrewAccept { proposal, from, .. } = request else {
-            panic!("it is the accept request");
-        };
-        assert_eq!((proposal.as_str(), from.as_str()), (key, "user"));
+            // The command as a shell would hand it over, through the real
+            // command tree, to the request it makes: nothing here is
+            // supplied by the test but who is asking.
+            let words = shlex::split(command).expect("the command is shell words");
+            let cli = parsed(words).expect("the command a person is given parses");
+            let crate::Command::Team(args) = cli.command else {
+                panic!("it is the team command");
+            };
+            let Some(Action::Accept { proposal }) = args.action else {
+                panic!("it accepts");
+            };
+            assert_eq!(args.project.as_deref(), Some(asked));
+            let request = accept("user".into(), Some(selected(args.project)), proposal);
+            let Request::CrewAccept {
+                proposal,
+                from,
+                project,
+            } = request
+            else {
+                panic!("it is the accept request");
+            };
+            assert_eq!(
+                (proposal.as_str(), from.as_str(), project.as_deref()),
+                (key, "user", Some(asked))
+            );
+        }
+
+        // A project that cannot be written on one line gets no command
+        // that would mean something else: the key and what to name.
+        let said = text(&proposed, "/work/two\nlines");
+        assert!(!said.contains("--project /work"), "{said}");
+        assert!(
+            said.contains(&format!("naming its key, `{key}`, and this project")),
+            "{said}"
+        );
+
+        // No project named: the folder the command runs in, made whole.
+        assert_eq!(selected(None), crate::project_selector("."));
+        assert!(std::path::Path::new(&selected(None)).is_absolute());
 
         // Without a key there is nothing to accept: the command does not
         // go and find one.

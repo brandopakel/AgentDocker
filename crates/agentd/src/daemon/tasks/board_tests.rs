@@ -2632,7 +2632,10 @@ async fn a_project_is_shown_a_proposed_team_until_the_person_saves_one() {
     let key = both.proposal.clone().unwrap();
     assert_eq!(
         key,
-        "writer=claude-code:implementer,reviewer=codex:reviewer"
+        format!(
+            "writer=claude-code:implementer,reviewer=codex:reviewer@{}",
+            both.project.as_str()
+        )
     );
     assert!(!both.same_vendor);
     assert!(both.members.iter().all(|m| m.id.is_none() && m.installed));
@@ -2721,6 +2724,70 @@ async fn a_project_is_shown_a_proposed_team_until_the_person_saves_one() {
 /// and another added under its name is a new member. A role is one of the
 /// palette as it is at the save.
 #[cfg(unix)]
+/// A proposal is accepted for the project it was shown for and no other.
+/// Two projects on one machine are proposed the same members, so a key
+/// that named the members alone let one project's proposal be saved as
+/// another's: the command copied from a read of one, run in the other's
+/// folder. The key names its project; the other project refuses it and
+/// saves nothing, and what is installed changing still refuses it where
+/// it was shown.
+#[tokio::test]
+async fn a_proposal_is_accepted_only_for_the_project_it_was_shown_for() {
+    let f = fixture().await;
+    let d = &f.daemon;
+    let other = f._dir.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = other.display().to_string();
+    let read = |project: &str| Request::Crew {
+        project: Some(project.to_owned()),
+    };
+    let accept = |project: &str, key: &str| Request::CrewAccept {
+        from: HUMAN.into(),
+        project: Some(project.to_owned()),
+        proposal: key.to_owned(),
+    };
+
+    install(&f, &["claude", "codex"]);
+    let a = shown(d.handle(read(&f.work)).await);
+    let b = shown(d.handle(read(&other)).await);
+    assert_ne!(a.project, b.project, "two projects");
+    let (a_key, b_key) = (a.proposal.clone().unwrap(), b.proposal.clone().unwrap());
+    assert_eq!(
+        a_key.rsplit_once('@').map(|(members, _)| members),
+        b_key.rsplit_once('@').map(|(members, _)| members),
+        "the same members are proposed to both"
+    );
+    assert_ne!(a_key, b_key, "and each project has a key of its own");
+
+    // B's key, sent about A: the command a person copied from a read of
+    // B, run where A is the project. Refused, and neither is saved.
+    let (code, why) = refused(d.handle(accept(&f.work, &b_key)).await);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert!(why.contains("proposed for another project"), "{why}");
+    assert_eq!(shown(d.handle(read(&f.work)).await).revision, 0);
+    assert_eq!(shown(d.handle(read(&other)).await).revision, 0);
+
+    // What is installed changes after B was shown: its key is no longer
+    // B's proposal either, and is refused there too.
+    install(&f, &["codex"]);
+    let (code, why) = refused(d.handle(accept(&other, &b_key)).await);
+    assert_eq!(code, ErrorCode::Conflict);
+    assert!(why.contains("what is installed has changed"), "{why}");
+    assert_eq!(shown(d.handle(read(&other)).await).revision, 0);
+
+    // As it was shown, for the project it was shown for: B is saved, and
+    // only B.
+    install(&f, &["claude", "codex"]);
+    let saved = shown(d.handle(accept(&other, &b_key)).await);
+    assert_eq!((saved.revision, &saved.project), (1, &b.project));
+    assert_eq!(
+        shown(d.handle(read(&f.work)).await).revision,
+        0,
+        "the other project still has no team"
+    );
+    assert_eq!(shown(d.handle(read(&other)).await).revision, 1);
+}
+
 #[tokio::test]
 async fn only_the_person_saves_a_team_and_an_edit_names_its_revision() {
     use agentdocker_core::crew::MemberInput;

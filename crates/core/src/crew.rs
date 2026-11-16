@@ -158,11 +158,13 @@ pub struct Proposed {
 }
 
 /// The crew the daemon offers a project that has saved none, from what is
-/// installed. Nothing is saved until a person accepts it, by its `key`: so
-/// what is saved is what they were shown, and a runtime installed or lost
-/// in between is a different proposal.
+/// installed. Nothing is saved until a person accepts it, by the key it
+/// was shown under ([`Proposal::key_for`]): so what is saved is what they
+/// were shown, where they were shown it. A runtime installed or lost in
+/// between is a different proposal, and so is another project's.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Proposal {
+    /// The members' part of the key: who, on what, holding what.
     pub key: String,
     pub members: Vec<Proposed>,
     /// Both members run on one vendor's runtime. It says which runtime,
@@ -231,6 +233,14 @@ fn proposal_key(members: &[Proposed]) -> String {
 }
 
 impl Proposal {
+    /// The key this proposal is shown under for `project`: its members,
+    /// then the project it is for. Two projects on one machine are
+    /// proposed the same members, and a key that named the members alone
+    /// would accept one project's proposal as another's.
+    pub fn key_for(&self, project: &ProjectId) -> String {
+        format!("{}@{}", self.key, project.as_str())
+    }
+
     /// The proposal as the members a save takes.
     pub fn inputs(&self) -> Vec<MemberInput> {
         self.members
@@ -244,6 +254,21 @@ impl Proposal {
                 ..MemberInput::default()
             })
             .collect()
+    }
+}
+
+/// Why `given` is not the key of the proposal a project has `now`, in
+/// words: it was shown for another project, or what is installed has
+/// changed since it was shown.
+pub fn not_the_proposal(now: &str, given: &str) -> String {
+    let project = |key: &str| key.rsplit_once('@').map(|(_, project)| project.to_owned());
+    match (project(now), project(given)) {
+        (Some(this), Some(other)) if this != other => format!(
+            "that team was proposed for another project (`{other}`), not this one (`{this}`): nothing is saved here; read this project's team and accept the one it shows"
+        ),
+        _ => format!(
+            "what is installed has changed since that team was proposed: the proposal is now `{now}`; read it again"
+        ),
     }
 }
 
@@ -526,7 +551,7 @@ pub fn view(project: &ProjectId, saved: Option<&Crew>, known: &[Known]) -> CrewV
             Ok(proposal) => CrewView {
                 project: project.clone(),
                 revision: 0,
-                proposal: Some(proposal.key.clone()),
+                proposal: Some(proposal.key_for(project)),
                 unavailable: None,
                 same_vendor: proposal.same_vendor,
                 members: proposal
@@ -900,7 +925,39 @@ mod tests {
         assert_eq!(proposed.revision, 0);
         assert_eq!(
             proposed.proposal.as_deref(),
-            Some("writer=claude-code:implementer,reviewer=codex:reviewer")
+            Some("writer=claude-code:implementer,reviewer=codex:reviewer@project")
+        );
+        // The same members proposed to another project are another key:
+        // what one project was shown is not what the other accepts.
+        let elsewhere = view(&ProjectId::from("another"), None, &both);
+        assert_eq!(
+            elsewhere.proposal.as_deref(),
+            Some("writer=claude-code:implementer,reviewer=codex:reviewer@another")
+        );
+        assert_ne!(proposed.proposal, elsewhere.proposal);
+        let here = proposed.proposal.as_deref().unwrap();
+        let there = elsewhere.proposal.as_deref().unwrap();
+        let other_project = not_the_proposal(here, there);
+        assert!(
+            other_project
+                .contains("proposed for another project (`another`), not this one (`project`)"),
+            "{other_project}"
+        );
+        let changed = not_the_proposal(
+            here,
+            "writer=codex:implementer,reviewer=codex:reviewer@project",
+        );
+        assert!(
+            changed.contains("what is installed has changed") && changed.contains(here),
+            "{changed}"
+        );
+        // A key with no project in it, as an earlier build printed it.
+        assert!(
+            not_the_proposal(
+                here,
+                "writer=claude-code:implementer,reviewer=codex:reviewer"
+            )
+            .contains("what is installed has changed")
         );
         assert!(!proposed.same_vendor && proposed.unavailable.is_none());
         assert!(

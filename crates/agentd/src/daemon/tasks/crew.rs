@@ -165,8 +165,9 @@ impl Daemon {
 
     /// Save the proposed crew as a project's first, named by the key the
     /// person was shown it under: the person's to do. What is installed
-    /// is read again, and a proposal that is no longer the one for it is
-    /// refused, so what is saved is what was shown.
+    /// is read again, and a key that is not this project's proposal for
+    /// it (another project's, or one from before a runtime came or went)
+    /// is refused, so what is saved is what was shown, where it was shown.
     pub(in crate::daemon) async fn crew_accept(
         self: &Arc<Self>,
         from: &str,
@@ -204,13 +205,10 @@ impl Daemon {
                     .unwrap_or_else(|| crew::NOTHING_TO_PROPOSE.to_owned()),
             );
         };
+        // The key names the members and the project: one shown for
+        // another project, or for other runtimes, is not this one.
         if key != proposal {
-            return Response::error(
-                ErrorCode::Conflict,
-                format!(
-                    "what is installed has changed since that team was proposed: the proposal is now `{key}`; read it again"
-                ),
-            );
+            return Response::error(ErrorCode::Conflict, crew::not_the_proposal(key, proposal));
         }
         let members = offered
             .members
