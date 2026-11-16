@@ -205,6 +205,8 @@ impl State {
         self.stale_questions(now);
     }
 
+    /// Close every question whose time ran out, each with the held
+    /// message it carries, in one commit.
     fn close_expired_questions(&mut self, now: DateTime<Utc>) {
         let mut expired: Vec<_> = self
             .questions
@@ -216,59 +218,16 @@ impl State {
             return;
         }
         expired.sort();
-        // A card that carried a held message takes the message with it.
-        let held: Vec<(MessageId, MessageId)> = expired
-            .iter()
-            .filter_map(|question| {
-                self.held_messages
-                    .get(question)
-                    .map(|held| (question.clone(), held.envelope.id.clone()))
-            })
-            .collect();
-        let mut events: Vec<_> = expired
-            .iter()
-            .map(|question| {
-                Event::new(
-                    EventKind::QuestionClosed {
-                        question: question.clone(),
-                        answer: None,
-                    },
-                    now,
-                )
-            })
-            .collect();
-        events.extend(held.iter().map(|(question, message)| {
-            Event::new(
-                EventKind::HeldMessageDropped {
-                    message: message.clone(),
-                    question: question.clone(),
-                    by: super::inbound::EXPIRY.to_owned(),
-                },
-                now,
-            )
-        }));
-        let delete: Vec<(&str, String)> = expired
-            .iter()
-            .map(|question| ("question", question.as_str().to_owned()))
-            .chain(
-                held.iter()
-                    .map(|(question, _)| (super::inbound::DOCUMENT, question.as_str().to_owned())),
-            )
-            .collect();
-        let _ = self.commit(
-            "question expiration",
-            events,
-            |store, events| store.documents_change(&[], &delete, events),
-            |state, _, ()| {
-                for question in &expired {
-                    state.questions.remove(question);
-                    if state.blocked_defaults.remove(question) {
-                        info!(%question, "question expired before its refused stale default answer could be published");
-                    }
-                    state.held_messages.remove(question);
-                }
-            },
-        );
+        let mut closing = super::closing::Closing::default();
+        for question in &expired {
+            closing.end(
+                question,
+                self.held_messages.get(question),
+                super::closing::Ending::Closed(agentdocker_core::CloseReason::Expired),
+                super::inbound::EXPIRY,
+            );
+        }
+        let _ = self.close("question expiration", Vec::new(), closing, now);
     }
 
     /// What became of a stale default answer on this sweep, said so that
@@ -277,11 +236,8 @@ impl State {
     /// debug, and the moment it goes through at info.
     fn note_default(&mut self, question: &MessageId, outcome: Result<(), String>) {
         match outcome {
-            Ok(()) => {
-                if self.blocked_defaults.remove(question) {
-                    info!(%question, "stale default answer published after it was refused");
-                }
-            }
+            // The answer's own closing cleared a refusal and said so.
+            Ok(()) => {}
             Err(reason) => {
                 if self.blocked_defaults.insert(question.clone()) {
                     warn!(%question, %reason, "stale default answer could not be published; the question stays open and the default is tried again on every sweep");
@@ -305,16 +261,6 @@ impl State {
     /// does not run the sweep again, and nothing already stale or gone is
     /// touched twice.
     pub(super) fn stale_questions(&mut self, now: DateTime<Utc>) {
-        // A refused default whose question was answered or cancelled
-        // meanwhile is nobody's concern any more; say so once.
-        let questions = &self.questions;
-        self.blocked_defaults.retain(|question| {
-            let open = questions.contains_key(question);
-            if !open {
-                info!(%question, "question closed before its refused stale default answer could be published");
-            }
-            open
-        });
         if self.storage_error.is_some() {
             return;
         }
@@ -397,31 +343,18 @@ impl State {
                     self.note_default(&question.id, outcome);
                 }
                 StaleAction::Withdraw => {
-                    let closed = vec![question.id.clone()];
-                    let events = vec![
-                        Event::new(
-                            EventKind::QuestionStale {
-                                question: question.id.clone(),
-                                action: StaleAction::Withdraw,
-                            },
-                            now,
-                        ),
-                        Event::new(
-                            EventKind::QuestionClosed {
-                                question: question.id.clone(),
-                                answer: None,
-                            },
-                            now,
-                        ),
-                    ];
-                    let _ = self.commit(
-                        "question withdrawal",
-                        events,
-                        |store, events| store.close_questions(&closed, events),
-                        |state, _, ()| {
-                            state.questions.remove(&question.id);
-                        },
+                    let mut closing = super::closing::Closing::default();
+                    closing.end(
+                        &question.id,
+                        self.held_messages.get(&question.id),
+                        super::closing::Ending::Closed(agentdocker_core::CloseReason::Withdrawn),
+                        super::closing::WITHDRAWAL,
                     );
+                    let stale = EventKind::QuestionStale {
+                        question: question.id.clone(),
+                        action: StaleAction::Withdraw,
+                    };
+                    let _ = self.close("question withdrawal", vec![stale], closing, now);
                 }
             }
             if self.storage_error.is_some() {
@@ -437,6 +370,7 @@ impl State {
         let mut questions: Vec<Question> = self
             .questions
             .values()
+            .filter(|q| !q.expired(now))
             .filter(|q| agent.is_none_or(|id| self.put_to(q, id)))
             .cloned()
             .collect();
@@ -820,10 +754,8 @@ impl Daemon {
                 event = events.recv() => match event {
                     Ok(Event { kind: EventKind::QuestionCancelled { question, .. }, .. }) if question == message =>
                         return Response::error(ErrorCode::Cancelled, "the asker cancelled this question"),
-                    Ok(Event { kind: EventKind::QuestionStale { question, action: StaleAction::Withdraw }, .. }) if question == message =>
-                        return Response::error(ErrorCode::Timeout, "the question went stale and was withdrawn"),
-                    Ok(Event { kind: EventKind::QuestionClosed { question, answer }, .. }) if question == message => {
-                        let Some(answer) = answer else { return Response::error(ErrorCode::Timeout, "the question expired"); };
+                    Ok(Event { kind: EventKind::QuestionClosed { question, answer, reason }, .. }) if question == message => {
+                        let Some(answer) = answer else { return closed_unanswered(reason); };
                         candidates.accept(answer);
                     }
                     Ok(_) => continue,
@@ -918,38 +850,15 @@ impl Daemon {
         }
         // A held message's card withdrawn by its sender takes the message
         // with it: nobody asked for it to be delivered.
-        if let Some(held) = state.held_messages.get(message).cloned() {
-            state.drop_held(
-                &[(message.clone(), held.envelope.id)],
-                agent.as_str(),
-                Some(EventKind::QuestionCancelled {
-                    question: message.clone(),
-                    agent: agent.clone(),
-                }),
-            );
-            return state.write_failure().unwrap_or(Response::Ok);
-        }
-        let event = Event::new(
-            EventKind::QuestionCancelled {
-                question: message.clone(),
-                agent,
-            },
-            Utc::now(),
+        let mut closing = super::closing::Closing::default();
+        closing.end(
+            message,
+            state.held_messages.get(message),
+            super::closing::Ending::Cancelled(agent.clone()),
+            agent.as_str(),
         );
-        let _ = state.transition(
-            "question cancellation",
-            event,
-            |store, event| {
-                store.close_questions(std::slice::from_ref(message), std::slice::from_ref(event))
-            },
-            |state| {
-                state.questions.remove(message);
-            },
-        );
-        if let Some(error) = state.write_failure() {
-            return error;
-        }
-        Response::Ok
+        let _ = state.close("question cancellation", Vec::new(), closing, Utc::now());
+        state.write_failure().unwrap_or(Response::Ok)
     }
 
     /// `answer`: reply to a question by its id. Who to reply to comes
@@ -1081,6 +990,28 @@ impl Daemon {
         Response::Questions {
             questions: state.open_questions(agent.as_ref()),
         }
+    }
+}
+
+/// `ask`'s answer when its question closed with none: `timeout`, as
+/// before, with `details.closed` saying which ending it was where the
+/// daemon knows (`expired` or `withdrawn`), so a caller tells them apart
+/// without reading the words. Its own wait running out has no `closed`:
+/// nothing closed the question.
+fn closed_unanswered(reason: Option<agentdocker_core::CloseReason>) -> Response {
+    use agentdocker_core::CloseReason;
+    let (message, closed) = match reason {
+        Some(CloseReason::Expired) => ("the question expired", Some("expired")),
+        Some(CloseReason::Withdrawn) => (
+            "the question went stale and was withdrawn",
+            Some("withdrawn"),
+        ),
+        _ => ("the question closed without an answer", None),
+    };
+    Response::Error {
+        code: ErrorCode::Timeout,
+        message: message.to_owned(),
+        details: closed.map(|closed| json!({ "closed": closed })),
     }
 }
 
@@ -2386,7 +2317,7 @@ mod tests {
             .iter()
             .filter(|event| {
                 matches!(&event.kind,
-            EventKind::QuestionClosed { question, answer: None } if question == &pending.id)
+            EventKind::QuestionClosed { question, answer: None, .. } if question == &pending.id)
             })
             .count();
         assert_eq!(count, 1);
@@ -2397,7 +2328,7 @@ mod tests {
                 .recent_events(10)
                 .iter()
                 .filter(|event| matches!(&event.kind,
-            EventKind::QuestionClosed { question, answer: None } if question == &pending.id))
+            EventKind::QuestionClosed { question, answer: None, .. } if question == &pending.id))
                 .count(),
             1
         );
@@ -3165,9 +3096,9 @@ mod tests {
                 EventKind::QuestionStale { question, action } if question == pending => {
                     Some(format!("stale:{action}"))
                 }
-                EventKind::QuestionClosed { question, answer } if question == pending => {
-                    Some(format!("closed:{}", answer.is_some()))
-                }
+                EventKind::QuestionClosed {
+                    question, answer, ..
+                } if question == pending => Some(format!("closed:{}", answer.is_some())),
                 _ => None,
             })
             .collect();
@@ -3241,7 +3172,7 @@ mod tests {
                 .recent_events(50)
                 .iter()
                 .filter(|event| {
-                    matches!(&event.kind, EventKind::QuestionClosed { question, answer: Some(_) } if question == id)
+                    matches!(&event.kind, EventKind::QuestionClosed { question, answer: Some(_), .. } if question == id)
                 })
                 .count();
             assert_eq!(closed, 1);
@@ -3401,7 +3332,7 @@ mod tests {
         );
         assert_eq!(said(&doomed, refused, "WARN"), 1, "{log}");
         assert_eq!(
-            said(&doomed, "expired before its refused stale default", "INFO"),
+            said(&doomed, "closed before its refused stale default", "INFO"),
             1,
             "{log}"
         );
@@ -3436,13 +3367,13 @@ mod tests {
         let pending = open_ask(&mut asking, &daemon).await;
         let asked_at = lock(&daemon.state).questions[&pending].asked_at;
         lock(&daemon.state).expire_questions(asked_at + Duration::seconds(1));
-        assert!(matches!(
-            asking.await,
-            Response::Error {
-                code: ErrorCode::Timeout,
-                ..
-            }
-        ));
+        // Still `timeout`, saying which ending it was.
+        let answer = asking.await;
+        assert!(
+            matches!(&answer, Response::Error { code: ErrorCode::Timeout, message, details: Some(details) }
+                if message.contains("withdrawn") && *details == json!({ "closed": "withdrawn" })),
+            "{answer:?}"
+        );
         let state = lock(&daemon.state);
         assert!(!state.questions.contains_key(&pending));
         assert!(
@@ -3464,9 +3395,9 @@ mod tests {
                 EventKind::QuestionStale { question, action } if question == pending => {
                     Some(format!("stale:{action}"))
                 }
-                EventKind::QuestionClosed { question, answer } if question == pending => {
-                    Some(format!("closed:{}", answer.is_some()))
-                }
+                EventKind::QuestionClosed {
+                    question, answer, ..
+                } if question == pending => Some(format!("closed:{}", answer.is_some())),
                 _ => None,
             })
             .collect();
@@ -3474,6 +3405,153 @@ mod tests {
             kinds,
             vec!["stale:withdraw".to_owned(), "closed:false".to_owned()]
         );
+        assert!(daemon.recent_events(50).iter().any(|event| event.kind
+            == EventKind::QuestionClosed {
+                question: pending.clone(),
+                answer: None,
+                reason: Some(agentdocker_core::CloseReason::Withdrawn),
+            }));
+    }
+
+    /// A question whose time runs out while its `ask` waits ends the wait
+    /// with `timeout` saying it expired: told apart from a withdrawal by
+    /// the closing's reason, not by its words.
+    #[tokio::test]
+    async fn an_expired_question_ends_the_wait_saying_it_expired() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        register(&daemon, "asker").await;
+        register(&daemon, "recipient").await;
+        let mut asking = Box::pin(daemon.ask(
+            "asker".into(),
+            "recipient".into(),
+            "Which theme?".into(),
+            300,
+            QuestionForm::default(),
+        ));
+        let pending = open_ask(&mut asking, &daemon).await;
+        let expires_at = lock(&daemon.state).questions[&pending].expires_at;
+        lock(&daemon.state).expire_questions(expires_at);
+        let answer = asking.await;
+        assert!(
+            matches!(&answer, Response::Error { code: ErrorCode::Timeout, message, details: Some(details) }
+                if message.contains("expired") && *details == json!({ "closed": "expired" })),
+            "{answer:?}"
+        );
+        assert!(daemon.recent_events(50).iter().any(|event| event.kind
+            == EventKind::QuestionClosed {
+                question: pending.clone(),
+                answer: None,
+                reason: Some(agentdocker_core::CloseReason::Expired),
+            }));
+    }
+
+    /// Every ending clears what its question held at once, a refused
+    /// default answer included, and says its reason: an answer, the
+    /// default, and a cancellation.
+    #[tokio::test]
+    async fn an_ending_clears_a_refused_default_and_says_its_reason() {
+        let dir = TempDir::new().unwrap();
+        let daemon = state(&dir);
+        let asker = register(&daemon, "asker").await;
+        let recipient = register(&daemon, "recipient").await;
+        let post = |text: &str| Request::PostQuestion {
+            from: asker.id.to_string(),
+            to: recipient.id.to_string(),
+            question: text.into(),
+            presentation: None,
+            timeout_secs: 600,
+            form: colours(
+                Some(1),
+                StaleAction::AnswerDefault {
+                    label: "Green".into(),
+                },
+            ),
+        };
+        let mut asked = Vec::new();
+        for text in ["answered", "defaulted", "cancelled"] {
+            let posted = daemon.handle(post(text)).await;
+            let Response::Sent { message, .. } = posted else {
+                panic!("{posted:?}")
+            };
+            asked.push(message);
+        }
+        let [answered, defaulted, cancelled] = &asked[..] else {
+            unreachable!()
+        };
+        for question in [answered, cancelled] {
+            lock(&daemon.state)
+                .blocked_defaults
+                .insert(question.clone());
+        }
+        let reply = daemon
+            .handle(Request::Answer {
+                from: Some(recipient.id.to_string()),
+                message: answered.clone(),
+                text: "Blue".into(),
+                choices: Vec::new(),
+                note: None,
+                other: None,
+            })
+            .await;
+        let Response::Sent { message: reply, .. } = reply else {
+            panic!("{reply:?}")
+        };
+        let cancel = daemon
+            .handle(Request::CancelQuestion {
+                agent: asker.id.to_string(),
+                message: cancelled.clone(),
+            })
+            .await;
+        assert!(matches!(cancel, Response::Ok), "{cancel:?}");
+        {
+            let state = lock(&daemon.state);
+            assert!(
+                state.blocked_defaults.is_empty(),
+                "cleared with each ending"
+            );
+            assert_eq!(state.questions.keys().collect::<Vec<_>>(), [defaulted]);
+        }
+        let asked_at = lock(&daemon.state).questions[defaulted].asked_at;
+        lock(&daemon.state).expire_questions(asked_at + Duration::seconds(1));
+        let endings: Vec<EventKind> = daemon
+            .recent_events(100)
+            .into_iter()
+            .map(|event| event.kind)
+            .filter(|kind| {
+                matches!(
+                    kind,
+                    EventKind::QuestionClosed { .. } | EventKind::QuestionCancelled { .. }
+                )
+            })
+            .collect();
+        let Some(EventKind::QuestionClosed {
+            answer: Some(default),
+            ..
+        }) = endings.last()
+        else {
+            panic!("{endings:?}")
+        };
+        assert_eq!(
+            endings,
+            [
+                EventKind::QuestionClosed {
+                    question: answered.clone(),
+                    answer: Some(reply),
+                    reason: Some(agentdocker_core::CloseReason::Answered),
+                },
+                EventKind::QuestionCancelled {
+                    question: cancelled.clone(),
+                    agent: asker.id.clone(),
+                },
+                EventKind::QuestionClosed {
+                    question: defaulted.clone(),
+                    answer: Some(default.clone()),
+                    reason: Some(agentdocker_core::CloseReason::Default),
+                },
+            ]
+        );
+        assert!(lock(&daemon.state).questions.is_empty());
     }
 
     #[test]

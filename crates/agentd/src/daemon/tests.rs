@@ -2596,6 +2596,12 @@ async fn ask_times_out_rather_than_waiting_forever() {
         ),
         "unexpected {response:?}"
     );
+    // Its own wait ran out: nothing closed the question, and the answer
+    // says no closing.
+    assert!(
+        matches!(&response, Response::Error { details: None, .. }),
+        "{response:?}"
+    );
     // Nobody is blocked on it any more, so it is not still open.
     let Response::Questions { questions } = daemon.handle(Request::Questions { agent: None }).await
     else {

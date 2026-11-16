@@ -703,6 +703,11 @@ impl Daemon {
                     }
                     state.next_seq += used;
                 }
+                // A held message whose question was already gone at the
+                // open, which a fenced open could not write away; an
+                // expired question and its held message are the tick's,
+                // as at any other time.
+                state.drop_orphaned_held();
                 Ok(())
             }
             Ok(false) => Err(format!(

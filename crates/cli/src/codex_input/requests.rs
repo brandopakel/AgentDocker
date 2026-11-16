@@ -441,6 +441,7 @@ pub(super) mod tests {
                 &agentdocker_core::EventKind::QuestionClosed {
                     question: "question".to_owned().into(),
                     answer: Some(answer.id.clone()),
+                    reason: None,
                 },
                 "owner",
             )

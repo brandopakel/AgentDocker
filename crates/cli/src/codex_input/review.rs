@@ -724,7 +724,9 @@ impl Pending {
 
     pub fn observe(&mut self, event: &EventKind, owner: &str) -> Result<bool> {
         let (id, next) = match event {
-            EventKind::QuestionClosed { question, answer } => (
+            EventKind::QuestionClosed {
+                question, answer, ..
+            } => (
                 question,
                 match answer {
                     Some(message) => Closure::Answered {
@@ -1245,6 +1247,7 @@ mod tests {
                     &EventKind::QuestionClosed {
                         question: "question".to_owned().into(),
                         answer: Some(response.id.clone()),
+                        reason: None,
                     },
                     "owner",
                 )
@@ -1317,6 +1320,7 @@ mod tests {
                     &EventKind::QuestionClosed {
                         question: "question".to_owned().into(),
                         answer: Some(response.id.clone()),
+                        reason: None,
                     },
                     "owner",
                 )
@@ -1424,6 +1428,7 @@ mod tests {
                         &EventKind::QuestionClosed {
                             question: "question".to_owned().into(),
                             answer: Some(response.id.clone()),
+                            reason: None,
                         },
                         "owner",
                     )
@@ -1519,6 +1524,7 @@ mod tests {
                         &EventKind::QuestionClosed {
                             question: "question".to_owned().into(),
                             answer: Some(response.id.clone()),
+                            reason: None,
                         },
                         "owner",
                     )
@@ -1661,6 +1667,7 @@ mod tests {
                         &EventKind::QuestionClosed {
                             question: MessageId::from("question".to_owned()),
                             answer: Some(response.id.clone()),
+                            reason: None,
                         },
                         "owner",
                     )
@@ -1828,6 +1835,7 @@ mod tests {
                     &EventKind::QuestionClosed {
                         question: "question".to_owned().into(),
                         answer: Some(response.id.clone()),
+                        reason: None,
                     },
                     "owner",
                 )
@@ -2001,6 +2009,7 @@ mod tests {
                         &EventKind::QuestionClosed {
                             question: "question".to_owned().into(),
                             answer: Some(response.id.clone()),
+                            reason: None,
                         },
                         "owner",
                     )
@@ -2203,6 +2212,7 @@ mod tests {
                     &EventKind::QuestionClosed {
                         question: "question".to_owned().into(),
                         answer: Some(response.id.clone()),
+                        reason: None,
                     },
                     "owner",
                 )
@@ -2238,6 +2248,7 @@ mod tests {
                 &EventKind::QuestionClosed {
                     question: "question".to_owned().into(),
                     answer: Some(first.id.clone()),
+                    reason: None,
                 },
                 "owner",
             )
@@ -2294,7 +2305,8 @@ mod tests {
                 .observe(
                     &EventKind::QuestionClosed {
                         question: "question".to_owned().into(),
-                        answer: Some(late.id)
+                        answer: Some(late.id),
+                        reason: None,
                     },
                     "owner"
                 )
@@ -2322,6 +2334,7 @@ mod tests {
                 &EventKind::QuestionClosed {
                     question: "question".to_owned().into(),
                     answer: Some(late.id.clone()),
+                    reason: None,
                 },
                 "owner",
             )
@@ -2393,6 +2406,63 @@ mod tests {
         assert!(response.get("error").is_some());
     }
 
+    /// A closing's reason, absent, known or newer than this reader, never
+    /// changes what the ledger keeps: an answer is kept as the answer that
+    /// closed the question, and an unanswered close as the stored
+    /// cancellation that ends the provider's question at once, as before.
+    /// Keeping why it closed is the ledger's own version step.
+    #[test]
+    fn a_closing_reason_never_changes_what_the_ledger_keeps() {
+        let event = json!({"id":17,"method":"item/commandExecution/requestApproval","params":{"threadId":"thread","turnId":"turn","command":"echo trial","cwd":"/owned"}});
+        let response = answer("human", "Allow");
+        let words = [
+            None,
+            Some("answered"),
+            Some("default"),
+            Some("expired"),
+            Some("withdrawn"),
+            Some("released"),
+            Some("dropped"),
+            Some("a_newer_reason"),
+        ];
+        for word in words {
+            for answered in [true, false] {
+                let mut closing = json!({
+                    "event": "question_closed",
+                    "question": "question",
+                    "answer": answered.then(|| response.id.to_string()),
+                });
+                if let Some(word) = word {
+                    closing["reason"] = json!(word);
+                }
+                let closing: EventKind = serde_json::from_value(closing).unwrap();
+                let mut request =
+                    Pending::plan(&event, "thread", Some("turn"), "human", Utc::now()).unwrap();
+                request.questions[0].message = Some("question".to_owned().into());
+                assert!(request.observe(&closing, "owner").unwrap(), "{word:?}");
+                let kept = &request.questions[0].closure;
+                if answered {
+                    assert_eq!(
+                        *kept,
+                        Closure::Answered {
+                            message: response.id.clone()
+                        },
+                        "{word:?}"
+                    );
+                    request
+                        .capture(std::slice::from_ref(&response), "owner", false)
+                        .unwrap();
+                } else {
+                    assert_eq!(*kept, Closure::Cancelled, "{word:?}");
+                }
+                assert!(
+                    request.reply(Utc::now()).unwrap().is_some(),
+                    "the provider's question ends at once: {word:?}"
+                );
+            }
+        }
+    }
+
     /// A command approval routed to `question`, answered by the human and
     /// closed by the daemon, with its response written.
     fn answered_command() -> Pending {
@@ -2406,6 +2476,7 @@ mod tests {
                 &EventKind::QuestionClosed {
                     question: "question".to_owned().into(),
                     answer: Some(response.id.clone()),
+                    reason: None,
                 },
                 "owner",
             )
@@ -2437,6 +2508,7 @@ mod tests {
                 &EventKind::QuestionClosed {
                     question: "question".to_owned().into(),
                     answer: Some(response.id.clone()),
+                    reason: None,
                 },
                 "owner",
             )

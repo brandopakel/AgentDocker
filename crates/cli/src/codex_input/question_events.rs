@@ -201,6 +201,7 @@ mod tests {
                 kind: EventKind::QuestionClosed {
                     question: seq.to_string().into(),
                     answer: Some(format!("answer-{seq}").into()),
+                    reason: None,
                 },
             },
         }
