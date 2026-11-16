@@ -29,10 +29,12 @@ from pathlib import Path
 # The whole of `finish`, the send included.
 DEADLINE = 10
 # The CLI's exits that say nothing was kept: a usage error before anything
-# was sent, or the daemon's own refusal (invalid, not found, conflict,
-# forbidden, unavailable). Any other exit, 1 above all, may follow a
-# record the daemon kept before its answer was lost.
-REFUSED = (2, 3, 4, 5, 6)
+# was sent, or a refusal the daemon makes before the write (invalid, not
+# found, conflict, forbidden). Any other exit may follow a record the
+# daemon kept: 1 (no answer, a broken connection), and 6 too, since an
+# unavailable store or a transfer latched by another writer after this
+# write committed replaces its answer.
+REFUSED = (2, 3, 4, 5)
 FULL = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 
 

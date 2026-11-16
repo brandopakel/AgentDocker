@@ -43,6 +43,9 @@ if cmd == "gate-run":
     if os.environ.get("FAKE_RECORD") == "lost":
         # Kept, then the connection closed before the answer.
         sys.stderr.write("Error: the daemon closed the connection before answering\n"); sys.exit(1)
+    if os.environ.get("FAKE_RECORD") == "kept-then-unavailable":
+        # Kept, then another writer's store failure replaced the answer.
+        sys.stderr.write("Error: storage failed (disk full); coordination disabled until daemon restart (storage_unavailable)\n"); sys.exit(6)
     print("run-id-1"); sys.exit(0)
 sys.stderr.write("unexpected " + " ".join(args) + "\n"); sys.exit(9)
 '''
@@ -292,6 +295,7 @@ class GateRecord(unittest.TestCase):
 
     def test_a_reply_lost_after_the_record_is_not_confirmed_and_a_refusal_is_not_recorded(self):
         for record, said, kept in (("lost", "recording this run was not confirmed", 1),
+                                   ("kept-then-unavailable", "recording this run was not confirmed", 1),
                                    ("refuse", "this run was not recorded", 0)):
             result = self.run_verify("test", {"AGENTDOCKER_AGENT_ID": "abc", "FAKE_RECORD": record})
             self.assertEqual(result.returncode, 0, result.stderr)
