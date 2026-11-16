@@ -253,7 +253,7 @@ impl App {
     pub(super) fn draft_of(&self, id: &TaskId) -> super::shell::CardDraft {
         let card = self
             .tasks
-            .as_ref()
+            .value()
             .and_then(|b| b.cards.iter().find(|t| &t.id == id));
         match card {
             Some(task) => {
@@ -462,7 +462,7 @@ impl App {
             return 0;
         };
         self.tasks
-            .as_ref()
+            .value()
             .filter(|b| b.project == project)
             .map_or(0, |b| {
                 b.cards
@@ -484,11 +484,11 @@ impl App {
             return super::view::empty(None, c);
         };
         let root = entry.project.root.display().to_string();
-        let loaded = self.tasks.as_ref().filter(|b| b.project == root);
+        let loaded = self.tasks.value().filter(|b| b.project == root);
         let all: &[Task] = loaded.map_or(&[], |b| &b.cards);
         let more = loaded.is_some_and(|b| b.more);
         let loading = loaded.is_some_and(Board::loading_more)
-            || self.board_asks.values().any(|(p, _)| *p == root);
+            || self.board_asks.values().any(|(p, _, _)| *p == root);
         let on_board: Vec<&Task> = all
             .iter()
             .filter(|t| t.board.as_deref().unwrap_or(board::MAIN) == board.slug)
@@ -496,6 +496,28 @@ impl App {
         let mut page = column![self.board_toolbar(&root, &board, c)]
             .spacing(14)
             .width(Fill);
+        // The board is a read like any other. Empty lanes used to stand
+        // for a board being read and one that could not be, as well as
+        // for one with no cards: a first read says so (`board-reading`),
+        // and a read that failed says why (`board-error`) above the board
+        // as last read.
+        let read = self.tasks.seen();
+        if let Some(error) = read.error() {
+            page = page.push(super::view::error_line(
+                "board-error",
+                &format!("The board could not be read: {error}"),
+                c,
+            ));
+        }
+        if read.first_read() {
+            page = page.push(super::chip::chip(
+                "board-reading",
+                None,
+                "Reading…",
+                super::chip::Tone::Info,
+                c,
+            ));
+        }
         // The range on view is the cards shown, after the search and the
         // filters, so narrowing the board narrows its numbers.
         let times: &[CardTimes] = loaded.map_or(&[], |b| &b.times);
@@ -1179,7 +1201,7 @@ impl App {
         if let Some(secs) = in_lane_secs(
             task,
             self.tasks
-                .as_ref()
+                .value()
                 .and_then(|b| b.times.iter().find(|t| t.task == id)),
             chrono::Utc::now(),
         ) {
@@ -2675,7 +2697,7 @@ mod tests {
                 .is_some_and(|b| b.1.contains("3h in lane")),
             "the spoken name says it"
         );
-        app.tasks = Some(crate::app::Board {
+        app.tasks = crate::app::remote::Remote::ready(crate::app::Board {
             project: project.root.display().to_string(),
             cards: vec![card.clone()],
             times: vec![times.clone()],

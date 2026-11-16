@@ -5165,8 +5165,8 @@ mod tests {
                 .into_iter()
                 .find(|(id, _, _)| id == "card-start")
         };
-        assert!(app.tasks.as_ref().unwrap().more);
-        assert_eq!(app.tasks.as_ref().unwrap().cards.len(), 1);
+        assert!(app.tasks.value().unwrap().more);
+        assert_eq!(app.tasks.value().unwrap().cards.len(), 1);
         assert!(
             start(&app).is_none(),
             "an open prerequisite on a later page blocks Start"

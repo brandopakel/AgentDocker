@@ -153,7 +153,7 @@ enum Cmd {
     /// one row per `by`, over the window `since`.
     Usage {
         project: String,
-        request: u64,
+        request: remote::Ask,
         since: &'static str,
         by: agentdocker_core::usage::report::Group,
     },
@@ -437,7 +437,7 @@ enum Msg {
     /// The usage report read for a project, or why it could not be.
     Usage(
         String,
-        u64,
+        remote::Ask,
         Result<agentdocker_core::usage::report::Report, String>,
     ),
     /// Every agent's tokens over the last day, or why they could not be read.
@@ -691,10 +691,10 @@ pub struct App {
     /// it waits for — with its evidence; absent from a daemon predating it.
     identity: BTreeMap<String, agentdocker_core::IdentityStatus>,
     /// The board on view.
-    tasks: Option<Board>,
+    tasks: remote::Remote<Board>,
     /// The usage report on view: which project's, and the report — kept
     /// as last read when a read fails, with the failure said beside it.
-    usage: Option<(String, agentdocker_core::usage::report::Report)>,
+    usage: remote::About<String, agentdocker_core::usage::report::Report>,
     /// What each agent's provider reported over the last day, by agent id,
     /// and when it was last asked for: at most once a minute, as the agent
     /// list refreshes.
@@ -710,19 +710,15 @@ pub struct App {
     merge_outcome: Option<(String, Result<String, String>)>,
     /// A worktree removal on its way, by agent id.
     removing_worktree: Option<String>,
-    usage_error: Option<String>,
-    usage_requests: u64,
-    usage_pending: Option<(
-        u64,
-        String,
-        &'static str,
-        agentdocker_core::usage::report::Group,
-    )>,
+    /// The window and grouping of the usage read that is out, so that an
+    /// identical refresh shares it. `None` once the link has gone: that
+    /// read is not waited for, and the next is asked afresh.
+    usage_out: Option<(&'static str, agentdocker_core::usage::report::Group)>,
     /// Board asks on their way, by number: which project's, and from
     /// what offset. A reply answers one ask; a reply to none — an ask
     /// cancelled by a later refresh, or made for a project no longer on
     /// view — moves nothing.
-    board_asks: BTreeMap<u64, (String, usize)>,
+    board_asks: BTreeMap<u64, (String, usize, Option<remote::Ask>)>,
     /// Filings so far, numbering each so its reply is told apart.
     task_requests: u64,
     /// The last number given to a save of the plan in the editor.
@@ -892,8 +888,8 @@ impl App {
             dismissing: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             identity: BTreeMap::new(),
-            tasks: None,
-            usage: None,
+            tasks: remote::Remote::default(),
+            usage: remote::About::default(),
             agent_tokens: BTreeMap::new(),
             agent_context: BTreeMap::new(),
             agent_tokens_asked: None,
@@ -901,9 +897,7 @@ impl App {
             merging: None,
             merge_outcome: None,
             removing_worktree: None,
-            usage_error: None,
-            usage_requests: 0,
-            usage_pending: None,
+            usage_out: None,
             task_requests: 0,
             plan_saves: 0,
             board_asks: BTreeMap::new(),
@@ -989,8 +983,8 @@ impl App {
             sending: std::collections::BTreeSet::new(),
             activity: BTreeMap::new(),
             identity: BTreeMap::new(),
-            tasks: None,
-            usage: None,
+            tasks: remote::Remote::default(),
+            usage: remote::About::default(),
             agent_tokens: BTreeMap::new(),
             agent_context: BTreeMap::new(),
             agent_tokens_asked: None,
@@ -998,9 +992,7 @@ impl App {
             merging: None,
             merge_outcome: None,
             removing_worktree: None,
-            usage_error: None,
-            usage_requests: 0,
-            usage_pending: None,
+            usage_out: None,
             task_requests: 0,
             plan_saves: 0,
             board_asks: BTreeMap::new(),
@@ -1219,13 +1211,12 @@ impl App {
                     draft.error = Some(reason.into());
                 }
             }
-            // A page asked for by hand that could not be queued is
-            // told so; a refresh is not.
-            Cmd::Usage { request, .. } => {
-                if self.usage_pending.as_ref().is_some_and(|p| p.0 == request) {
-                    self.usage_pending = None;
-                    self.usage_error = Some(reason.into());
-                }
+            // Usage that could not be asked for: the reason stands on its
+            // page, beside the report as last read.
+            Cmd::Usage {
+                project, request, ..
+            } => {
+                self.usage.answer(&project, request, Err(reason.into()));
                 return;
             }
             Cmd::Tasks {
@@ -1234,11 +1225,16 @@ impl App {
                 offset,
                 ..
             } => {
-                self.board_asks.remove(&request);
+                let asked = self.board_asks.remove(&request);
                 if offset == 0 {
+                    // A read of the board that could not be asked: said
+                    // on the board, beside the board as last read.
+                    if let Some((_, _, Some(ask))) = asked {
+                        self.tasks.answer(ask, Err(reason.into()));
+                    }
                     return;
                 }
-                if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
+                if let Some(board) = self.tasks.value_mut().filter(|b| b.project == project)
                     && board.pending_more == Some(request)
                 {
                     board.pending_more = None;
@@ -1583,10 +1579,10 @@ impl App {
                 Msg::Tasks(project, request, result) => {
                     // Only a reply to an ask still standing, for the
                     // project on view, moves the board.
-                    let Some((asked_for, offset)) = self.board_asks.remove(&request) else {
+                    let Some((asked_for, offset, ask)) = self.board_asks.remove(&request) else {
                         continue;
                     };
-                    if let Some(board) = self.tasks.as_mut().filter(|b| b.project == project)
+                    if let Some(board) = self.tasks.value_mut().filter(|b| b.project == project)
                         && board.pending_more == Some(request)
                     {
                         board.pending_more = None;
@@ -1603,20 +1599,23 @@ impl App {
                         Ok((tasks, more, times)) if offset == 0 => {
                             let pending_more = self
                                 .tasks
-                                .as_ref()
+                                .value()
                                 .filter(|b| b.project == project)
                                 .and_then(|b| b.pending_more);
-                            self.tasks = Some(Board {
+                            let board = Board {
                                 project,
                                 cards: tasks,
                                 times,
                                 more,
                                 pending_more,
-                            });
+                            };
+                            if let Some(ask) = ask {
+                                self.tasks.answer(ask, Ok(board));
+                            }
                         }
                         Ok((tasks, more, times)) => {
                             if let Some(board) =
-                                self.tasks.as_mut().filter(|b| b.project == project)
+                                self.tasks.value_mut().filter(|b| b.project == project)
                                 && board.cards.len() == offset
                             {
                                 board.cards.extend(tasks);
@@ -1624,35 +1623,27 @@ impl App {
                                 board.more = more;
                             }
                         }
-                        // The board as last read stays on view; the
-                        // person is told why it is not newer.
-                        Err(error) => {
-                            self.say(format!("The board could not be read: {error}"));
-                        }
+                        // The board as last read stays on view, and the
+                        // board says why it is not newer. A further page
+                        // that failed is said at the window's foot: the
+                        // board itself was read.
+                        Err(error) => match ask {
+                            Some(ask) => {
+                                self.tasks.answer(ask, Err(error));
+                            }
+                            None => {
+                                self.say(format!("More of the board could not be read: {error}"));
+                            }
+                        },
                     }
                     self.fill_card_draft();
                 }
+                // Only the latest ask's answer, about the project last
+                // asked about: a later window or grouping supersedes the
+                // old read, even for the same project. A failure is kept
+                // beside the report as last read.
                 Msg::Usage(project, request, result) => {
-                    // A later range/group selection supersedes the old read,
-                    // even when both asks concern the same project.
-                    if self
-                        .usage_pending
-                        .as_ref()
-                        .is_some_and(|p| p.0 == request && p.1 == project)
-                    {
-                        self.usage_pending = None;
-                    } else {
-                        continue;
-                    }
-                    if self.selected_project_root().as_deref() == Some(project.as_str()) {
-                        match result {
-                            Ok(report) => {
-                                self.usage = Some((project, report));
-                                self.usage_error = None;
-                            }
-                            Err(error) => self.usage_error = Some(error),
-                        }
-                    }
+                    self.usage.answer(&project, request, result);
                 }
                 Msg::BranchReview(agent, ask, result) => {
                     // Only the session whose changes were asked for last,
@@ -2078,6 +2069,9 @@ impl App {
                         if let Some(selected) = self.shell.selected.clone() {
                             self.request_review(&selected);
                         }
+                        if self.screen == Screen::Board {
+                            self.request_tasks();
+                        }
                     }
                 }
                 // A call asked on an earlier connection failed against
@@ -2097,7 +2091,7 @@ impl App {
                         // read on its way is not waited for either — the
                         // next request is not deduplicated against it.
                         self.shell.route.end_search();
-                        self.usage_pending = None;
+                        self.usage_out = None;
                     }
                 }
                 Msg::Status(text) => self.say(text),
@@ -2981,21 +2975,17 @@ impl App {
                 self.shell.usage_since
             };
             let by = self.shell.usage_by;
-            if self
-                .usage_pending
-                .as_ref()
-                .is_some_and(|p| p.1 == project && p.2 == since && p.3 == by)
+            // An identical read already out answers for this one.
+            if self.usage_out == Some((since, by))
+                && matches!(
+                    self.usage.of(project.as_str()),
+                    remote::Seen::Reading { .. }
+                )
             {
                 return;
             }
-            let Some(request) = self.usage_requests.checked_add(1) else {
-                self.usage_error =
-                    Some("Usage request counter exhausted; reopen the window".into());
-                return;
-            };
-            self.usage_requests = request;
-            self.usage_pending = Some((request, project.clone(), since, by));
-            self.usage_error = None;
+            let request = self.usage.ask(project.clone());
+            self.usage_out = Some((since, by));
             self.send(Cmd::Usage {
                 project,
                 request,
@@ -3014,8 +3004,13 @@ impl App {
             // land first, the refresh, sized to what was on view when it
             // was asked, would fold the board back; were an earlier
             // refresh to land last, it would overwrite the newer read.
-            self.board_asks.retain(|_, (p, _)| *p != project);
-            let on_view = match self.tasks.as_mut().filter(|b| b.project == project) {
+            self.board_asks.retain(|_, (p, _, _)| *p != project);
+            // Another project's board is not this one's to show while
+            // this one is read.
+            if self.tasks.value().is_some_and(|b| b.project != project) {
+                self.tasks.forget();
+            }
+            let on_view = match self.tasks.value_mut() {
                 Some(board) => {
                     board.pending_more = None;
                     board.cards.len()
@@ -3026,7 +3021,8 @@ impl App {
             if !self.boards.contains_key(&project) {
                 self.send(Cmd::Boards(project.clone()));
             }
-            let request = self.next_board_ask(&project, 0);
+            let ask = self.tasks.ask();
+            let request = self.next_board_ask(&project, 0, Some(ask));
             self.send(Cmd::Tasks {
                 project,
                 request,
@@ -3043,16 +3039,16 @@ impl App {
     pub(crate) fn request_more_tasks(&mut self) {
         if self.link.is_up()
             && let Some(project) = self.selected_project_root()
-            && !self.board_asks.values().any(|(p, _)| *p == project)
+            && !self.board_asks.values().any(|(p, _, _)| *p == project)
             && self
                 .tasks
-                .as_ref()
+                .value()
                 .is_some_and(|b| b.project == project && b.more && b.cards.len() < BOARD_KEEP)
         {
-            let offset = self.tasks.as_ref().map_or(0, |b| b.cards.len());
+            let offset = self.tasks.value().map_or(0, |b| b.cards.len());
             let limit = agentdocker_core::protocol::TASKS_LIMIT.min(BOARD_KEEP - offset);
-            let request = self.next_board_ask(&project, offset);
-            if let Some(board) = self.tasks.as_mut() {
+            let request = self.next_board_ask(&project, offset, None);
+            if let Some(board) = self.tasks.value_mut() {
                 board.pending_more = Some(request);
             }
             self.send(Cmd::Tasks {
@@ -3067,11 +3063,11 @@ impl App {
     /// Number a board ask and remember what it was for. Asks are few
     /// and answered or refused in order; the map stays small, and is
     /// cleared with the board when another project is chosen.
-    fn next_board_ask(&mut self, project: &str, offset: usize) -> u64 {
+    fn next_board_ask(&mut self, project: &str, offset: usize, ask: Option<remote::Ask>) -> u64 {
         self.task_requests += 1;
         let request = self.task_requests;
         self.board_asks
-            .insert(request, (project.to_owned(), offset));
+            .insert(request, (project.to_owned(), offset, ask));
         request
     }
 

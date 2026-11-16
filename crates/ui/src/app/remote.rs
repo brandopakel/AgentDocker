@@ -166,8 +166,8 @@ impl<T> Remote<T> {
         }
     }
 
-    /// The value, for a test to change what was read.
-    #[cfg(test)]
+    /// The last value read, to add to: a further page of a list is
+    /// part of what was read, not another read of it.
     pub fn value_mut(&mut self) -> Option<&mut T> {
         self.last.as_mut()
     }

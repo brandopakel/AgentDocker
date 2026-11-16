@@ -725,11 +725,14 @@ command.
   ask the queue hands back (`queue::Sent::Merged`). A command the queue
   refuses is a failed read, said in the read's own place. A session's changes
   are one read about the selected session, and only that session's are asked
-  for. Each case
-  has a node the workflow driver can wait on: *Reading…* is `todo-reading`,
-  `card-reading`, `changes-reading` and `session-log-reading`; a failure is
-  `todo-error-mark`, `card-error-mark`, `changes-error-mark` and
-  `session-log-error-mark`; a read that came back empty is `todo-empty` and
+  for. The board's further pages are added to what was read and keep their
+  own request numbers beside the read; usage shares one read between identical
+  refreshes that are out together. Each case
+  has a node the workflow driver can wait on: *Reading…* is `board-reading`,
+  `todo-reading`, `card-reading`, `changes-reading`, `session-log-reading`
+  and `usage-reading`; a failure is `board-error-mark`, `todo-error-mark`,
+  `card-error-mark`, `changes-error-mark`, `session-log-error-mark` and
+  `usage-error-mark`; a read that came back empty is `todo-empty` and
   `session-log-empty` (named for a reader, with no sentence drawn), and for a
   session's changes the words *Up to date*.
 - The link to the background service is one value (`link::Link`): connecting,
