@@ -201,7 +201,7 @@ fn escape_gives_a_keyboard_opened_menu_back_to_its_opener() {
     let mut window = window(&app);
     window.deliver(&mut app, vec![Message::Focus("project-more".into())]);
     window.key(&mut app, named(Named::Enter));
-    assert!(app.shell.more, "Enter opened the menu");
+    assert!(app.shell.menu_is(&Menu::More), "Enter opened the menu");
     let ringed = |id: &str| {
         [Focused {
             id: id.into(),
@@ -216,7 +216,7 @@ fn escape_gives_a_keyboard_opened_menu_back_to_its_opener() {
         "the entry keeps the focus once the view is built again"
     );
     window.key(&mut app, named(Named::Escape));
-    assert!(!app.shell.more, "Escape closed it");
+    assert!(!app.shell.menu_is(&Menu::More), "Escape closed it");
     assert_eq!(window.focused(&app), ringed("project-more"));
 }
 
@@ -231,14 +231,14 @@ fn a_pointer_opened_menu_closes_leaving_no_ring() {
         let mut window = window(&app);
         let more = window.bounds(&app, "project-more").expect("the More tab");
         window.tap(&mut app, more.center());
-        assert!(app.shell.more);
+        assert!(app.shell.menu_is(&Menu::More));
         if escape {
             window.key(&mut app, named(Named::Escape));
         } else {
             // The page's own margin: nothing to press there.
             window.tap(&mut app, iced::Point::new(1395.0, 895.0));
         }
-        assert!(!app.shell.more, "escape={escape}: closed");
+        assert!(!app.shell.menu_is(&Menu::More), "escape={escape}: closed");
         let focused = window.focused(&app);
         assert!(
             focused.iter().all(|f| !f.ringed),
@@ -258,9 +258,9 @@ fn a_keyboard_opened_menu_closed_by_the_pointer_leaves_no_ring() {
     let mut window = window(&app);
     window.deliver(&mut app, vec![Message::Focus("project-more".into())]);
     window.key(&mut app, named(Named::Enter));
-    assert!(app.shell.more);
+    assert!(app.shell.menu_is(&Menu::More));
     window.tap(&mut app, iced::Point::new(1395.0, 895.0));
-    assert!(!app.shell.more);
+    assert!(!app.shell.menu_is(&Menu::More));
     let focused = window.focused(&app);
     assert!(focused.iter().all(|f| !f.ringed), "{focused:?}");
 }
@@ -361,7 +361,10 @@ fn enter_on_a_menu_entry_gives_the_focus_back_to_its_opener() {
     window.key(&mut app, named(Named::Enter));
     assert_eq!(window.focused(&app), ringed("project-tab-Journal"));
     window.key(&mut app, named(Named::Enter));
-    assert!(!app.shell.more, "the choice closed the menu");
+    assert!(
+        !app.shell.menu_is(&Menu::More),
+        "the choice closed the menu"
+    );
     assert_eq!(app.screen, Screen::Journal, "and went to History");
     assert_eq!(window.focused(&app), ringed("project-more"));
 }
@@ -385,11 +388,11 @@ fn the_roles_menu_takes_and_gives_back_the_keyboards_focus() {
     let mut window = window(&app);
     keyboard_focus(&mut window, &mut app, "session-roles");
     window.key(&mut app, named(Named::Enter));
-    assert_eq!(app.shell.roles_menu.as_deref(), Some(id.as_str()));
+    assert_eq!(app.shell.roles_menu(), Some(id.as_str()));
     let pick = format!("role-pick-{id}-{first}");
     assert_eq!(window.focused(&app), ringed(&pick));
     window.key(&mut app, named(Named::Escape));
-    assert_eq!(app.shell.roles_menu, None);
+    assert_eq!(app.shell.roles_menu(), None);
     assert_eq!(window.focused(&app), ringed("session-roles"));
 }
 
@@ -459,11 +462,11 @@ fn enter_after_a_click_and_escape_opens_the_menu_for_the_keyboard() {
     let mut window = window(&app);
     let more = window.bounds(&app, "project-more").expect("the More tab");
     window.tap(&mut app, more.center());
-    assert!(app.shell.more, "the click opened it");
+    assert!(app.shell.menu_is(&Menu::More), "the click opened it");
     window.key(&mut app, named(Named::Escape));
-    assert!(!app.shell.more, "Escape closed it");
+    assert!(!app.shell.menu_is(&Menu::More), "Escape closed it");
     window.key(&mut app, named(Named::Enter));
-    assert!(app.shell.more, "Enter opened it again");
+    assert!(app.shell.menu_is(&Menu::More), "Enter opened it again");
     assert_eq!(window.focused(&app), ringed("project-tab-Journal"));
     assert_eq!(app.shell.menu_opener.as_deref(), Some("project-more"));
 }
@@ -499,10 +502,13 @@ fn a_keyboard_choice_in_the_launch_dialog_returns_to_its_chip() {
         let chip = format!("launch-{key}");
         keyboard_focus(&mut window, &mut app, &chip);
         window.key(&mut app, named(Named::Enter));
-        assert!(app.shell.launch_choice_menu.is_some(), "{key}: opened");
+        assert!(
+            matches!(app.shell.menu, Some(Menu::LaunchChoice(_))),
+            "{key}: opened"
+        );
         assert_eq!(window.focused(&app), ringed(&format!("{chip}-default")));
         window.key(&mut app, named(chooses));
-        assert_eq!(app.shell.launch_choice_menu, None, "{key}: chosen");
+        assert_eq!(app.shell.menu, None, "{key}: chosen");
         assert!(app.shell.launch, "the dialog stays");
         assert_eq!(window.focused(&app), ringed(&chip), "{key}");
     }
@@ -536,7 +542,7 @@ fn a_keyboard_choice_that_opens_the_dialog_leaves_the_focus_there() {
     let mut window = window(&app);
     keyboard_focus(&mut window, &mut app, "launch-menu");
     window.key(&mut app, named(Named::Enter));
-    assert!(app.shell.launch_menu);
+    assert!(app.shell.menu_is(&Menu::LaunchTools));
     assert_eq!(window.focused(&app), ringed("launch-with-claude-code"));
     window.key(&mut app, named(Named::Enter));
     assert!(app.shell.launch, "the choice opened the dialog");

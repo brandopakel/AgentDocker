@@ -1066,10 +1066,9 @@ impl App {
                     self.shell.palette.close();
                 } else {
                     self.shell.palette.show();
-                    // A menu left open would float over the palette.
-                    self.shell.launch_menu = false;
-                    self.shell.project_menu = None;
-                    self.shell.more = false;
+                    // A menu left open would float over the palette, or
+                    // be found open under it: whichever it is, it closes.
+                    self.close_menu();
                     return self.focus_search();
                 }
             }

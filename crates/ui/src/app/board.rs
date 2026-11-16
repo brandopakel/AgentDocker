@@ -316,7 +316,10 @@ impl App {
         };
         self.shell.link_kind = None;
         self.shell.link_target.clear();
-        self.shell.card_menu = None;
+        // Its menu goes with it; another menu is not the card's to close.
+        if self.shell.card_menu().is_some() {
+            self.close_menu();
+        }
     }
 
     /// A card opened before its board was read (from To-do, or Back to
@@ -533,7 +536,7 @@ impl App {
         if stats.done > 0 || stats.in_review.is_some() {
             page = page.push(self.stats_strip(&stats, c));
         }
-        if self.shell.tags_menu {
+        if self.shell.menu_is(&Menu::Tags) {
             page = page.push(self.tags_menu(&root, c));
         }
         if let Some(settings) = &self.shell.lane_settings {
@@ -771,7 +774,7 @@ impl App {
                     .spacing(4)
                     .align_y(Center),
                     Some(Message::TagsMenu),
-                    self.shell.tags_menu,
+                    self.shell.menu_is(&Menu::Tags),
                     Kind::Ghost,
                     [6, 6],
                     iced::Length::Shrink,
@@ -2038,7 +2041,7 @@ impl App {
         let workspace = self
             .selected_project_root()
             .and_then(|p| self.workspaces.get(&p));
-        let menu = self.shell.card_menu;
+        let menu = self.shell.card_menu();
         let mut tools = row![
             icon_button(
                 "card-plan".into(),

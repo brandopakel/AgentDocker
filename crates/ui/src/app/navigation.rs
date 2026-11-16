@@ -440,12 +440,7 @@ impl App {
     fn restore(&mut self, place: &Place) -> Task<Message> {
         let mut tasks = Vec::new();
         // The page's menus close with it.
-        self.shell.more = false;
-        self.shell.launch_menu = false;
-        self.shell.editor_menu = None;
-        self.shell.project_menu = None;
-        self.shell.card_menu = None;
-        self.shell.tags_menu = false;
+        self.close_menu();
         if let Some(scope) = &place.scope
             && *scope != self.scope()
         {
