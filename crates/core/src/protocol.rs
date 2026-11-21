@@ -1173,6 +1173,31 @@ pub enum Request {
         project: Option<String>,
         role: String,
     },
+    /// A project's team: its saved crew, or the one the daemon proposes
+    /// from what is installed, or why it can propose none. Answers `crew`.
+    Crew {
+        #[serde(default)]
+        project: Option<String>,
+    },
+    /// Save a project's crew as these members, made against revision
+    /// `expect` (zero when none is saved). A member given with its id is
+    /// kept as that member; one without is new. The person's to do.
+    /// Answers `crew`.
+    CrewSave {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        expect: u64,
+        members: Vec<crate::crew::MemberInput>,
+    },
+    /// Save the proposed crew, named by the key it was shown under, as a
+    /// project's first. The person's to do. Answers `crew`.
+    CrewAccept {
+        from: String,
+        #[serde(default)]
+        project: Option<String>,
+        proposal: String,
+    },
     /// Cards that answer some words, best first: a key exactly, else
     /// every word somewhere on the card, slips forgiven. Every project's
     /// when none is named; archived ones only when asked. Answers `tasks`.
@@ -2484,6 +2509,9 @@ pub enum Response {
     },
     RoleDef {
         role: crate::RoleDef,
+    },
+    Crew {
+        crew: crate::crew::CrewView,
     },
     Plans {
         plans: Vec<crate::Plan>,

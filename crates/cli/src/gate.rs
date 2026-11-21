@@ -575,7 +575,7 @@ pub async fn open_pulls(
 /// closed, escaped and reopened. None when it holds a control character
 /// or any space but a plain one (a line break among them), which a command
 /// told on one line cannot carry as itself.
-fn shell_word(text: &str) -> Option<String> {
+pub(crate) fn shell_word(text: &str) -> Option<String> {
     if text.is_empty()
         || text
             .chars()

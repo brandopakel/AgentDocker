@@ -11,6 +11,7 @@ pub mod brief;
 pub mod change;
 pub mod config;
 pub mod conversation;
+pub mod crew;
 pub mod desktop_report;
 pub use conversation::{
     ArchivedMessage, ConversationId, ConversationKind, ConversationSummary, ReadCursor,

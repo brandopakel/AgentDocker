@@ -12,6 +12,7 @@ mod client;
 mod codex_input;
 mod connector;
 mod console;
+mod crew;
 mod desktop;
 mod emission;
 mod format;
@@ -616,6 +617,10 @@ enum Command {
     },
     /// Give an agent a role, so `role:<name>` names it as a recipient.
     Role(RoleArgs),
+    /// A project's team: who its members are, on which runtime and with
+    /// which roles. With none saved, the team proposed from what is
+    /// installed; `team accept` saves it, `team add` and `team rm` change it.
+    Team(crew::Args),
     /// A project's roles, each with its colour: the five every project
     /// offers and your own. Nothing holds one until you give it.
     Roles {
@@ -5601,6 +5606,7 @@ async fn run() -> Result<()> {
             }
         }
         Command::SecretReview(args) => secret_review::run(&client, args).await?,
+        Command::Team(args) => crew::run(&client, args).await?,
         Command::Questions { agent, me } => {
             let agent = if me { Some(HUMAN.to_owned()) } else { agent };
             if let Response::Questions { questions } =

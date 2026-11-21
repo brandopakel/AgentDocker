@@ -193,6 +193,8 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::RoleSave { from, .. }
         | R::RoleAssign { from, .. }
         | R::RoleDelete { from, .. }
+        | R::CrewSave { from, .. }
+        | R::CrewAccept { from, .. }
         | R::MemoryAdd { from, .. }
         | R::MemoryForget { from, .. }
         | R::MemoryRetire { from, .. }
@@ -287,6 +289,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::Rules { .. }
         | R::Tags { .. }
         | R::RoleCatalog { .. }
+        | R::Crew { .. }
         | R::TaskSearch { .. }
         | R::Plans { .. }
         | R::PlanGet { .. }
