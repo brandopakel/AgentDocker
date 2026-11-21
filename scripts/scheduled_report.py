@@ -14,7 +14,8 @@ has decided: in the Actions results (success, failure or timed out; a
 cancelled or running attempt decides nothing, and its run's newest decisive
 attempt is read instead) or in the automation's own receipts. A counted
 result brings the issues to the state it calls for, so a retry finishes what
-an earlier attempt left half done and a repeat changes nothing.
+an earlier attempt left half done and a repeat changes nothing. Evidence that
+cannot be read (a failed or malformed answer) stops it before any write.
 
     python3 scripts/scheduled_report.py --workflow fuzz.yml --result failure
 
@@ -153,11 +154,10 @@ class Gh:
                 if run["run_number"] != number and each == run["run_attempt"]:
                     status, conclusion = run["status"], run["conclusion"]
                 else:
-                    try:
-                        (past,) = self.lines(f"repos/{self.repository}/actions/runs/{run['id']}/attempts/{each}",
-                                             "--jq", "{status, conclusion}")
-                    except (subprocess.CalledProcessError, ValueError):
-                        continue
+                    # Evidence that cannot be read stops the report: a
+                    # missing newer result could let a stale one write.
+                    (past,) = self.lines(f"repos/{self.repository}/actions/runs/{run['id']}/attempts/{each}",
+                                         "--jq", "{status, conclusion}")
                     status, conclusion = past["status"], past["conclusion"]
                 if status == "completed" and conclusion in DECISIVE:
                     found.append((run["run_number"], each, DECISIVE[conclusion]))
@@ -188,8 +188,15 @@ def main(client=None, environ=None):
                f"/actions/runs/{environ['GITHUB_RUN_ID']}",
     }
     client = client or Gh(environ["GITHUB_REPOSITORY"])
-    history = client.history(args.workflow, run["number"], run["attempt"])
-    effects = decide(args.workflow, run, history, client.issues(args.workflow))
+    try:
+        history = client.history(args.workflow, run["number"], run["attempt"])
+        issues = client.issues(args.workflow)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError, ValueError, KeyError) as error:
+        # Nothing is written on evidence that could not be read.
+        print(f"scheduled_report: the schedule's evidence could not be read ({error}); nothing changed",
+              file=sys.stderr)
+        return 1
+    effects = decide(args.workflow, run, history, issues)
     for effect in effects:
         client.apply(effect)
     print(f"scheduled_report: {len(effects)} effect(s) for run {run['number']}.{run['attempt']} ({run['result']})")

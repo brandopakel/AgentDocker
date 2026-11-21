@@ -211,6 +211,33 @@ class ScheduledReport(unittest.TestCase):
         self.assertIn("--paginate", open_call)
         self.assertEqual(history, [(41, 1, "failure")])
 
+    def test_evidence_that_cannot_be_read_writes_nothing(self):
+        # A newer run is being rerun and its previous attempt cannot be
+        # read (a 503): the report stops before writing anything.
+        writes = []
+
+        def fake(argv, **_):
+            path = next(arg for arg in argv[2:] if arg.startswith("repos/"))
+            if "-f" in argv:
+                writes.append(argv)
+                return subprocess.CompletedProcess(argv, 0, "", "")
+            if "/workflows/" in path:
+                out = json.dumps({"id": 7, "run_number": 41, "run_attempt": 2, "status": "in_progress",
+                                  "conclusion": None}) + "\n"
+                return subprocess.CompletedProcess(argv, 0, out, "")
+            if "/attempts/" in path:
+                raise subprocess.CalledProcessError(1, argv, "", "HTTP 503")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+
+        environ = {"GITHUB_REPOSITORY": "owner/repo", "GITHUB_RUN_NUMBER": "40", "GITHUB_RUN_ATTEMPT": "2",
+                   "GITHUB_RUN_ID": "9", "GITHUB_SERVER_URL": "https://github.example"}
+        with mock.patch.object(report.subprocess, "run", side_effect=fake), \
+                mock.patch.object(sys, "argv", ["scheduled_report.py", "--workflow", WORKFLOW, "--result", "failure"]), \
+                mock.patch("sys.stderr", io.StringIO()) as said:
+            self.assertEqual(report.main(environ=environ), 1)
+        self.assertEqual(writes, [])
+        self.assertIn("could not be read", said.getvalue())
+
     def test_the_report_job_is_scheduled_only_and_cannot_decide_the_fuzz_result(self):
         text = (REPO / ".github/workflows/fuzz.yml").read_text()
         job = text[text.index("\n  report:"):]
