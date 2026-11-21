@@ -198,8 +198,10 @@ def fuzz_closure(metadata):
             package["id"] for package in metadata["packages"] if package["name"] == "agentdocker-fuzz"
         )
         deps = {node["id"]: [dep["pkg"] for dep in node.get("deps", [])] for node in resolve["nodes"]}
-    except (KeyError, TypeError, StopIteration):
+    except (KeyError, TypeError, AttributeError, StopIteration):
         return None
+    if root not in deps:
+        return None  # the graph does not reach the fuzz crate: not told
     reached, stack = set(), [root]
     while stack:
         for dep in deps.get(stack.pop(), []):

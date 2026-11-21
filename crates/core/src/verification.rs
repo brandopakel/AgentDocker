@@ -336,6 +336,9 @@ pub enum StepState {
     NotReached,
     /// Left out by a quick run's scope: not the same as never reached.
     OutOfScope,
+    /// Not run, and whether it had to be cannot be told: a quick report
+    /// with no word on the fuzz targets.
+    Unknown,
 }
 
 /// One step for display: recorded, never reached, or out of scope.
@@ -367,33 +370,45 @@ pub fn steps(report: &GateRunReport) -> Vec<StepView> {
             counts: step.counts.clone(),
         })
         .collect();
-    let required =
-        required(report.mode, report.scope.as_ref(), report.gate_version).unwrap_or_default();
-    for name in &required {
-        if !report.steps.iter().any(|step| step.name == *name) {
-            views.push(StepView {
-                name: *name,
-                program: None,
-                state: StepState::NotReached,
-                counts: None,
-            });
+    let ran = |name: StepName| report.steps.iter().any(|step| step.name == name);
+    let view = |name, state| StepView {
+        name,
+        program: None,
+        state,
+        counts: None,
+    };
+    // Only against a required list that can be told: never for a version
+    // this build does not know, nor a quick run with no word on the fuzz
+    // targets.
+    if let Some(required) = required(report.mode, report.scope.as_ref(), report.gate_version) {
+        for name in required {
+            if !ran(name) {
+                views.push(view(name, StepState::NotReached));
+            }
         }
     }
-    if report.mode == GateMode::Quick && report.scope.is_some() {
+    // What a quick run's selection established it left out, and nothing
+    // more: Cargo steps for an empty package selection (doctests too for
+    // an empty doctest selection), the fuzz targets for a `false` word.
+    let known = (1..=GATE_VERSION).contains(&report.gate_version);
+    if let (GateMode::Quick, Some(scope), true) = (report.mode, &report.scope, known) {
         use StepName::*;
-        let fuzz = if report.gate_version >= 2 {
-            Some(FuzzBuild)
-        } else {
-            None
-        };
-        for name in fuzz.into_iter().chain([Clippy, Nextest, Doctests]) {
-            if !required.contains(&name) && !report.steps.iter().any(|step| step.name == name) {
-                views.push(StepView {
-                    name,
-                    program: None,
-                    state: StepState::OutOfScope,
-                    counts: None,
-                });
+        let mut left: Vec<(StepName, StepState)> = Vec::new();
+        if report.gate_version >= 2 {
+            match scope.fuzz {
+                Some(false) => left.push((FuzzBuild, StepState::OutOfScope)),
+                None => left.push((FuzzBuild, StepState::Unknown)),
+                Some(true) => {}
+            }
+        }
+        if scope.packages.is_empty() {
+            left.extend([Clippy, Nextest, Doctests].map(|name| (name, StepState::OutOfScope)));
+        } else if scope.doc_packages.is_empty() {
+            left.push((Doctests, StepState::OutOfScope));
+        }
+        for (name, state) in left {
+            if !ran(name) {
+                views.push(view(name, state));
             }
         }
     }
@@ -754,6 +769,56 @@ mod tests {
 
     fn at_time(seconds: i64) -> DateTime<Utc> {
         at(seconds)
+    }
+
+    /// What is shown claims no exclusion the selection did not establish:
+    /// a quick run with no fuzz word and packages selected lists the fuzz
+    /// targets as unknown and no Cargo step as out of scope; an unknown
+    /// version lists only what ran.
+    #[test]
+    fn only_established_exclusions_are_shown() {
+        let state = |run: &GateRunReport, name: StepName| {
+            steps(run)
+                .into_iter()
+                .find(|view| view.name == name)
+                .map(|view| view.state)
+        };
+        let mut unworded = report(
+            GateMode::Quick,
+            &[Docs, Fmt, FuzzLock, Selection, Clippy, Nextest, Installer],
+            scope(&["agentd"], &[]),
+        );
+        unworded.gate_version = 2;
+        assert_eq!(outcome(&unworded), Outcome::Incomplete);
+        assert_eq!(state(&unworded, FuzzBuild), Some(StepState::Unknown));
+        assert_eq!(state(&unworded, Clippy), Some(StepState::Passed));
+        assert_eq!(
+            state(&unworded, Doctests),
+            Some(StepState::OutOfScope),
+            "no doctest selection"
+        );
+        assert!(
+            !steps(&unworded)
+                .iter()
+                .any(|view| view.state == StepState::NotReached)
+        );
+        // An empty selection with no word: the Cargo steps are out of
+        // scope, the fuzz targets unknown.
+        let mut empty = report(
+            GateMode::Quick,
+            &[Docs, Fmt, FuzzLock, Selection, Installer],
+            scope(&[], &[]),
+        );
+        empty.gate_version = 2;
+        assert_eq!(state(&empty, Nextest), Some(StepState::OutOfScope));
+        assert_eq!(state(&empty, FuzzBuild), Some(StepState::Unknown));
+        // An unknown version: only what ran.
+        let mut newer = report(GateMode::Check, &[Docs, Fmt], None);
+        newer.gate_version = 3;
+        assert_eq!(steps(&newer).len(), 2);
+        let mut newer_quick = empty.clone();
+        newer_quick.gate_version = 3;
+        assert_eq!(steps(&newer_quick).len(), 5);
     }
 
     /// A step name a newer build wrote reads as unknown, never a failure to

@@ -119,6 +119,17 @@ class TouchedCrates(unittest.TestCase):
         # Metadata that cannot be read: the targets are compiled.
         self.assertTrue(TOUCHED.fuzz_reached(["crates/cli/src/main.rs"], {"agentdocker"}, "/nonexistent.json"))
         self.assertIsNone(TOUCHED.fuzz_closure({"packages": []}))
+        # A graph that cannot be walked from the fuzz crate is not told:
+        # its root missing from the nodes, or no graph at all.
+        rootless = json.loads(json.dumps(self.FUZZ_METADATA))
+        rootless["resolve"]["nodes"] = [node for node in rootless["resolve"]["nodes"] if node["id"] != "fuzz"]
+        self.assertIsNone(TOUCHED.fuzz_closure(rootless))
+        self.assertIsNone(TOUCHED.fuzz_closure({**self.FUZZ_METADATA, "resolve": None}))
+        with tempfile.TemporaryDirectory() as folder:
+            for broken in (rootless, {**self.FUZZ_METADATA, "resolve": None}):
+                path = Path(folder) / "broken.json"
+                path.write_text(json.dumps(broken))
+                self.assertTrue(TOUCHED.fuzz_reached(["crates/cli/src/main.rs"], {"agentdocker"}, str(path)))
 
     def test_selectors_name_each_package_or_the_workspace(self):
         self.assertEqual(TOUCHED.selectors({"top", "base"}), ["-p", "base", "-p", "top"])

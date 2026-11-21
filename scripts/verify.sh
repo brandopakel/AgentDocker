@@ -521,7 +521,7 @@ case "${1:-check}" in
     doc_selectors=()
     while IFS= read -r line; do [ -n "$line" ] && doc_selectors+=("$line"); done < "$campaign_dir/doc-packages"
     if [ "${#selectors[@]}" -eq 0 ]; then
-      echo "verify.sh quick: no workspace package changed since ${base:0:12}; no Cargo build, Clippy or tests run" >&2
+      echo "verify.sh quick: no workspace package changed since ${base:0:12}; no workspace Cargo build, Clippy or tests run" >&2
     else
       step cargo clippy --locked "${selectors[@]}" --all-targets -- -D warnings
       step cargo nextest run --locked "${selectors[@]}" --profile ci ${nextest_config[@]+"${nextest_config[@]}"}

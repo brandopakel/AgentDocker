@@ -163,12 +163,17 @@ pub fn line(run: &GateRun) -> String {
             }
             (
                 None,
-                StepState::Failed | StepState::Lost | StepState::Incomplete | StepState::NotReached,
+                StepState::Failed
+                | StepState::Lost
+                | StepState::Incomplete
+                | StepState::NotReached
+                | StepState::Unknown,
             ) => {
                 let state = match step.state {
                     StepState::Failed => "failed",
                     StepState::Lost => "stopped",
                     StepState::Incomplete => "never ended",
+                    StepState::Unknown => "not run, and not known to be required",
                     _ => "not reached",
                 };
                 said.push_str(&format!("; {} {state}", step.name));

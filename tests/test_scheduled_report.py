@@ -1,7 +1,9 @@
 """A failed scheduled run keeps one issue open, owned by the automation,
 until a later scheduled run passes; a repeat, a stale rerun or a person's
 issue changes nothing."""
+import json
 from pathlib import Path
+import subprocess
 import importlib.util
 import io
 import re
@@ -18,24 +20,30 @@ WORKFLOW = "fuzz.yml"
 
 
 class World:
-    """GitHub as the script sees it: issues and completed scheduled runs,
-    changed only through the effects the script applies."""
+    """GitHub as the script sees it: issues and the schedule's decisive
+    results, changed only through the effects the script applies."""
 
     def __init__(self):
         self.issues = []
-        self.runs = []
+        self.results = []  # (number, attempt, result) the Actions API reports as decisive
+        self.fail_close = False
 
-    def run(self, number, attempt, result):
+    def run(self, number, attempt, result, recorded=True):
+        history = [r for r in self.results if r[0] != number or r[1] < attempt]
         effects = report.decide(
             WORKFLOW,
             {"number": number, "attempt": attempt, "result": result, "url": f"https://example.invalid/{number}"},
-            [run for run in self.runs if run[0] != number],
+            history,
             self.issues,
         )
+        applied = []
         for effect in effects:
+            if effect[0] == "close" and self.fail_close:
+                break
             self.apply(effect)
-        # The run completes after its report.
-        self.runs = [run for run in self.runs if run[0] != number] + [(number, attempt, result)]
+            applied.append(effect)
+        if recorded and result in ("success", "failure"):
+            self.results.append((number, attempt, result))
         return effects
 
     def apply(self, effect):
@@ -47,7 +55,7 @@ class World:
         else:
             issue = next(issue for issue in self.issues if issue["number"] == effect[1])
             if kind == "comment":
-                issue["comments"].append(effect[2])
+                issue["comments"].append({"author": report.BOT, "body": effect[2]})
             elif kind == "close":
                 issue["open"] = False
 
@@ -55,60 +63,91 @@ class World:
         return [issue for issue in self.issues if issue["open"] and issue["author"] == report.BOT]
 
 
+def kinds(effects):
+    return [effect[0] for effect in effects]
+
+
 class ScheduledReport(unittest.TestCase):
     def test_one_issue_per_failing_episode(self):
         world = World()
         self.assertEqual(world.run(40, 1, "success"), [])
-        created = world.run(41, 1, "failure")
-        self.assertEqual([effect[0] for effect in created], ["create"])
+        self.assertEqual(kinds(world.run(41, 1, "failure")), ["create"])
         issue = world.open_owned()[0]
         self.assertIn(report.marker(WORKFLOW), issue["body"])
         self.assertIn("https://example.invalid/41", issue["body"])
-        # A later failure is added to the same issue.
-        self.assertEqual([effect[0] for effect in world.run(42, 1, "failure")], ["comment"])
+        self.assertEqual(kinds(world.run(42, 1, "failure")), ["comment"])
         self.assertEqual(len(world.issues), 1)
-        # Recovery closes it.
-        self.assertEqual([effect[0] for effect in world.run(43, 1, "success")], ["comment", "close"])
+        self.assertEqual(kinds(world.run(43, 1, "success")), ["comment", "close"])
         self.assertEqual(world.open_owned(), [])
-        # A recurrence opens a new one.
-        self.assertEqual([effect[0] for effect in world.run(44, 1, "failure")], ["create"])
+        self.assertEqual(kinds(world.run(44, 1, "failure")), ["create"])
         self.assertEqual(len(world.issues), 2)
 
     def test_a_repeated_attempt_has_one_effect(self):
         world = World()
         world.run(40, 1, "failure")
-        # The same run and attempt reported again (the report job retried).
-        self.assertEqual(report.decide(WORKFLOW, {"number": 40, "attempt": 1, "result": "failure", "url": "u"},
-                                       [], world.issues), [])
-        self.assertEqual(report.decide(WORKFLOW, {"number": 40, "attempt": 1, "result": "success", "url": "u"},
-                                       [], world.issues), [])
+        self.assertEqual(world.run(40, 1, "failure"), [])
+        self.assertEqual(len(world.issues), 1)
+
+    def test_a_retry_after_half_a_recovery_makes_only_the_close(self):
+        world = World()
+        world.run(40, 1, "failure")
+        world.fail_close = True
+        self.assertEqual(kinds(world.run(41, 1, "success", recorded=False)), ["comment", "close"])
+        self.assertEqual(len(world.open_owned()), 1, "the close failed")
+        world.fail_close = False
+        self.assertEqual(kinds(world.run(41, 1, "success")), ["close"])
+        self.assertEqual(world.open_owned(), [])
 
     def test_ordering_holds_both_ways(self):
-        # 40 fails, 41 passes and closes, then a late failure of 40 leaves
-        # it closed and opens nothing.
+        # 40 fails, 41 passes and closes; a late failure of 40 leaves it closed.
         world = World()
         world.run(40, 1, "failure")
         world.run(41, 1, "success")
-        self.assertEqual(world.open_owned(), [])
         self.assertEqual(world.run(40, 2, "failure"), [])
         self.assertEqual(world.open_owned(), [])
-        # A stale success leaves a newer failure open.
-        world = World()
-        world.run(40, 1, "success")
-        world.run(41, 1, "failure")
-        self.assertEqual(world.run(40, 2, "success"), [])
-        self.assertEqual(len(world.open_owned()), 1)
-        # A later attempt of the same run may settle its own failure.
+        # A later attempt of the same run settles its own failure.
         world = World()
         world.run(40, 1, "failure")
-        self.assertEqual([effect[0] for effect in world.run(40, 2, "success")], ["comment", "close"])
+        self.assertEqual(kinds(world.run(40, 2, "success")), ["comment", "close"])
+        # An older attempt's success does not close a newer attempt's failure.
+        world = World()
+        world.run(40, 2, "failure")
+        self.assertEqual(world.run(40, 1, "success"), [])
+        self.assertEqual(len(world.open_owned()), 1)
+
+    def test_only_a_decisive_newer_result_suppresses(self):
+        # A cancelled 41 decides nothing: 40's failure still opens.
+        world = World()
+        world.run(41, 1, "cancelled")
+        self.assertEqual(kinds(world.run(40, 1, "failure")), ["create"])
+        # 41's failure is on the issue though the Actions listing lacks it
+        # (41 is being rerun): an older success leaves it open.
+        world = World()
+        world.run(41, 1, "failure", recorded=False)
+        self.assertEqual(world.run(40, 2, "success"), [])
+        self.assertEqual(len(world.open_owned()), 1)
+        # A newer success that found nothing to close still decides: a
+        # delayed failure of an older run opens nothing.
+        world = World()
+        world.run(41, 1, "success")
+        self.assertEqual(world.run(40, 1, "failure"), [])
+        self.assertEqual(world.issues, [])
+
+    def test_only_the_bots_own_receipts_count(self):
+        world = World()
+        world.run(40, 1, "failure")
+        issue = world.open_owned()[0]
+        # Somebody quotes a marker for a newer run in their own comment.
+        issue["comments"].append({"author": "somebody", "body": report.run_marker(99, 1, "success")})
+        self.assertEqual(kinds(world.run(41, 1, "failure")), ["comment"])
+        self.assertEqual(kinds(world.run(42, 1, "success")), ["comment", "close"])
 
     def test_a_persons_issue_of_the_same_title_is_never_touched(self):
         world = World()
         person = {"number": 7, "open": True, "author": "somebody", "title": "Scheduled fuzz.yml fails on main",
                   "body": report.marker(WORKFLOW), "comments": []}
         world.issues.append(person)
-        self.assertEqual([effect[0] for effect in world.run(40, 1, "failure")], ["create"])
+        self.assertEqual(kinds(world.run(40, 1, "failure")), ["create"])
         world.run(41, 1, "success")
         self.assertTrue(person["open"])
         self.assertEqual(person["comments"], [])
@@ -123,7 +162,7 @@ class ScheduledReport(unittest.TestCase):
             def __init__(self):
                 self.applied = []
 
-            def completed(self, workflow, current):
+            def history(self, workflow, number, attempt):
                 return []
 
             def issues(self, workflow):
@@ -141,6 +180,36 @@ class ScheduledReport(unittest.TestCase):
         self.assertEqual(stub.applied[0][0], "create")
         self.assertIn("https://github.example/owner/repo/actions/runs/999", stub.applied[0][2])
         self.assertIn(report.run_marker(12, 2, "failure"), stub.applied[0][2])
+
+    def test_the_client_reads_every_open_issue_and_walks_back_a_running_attempt(self):
+        owned_body = report.marker(WORKFLOW) + "\nopen"
+        calls = []
+
+        def fake(argv, **_):
+            calls.append(argv)
+            path = next(arg for arg in argv[2:] if arg.startswith("repos/"))
+            out = ""
+            if "/issues?" in path and "state=open" in path:
+                # Two pages, joined by --paginate: the owned one is on the second.
+                out = json.dumps({"number": 1, "state": "open", "title": "x", "body": "other", "author": "somebody"}) + "\n"
+                out += json.dumps({"number": 205, "state": "open", "title": "t", "body": owned_body, "author": report.BOT}) + "\n"
+            elif path.endswith("/comments"):
+                out = json.dumps({"author": "somebody", "body": "hi"}) + "\n"
+            elif "/workflows/" in path:
+                out = json.dumps({"id": 7, "run_number": 41, "run_attempt": 2, "status": "in_progress", "conclusion": None}) + "\n"
+            elif "/attempts/1" in path:
+                out = json.dumps({"status": "completed", "conclusion": "failure"}) + "\n"
+            return subprocess.CompletedProcess(argv, 0, out, "")
+
+        client = report.Gh("owner/repo")
+        with mock.patch.object(report.subprocess, "run", side_effect=fake):
+            issues = client.issues(WORKFLOW)
+            history = client.history(WORKFLOW, 42, 1)
+        self.assertEqual([issue["number"] for issue in issues], [205])
+        self.assertEqual(issues[0]["comments"], [{"author": "somebody", "body": "hi"}])
+        open_call = next(call for call in calls if any("state=open" in arg for arg in call))
+        self.assertIn("--paginate", open_call)
+        self.assertEqual(history, [(41, 1, "failure")])
 
     def test_the_report_job_is_scheduled_only_and_cannot_decide_the_fuzz_result(self):
         text = (REPO / ".github/workflows/fuzz.yml").read_text()
