@@ -16,6 +16,7 @@ mod desktop;
 mod emission;
 mod format;
 mod gate;
+mod gate_runs;
 mod git_hook;
 #[cfg(test)]
 mod guide_lists;
@@ -544,6 +545,13 @@ enum Command {
     Verdict(gate::VerdictArgs),
     /// Whether a pull request or branch may land: approved at its head as it is now. Exits 1 when not.
     Gate(gate::GateArgs),
+    /// Record a local gate run (scripts/verify.sh does this when it ends).
+    GateRun {
+        #[command(subcommand)]
+        command: gate_runs::GateRunCommand,
+    },
+    /// The local gate runs recorded, newest first: each its runner's report of what it ran, how it ended and on which head.
+    GateRuns(gate_runs::GateRunsArgs),
     /// The agent tools installed on this machine — CLI, version, apps — and whether AgentDocker is wired into each.
     Runtimes,
     /// Open the desktop app: a native window over the same socket, showing agents, runtimes, the journal, leases and events.
@@ -4706,6 +4714,8 @@ async fn run() -> Result<()> {
                 std::process::exit(1);
             }
         }
+        Command::GateRun { command } => gate_runs::record(&client, command).await?,
+        Command::GateRuns(args) => gate_runs::list(&client, args).await?,
         Command::Runtimes => {
             if let Response::Runtimes { runtimes } = client.call(&Request::Runtimes).await? {
                 print_runtimes(&runtimes);

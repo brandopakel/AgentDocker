@@ -1046,6 +1046,10 @@ pub enum EventKind {
         #[serde(default)]
         runtime: String,
     },
+    /// A local gate run was recorded, as its runner reported it.
+    GateRunRecorded {
+        run: Box<crate::verification::GateRun>,
+    },
     /// A verdict was set aside: a departed reviewer's request for changes
     /// at `role`'s gate, by a successor's pass of that commit or a later
     /// one (`reviewer_ended`), or any verdict at every gate by the person
@@ -1314,6 +1318,7 @@ impl EventKind {
         "channels_pruned",
         "review_submitted",
         "code_verdict_given",
+        "gate_run_recorded",
         "code_verdict_superseded",
         "journal_appended",
         "journal_read",

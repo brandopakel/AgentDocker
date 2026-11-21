@@ -905,6 +905,18 @@ pub fn event_line(event: &Event) -> String {
             by.short(),
             of.short()
         ),
+        EventKind::GateRunRecorded { run } => format!(
+            "gate run         {} {} on {} at {}",
+            run.report.mode,
+            agentdocker_core::verification::outcome(&run.report).word(),
+            run.report.branch.as_deref().unwrap_or("(no branch)"),
+            run.report
+                .start
+                .head
+                .as_deref()
+                .map(|head| head.chars().take(8).collect::<String>())
+                .unwrap_or_else(|| "unknown".to_owned())
+        ),
         EventKind::CodeVerdictGiven {
             branch,
             head,
