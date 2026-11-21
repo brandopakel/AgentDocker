@@ -21,275 +21,14 @@
 //! would be pinned as what it says.
 #![cfg(unix)]
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
+mod support;
+
 use std::path::Path;
 use std::process::Command;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
-use agentdocker_core::{AgentRecord, AgentSpec, AgentStatus};
 use chrono::{DateTime, Utc};
 use serde_json::{Value, json};
-
-/// Answer each request in turn from `answers` for as long as the command
-/// runs, and hand back every request it made.
-///
-/// A request beyond the answers is recorded like the rest and answered
-/// with an error, so a command cannot make a request a test does not
-/// know of: one that fails quietly would otherwise be pinned as what the
-/// command prints, when it is what the command prints with half its
-/// answers missing. `done` is set when the command has exited; every
-/// accept, read and write is bounded.
-fn serve(
-    socket: &Path,
-    answers: Vec<Value>,
-    done: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<Vec<Value>> {
-    let listener = UnixListener::bind(socket).unwrap();
-    listener.set_nonblocking(true).unwrap();
-    std::thread::spawn(move || {
-        let mut requests = Vec::new();
-        let mut answers = answers.into_iter();
-        loop {
-            // Read before the accept: a request made just before the
-            // command exited is still taken on the last pass.
-            let exited = done.load(Ordering::SeqCst);
-            let stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if exited {
-                        return requests;
-                    }
-                    std::thread::sleep(Duration::from_millis(2));
-                    continue;
-                }
-                Err(error) => panic!("accept failed: {error}"),
-            };
-            stream.set_nonblocking(false).unwrap();
-            stream
-                .set_read_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            stream
-                .set_write_timeout(Some(Duration::from_secs(5)))
-                .unwrap();
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut request = String::new();
-            reader.read_line(&mut request).expect("a request line");
-            requests.push(serde_json::from_str(&request).expect("a request is JSON"));
-            let answer = answers.next().unwrap_or_else(|| {
-                json!({
-                    "type": "error",
-                    "code": "internal",
-                    "message": "this test has no answer for that request",
-                })
-            });
-            let mut stream = stream;
-            // The command may have gone by now, if it did not wait for
-            // this answer; that it asked is what is recorded.
-            let _ = stream.write_all(format!("{answer}\n{}\n", json!({"type":"end"})).as_bytes());
-        }
-    })
-}
-
-/// What a command printed and how it ended.
-struct Captured {
-    stdout: Vec<u8>,
-    stderr: String,
-    status: Option<i32>,
-    /// The `op` of each request it made, in order.
-    asked: Vec<String>,
-}
-
-impl Captured {
-    fn text(&self) -> String {
-        String::from_utf8(self.stdout.clone()).expect("stdout is UTF-8")
-    }
-}
-
-/// One command, its output in a pipe, against a daemon with `answers` to
-/// give, with nothing inherited from the surrounding session.
-fn capture(answers: Vec<Value>, args: &[&str]) -> Captured {
-    capture_in(None, answers, args)
-}
-
-/// [`capture`], run in `folder` when one is given: a command that asks
-/// git something needs a checkout to ask.
-fn capture_in(folder: Option<&Path>, answers: Vec<Value>, args: &[&str]) -> Captured {
-    let home = tempfile::Builder::new()
-        .prefix("ad-cap-")
-        .tempdir_in("/tmp")
-        .unwrap();
-    let socket = home.path().join("d.sock");
-    let expected = answers.len();
-    let done = Arc::new(AtomicBool::new(false));
-    let daemon = serve(&socket, answers, done.clone());
-    let mut command = Command::new(env!("CARGO_BIN_EXE_agentdocker"));
-    for (key, _) in std::env::vars_os() {
-        let key = key.to_string_lossy().into_owned();
-        if key.starts_with("AGENTDOCKER_")
-            || ["NO_COLOR", "CLICOLOR", "CLICOLOR_FORCE", "COLUMNS"].contains(&key.as_str())
-        {
-            command.env_remove(key);
-        }
-    }
-    let output = command
-        .args(args)
-        .current_dir(folder.unwrap_or(home.path()))
-        .env("AGENTDOCKER_HOME", home.path())
-        .env("AGENTDOCKER_SOCKET", &socket)
-        .env("AGENTDOCKER_NO_AUTOSTART", "1")
-        .output()
-        .unwrap();
-    done.store(true, Ordering::SeqCst);
-    let asked: Vec<String> = daemon
-        .join()
-        .expect("the fake daemon served")
-        .iter()
-        .map(|request| request["op"].as_str().unwrap_or("?").to_owned())
-        .collect();
-    assert_eq!(
-        asked.len(),
-        expected,
-        "the command made {} requests and the test has {expected} answers: {asked:?}\nstdout: {}\nstderr: {}",
-        asked.len(),
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
-    );
-    Captured {
-        stdout: output.stdout,
-        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        status: output.status.code(),
-        asked,
-    }
-}
-
-/// A moment `seconds` before now, placed in the middle of its minute so
-/// that "2m ago" stays "2m ago" for as long as a test runs.
-fn ago(seconds: i64) -> DateTime<Utc> {
-    Utc::now() - chrono::Duration::seconds(seconds)
-}
-
-fn agent(id: &str, name: &str, runtime: &str, managed: bool) -> AgentRecord {
-    let mut agent = AgentRecord::new(
-        AgentSpec {
-            name: name.into(),
-            runtime: runtime.into(),
-            ..Default::default()
-        },
-        managed,
-        ago(150),
-    );
-    agent.id = id.into();
-    agent.status = AgentStatus::Running;
-    agent.pid = Some(4242);
-    agent.process_started_at = Some(ago(150));
-    agent
-}
-
-const WRITER: &str = "aaaaaaaaaaaa0000000000000000aaaa";
-const REVIEWER: &str = "bbbbbbbbbbbb0000000000000000bbbb";
-const PROJECT: &str = "cccccccccccc0000000000000000cccc";
-
-fn card(key: &str, title: &str, column: &str, assignee: Option<&str>) -> Value {
-    let mut card = json!({
-        "id": format!("task-{key}"),
-        "project": PROJECT,
-        "key": key,
-        "title": title,
-        "acceptance": "It is done when it is done.",
-        "column": column,
-        "lane": column,
-        "rank": "a0",
-        "size": "s",
-        "tags": ["cli"],
-        "created_by": "user",
-        "created_at": ago(7350),
-        "updated_at": ago(150),
-        "lane_since": ago(150),
-    });
-    if let Some(assignee) = assignee {
-        card["assignee"] = json!(assignee);
-    }
-    card
-}
-
-/// A day's usage report as the daemon answers it, with `rows` in it.
-fn usage(rows: Vec<agentdocker_core::usage::report::Row>) -> Value {
-    use agentdocker_core::usage::report::{Collection, Group, Overhead, Report, ReportCoverage};
-    let now = Utc::now();
-    let day = chrono::Duration::hours(24);
-    let mut answer = serde_json::to_value(Report {
-        rows,
-        by: Group::Agent,
-        as_of: now,
-        effective_since: now - day,
-        effective_until: now,
-        coverage: ReportCoverage {
-            retained_since: now - day,
-            history_truncated: false,
-            future_until_clamped: false,
-            includes_current_hour: true,
-            source_gaps: 0,
-            collection: Collection::default(),
-            tracking: None,
-        },
-        overhead: Overhead::default(),
-        context: Default::default(),
-    })
-    .unwrap();
-    answer["type"] = json!("usage");
-    answer
-}
-
-/// One agent's tokens over the day: every sample said its count.
-fn tokens_of(agent: &str, input: u64, output: u64) -> agentdocker_core::usage::report::Row {
-    use agentdocker_core::usage::report::{CounterReports, Row};
-    use agentdocker_core::usage::{CounterReport, Coverage};
-    let counted = |sum| CounterReport {
-        sum: Some(sum),
-        known_samples: 4,
-        coverage: Coverage::Complete,
-    };
-    Row {
-        key: Some(agent.to_owned()),
-        samples: 4,
-        counters: CounterReports {
-            input_tokens: counted(input),
-            cache_read_input_tokens: CounterReport::default(),
-            cache_write_input_tokens: CounterReport::default(),
-            output_tokens: counted(output),
-            reasoning_output_tokens: CounterReport::default(),
-        },
-        usage_source: None,
-        cost_usd_micros: CounterReport::default(),
-        cache_read_share_percent: None,
-        estimated_cost: None,
-    }
-}
-
-/// What `ps --no-discover` asks, in order: the agents shown, every agent
-/// (whose provider's state a shown one may depend on), what each is
-/// doing, the day's tokens, and whether an ended one comes back.
-const PS_ASKS: [&str; 5] = ["list", "list", "activity", "usage", "restarts"];
-
-fn ps(report: Value) -> Captured {
-    let agents = json!([
-        agent(WRITER, "writer", "claude-code", true),
-        agent(REVIEWER, "reviewer", "codex", false),
-    ]);
-    capture(
-        vec![
-            json!({"type":"agents", "agents": agents.clone()}),
-            json!({"type":"agents", "agents": agents}),
-            json!({"type":"activity", "activity": []}),
-            report,
-            json!({"type":"restarts", "outlooks": {}}),
-        ],
-        &["ps", "--no-discover"],
-    )
-}
+use support::*;
 
 /// `ps` in a pipe: the table as it is, with the five requests it makes.
 #[test]
@@ -562,7 +301,9 @@ fn file_get_writes_the_files_bytes_and_nothing_else() {
         &["file", "get", "file-one"],
     );
     assert_eq!(captured.status, Some(0), "{}", captured.stderr);
+    assert_eq!(captured.asked, ["file_get"]);
     assert_eq!(captured.stdout, text.as_bytes());
+    assert_eq!(captured.stderr, "");
 }
 
 /// `gate` ends with status 1 when the branch is not approved, and says
@@ -605,6 +346,7 @@ fn gate_ends_with_one_when_the_branch_is_not_approved() {
         "{:?}",
         captured.text()
     );
+    assert_eq!(captured.stderr, "");
 }
 
 const GATE: &str = "\

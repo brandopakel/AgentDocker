@@ -25,6 +25,7 @@ mod hooks;
 mod input_status;
 mod mcp;
 mod opencode_plugin;
+mod out;
 mod provider_status;
 mod rtk;
 mod secret_review;
@@ -351,6 +352,8 @@ enum Command {
         /// Show input readiness and reconnect guidance for sessions needing attention.
         #[arg(long)]
         input_details: bool,
+        #[command(flatten)]
+        look: out::Look,
     },
     /// Find running agent processes (Claude Code, Codex, ...) nobody registered.
     Discover,
@@ -964,6 +967,8 @@ enum Command {
         /// Only leases overlapping this resource.
         #[arg(long)]
         resource: Option<String>,
+        #[command(flatten)]
+        look: out::Look,
     },
     /// Run agentd as a login service, or start, stop, and inspect it.
     Daemon(service::DaemonArgs),
@@ -1488,6 +1493,8 @@ enum TaskAction {
     /// One card in full: fields, comments and history.
     Show {
         task: String,
+        #[command(flatten)]
+        look: out::Look,
     },
     /// Take a card from the pull source nobody else holds: yours, in the
     /// pull target. With no card named, the next ready one.
@@ -1785,6 +1792,8 @@ enum TaskAction {
         /// last one said it went on.
         #[arg(long, default_value_t = 0)]
         offset: usize,
+        #[command(flatten)]
+        look: out::Look,
     },
 }
 
@@ -2985,7 +2994,14 @@ async fn run() -> Result<()> {
             labels,
             no_discover,
             input_details,
+            look,
         } => {
+            let caps = out::Caps::stdout(look);
+            // What could not be read, for a person to be told: a column
+            // that is empty because its answer did not come is not a
+            // column of nothing. A script's output says what it always
+            // has.
+            let mut unread: Vec<&str> = Vec::new();
             let request = Request::List {
                 all,
                 project: project.as_deref().map(project_selector),
@@ -3030,7 +3046,10 @@ async fn run() -> Result<()> {
                 .await
             {
                 Ok(Response::Activity { activity }) => activity,
-                _ => Vec::new(),
+                _ => {
+                    unread.push("what each is doing");
+                    Vec::new()
+                }
             };
             // What each one's provider reported over the last day, beside
             // what it is doing. Nothing to show — collection off, or no
@@ -3046,15 +3065,32 @@ async fn run() -> Result<()> {
                 .await
             {
                 Ok(Response::Usage { report }) => format::tokens_by_agent(&report),
-                _ => HashMap::new(),
+                _ => {
+                    unread.push("the day's tokens");
+                    HashMap::new()
+                }
             };
             // Whether each ended one comes back, from the daemon that
             // schedules it; a daemon that cannot say adds nothing.
             let restarts = match client.call(&Request::Restarts { agent: None }).await {
                 Ok(Response::Restarts { outlooks }) => outlooks,
-                _ => BTreeMap::new(),
+                _ => {
+                    unread.push("whether an ended one comes back");
+                    BTreeMap::new()
+                }
             };
-            print_agents(&agents, &unadopted, &activity, sources, &tokens, &restarts);
+            print_agents(
+                &agents,
+                &unadopted,
+                &activity,
+                sources,
+                &tokens,
+                &restarts,
+                Printed {
+                    caps,
+                    unread: &unread,
+                },
+            );
             if input_details {
                 let now = chrono::Utc::now();
                 for agent in &agents {
@@ -3067,10 +3103,18 @@ async fn run() -> Result<()> {
                 }
             }
             if !unadopted.is_empty() {
-                eprintln!(
+                let note = format!(
                     "{} running agent process(es) nobody registered; `agentdocker adopt <pid>` brings one in",
                     unadopted.len()
                 );
+                // The same words on stderr; set back where stderr itself
+                // is a terminal with colour, whatever stdout is.
+                let stderr = out::Caps::stderr(look);
+                if caps.human && stderr.color {
+                    eprintln!("{}", out::paint(&note, out::FAINT, stderr));
+                } else {
+                    eprintln!("{note}");
+                }
             }
         }
         Command::Changes {
@@ -4073,8 +4117,48 @@ async fn run() -> Result<()> {
                         }
                     }
                 }
-                TaskAction::Show { task } => {
-                    detail(client.call(&Request::TaskGet { task }).await?);
+                TaskAction::Show { task, look } => {
+                    let caps = out::Caps::stdout(look);
+                    match client.call(&Request::TaskGet { task }).await? {
+                        Response::TaskDetail {
+                            task,
+                            board,
+                            comments,
+                            history,
+                            blockers,
+                            children,
+                            lease,
+                            plan,
+                            files,
+                            times,
+                            usage,
+                        } if caps.human => {
+                            // Who holds it and who wrote what, by name:
+                            // read only for a person, so a script's
+                            // output and its one request are as before.
+                            let names = agent_names(&client).await;
+                            let zone = chrono::Offset::fix(chrono::Local::now().offset());
+                            out::print(&out::views::card(
+                                &out::views::Card {
+                                    task: &task,
+                                    board: &board,
+                                    comments: &comments,
+                                    history: &history,
+                                    blockers: &blockers,
+                                    children: &children,
+                                    lease: lease.as_ref(),
+                                    plan: plan.as_ref(),
+                                    files: &files,
+                                    times: times.as_ref(),
+                                    usage: usage.as_ref(),
+                                },
+                                &names,
+                                zone,
+                                caps,
+                            ));
+                        }
+                        other => detail(other),
+                    }
                 }
                 TaskAction::Pull {
                     task,
@@ -4537,7 +4621,9 @@ async fn run() -> Result<()> {
                     archived,
                     limit,
                     offset,
+                    look,
                 } => {
+                    let caps = out::Caps::stdout(look);
                     let agent = sender::resolve(&client, agent).await?;
                     let request = Request::Tasks {
                         project: Some(project.map_or_else(here, Ok)?),
@@ -4591,15 +4677,42 @@ async fn run() -> Result<()> {
                                     ]
                                 })
                                 .collect();
-                            format::table(
-                                &["CARD", "LANE", "IN LANE", "TITLE", "HOLDER", ""],
-                                &rows,
-                            );
-                            if more {
-                                println!(
-                                    "and more: the board goes on; --offset {} shows the next page",
-                                    offset + tasks.len()
+                            if caps.human {
+                                // The same cells, each card's lane in
+                                // its tone, fitted to the terminal.
+                                let cards: Vec<out::views::CardRow<'_>> = tasks
+                                    .iter()
+                                    .zip(&rows)
+                                    .map(|(task, row)| out::views::CardRow {
+                                        task,
+                                        in_lane: row[2].clone(),
+                                        holder: row[4].clone(),
+                                    })
+                                    .collect();
+                                let mut said = out::views::cards(&cards, caps);
+                                if more {
+                                    said.push_str(&out::paint(
+                                        &format!(
+                                            "and more: the board goes on; --offset {} shows the next page",
+                                            offset + tasks.len()
+                                        ),
+                                        out::FAINT,
+                                        caps,
+                                    ));
+                                    said.push('\n');
+                                }
+                                out::print(&said);
+                            } else {
+                                format::table(
+                                    &["CARD", "LANE", "IN LANE", "TITLE", "HOLDER", ""],
+                                    &rows,
                                 );
+                                if more {
+                                    println!(
+                                        "and more: the board goes on; --offset {} shows the next page",
+                                        offset + tasks.len()
+                                    );
+                                }
                             }
                         }
                     }
@@ -5916,13 +6029,22 @@ async fn run() -> Result<()> {
             }
         }
         Command::Journal(args) => journal_command(&client, args).await?,
-        Command::Leases { agent, resource } => {
+        Command::Leases {
+            agent,
+            resource,
+            look,
+        } => {
             let request = Request::Leases {
                 agent,
                 resource: resource.as_deref().map(resource_key),
             };
             if let Response::Leases { leases } = client.call(&request).await? {
-                print_leases(&leases);
+                let caps = out::Caps::stdout(look);
+                if caps.human {
+                    out::print(&out::views::leases(&leases, chrono::Utc::now(), caps));
+                } else {
+                    print_leases(&leases);
+                }
             }
         }
         Command::Daemon(args) => service::run(socket, args).await?,
@@ -6685,6 +6807,13 @@ fn status_cell(
     }
 }
 
+/// How `ps` is printed, and what it could not read: said to a person,
+/// and left out of what a script reads, which is what it always was.
+struct Printed<'a> {
+    caps: out::Caps,
+    unread: &'a [&'a str],
+}
+
 fn print_agents(
     agents: &[AgentRecord],
     unadopted: &[DiscoveredProcess],
@@ -6692,7 +6821,9 @@ fn print_agents(
     input_sources: &[AgentRecord],
     tokens: &HashMap<String, String>,
     restarts: &BTreeMap<agentdocker_core::AgentId, agentdocker_core::restart::Outlook>,
+    printed: Printed<'_>,
 ) {
+    let Printed { caps, unread } = printed;
     let with_tokens = agents.iter().any(|a| tokens.contains_key(a.id.as_str()));
     let doing = |id: &agentdocker_core::AgentId| {
         activity
@@ -6836,7 +6967,22 @@ fn print_agents(
         headers.push("TEAM");
     }
     headers.extend(["PID", "CREATED"]);
-    format::table_dimming(&headers, &rows, |i| i >= first_unadopted);
+    if !caps.human {
+        format::table_dimming(&headers, &rows, |i| i >= first_unadopted);
+        return;
+    }
+    let tones: Vec<agentdocker_core::Tone> = agents
+        .iter()
+        .map(|a| agentdocker_core::Tone::of_status(&a.status))
+        .collect();
+    out::print(&out::views::agents(
+        &headers,
+        rows,
+        &tones,
+        first_unadopted,
+        unread,
+        caps,
+    ));
 }
 
 /// The `ps` THREAD cell: what the provider says of the agent's own thread.

@@ -60,13 +60,7 @@ fn lane_tone(kind: Column, c: Colors) -> iced::Color {
 /// while it is ready or under way, attention in review, positive done,
 /// alert blocked.
 fn lane_chip_tone(kind: Column) -> Tone {
-    match kind {
-        Column::Backlog | Column::Cancelled => Tone::Neutral,
-        Column::Ready | Column::InProgress => Tone::Info,
-        Column::Review => Tone::Attention,
-        Column::Done => Tone::Positive,
-        Column::Blocked => Tone::Alert,
-    }
+    Tone::of_lane(kind)
 }
 
 /// Where a card stands, as a chip: its lane's glyph and name.
