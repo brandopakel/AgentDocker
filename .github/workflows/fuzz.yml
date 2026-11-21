@@ -42,3 +42,27 @@ jobs:
             fuzz/corpus/
             artifacts/fuzz-manifest*.json
             artifacts/fuzz-*.log
+  # A failed scheduled run is otherwise seen only by asking for it by name:
+  # this keeps one issue open while the schedule fails and closes it on the
+  # next pass. Its own failure never decides the fuzz result.
+  report:
+    needs: fuzz
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    concurrency:
+      group: scheduled-incident-fuzz
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: python3 scripts/scheduled_report.py --workflow fuzz.yml --result "$FUZZ_RESULT"
+        env:
+          FUZZ_RESULT: ${{ needs.fuzz.result }}
+          GH_TOKEN: ${{ github.token }}

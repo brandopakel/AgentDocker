@@ -24,6 +24,14 @@ everything is touched; nothing when no touched package has a library. The
 exit status is 0 when the selection was made and 1 when Git or Cargo could
 not answer, so a caller never mistakes a failure for "nothing changed".
 
+`--fuzz-output <file>` writes `true` or `false`: whether the change reaches
+the fuzz targets, so `quick` compiles them. It is `true` for a file under
+`fuzz/`, for a whole-workspace change, and for a selected package the fuzz
+crate depends on directly or through another, from the fuzz workspace's
+own `cargo metadata` (`--fuzz-metadata <file>`, the output the run already
+saved when it resolved that workspace's lockfile). When that cannot be
+read the answer is `true`: the targets are compiled rather than skipped.
+
     python3 scripts/touched_crates.py --base origin/main
     python3 scripts/touched_crates.py --base HEAD~1 --metadata metadata.json
 """
@@ -179,6 +187,46 @@ def doc_selectors(names, libs):
     return selectors(names & libs)
 
 
+def fuzz_closure(metadata):
+    """The path packages the fuzz crate reaches, directly or through
+    another, by name, from its own workspace's `cargo metadata`; None when
+    the graph cannot be read."""
+    try:
+        by_id = {package["id"]: package for package in metadata["packages"]}
+        resolve = metadata["resolve"]
+        root = resolve.get("root") or next(
+            package["id"] for package in metadata["packages"] if package["name"] == "agentdocker-fuzz"
+        )
+        deps = {node["id"]: [dep["pkg"] for dep in node.get("deps", [])] for node in resolve["nodes"]}
+    except (KeyError, TypeError, StopIteration):
+        return None
+    reached, stack = set(), [root]
+    while stack:
+        for dep in deps.get(stack.pop(), []):
+            if dep not in reached:
+                reached.add(dep)
+                stack.append(dep)
+    # A path package has no registry or Git source: the workspace's own.
+    return {by_id[dep]["name"] for dep in reached if dep in by_id and by_id[dep].get("source") is None}
+
+
+def fuzz_reached(paths, names, fuzz_metadata_path):
+    """Whether a change reaches the fuzz targets; True when that cannot be
+    told."""
+    if any(path == "fuzz" or path.startswith("fuzz/") for path in paths):
+        return True
+    if names is None:
+        return True
+    if not names:
+        return False
+    try:
+        with open(fuzz_metadata_path, encoding="utf-8") as handle:
+            closure = fuzz_closure(json.load(handle))
+    except (OSError, ValueError, TypeError):
+        return True
+    return closure is None or bool(names & closure)
+
+
 def write(path, args):
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("".join(f"{arg}\n" for arg in args))
@@ -192,12 +240,15 @@ def main():
     parser.add_argument("--metadata", help="a saved `cargo metadata` JSON file instead of running cargo")
     parser.add_argument("--output", help="write the selectors to this file instead of standard output")
     parser.add_argument("--doc-output", help="also write the doctest step's selectors to this file")
+    parser.add_argument("--fuzz-metadata", help="the fuzz workspace's saved `cargo metadata` JSON")
+    parser.add_argument("--fuzz-output", help="write whether the change reaches the fuzz targets to this file")
     args = parser.parse_args()
     try:
         metadata = load_metadata(args.metadata)
         packages = workspace_packages(metadata)
         libs = libraries(metadata)
-        names = touched(changed_paths(args.base), packages)
+        paths = changed_paths(args.base)
+        names = touched(paths, packages)
     except (subprocess.CalledProcessError, OSError, KeyError, ValueError) as error:
         print(f"touched_crates: could not name the changed packages: {error}", file=sys.stderr)
         return 1
@@ -207,6 +258,10 @@ def main():
         sys.stdout.write("".join(f"{arg}\n" for arg in selectors(names)))
     if args.doc_output:
         write(args.doc_output, doc_selectors(names, libs))
+    if args.fuzz_output:
+        reached = fuzz_reached(paths, names, args.fuzz_metadata) if args.fuzz_metadata else True
+        with open(args.fuzz_output, "w", encoding="utf-8") as handle:
+            handle.write("true\n" if reached else "false\n")
     return 0
 
 

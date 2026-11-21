@@ -40,6 +40,8 @@ pub enum StepName {
     Fmt,
     /// The fuzz workspace's lockfile, resolved locked.
     FuzzLock,
+    /// The fuzz targets, compiled (`cargo check` on the fuzz workspace).
+    FuzzBuild,
     /// `scripts/touched_crates.py`: which packages a quick run covers.
     Selection,
     Clippy,
@@ -50,6 +52,10 @@ pub enum StepName {
     Installer,
     /// A command not in the table: the run is then never passed.
     Other,
+    /// A step name this build does not know, read from a record a newer
+    /// one wrote: never passed, and never a reason to refuse the record.
+    #[serde(other)]
+    Unknown,
 }
 
 impl std::fmt::Display for StepName {
@@ -58,12 +64,14 @@ impl std::fmt::Display for StepName {
             StepName::Docs => "docs",
             StepName::Fmt => "fmt",
             StepName::FuzzLock => "fuzz_lock",
+            StepName::FuzzBuild => "fuzz_build",
             StepName::Selection => "selection",
             StepName::Clippy => "clippy",
             StepName::Nextest => "nextest",
             StepName::Doctests => "doctests",
             StepName::Installer => "installer",
             StepName::Other => "other",
+            StepName::Unknown => "unknown",
         })
     }
 }
@@ -129,11 +137,22 @@ pub struct QuickScope {
     pub base: String,
     pub packages: Vec<String>,
     pub doc_packages: Vec<String>,
+    /// Whether the change reaches the fuzz targets (a package they depend
+    /// on, directly or not, or a file under `fuzz/`), so the run had to
+    /// compile them. Absent from a report written before it was kept;
+    /// from gate version 2 its absence leaves the run incomplete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fuzz: Option<bool>,
 }
 
 /// What the runner reports, kept exactly as given.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GateRunReport {
+    /// Which `verify.sh` wrote it, by the steps its modes require: 1
+    /// before the fuzz targets were compiled, 2 since. A report keeps the
+    /// required list of its own version.
+    #[serde(default = "first_gate_version")]
+    pub gate_version: u32,
     /// The run's own key, made at its start: the same run reported twice
     /// is recorded once.
     pub run_key: String,
@@ -227,6 +246,14 @@ impl Outcome {
     }
 }
 
+/// The gate version a report written before it was kept is.
+fn first_gate_version() -> u32 {
+    1
+}
+
+/// The newest gate version this build knows.
+pub const GATE_VERSION: u32 = 2;
+
 /// The status `verify.sh` exits with when it lost the build slot.
 pub const LOST: i32 = 75;
 
@@ -236,16 +263,30 @@ fn stopped(status: i32) -> bool {
     status == LOST || status >= 128
 }
 
-/// The steps a mode must run, in order; for a quick run, by its scope.
-/// `None` when a quick run reported no scope.
-pub fn required(mode: GateMode, scope: Option<&QuickScope>) -> Option<Vec<StepName>> {
+/// The steps a mode must run, in order, by the report's gate version;
+/// for a quick run, by its scope. `None` when a quick run reported no
+/// scope, or, from version 2, no word on the fuzz targets, or when the
+/// version is newer than this build knows.
+pub fn required(mode: GateMode, scope: Option<&QuickScope>, version: u32) -> Option<Vec<StepName>> {
     use StepName::*;
+    if !(1..=GATE_VERSION).contains(&version) {
+        return None;
+    }
+    let fuzz = version >= 2;
     Some(match mode {
+        GateMode::Check if fuzz => {
+            vec![
+                Docs, Fmt, FuzzLock, FuzzBuild, Clippy, Nextest, Doctests, Installer,
+            ]
+        }
         GateMode::Check => vec![Docs, Fmt, FuzzLock, Clippy, Nextest, Doctests, Installer],
         GateMode::Test => vec![Nextest, Doctests],
         GateMode::Quick => {
             let scope = scope?;
             let mut steps = vec![Docs, Fmt, FuzzLock, Selection];
+            if fuzz && scope.fuzz? {
+                steps.push(FuzzBuild);
+            }
             if !scope.packages.is_empty() {
                 steps.extend([Clippy, Nextest]);
                 if !scope.doc_packages.is_empty() {
@@ -271,7 +312,7 @@ pub fn outcome(report: &GateRunReport) -> Outcome {
     if steps.iter().any(|step| step.status != Some(0)) || report.exit != 0 {
         return Outcome::Failed;
     }
-    let Some(required) = required(report.mode, report.scope.as_ref()) else {
+    let Some(required) = required(report.mode, report.scope.as_ref(), report.gate_version) else {
         return Outcome::Incomplete;
     };
     let ran: Vec<StepName> = steps.iter().map(|step| step.name).collect();
@@ -326,7 +367,8 @@ pub fn steps(report: &GateRunReport) -> Vec<StepView> {
             counts: step.counts.clone(),
         })
         .collect();
-    let required = required(report.mode, report.scope.as_ref()).unwrap_or_default();
+    let required =
+        required(report.mode, report.scope.as_ref(), report.gate_version).unwrap_or_default();
     for name in &required {
         if !report.steps.iter().any(|step| step.name == *name) {
             views.push(StepView {
@@ -339,7 +381,12 @@ pub fn steps(report: &GateRunReport) -> Vec<StepView> {
     }
     if report.mode == GateMode::Quick && report.scope.is_some() {
         use StepName::*;
-        for name in [Clippy, Nextest, Doctests] {
+        let fuzz = if report.gate_version >= 2 {
+            Some(FuzzBuild)
+        } else {
+            None
+        };
+        for name in fuzz.into_iter().chain([Clippy, Nextest, Doctests]) {
             if !required.contains(&name) && !report.steps.iter().any(|step| step.name == name) {
                 views.push(StepView {
                     name,
@@ -361,6 +408,12 @@ pub const MAX_STEPS: usize = 64;
 
 /// Why a report cannot be recorded, if it cannot.
 pub fn validate(report: &GateRunReport, received_at: DateTime<Utc>) -> Result<(), String> {
+    if !(1..=GATE_VERSION).contains(&report.gate_version) {
+        return Err(format!(
+            "gate version {} is not one this daemon knows",
+            report.gate_version
+        ));
+    }
     let key = &report.run_key;
     if !(8..=64).contains(&key.len())
         || !key
@@ -442,6 +495,7 @@ pub fn validate(report: &GateRunReport, received_at: DateTime<Utc>) -> Result<()
             }
         }
         match (step.name, &step.program) {
+            (StepName::Unknown, _) => return Err("a runner reports only the steps it names".into()),
             (StepName::Other, Some(program)) if !program.is_empty() && program.len() <= 200 => {}
             (StepName::Other, _) => return Err("an other step names its program".into()),
             (_, Some(_)) => return Err("only an other step names its program".into()),
@@ -507,6 +561,7 @@ mod tests {
 
     fn report(mode: GateMode, names: &[StepName], scope: Option<QuickScope>) -> GateRunReport {
         GateRunReport {
+            gate_version: 1,
             run_key: "run-key-0001".into(),
             checkout: "/work/app".into(),
             branch: Some("feature".into()),
@@ -531,6 +586,7 @@ mod tests {
             base: B.into(),
             packages: packages.iter().map(|p| (*p).to_owned()).collect(),
             doc_packages: docs.iter().map(|p| (*p).to_owned()).collect(),
+            fuzz: None,
         })
     }
 
@@ -640,6 +696,85 @@ mod tests {
         let mut contradictory = report(GateMode::Check, CHECK, None);
         contradictory.steps[4].status = Some(100);
         assert_eq!(outcome(&contradictory), Outcome::Failed);
+    }
+
+    /// From gate version 2 a check run compiles the fuzz targets, and a
+    /// quick run says whether its change reached them; a version-1 report
+    /// keeps its own required list.
+    #[test]
+    fn the_fuzz_targets_are_required_by_version_and_scope() {
+        const CHECK_2: &[StepName] = &[
+            Docs, Fmt, FuzzLock, FuzzBuild, Clippy, Nextest, Doctests, Installer,
+        ];
+        let at = |version: u32, mut run: GateRunReport| {
+            run.gate_version = version;
+            outcome(&run)
+        };
+        assert_eq!(at(1, report(GateMode::Check, CHECK, None)), Outcome::Passed);
+        assert_eq!(
+            at(2, report(GateMode::Check, CHECK, None)),
+            Outcome::Incomplete
+        );
+        assert_eq!(
+            at(2, report(GateMode::Check, CHECK_2, None)),
+            Outcome::Passed
+        );
+        let quick = |fuzz: Option<bool>, names: &[StepName], packages: &[&str]| {
+            let mut scope = scope(packages, &[]);
+            scope.as_mut().unwrap().fuzz = fuzz;
+            report(GateMode::Quick, names, scope)
+        };
+        const QUICK: &[StepName] = &[Docs, Fmt, FuzzLock, Selection, Installer];
+        const QUICK_FUZZ: &[StepName] = &[Docs, Fmt, FuzzLock, Selection, FuzzBuild, Installer];
+        // No word on the fuzz targets: never passed from version 2.
+        assert_eq!(at(2, quick(None, QUICK, &[])), Outcome::Incomplete);
+        assert_eq!(at(1, quick(None, QUICK, &[])), Outcome::Passed);
+        // Not reached: the step is out of scope.
+        let unreached = quick(Some(false), QUICK, &[]);
+        let mut seen = unreached.clone();
+        seen.gate_version = 2;
+        assert_eq!(outcome(&seen), Outcome::Passed);
+        assert!(
+            steps(&seen)
+                .iter()
+                .any(|view| view.name == FuzzBuild && view.state == StepState::OutOfScope)
+        );
+        // A change under fuzz/ alone: required with an empty selection.
+        assert_eq!(at(2, quick(Some(true), QUICK_FUZZ, &[])), Outcome::Passed);
+        assert_eq!(at(2, quick(Some(true), QUICK, &[])), Outcome::Incomplete);
+        // A version this build does not know reads incomplete.
+        assert_eq!(
+            at(3, report(GateMode::Check, CHECK_2, None)),
+            Outcome::Incomplete
+        );
+        let mut newer = report(GateMode::Check, CHECK_2, None);
+        newer.gate_version = 3;
+        assert!(validate(&newer, at_time(200)).is_err());
+    }
+
+    fn at_time(seconds: i64) -> DateTime<Utc> {
+        at(seconds)
+    }
+
+    /// A step name a newer build wrote reads as unknown, never a failure to
+    /// read the record, and never passed; a runner may not report one.
+    #[test]
+    fn an_unknown_step_name_is_read_and_never_passed() {
+        let mut run = report(GateMode::Test, &[Nextest, Doctests], None);
+        let mut text = serde_json::to_value(&run).unwrap();
+        text["steps"][1]["name"] = "telepathy".into();
+        let read: GateRunReport = serde_json::from_value(text).unwrap();
+        assert_eq!(read.steps[1].name, StepName::Unknown);
+        assert_eq!(outcome(&read), Outcome::Incomplete);
+        run.steps[1].name = StepName::Unknown;
+        assert!(validate(&run, at(200)).is_err());
+        // A report written before the version was kept is version 1.
+        let mut old =
+            serde_json::to_value(report(GateMode::Test, &[Nextest, Doctests], None)).unwrap();
+        old.as_object_mut().unwrap().remove("gate_version");
+        let old: GateRunReport = serde_json::from_value(old).unwrap();
+        assert_eq!(old.gate_version, 1);
+        assert_eq!(outcome(&old), Outcome::Passed);
     }
 
     #[test]

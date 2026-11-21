@@ -450,7 +450,15 @@ esac
 # and compiles nothing; it runs whatever the change touched, since the
 # package selection knows nothing of fuzz/.
 fuzz_lock_current() {
-  step cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+  # Its answer is the fuzz workspace's dependency graph: a quick run's
+  # selection reads it to tell whether a change reaches the fuzz targets.
+  step cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > "$campaign_dir/fuzz-metadata.json"
+}
+# The fuzz targets are outside the workspace, so nothing else compiles them
+# before a merge. A check on the stable toolchain needs neither nightly nor
+# cargo-fuzz; the scheduled campaign still builds them with both.
+fuzz_build() {
+  step cargo check --locked --manifest-path fuzz/Cargo.toml --bins
 }
 
 case "${1:-check}" in
@@ -465,6 +473,7 @@ case "${1:-check}" in
     fi
     step cargo fmt --all --check
     fuzz_lock_current
+    fuzz_build
     step cargo clippy --locked --workspace --all-targets -- -D warnings
     step cargo nextest run --locked --workspace --profile ci ${nextest_config[@]+"${nextest_config[@]}"}
     step cargo test --locked --workspace --doc
@@ -497,7 +506,13 @@ case "${1:-check}" in
     # The selection is a checked step of its own: a Git or Cargo failure
     # stops the run, and only a successful empty answer means nothing to test.
     step python3 scripts/touched_crates.py --base "$base" --output "$campaign_dir/packages" \
-      --doc-output "$campaign_dir/doc-packages"
+      --doc-output "$campaign_dir/doc-packages" \
+      --fuzz-metadata "$campaign_dir/fuzz-metadata.json" --fuzz-output "$campaign_dir/fuzz"
+    # The fuzz targets, when the change reaches them; a missing answer
+    # compiles them rather than skip them.
+    if [ "$(cat "$campaign_dir/fuzz" 2>/dev/null)" != false ]; then
+      fuzz_build
+    fi
     selectors=()
     while IFS= read -r line; do [ -n "$line" ] && selectors+=("$line"); done < "$campaign_dir/packages"
     # Only a library has doctests, and Cargo refuses `--doc` for a selection

@@ -387,7 +387,8 @@ class ToolPins(unittest.TestCase):
         said = "      RUSTUP_TOOLCHAIN: nightly\n"
         step = "        env:\n          FUZZ_SECONDS: '120'\n"
         shared = ("permissions:\n", "env:\n  RUSTUP_TOOLCHAIN: nightly\npermissions:\n")
-        self.assertEqual((fuzz.count(said), fuzz.count(step), fuzz.count(shared[0])), (1, 1, 1))
+        # The workflow's own permissions (a job may hold its own, indented).
+        self.assertEqual((fuzz.count(said), fuzz.count(step), fuzz.count("\n" + shared[0])), (1, 1, 1))
         cannot = "is written in a way this check does not read (inline, or by an alias): whether it sets RUSTUP_TOOLCHAIN cannot be told"
 
         def problems(text):
@@ -412,8 +413,11 @@ class ToolPins(unittest.TestCase):
             "the toolchain file would decide its plain cargo calls"])
         # Steps whose dashes sit at the column of `steps:` are steps all the
         # same: the real job written that way passes, and its override is found.
-        before, after = fuzz.split("    steps:\n")
-        flat = before + "    steps:\n" + "\n".join(line[2:] if line.startswith("      ") else line for line in after.split("\n"))
+        # Only the fuzz job's steps are flattened; the report job stays as written.
+        fuzz_job, report_job = fuzz.split("\n  report:", 1)
+        before, after = fuzz_job.split("    steps:\n")
+        flat = before + "    steps:\n" + "\n".join(
+            line[2:] if line.startswith("      ") else line for line in after.split("\n")) + "\n  report:" + report_job
         self.assertIn("    steps:\n    - uses: actions/checkout@", flat)
         self.assertEqual(problems(flat), [])
         flat_step = "      env:\n        FUZZ_SECONDS: '120'\n"

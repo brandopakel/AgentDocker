@@ -107,7 +107,10 @@ class GateRecord(unittest.TestCase):
                 "args = sys.argv\n"
                 "names = os.environ.get('FAKE_PACKAGES', '').split()\n"
                 "open(args[args.index('--output') + 1], 'w').write(''.join(n + '\\n' for n in names))\n"
-                "open(args[args.index('--doc-output') + 1], 'w').write('')\n")
+                "open(args[args.index('--doc-output') + 1], 'w').write('')\n"
+                "fuzz = os.environ.get('FAKE_FUZZ', 'false')\n"
+                "if fuzz != 'none' and '--fuzz-output' in args:\n"
+                "    open(args[args.index('--fuzz-output') + 1], 'w').write(fuzz + '\\n')\n")
             (root / ".config").mkdir()
             shutil.copy2(REPO / ".config/nextest.toml", root / ".config/nextest.toml")
             (root / "tests").mkdir()
@@ -229,12 +232,36 @@ class GateRecord(unittest.TestCase):
         run = self.only_record()["run"]
         self.assertEqual([s["name"] for s in run["steps"]],
                          ["docs", "fmt", "fuzz_lock", "selection", "installer"])
-        self.assertEqual(run["scope"], {"base": self.head, "packages": [], "doc_packages": []})
+        self.assertEqual(run["scope"], {"base": self.head, "packages": [], "doc_packages": [], "fuzz": False})
+        self.assertEqual(run["gate_version"], 2)
         self.assertTrue(run["completed"])
         # unittest said OK with one skipped: no passed count is made up.
         self.assertEqual(run["steps"][-1]["counts"], {"run": 2, "failed": 0, "skipped": 1})
         # The suite's own output still reached the terminal.
         self.assertIn("Ran 2 tests", result.stderr)
+
+    def test_a_quick_that_reaches_the_fuzz_targets_compiles_them(self):
+        result = self.run_verify("quick", {"AGENTDOCKER_AGENT_ID": "abc", "FAKE_FUZZ": "true"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = self.only_record()["run"]
+        self.assertEqual([s["name"] for s in run["steps"]],
+                         ["docs", "fmt", "fuzz_lock", "selection", "fuzz_build", "installer"])
+        self.assertTrue(run["scope"]["fuzz"])
+        check = next(call for call in self.cargo if call[0] == "check")
+        self.assertIn("fuzz/Cargo.toml", check)
+
+    def test_a_quick_with_no_word_on_the_fuzz_targets_compiles_them_and_says_so(self):
+        result = self.run_verify("quick", {"AGENTDOCKER_AGENT_ID": "abc", "FAKE_FUZZ": "none"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        run = self.only_record()["run"]
+        self.assertIn("fuzz_build", [s["name"] for s in run["steps"]])
+        self.assertNotIn("fuzz", run["scope"])
+
+    def test_a_check_run_compiles_the_fuzz_targets_after_their_lockfile(self):
+        result = self.run_verify("check", {"AGENTDOCKER_AGENT_ID": "abc"})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        names = [s["name"] for s in self.only_record()["run"]["steps"]]
+        self.assertEqual(names[:4], ["docs", "fmt", "fuzz_lock", "fuzz_build"])
 
     def test_a_quick_with_packages_names_them(self):
         result = self.run_verify("quick", {"AGENTDOCKER_AGENT_ID": "abc", "FAKE_PACKAGES": "agentd"})
