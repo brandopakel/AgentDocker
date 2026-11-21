@@ -145,9 +145,21 @@ pub fn resolve(look: Look, terminal: bool, window: Option<usize>, env: &Env) -> 
     }
 }
 
+/// A terminal's width as it reports it, zero included: a terminal that
+/// says it has no columns is a terminal, and is laid out for as the
+/// narrowest, not as one with all the room there is.
 #[cfg(unix)]
 fn window(fd: std::os::fd::RawFd) -> Option<usize> {
-    agentdocker_host::pty::window_size(fd).map(|(columns, _)| usize::from(columns))
+    let mut size = libc::winsize {
+        ws_row: 0,
+        ws_col: 0,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    // SAFETY: `size` outlives the call; a descriptor that is not a
+    // terminal simply fails.
+    let answered = unsafe { libc::ioctl(fd, libc::TIOCGWINSZ as _, &mut size) } == 0;
+    answered.then_some(usize::from(size.ws_col))
 }
 
 impl Caps {
@@ -206,13 +218,23 @@ pub fn paint(text: &str, style: Style, caps: Caps) -> String {
     format!("{style}{text}{style:#}")
 }
 
-/// Write what a person reads to stdout. A reader that went away (a pager
-/// closed) ends the writing quietly.
-pub fn print(text: &str) {
-    use std::io::Write;
-    let mut out = anstream::AutoStream::always(std::io::stdout().lock());
-    let _ = out.write_all(text.as_bytes());
-    let _ = out.flush();
+/// Write `text` to `to`. A reader that went away (a pager closed) is not
+/// a failure of the command, and ends the writing quietly; anything else
+/// that stops the write (a full disk, a closed file) is, and is returned,
+/// so a report cut short is never an exit of zero.
+pub fn write_to(to: &mut impl std::io::Write, text: &str) -> std::io::Result<()> {
+    match to.write_all(text.as_bytes()).and_then(|()| to.flush()) {
+        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        other => other,
+    }
+}
+
+/// Write what a person reads to stdout.
+pub fn print(text: &str) -> std::io::Result<()> {
+    write_to(
+        &mut anstream::AutoStream::always(std::io::stdout().lock()),
+        text,
+    )
 }
 
 #[cfg(test)]
@@ -370,6 +392,49 @@ mod tests {
             ..Env::default()
         };
         assert_eq!(resolve(human, false, None, &zero).width, Some(NARROWEST));
+    }
+
+    /// A reader that went away ends the writing quietly; any other
+    /// failure is the command's to report.
+    #[test]
+    fn a_failed_write_is_an_error_and_a_closed_pager_is_not() {
+        struct Fails(std::io::ErrorKind);
+        impl std::io::Write for Fails {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(self.0.into())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        struct FailsToFlush;
+        impl std::io::Write for FailsToFlush {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::ErrorKind::StorageFull.into())
+            }
+        }
+        assert!(write_to(&mut Fails(std::io::ErrorKind::BrokenPipe), "x").is_ok());
+        for kind in [
+            std::io::ErrorKind::StorageFull,
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::Other,
+        ] {
+            assert_eq!(
+                write_to(&mut Fails(kind), "x").unwrap_err().kind(),
+                kind,
+                "{kind:?}"
+            );
+        }
+        assert!(
+            write_to(&mut FailsToFlush, "x").is_err(),
+            "what was not flushed was not written"
+        );
+        let mut kept = Vec::new();
+        write_to(&mut kept, "all of it\n").unwrap();
+        assert_eq!(kept, b"all of it\n");
     }
 
     /// A tone's style: nothing for what is quiet, and no escape at all

@@ -63,6 +63,59 @@ aaaaaaaaaaaa   writer     -         -        -      claude-code   -       runnin
 bbbbbbbbbbbb   reviewer   -         -        -      codex         -       running   Can't receive messages   -       -            4242   2m ago
 ";
 
+/// `ps --input-details` in a pipe for two browser agents, one heard from
+/// a moment ago and one not for hours: what each row says of the state,
+/// of whether it can be told something and of when it was made, and the
+/// detail on stderr.
+#[test]
+fn ps_in_a_pipe_says_a_connector_gone_quiet_is_not_connected() {
+    let connector = |id: &str, name: &str, last_seen: i64| {
+        let mut agent = agent(id, name, "claude-in-chrome", false);
+        agent.pid = None;
+        agent.process_started_at = None;
+        agent
+            .spec
+            .labels
+            .insert("connector".to_owned(), "true".to_owned());
+        agent.last_seen = ago(last_seen);
+        agent
+    };
+    let agents = json!([
+        connector(WRITER, "here", 30),
+        connector(REVIEWER, "gone-quiet", 7350),
+    ]);
+    let captured = capture(
+        vec![
+            json!({"type":"agents", "agents": agents.clone()}),
+            json!({"type":"agents", "agents": agents}),
+            json!({"type":"activity", "activity": []}),
+            usage(Vec::new()),
+            json!({"type":"restarts", "outlooks": {}}),
+        ],
+        &["ps", "--no-discover", "--input-details"],
+    );
+    assert_eq!(captured.status, Some(0), "{}", captured.stderr);
+    assert_eq!(captured.asked, PS_ASKS);
+    assert_eq!(captured.text(), PS_CONNECTORS, "{:?}", captured.text());
+    assert_eq!(
+        captured.stderr, PS_CONNECTORS_DETAIL,
+        "{:?}",
+        captured.stderr
+    );
+}
+
+const PS_CONNECTORS: &str = "\
+AGENT ID       NAME         PROJECT   BRANCH   HEAD   RUNTIME            MODEL   STATUS          INPUT                      DOING   PID   CREATED
+aaaaaaaaaaaa   here         -         -        -      claude-in-chrome   -       running         Waits until it checks in   -       -     2m ago
+bbbbbbbbbbbb   gone-quiet   -         -        -      claude-in-chrome   -       not connected   Waits until it checks in   -       -     2m ago
+";
+const PS_CONNECTORS_DETAIL: &str = "\
+\x20 here (aaaaaaaaaaaa): Waits until it checks in
+    It reads messages only when it checks in; they are kept until then. It takes them the next time it is used.
+  gone-quiet (bbbbbbbbbbbb): Waits until it checks in
+    It reads messages only when it checks in; they are kept until then. It takes them the next time it is used.
+";
+
 /// `leases` in a pipe.
 #[test]
 fn leases_in_a_pipe_prints_what_it_prints_today() {

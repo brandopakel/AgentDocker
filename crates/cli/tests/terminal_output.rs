@@ -386,3 +386,166 @@ Comments
             .starts_with("AD-1  in_progress  Give the router one error type  (aaaaaaaaaaaa)\n")
     );
 }
+
+/// One process nobody registered, as the daemon answers `discover`.
+fn discovered() -> Value {
+    json!({"type":"processes", "processes": [{
+        "pid": 5151,
+        "ppid": 1,
+        "runtime": "claude-code",
+        "command": "claude",
+    }]})
+}
+
+/// `ps` with discovery on asks six things: the process nobody registered
+/// is asked for between the agents and what each is doing.
+fn ps_with_discovery() -> Vec<Value> {
+    let mut answers = ps_answers(day());
+    answers.insert(2, discovered());
+    answers
+}
+
+/// Plain output at a terminal is the pipe's bytes with a process nobody
+/// registered in the table too: that row used to be set back with escapes
+/// whenever stdout was a terminal, whatever was asked.
+#[test]
+fn plain_at_a_terminal_is_the_pipes_bytes_with_discovery_on() {
+    let piped = capture(ps_with_discovery(), &["ps"]);
+    assert_eq!(piped.status, Some(0), "{}", piped.stderr);
+    assert_eq!(
+        piped.asked,
+        ["list", "list", "discover", "activity", "usage", "restarts"]
+    );
+    assert!(piped.text().contains("unadopted"), "{}", piped.text());
+    let at_terminal = run(
+        at_a_terminal(200),
+        ps_with_discovery(),
+        &["ps", "--format", "plain", "--color", "never"],
+    );
+    assert_eq!(at_terminal.text(), piped.text());
+    assert!(!at_terminal.text().contains('\u{1b}'));
+    // For a person the row is there, set back, with the process id that
+    // `adopt` takes.
+    let human = run(at_a_terminal(200), ps_with_discovery(), &["ps"]);
+    assert!(
+        human.text().contains("\u{1b}[2m5151\u{1b}[0m"),
+        "{:?}",
+        human.text()
+    );
+}
+
+/// A name is somebody's data on both streams: in the table it is written
+/// out, and the readiness detail under `--input-details` names the agent
+/// in plain words (core makes the name plain before it is said, in a
+/// pipe as at a terminal), so a line break or a carriage return in a name
+/// can break or overwrite neither.
+#[test]
+fn a_name_cannot_break_the_detail_said_about_it() {
+    let agents = json!([agent(WRITER, "wri\nter\rX", "claude-code", true)]);
+    let answers = || {
+        vec![
+            json!({"type":"agents", "agents": agents.clone()}),
+            json!({"type":"agents", "agents": agents.clone()}),
+            json!({"type":"activity", "activity": []}),
+            usage(Vec::new()),
+            json!({"type":"restarts", "outlooks": {}}),
+        ]
+    };
+    let args = ["ps", "--no-discover", "--input-details"];
+    let said = run(
+        Run {
+            env: &[TERM],
+            stdout: Stream::Terminal(160),
+            stderr: Stream::Terminal(160),
+            ..Run::PIPED
+        },
+        answers(),
+        &args,
+    );
+    assert_eq!(said.status, Some(0), "{}", said.stderr);
+    let table = strip(&said.text());
+    assert!(table.contains("wri\\nter\\rX"), "{table:?}");
+    assert!(!table.contains("ter\rX"), "{table:?}");
+    let detail = "  writerX (aaaaaaaaaaaa): Can't receive messages\n";
+    assert!(said.stderr.starts_with(detail), "{:?}", said.stderr);
+    assert_eq!(said.stderr.lines().count(), 2, "{:?}", said.stderr);
+    assert!(!said.stderr.contains('\r'), "{:?}", said.stderr);
+    // In a pipe the detail is the same words, as it always was.
+    let piped = capture(answers(), &args);
+    assert_eq!(piped.stderr, said.stderr);
+}
+
+/// A card's moments are each in the offset the reader's zone had at that
+/// moment: a summer comment read in winter keeps summer's offset.
+#[test]
+fn a_summer_moment_keeps_summers_offset() {
+    let mut task = card("AD-1", "Give the router one error type", "ready", None);
+    task["acceptance"] = json!("");
+    let comment = |id: &str, at: &str| {
+        json!({
+            "id": id,
+            "task": "task-AD-1",
+            "project": PROJECT,
+            "author": "user",
+            "body": "noted",
+            "created_at": at,
+        })
+    };
+    let detail = json!({
+        "type": "task_detail",
+        "task": task,
+        "board": {
+            "project": PROJECT,
+            "slug": "main",
+            "name": "Main",
+            "template": "software",
+            "lanes": [{"slug": "ready", "name": "Ready", "category": "ready"}],
+            "pull_source": "ready",
+            "pull_target": "ready",
+            "key_prefix": "AD",
+            "last_key": 2,
+            "created_at": "2026-01-02T03:04:05Z",
+            "updated_at": "2026-01-02T03:04:05Z",
+        },
+        "comments": [
+            comment("summer", "2026-07-15T12:00:00Z"),
+            comment("winter", "2026-11-15T12:00:00Z"),
+        ],
+        "history": [],
+        "blockers": [],
+        "children": [],
+    });
+    let said = run(
+        Run {
+            env: &[TERM, ("TZ", "America/Los_Angeles")],
+            stdout: Stream::Terminal(100),
+            ..Run::PIPED
+        },
+        vec![detail, json!({"type":"agents", "agents": []})],
+        &["task", "show", "AD-1"],
+    );
+    assert_eq!(said.status, Some(0), "{}", said.stderr);
+    let text = strip(&said.text());
+    assert!(text.contains("  2026-07-15 05:00 -07:00  user\n"), "{text}");
+    assert!(text.contains("  2026-11-15 04:00 -08:00  user\n"), "{text}");
+}
+
+/// A terminal that says it has no columns is laid out for as the
+/// narrowest, not as one with all the room there is.
+#[test]
+fn a_terminal_of_no_width_is_the_narrowest() {
+    let said = run(
+        at_a_terminal(0),
+        ps_answers(day()),
+        &["ps", "--no-discover"],
+    );
+    assert_eq!(said.status, Some(0), "{}", said.stderr);
+    let text = strip(&said.text());
+    // Too narrow for the table: a block an agent, nothing left out.
+    assert!(text.starts_with("aaaaaaaaaaaa\n  NAME"), "{text}");
+    assert!(!text.contains("AGENT ID"), "{text}");
+    assert!(
+        text.contains("  STATUS") && text.contains("running"),
+        "{text}"
+    );
+}

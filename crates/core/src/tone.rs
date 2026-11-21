@@ -15,8 +15,10 @@
 //! Attention that depends on who is looking (a message new to this
 //! reader, a card that is theirs) is each surface's own and is not here.
 
-use crate::AgentStatus;
+use chrono::{DateTime, Utc};
+
 use crate::task::Column;
+use crate::{AgentRecord, AgentStatus};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Tone {
@@ -66,6 +68,23 @@ impl Tone {
             } => Tone::Neutral,
             AgentStatus::Exited { code: Some(_) } => Tone::Attention,
             AgentStatus::Failed { .. } => Tone::Alert,
+        }
+    }
+
+    /// An agent's, by the state a reader is shown and not by its record's
+    /// status alone: a live record nothing has been heard from for longer
+    /// than its presence allows (a browser agent, a session known by its
+    /// key) is not connected, which is attention and never the colour of
+    /// a running one; a container refused at a dead end is alert whatever
+    /// its status says; otherwise its status's. `now` is the reader's
+    /// clock. A surface that words these states words them in this order.
+    pub fn of_agent(agent: &AgentRecord, now: DateTime<Utc>) -> Tone {
+        if agent.connector_absent(now) || agent.session_absent(now) {
+            Tone::Attention
+        } else if agent.container_dead_end().is_some() {
+            Tone::Alert
+        } else {
+            Tone::of_status(&agent.status)
         }
     }
 

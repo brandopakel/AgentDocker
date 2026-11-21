@@ -16,7 +16,7 @@ use agentdocker_core::usage::report::Row as UsageRow;
 use agentdocker_core::{
     Board, CardTimes, Comment, Lease, Plan, ProjectFile, Task, TaskEntry, Tone, journal, short,
 };
-use chrono::{DateTime, FixedOffset, Utc};
+use chrono::{DateTime, TimeZone, Utc};
 
 use super::table::{Cell, Column, Table};
 use super::{Caps, FAINT, HEADING, paint, style_of, text};
@@ -31,10 +31,15 @@ fn until(now: DateTime<Utc>, at: DateTime<Utc>) -> String {
     }
 }
 
-/// A moment as a person in `zone` reads it, with the zone said: a time
-/// with no zone is a guess for whoever reads it somewhere else.
-fn moment(at: DateTime<Utc>, zone: FixedOffset) -> String {
-    at.with_timezone(&zone)
+/// A moment as a person in `zone` reads it, with its offset said: a
+/// time with no zone is a guess for whoever reads it somewhere else. The
+/// offset is the one `zone` had at that moment, so a summer moment read
+/// in winter keeps summer's.
+fn moment<Tz: TimeZone>(at: DateTime<Utc>, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    at.with_timezone(zone)
         .format("%Y-%m-%d %H:%M %:z")
         .to_string()
 }
@@ -157,7 +162,19 @@ pub fn agents(
     caps: Caps,
 ) -> String {
     let status = headers.iter().position(|header| *header == "STATUS");
-    let mut table = Table::new(headers.iter().map(|header| agent_column(header)).collect());
+    // A process nobody registered has no agent id: its process id is
+    // what tells it from another and what `adopt` takes, so where one is
+    // listed that column stays.
+    let unregistered = set_back < rows.len();
+    let mut table = Table::new(
+        headers
+            .iter()
+            .map(|header| match *header {
+                "PID" if unregistered => Column::always(header),
+                header => agent_column(header),
+            })
+            .collect(),
+    );
     for (at, row) in rows.into_iter().enumerate() {
         let mut cells: Vec<Cell> = row.into_iter().map(Cell::from).collect();
         if let (Some(status), Some(tone)) = (status, tones.get(at))
@@ -234,12 +251,15 @@ fn action_words(entry: &TaskEntry) -> String {
 /// under headings of their own. Everything the plain view has is here;
 /// every time has its zone, a holder and an author their name, and
 /// nothing somebody wrote can act on the terminal.
-pub fn card(
+pub fn card<Tz: TimeZone>(
     card: &Card<'_>,
     names: &BTreeMap<String, String>,
-    zone: FixedOffset,
+    zone: &Tz,
     caps: Caps,
-) -> String {
+) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
     let task = card.task;
     let safe = |words: &str| text::shown(words).into_owned();
     let mut out = String::new();
@@ -421,8 +441,8 @@ mod tests {
         at("2026-01-02T03:04:05Z")
     }
 
-    fn utc() -> FixedOffset {
-        FixedOffset::east_opt(0).unwrap()
+    fn utc() -> chrono::FixedOffset {
+        chrono::FixedOffset::east_opt(0).unwrap()
     }
 
     fn names() -> BTreeMap<String, String> {
@@ -722,7 +742,7 @@ bbbbbbbbbbbb   reviewer   app       main     fcfd61e   codex         -       exi
         let eighty = agents(&PS, ps_rows(), &tones, 2, &[], caps(Some(80), false));
         assert!(
             eighty.contains(
-                "not shown at this width: PROJECT, BRANCH, HEAD, RUNTIME, MODEL, TOKENS 24H, PID, CREATED"
+                "not shown at this width: PROJECT, BRANCH, HEAD, RUNTIME, MODEL, TOKENS 24H, CREATED"
             ),
             "{eighty}"
         );
@@ -738,13 +758,69 @@ bbbbbbbbbbbb   reviewer   app       main     fcfd61e   codex         -       exi
             wider.contains("PROJECT"),
             "the project is the last to go: {wider}"
         );
-        assert!(!wider.lines().next().unwrap().contains("PID"), "{wider}");
-        let sixty = agents(&PS, ps_rows(), &tones, 2, &[], caps(Some(64), false));
-        for line in sixty.lines().take(4) {
-            assert!(text::width(line) <= 64, "{line:?}");
-            assert!(!line.starts_with('…'), "{line:?}");
+        let heading = wider.lines().next().unwrap();
+        assert!(
+            heading.contains("PID") && !heading.contains("CREATED"),
+            "{wider}"
+        );
+    }
+
+    /// Two processes nobody registered, of one runtime, on a terminal
+    /// too narrow for the table: each is still told from the other by the
+    /// process id `adopt` takes, and each still says what it is.
+    #[test]
+    fn unregistered_processes_stay_apart_on_a_narrow_terminal() {
+        let row = |pid: &str| -> Vec<String> {
+            [
+                "-",
+                "claude-code-session",
+                "app",
+                "-",
+                "-",
+                "claude-code",
+                "-",
+                "unadopted",
+                "Not connected",
+                "-",
+                "-",
+                pid,
+                "1m ago",
+            ]
+            .iter()
+            .map(|cell| (*cell).to_owned())
+            .collect()
+        };
+        for width in [20, 40] {
+            let said = agents(
+                &PS,
+                vec![row("5151"), row("6262")],
+                &[],
+                0,
+                &[],
+                caps(Some(width), false),
+            );
+            for pid in ["5151", "6262"] {
+                assert_eq!(said.matches(pid).count(), 1, "{width}: {said}");
+            }
+            assert_eq!(said.matches("unadopted").count(), 2, "{width}: {said}");
+            assert_eq!(
+                said.matches("claude-code-session").count(),
+                2,
+                "{width}: {said}"
+            );
         }
-        assert!(sixty.contains("aaaaaaaaaaaa") && sixty.contains("bbbbbbbbbbbb"));
+        // With room for a table, the process id is in it though a
+        // narrower table of agents alone would have left it out.
+        let table = agents(
+            &PS,
+            vec![row("5151"), row("6262")],
+            &[],
+            0,
+            &[],
+            caps(Some(75), false),
+        );
+        assert!(table.lines().next().unwrap().contains("PID"), "{table}");
+        assert!(table.contains("5151") && table.contains("6262"), "{table}");
     }
 
     /// What could not be read is said: an empty column whose answer did
@@ -831,7 +907,7 @@ bbbbbbbbbbbb   reviewer   app       main     fcfd61e   codex         -       exi
             times: None,
             usage: None,
         };
-        let plain = card(&shown, &names(), utc(), caps(Some(100), false));
+        let plain = card(&shown, &names(), &utc(), caps(Some(100), false));
         assert_eq!(
             plain,
             "\
@@ -858,7 +934,7 @@ History
   2026-01-02 03:04 +00:00  writer  pulled (lane in_progress)
 "
         );
-        let said = card(&shown, &names(), utc(), caps(Some(100), true));
+        let said = card(&shown, &names(), &utc(), caps(Some(100), true));
         assert!(
             said.starts_with(
                 "\u{1b}[1mAD-1\u{1b}[0m  \u{1b}[1mGive the router one error type\u{1b}[0m\n"
@@ -872,8 +948,8 @@ History
         assert_eq!(strip(&said), plain);
 
         // Read in another zone, the same moments say so.
-        let east = FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
-        let there = card(&shown, &names(), east, caps(None, false));
+        let east = chrono::FixedOffset::east_opt(5 * 3600 + 1800).unwrap();
+        let there = card(&shown, &names(), &east, caps(None, false));
         assert!(
             there.contains("  2026-01-02 08:34 +05:30  reviewer\n"),
             "{there}"
@@ -901,7 +977,7 @@ History
             times: None,
             usage: None,
         };
-        let said = card(&shown, &BTreeMap::new(), utc(), caps(Some(100), false));
+        let said = card(&shown, &BTreeMap::new(), &utc(), caps(Some(100), false));
         assert_eq!(
             said,
             "\

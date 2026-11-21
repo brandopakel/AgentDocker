@@ -8,8 +8,10 @@
 //! shortened; or something a narrow terminal can do without. A table that
 //! is too wide first leaves out what it can do without, least needed
 //! first, and says which; then shortens what may be shortened, the widest
-//! first, with an ellipsis. A row is always one line that still names
-//! what it is a row of.
+//! first, with an ellipsis. A row is one line that still names what it is
+//! a row of; and on a terminal too narrow for even that, the table gives
+//! way to one block a row, every field on a labelled line of its own,
+//! rather than run over or lose what tells two rows apart.
 
 use agentdocker_core::Tone;
 
@@ -197,6 +199,11 @@ impl Table {
                 let Some(widest) = widest else { break };
                 widths[widest] -= 1;
             }
+            // Still too wide with everything optional gone and everything
+            // else at its least: a table cannot be this narrow.
+            if total(&shown, &widths) > room {
+                return self.stacked(&cells, caps);
+            }
         }
         // Left out in the order they stand in the table, not the order
         // they went.
@@ -262,6 +269,62 @@ impl Table {
             );
             out.push_str(&super::paint(&note, super::FAINT, caps));
             out.push('\n');
+        }
+        out
+    }
+}
+
+impl Table {
+    /// A row a block, for a terminal too narrow for the table: the row's
+    /// identity on a line of its own, then each thing it has to say on a
+    /// labelled line, every column there whatever a table would have left
+    /// out, and nothing shortened. A cell that says nothing (empty, or
+    /// `-`) is not listed.
+    fn stacked(&self, cells: &[Vec<String>], caps: Caps) -> String {
+        let label = self
+            .columns
+            .iter()
+            .filter(|column| column.keep != Keep::Identity)
+            .map(|column| text::width(&column.header))
+            .max()
+            .unwrap_or(0);
+        let mut out = String::new();
+        for (row, texts) in self.rows.iter().zip(cells) {
+            let named: Vec<String> = self
+                .columns
+                .iter()
+                .zip(texts)
+                .filter(|(column, _)| column.keep == Keep::Identity)
+                .map(|(_, text)| {
+                    let style = if row.faint {
+                        super::FAINT
+                    } else {
+                        super::HEADING
+                    };
+                    super::paint(text, style, caps)
+                })
+                .collect();
+            out.push_str(named.join("  ").trim_end());
+            out.push('\n');
+            for (at, (column, text)) in self.columns.iter().zip(texts).enumerate() {
+                if column.keep == Keep::Identity || text.is_empty() || text == "-" {
+                    continue;
+                }
+                let tone = row.cells.get(at).map(|cell| cell.tone).unwrap_or_default();
+                let style = if row.faint {
+                    super::FAINT
+                } else {
+                    super::style_of(tone)
+                };
+                out.push_str("  ");
+                out.push_str(&super::paint(&column.header, super::FAINT, caps));
+                out.extend(std::iter::repeat_n(
+                    ' ',
+                    label.saturating_sub(text::width(&column.header)) + 2,
+                ));
+                out.push_str(&super::paint(text, style, caps));
+                out.push('\n');
+            }
         }
         out
     }
@@ -374,17 +437,44 @@ not shown at this width: MODEL, PID, CREATED (`--format plain` has every column)
         for line in narrow.lines().take(3) {
             assert!(text::width(line) <= 60, "{line:?}");
         }
-        // A terminal too narrow for even the least each column allows:
-        // the cuts stop at that least, the identity is whole, and the
-        // line runs over rather than lose what the row is.
-        let tiny = agents().render(caps(Some(20), false));
+    }
+
+    /// On a terminal too narrow for even the least each column allows,
+    /// the table gives way to a block a row: the identity on its own
+    /// line, every field labelled, nothing shortened and nothing left
+    /// out, and what says nothing not listed.
+    #[test]
+    fn too_narrow_for_a_table_is_a_block_a_row() {
+        let stacked = "\
+aaaaaaaaaaaa
+  NAME     writer
+  STATUS   running
+  DOING    editing the router's error type
+  MODEL    fable
+  PID      4242
+  CREATED  2m ago
+bbbbbbbbbbbb
+  NAME     reviewer-of-everything
+  STATUS   failed
+  CREATED  3h ago
+";
+        assert_eq!(agents().render(caps(Some(20), false)), stacked);
+        assert_eq!(agents().render(caps(Some(41), false)), stacked);
+        // One column more and the table fits again, cut to its least.
+        let fits = agents().render(caps(Some(42), false));
         assert!(
-            tiny.contains("aaaaaaaaaaaa   writer   running   editing…"),
-            "{tiny}"
+            fits.starts_with("AGENT ID       NAME     STATUS    DOING\n"),
+            "{fits}"
+        );
+        // The state keeps its tone, and the labels are set back.
+        let coloured = agents().render(caps(Some(20), true));
+        assert!(
+            coloured.contains("\u{1b}[2mSTATUS\u{1b}[0m   \u{1b}[32mrunning\u{1b}[0m"),
+            "{coloured:?}"
         );
         assert!(
-            tiny.contains("bbbbbbbbbbbb   revie…   failed    -"),
-            "{tiny}"
+            coloured.starts_with("\u{1b}[1maaaaaaaaaaaa\u{1b}[0m\n"),
+            "{coloured:?}"
         );
     }
 

@@ -704,20 +704,34 @@ What a person reads:
   shown, the longest of which is shortened with `…` when room runs out; or
   something a narrow terminal does without. Those go first, the least needed
   first, and a last line names them: `not shown at this width: MODEL, PID`.
-  A row is always one line. The width is the terminal's own; where stdout is
-  not one, `COLUMNS` when it is set, and otherwise nothing is fitted.
+  A row is one line. On a terminal too narrow for even that (every
+  shortened column at its least), the table gives way to a block a row: what
+  the row is a row of on a line of its own, then each field on a labelled
+  line, nothing left out and nothing shortened. A process nobody registered
+  has no agent id, so wherever `ps` lists one its process id stays. The
+  width is the terminal's own, and one that says it has no columns is taken
+  as the narrowest; where stdout is not a terminal, `COLUMNS` when it is set,
+  and otherwise nothing is fitted.
 - **A state has a tone**, the same five the app uses: quiet (ended, nothing
   known), positive (running, done), attention (stopping, in review, a lease
-  with under a minute left), alert (failed, blocked, expired) and on its way
-  (created, ready, in progress). The word always says the state; the colour
+  with under a minute left, an agent not connected), alert (failed, blocked,
+  expired, a container at a dead end) and on its way (created, ready, in
+  progress). The word and the tone are of one state. The word always says
+  the state; the colour
   only adds weight, and what is not known is never given the colour of good
   news. The colours are the terminal's own sixteen, so its palette decides.
 - **An answer that did not come is said.** `ps` reads what each agent is
   doing, the day's tokens and whether an ended one comes back; when one of
   those reads fails, a last line says which could not be read, rather than
-  leaving its column looking like a column of nothing.
-- **A time has its zone** (`YYYY-MM-DD HH:MM +00:00`), and a holder or an
-  author is named where the daemon knows the name.
+  leaving its column looking like a column of nothing. An ended agent whose
+  answer was for another run of it reads `whether it comes back is not
+  known`, where a script still reads only how it ended.
+- **A time has its zone** (`YYYY-MM-DD HH:MM +00:00`), the offset that
+  moment had where the reader is, so a summer moment read in winter keeps
+  summer's; and a holder or an author is named where the daemon knows the
+  name.
+- **A report that could not be written is an error.** Only a reader that
+  went away (a pager closed) ends it quietly.
 - **Nothing somebody wrote can act on the terminal.** A control character in
   a name, a title, a note or a comment is written out (`\e`, `\n`,
   `\u{202e}`), as is a mark that reorders text.
