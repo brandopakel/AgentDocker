@@ -33,6 +33,7 @@ fn records() -> &'static [AgentRecord; 2] {
             options: Default::default(),
             workspace: None,
             deadline: None,
+            dead_end: None,
         });
         let unmounted = record.clone();
         record.container.as_mut().unwrap().workspace = Some(ContainerWorkspace {
