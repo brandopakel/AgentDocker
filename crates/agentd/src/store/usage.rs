@@ -149,17 +149,60 @@ impl std::error::Error for Interrupted {}
 /// bounded read's deadline.
 const DEADLINE_STEPS: std::ffi::c_int = 1_000;
 
-/// Whether `error` is a bounded read's deadline, raised by its own check
-/// or by SQLite interrupting a statement.
-fn interrupted(error: &anyhow::Error) -> bool {
+/// How far short of a bounded read's deadline a lock wait may give up and
+/// still be that deadline: SQLite counts a busy timeout in whole
+/// milliseconds, so the allowance each stage sets is what is left rounded
+/// down.
+const LOCK_ROUNDING: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// Whether `error` is a bounded read's deadline: raised by its own check,
+/// by SQLite interrupting a statement, or a lock wait that ran out the
+/// allowance the deadline left it. A lock wait that gave up with time to
+/// spare is a fault like any other.
+fn interrupted(error: &anyhow::Error, deadline: std::time::Instant) -> bool {
+    let spent = std::time::Instant::now() + LOCK_ROUNDING >= deadline;
     error.chain().any(|cause| {
         cause.is::<Interrupted>()
-            || matches!(
-                cause.downcast_ref::<rusqlite::Error>(),
-                Some(rusqlite::Error::SqliteFailure(failure, _))
-                    if failure.code == rusqlite::ErrorCode::OperationInterrupted
-            )
+            || match cause.downcast_ref::<rusqlite::Error>() {
+                Some(rusqlite::Error::SqliteFailure(failure, _)) => {
+                    failure.code == rusqlite::ErrorCode::OperationInterrupted
+                        || (failure.code == rusqlite::ErrorCode::DatabaseBusy && spent)
+                }
+                _ => false,
+            }
     })
+}
+
+/// What a bounded read put on the shared connection, taken off again when
+/// the read ends however it ends, an unwind included: the deadline
+/// handler, the transaction (only if this read opened it), and the lock
+/// wait.
+struct Hold<'c> {
+    conn: &'c Connection,
+    began: bool,
+    released: bool,
+}
+
+impl Hold<'_> {
+    fn release(&mut self) -> rusqlite::Result<()> {
+        self.released = true;
+        let handler = self.conn.progress_handler(0, None::<fn() -> bool>);
+        let ended = if self.began && !self.conn.is_autocommit() {
+            self.conn.execute_batch("ROLLBACK")
+        } else {
+            Ok(())
+        };
+        let restored = self.conn.busy_timeout(super::BUSY_TIMEOUT);
+        handler.and(ended).and(restored)
+    }
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = self.release();
+        }
+    }
 }
 
 /// One bounded read of the store in one SQLite snapshot
@@ -194,8 +237,11 @@ impl Snapshot<'_> {
     }
 
     /// The latest verdict of `kind` that `by` gave on `branch` in
-    /// `project`, read alone: its id, its place, and the boundary it gives
-    /// a next window (where its own read ended, else its time).
+    /// `project`, by the order verdicts are given in (`seq`, then time,
+    /// then id; a verdict kept before `seq` reads as 0): its id, its place,
+    /// and the boundary it gives a next window (where its own capture
+    /// ended, else its time). Only those fields are read, never a whole
+    /// verdict.
     pub(crate) fn predecessor(
         &self,
         kind: &str,
@@ -204,36 +250,35 @@ impl Snapshot<'_> {
         by: &str,
     ) -> Result<Option<agentdocker_core::evidence::Predecessor>> {
         self.stage()?;
-        let row = self
-            .store
-            .conn
-            .query_row(
-                "SELECT json_extract(json,'$.id'), json_extract(json,'$.seq'), \
-                 COALESCE(json_extract(json,'$.evidence.observed.captured_at'), \
-                          json_extract(json,'$.at')) \
-                 FROM documents WHERE kind=?1 AND json_extract(json,'$.project')=?2 \
-                 AND json_extract(json,'$.branch')=?3 AND json_extract(json,'$.by')=?4 \
-                 ORDER BY json_extract(json,'$.seq') DESC LIMIT 1",
-                rusqlite::params![kind, project, branch, by],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let predecessor = row
-            .map(|(id, seq, boundary)| -> Result<_> {
-                Ok(agentdocker_core::evidence::Predecessor {
-                    id,
-                    seq: u64::try_from(seq)?,
-                    boundary: DateTime::parse_from_rfc3339(&boundary)?.with_timezone(&Utc),
-                })
-            })
-            .transpose()?;
-        self.done(predecessor)
+        let mut statement = self.store.conn.prepare(
+            "SELECT json_extract(json,'$.id'), COALESCE(json_extract(json,'$.seq'), 0), \
+             json_extract(json,'$.at'), json_extract(json,'$.evidence.observed.captured_at') \
+             FROM documents WHERE kind=?1 AND json_extract(json,'$.project')=?2 \
+             AND json_extract(json,'$.branch')=?3 AND json_extract(json,'$.by')=?4",
+        )?;
+        let mut rows = statement.query(rusqlite::params![kind, project, branch, by])?;
+        let time = |text: &str| -> Result<DateTime<Utc>> {
+            Ok(DateTime::parse_from_rfc3339(text)?.with_timezone(&Utc))
+        };
+        let mut latest: Option<(u64, DateTime<Utc>, String, DateTime<Utc>)> = None;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let seq = u64::try_from(row.get::<_, i64>(1)?)?;
+            let at = time(&row.get::<_, String>(2)?)?;
+            let boundary = match row.get::<_, Option<String>>(3)? {
+                Some(captured) => time(&captured)?,
+                None => at,
+            };
+            let candidate = (seq, at, id, boundary);
+            if latest.as_ref().is_none_or(|(seq, at, id, _)| {
+                (candidate.0, candidate.1, candidate.2.as_str()) > (*seq, *at, id.as_str())
+            }) {
+                latest = Some(candidate);
+            }
+        }
+        self.done(latest.map(
+            |(seq, _, id, boundary)| agentdocker_core::evidence::Predecessor { id, seq, boundary },
+        ))
     }
 
     pub(crate) fn collection(&self) -> Result<Option<Collection>> {
@@ -423,19 +468,27 @@ impl Store {
             DEADLINE_STEPS,
             Some(move || std::time::Instant::now() >= deadline),
         )?;
-        let answer = snapshot
-            .stage()
-            .and_then(|()| Ok(self.conn.execute_batch("BEGIN DEFERRED")?))
-            .and_then(|()| read(&snapshot))
-            .and_then(|value| snapshot.stage().map(|()| value));
-        self.conn.progress_handler(0, None::<fn() -> bool>)?;
-        if !self.conn.is_autocommit() {
-            self.conn.execute_batch("ROLLBACK")?;
-        }
-        self.conn.busy_timeout(super::BUSY_TIMEOUT)?;
+        let mut hold = Hold {
+            conn: &self.conn,
+            began: false,
+            released: false,
+        };
+        let answer = (|| -> Result<T> {
+            snapshot.stage()?;
+            self.conn.execute_batch("BEGIN DEFERRED")?;
+            hold.began = true;
+            let value = read(&snapshot)?;
+            snapshot.stage()?;
+            Ok(value)
+        })();
+        let busy = answer
+            .as_ref()
+            .err()
+            .is_some_and(|error| interrupted(error, deadline));
+        hold.release()?;
         match answer {
             Ok(value) => Ok(Ok(value)),
-            Err(error) if interrupted(&error) => Ok(Err(Interrupted)),
+            Err(_) if busy => Ok(Err(Interrupted)),
             Err(error) => Err(error),
         }
     }
@@ -1536,6 +1589,13 @@ impl Store {
 
 #[cfg(test)]
 impl Store {
+    /// Set the connection's journal mode, for a test that needs another
+    /// connection's lock to keep this one's reads out.
+    pub(crate) fn journal_mode_for_test(&self, mode: &str) -> Result<()> {
+        self.conn.pragma_update(None, "journal_mode", mode)?;
+        Ok(())
+    }
+
     /// A retained sample, written as attribution writes one, for tests of
     /// the reads over it.
     #[allow(clippy::too_many_arguments)]
@@ -1754,6 +1814,128 @@ mod observed_tests {
                 .samples,
             2
         );
+    }
+
+    /// Valid verdicts kept before `seq` read as 0, so the latest by time
+    /// is the predecessor, and never a store fault.
+    #[test]
+    fn a_predecessor_is_found_among_verdicts_kept_before_seq() {
+        let (_dir, store) = fresh();
+        for (id, at) in [("old-1", at(10)), ("old-2", at(20))] {
+            store
+                .put_document(
+                    "code_verdict",
+                    id,
+                    &serde_json::json!({"id": id, "project": "p", "branch": "b",
+                        "by": "reviewer", "at": at, "verdict": "comment", "note": ""}),
+                )
+                .unwrap();
+        }
+        let found = store
+            .bounded_snapshot(Instant::now() + Budget::from_secs(5), |snapshot| {
+                snapshot.predecessor("code_verdict", "p", "b", "reviewer")
+            })
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (found.id.as_str(), found.seq, found.boundary),
+            ("old-2", 0, at(20))
+        );
+    }
+
+    /// A lock another connection holds until the deadline is the bound,
+    /// never a store fault: the read is interrupted, and once the lock is
+    /// let go the next read and write are served.
+    #[test]
+    fn a_lock_held_to_the_deadline_is_the_bound_not_a_fault() {
+        let (dir, store) = fresh();
+        // A rollback journal, so another connection's write keeps a reader
+        // out (a WAL reader is kept out only by recovery or a connection
+        // in exclusive locking mode).
+        store
+            .conn
+            .pragma_update(None, "journal_mode", "DELETE")
+            .unwrap();
+        let other = crate::sqlite_fixture::open(dir.path().join("state.db")).unwrap();
+        other
+            .execute_batch("BEGIN EXCLUSIVE; INSERT INTO meta(key, value) VALUES('held', '1');")
+            .unwrap();
+        assert_eq!(
+            observed(&store, &own(), Budget::from_millis(50)),
+            Err(Interrupted)
+        );
+        other.execute_batch("COMMIT").unwrap();
+        assert_eq!(
+            observed(&store, &own(), Budget::from_secs(5))
+                .unwrap()
+                .samples,
+            0
+        );
+        store
+            .insert_test_sample("1", at(10), "reviewer", "codex", "s1", None, None)
+            .unwrap();
+        // With time to spare, a lock is a fault as before.
+        other
+            .execute_batch("BEGIN EXCLUSIVE; INSERT INTO meta(key, value) VALUES('again', '1');")
+            .unwrap();
+        let spare = store.bounded_snapshot(Instant::now() + Budget::from_secs(60), |snapshot| {
+            store.conn.busy_timeout(Budget::from_millis(10))?;
+            snapshot
+                .store
+                .conn
+                .query_row("SELECT COUNT(*) FROM usage_samples", [], |r| {
+                    r.get::<_, i64>(0)
+                })?;
+            Ok(())
+        });
+        assert!(spare.is_err(), "{spare:?}");
+        other.execute_batch("COMMIT").unwrap();
+    }
+
+    /// A read that unwinds leaves the connection as it found it: no
+    /// transaction, no deadline handler; and a transaction it did not
+    /// open is not its to end.
+    #[test]
+    fn a_bounded_read_leaves_the_connection_clean_however_it_ends() {
+        let (_dir, store) = fresh();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = store.bounded_snapshot(Instant::now() + Budget::from_millis(20), |snapshot| {
+                snapshot.collection()?;
+                panic!("a read that unwinds");
+                #[allow(unreachable_code)]
+                Ok(())
+            });
+        }));
+        assert!(unwound.is_err());
+        std::thread::sleep(Budget::from_millis(30));
+        assert!(store.conn.is_autocommit(), "its transaction ended");
+        let counted: i64 = store
+            .conn
+            .query_row(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 100000) \
+                 SELECT COUNT(*) FROM n",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(counted, 100_000, "no deadline handler past its read");
+        store
+            .insert_test_sample("1", at(10), "reviewer", "codex", "s1", None, None)
+            .unwrap();
+        store.conn.execute_batch("BEGIN").unwrap();
+        assert!(
+            store
+                .bounded_snapshot(Instant::now() + Budget::from_secs(5), |snapshot| {
+                    snapshot.collection()
+                })
+                .is_err()
+        );
+        assert!(
+            !store.conn.is_autocommit(),
+            "the caller's transaction stands"
+        );
+        store.conn.execute_batch("ROLLBACK").unwrap();
     }
 
     /// A read past its budget is interrupted and claims nothing, and the

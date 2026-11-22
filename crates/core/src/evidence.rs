@@ -10,6 +10,7 @@
 //! previous verdict on the branch, or its record's start) is said as
 //! inferred, never as "the model used for this review".
 
+use crate::usage::report::{Collection, CollectionPhase};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -87,9 +88,11 @@ pub struct Predecessor {
 }
 
 /// The samples read: those whose own time is in `[from, to)`. `to` is
-/// where the read ended (`captured_at`), and a next round inferred from
-/// this one starts exactly there, so no sample falls between two rounds
-/// and none is in both.
+/// `captured_at`, the sample-time upper bound fixed when the capture
+/// began; a next round inferred from this one starts exactly there, so two
+/// directly linked rounds meet with no sample in neither or both. Rounds
+/// captured before either was kept both start from the same predecessor,
+/// and their windows overlap, which `previous` shows.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Window {
     pub from: DateTime<Utc>,
@@ -146,9 +149,12 @@ pub struct Collector {
     /// configuration could not be read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    /// The collection's phase as it recorded it (`scanning`, `caught_up`).
+    /// The collection's phase as [`Collection::phase`] reads it from the
+    /// collection and the configuration (`discovering`, `discovery
+    /// incomplete`, `reading`, `caught up`, …); absent when no collection
+    /// was read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state: Option<String>,
+    pub phase: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discovery_complete: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,12 +166,34 @@ pub struct Collector {
     pub last_walk: Option<DateTime<Utc>>,
 }
 
+impl Collector {
+    /// The facts of `collection` as read, with whether collection was
+    /// configured on (`None` when that could not be read).
+    pub fn observed(collection: &Collection, enabled: Option<bool>) -> Collector {
+        let phase = Collection {
+            enabled,
+            ..collection.clone()
+        }
+        .phase();
+        Collector {
+            enabled,
+            phase: Some(phase.word().to_owned()),
+            discovery_complete: Some(collection.discovery_complete),
+            pending_files: collection.pending_files,
+            pending_tail_files: collection.pending_tail_files,
+            last_walk: collection.completed_at,
+        }
+    }
+}
+
 /// What the retained data showed for the reviewer's own session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Observed {
     /// The window read, exactly as queried; absent when none was known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<Window>,
+    /// The sample-time upper bound, fixed when the capture began (before
+    /// the read's transaction).
     pub captured_at: DateTime<Utc>,
     /// The earliest usage time retention kept at capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -260,9 +288,11 @@ pub enum Incomplete {
     /// The collector's last walk ended before the window did: a later
     /// ingestion may add samples.
     CollectorBehind,
-    /// The collector had not caught up (still discovering, scanning, or
-    /// with files pending), or its state could not be read.
+    /// The collector had not caught up: starting, still walking its roots,
+    /// a walk that stopped early, or files still being read.
     CollectorPending,
+    /// What the collector had read is not known: no collection was read.
+    CollectorUnknown,
     /// Collection was off at capture.
     CollectorOff,
     /// Whether collection was on could not be read.
@@ -278,6 +308,7 @@ impl Incomplete {
             Incomplete::BeforeRetention => "the window starts before retention",
             Incomplete::CollectorBehind => "the collector's last walk ended before the window did",
             Incomplete::CollectorPending => "the collector had not caught up",
+            Incomplete::CollectorUnknown => "what the collector had read is not known",
             Incomplete::CollectorOff => "collection was off",
             Incomplete::EnabledUnknown => "whether collection was on is unknown",
             Incomplete::Unknown => "an unknown limitation",
@@ -297,18 +328,25 @@ pub fn incomplete(
     {
         reasons.push(Incomplete::BeforeRetention);
     }
-    if let Some(window) = window
-        && collector.last_walk.is_none_or(|walk| walk < window.to)
-    {
-        reasons.push(Incomplete::CollectorBehind);
-    }
-    // The collector's own rule for having caught up, each fact known.
-    let caught_up = collector.state.as_deref() == Some("caught_up")
-        && collector.discovery_complete == Some(true)
-        && collector.pending_files == Some(0)
-        && collector.pending_tail_files == Some(0);
-    if !caught_up {
-        reasons.push(Incomplete::CollectorPending);
+    // A delay is said only from what was read; with no collection read,
+    // only that it is not known.
+    let word = |phase: CollectionPhase| phase.word();
+    match collector.phase.as_deref() {
+        None => reasons.push(Incomplete::CollectorUnknown),
+        Some(phase) if phase == word(CollectionPhase::Unknown) => {
+            reasons.push(Incomplete::CollectorUnknown);
+        }
+        Some(phase) => {
+            if let Some(window) = window
+                && collector.last_walk.is_none_or(|walk| walk < window.to)
+            {
+                reasons.push(Incomplete::CollectorBehind);
+            }
+            let caught_up = phase == word(CollectionPhase::CaughtUp { at: None });
+            if !caught_up && phase != word(CollectionPhase::Off) {
+                reasons.push(Incomplete::CollectorPending);
+            }
+        }
     }
     match collector.enabled {
         Some(true) => {}
@@ -359,20 +397,25 @@ mod tests {
 
     #[test]
     fn what_may_be_missing_is_said() {
+        use crate::usage::report::CollectionState;
         let w = Window {
             from: at(10),
             to: at(100),
             source: WindowSource::PreviousVerdict,
             previous: None,
         };
-        let on = Collector {
-            enabled: Some(true),
-            state: Some("caught_up".into()),
-            discovery_complete: Some(true),
+        let caught = Collection {
+            state: CollectionState::CaughtUp,
+            discovery_generation: Some(1),
+            completed_at: Some(at(120)),
+            discovery_complete: true,
+            discovery_ended: true,
             pending_files: Some(0),
             pending_tail_files: Some(0),
-            last_walk: Some(at(120)),
+            ..Collection::default()
         };
+        let on = Collector::observed(&caught, Some(true));
+        assert_eq!(on.phase.as_deref(), Some("caught up"));
         assert!(incomplete(Some(&w), Some(at(0)), &on).is_empty());
         assert_eq!(
             incomplete(Some(&w), Some(at(20)), &on),
@@ -386,52 +429,57 @@ mod tests {
             incomplete(Some(&w), None, &behind),
             vec![Incomplete::CollectorBehind]
         );
-        // A recent walk does not hide one still under way or with files
-        // pending, and a state that could not be read is not caught up.
-        for pending in [
-            Collector {
-                state: Some("scanning".into()),
-                ..on.clone()
-            },
-            Collector {
-                discovery_complete: Some(false),
-                ..on.clone()
-            },
-            Collector {
-                pending_files: Some(3),
-                ..on.clone()
-            },
-            Collector {
-                pending_tail_files: None,
-                ..on.clone()
-            },
-            Collector {
-                enabled: Some(true),
-                last_walk: Some(at(120)),
-                ..Collector::default()
-            },
-        ] {
+        // A walk under way and one that stopped early, otherwise the same
+        // fields, are told apart; neither, nor a pass still reading files,
+        // has caught up, however recent the last walk.
+        let walking = Collection {
+            state: CollectionState::Unknown,
+            discovery_ended: false,
+            discovery_complete: false,
+            ..caught.clone()
+        };
+        let stopped = Collection {
+            discovery_ended: true,
+            ..walking.clone()
+        };
+        let reading = Collection {
+            state: CollectionState::Scanning,
+            pending_files: Some(3),
+            ..caught.clone()
+        };
+        let (walking, stopped, reading) = (
+            Collector::observed(&walking, Some(true)),
+            Collector::observed(&stopped, Some(true)),
+            Collector::observed(&reading, Some(true)),
+        );
+        assert_eq!(
+            (walking.phase.as_deref(), stopped.phase.as_deref()),
+            (Some("discovering"), Some("discovery incomplete"))
+        );
+        for pending in [walking, stopped, reading] {
             assert_eq!(
                 incomplete(Some(&w), None, &pending),
                 vec![Incomplete::CollectorPending],
                 "{pending:?}"
             );
         }
-        let off = Collector {
-            enabled: Some(false),
-            ..on.clone()
-        };
-        assert_eq!(
-            incomplete(Some(&w), None, &off),
-            vec![Incomplete::CollectorOff]
-        );
-        // A configuration that could not be read is not "off".
+        // A read that took no collection (one stopped at its deadline, say)
+        // says only that what the collector had read is not known.
         let unread = Collector {
-            enabled: None,
-            ..on.clone()
+            enabled: Some(true),
+            ..Collector::default()
         };
         assert_eq!(
             incomplete(Some(&w), None, &unread),
+            vec![Incomplete::CollectorUnknown]
+        );
+        assert_eq!(
+            incomplete(Some(&w), None, &Collector::observed(&caught, Some(false))),
+            vec![Incomplete::CollectorOff]
+        );
+        // A configuration that could not be read is not "off".
+        assert_eq!(
+            incomplete(Some(&w), None, &Collector::observed(&caught, None)),
             vec![Incomplete::EnabledUnknown]
         );
     }

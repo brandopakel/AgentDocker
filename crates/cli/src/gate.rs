@@ -284,11 +284,15 @@ fn short(commit: &str) -> &str {
 
 /// The reviewer, its runtime and what it found, as a person reads it:
 /// `reviewer-1 (codex; important 0, nit 1, pre-existing 0)`.
+/// Who gave it, in what, and what they found: the name and the runtime
+/// are what a record said, shown with any control or direction mark
+/// written out.
 fn who(v: &CodeVerdict) -> String {
+    use crate::out::text::shown;
     format!(
         "{} ({}; {})",
-        v.by_name,
-        v.runtime_said(),
+        shown(&v.by_name),
+        shown(v.runtime_said()),
         v.findings.said_as(v.findings_presence)
     )
 }
@@ -1072,7 +1076,9 @@ mod tests {
                 incomplete: vec![Incomplete::BeforeRetention, Incomplete::CollectorOff],
             }),
         });
+        v.by_name = "review\u{202e}er".into();
         let line = round(&v);
+        assert!(line.contains("by review\\u{202e}er (codex"), "{line}");
         assert!(
             line.contains("configured open\\u{202e}ai/model-b"),
             "{line}"

@@ -162,10 +162,38 @@ impl State {
         &mut self,
         marked: &[(&CodeVerdict, &Supersession, Option<&CodeVerdict>)],
     ) -> Option<Response> {
-        let documents: Vec<Doc> = marked
-            .iter()
-            .map(|(verdict, _, _)| doc(VERDICT, verdict.id.clone(), *verdict))
-            .collect();
+        // Each document as it is stored, with only its marks replaced: what
+        // this build reads as unknown (a newer word, a field it does not
+        // know) is written back as it was.
+        let mut documents: Vec<Doc> = Vec::with_capacity(marked.len());
+        for (verdict, _, _) in marked {
+            let stored = self.store_read("verdict document", |store| {
+                store.document::<serde_json::Value>(VERDICT, &verdict.id)
+            });
+            let Some(stored) = stored else {
+                return Some(self.storage_failure().unwrap_or_else(|| {
+                    Response::error(
+                        ErrorCode::StorageUnavailable,
+                        "the verdict to set aside could not be read",
+                    )
+                }));
+            };
+            documents.push(match stored {
+                Some(serde_json::Value::Object(mut fields)) => {
+                    fields.insert(
+                        "superseded".to_owned(),
+                        serde_json::to_value(&verdict.superseded)
+                            .expect("supersession marks serialize"),
+                    );
+                    (
+                        VERDICT,
+                        verdict.id.clone(),
+                        serde_json::Value::Object(fields).to_string(),
+                    )
+                }
+                _ => doc(VERDICT, verdict.id.clone(), *verdict),
+            });
+        }
         let entries: Vec<JournalEntry> = marked
             .iter()
             .map(|(verdict, mark, pass)| {
@@ -311,17 +339,12 @@ impl Daemon {
             }
             Some(Ok(read)) => read,
         };
-        let collector = Collector {
-            enabled,
-            state: read.collection.as_ref().and_then(|collection| {
-                serde_json::to_value(collection.state)
-                    .ok()
-                    .and_then(|word| word.as_str().map(str::to_owned))
-            }),
-            discovery_complete: read.collection.as_ref().map(|c| c.discovery_complete),
-            pending_files: read.collection.as_ref().and_then(|c| c.pending_files),
-            pending_tail_files: read.collection.as_ref().and_then(|c| c.pending_tail_files),
-            last_walk: read.collection.as_ref().and_then(|c| c.completed_at),
+        let collector = match &read.collection {
+            Some(collection) => Collector::observed(collection, enabled),
+            None => Collector {
+                enabled,
+                ..Collector::default()
+            },
         };
         let result = match (&session, &read.window, read.read_from, read.found) {
             (None, _, _, _) => ObservedResult::Unavailable {
@@ -1702,11 +1725,16 @@ mod tests {
             (
                 observed.retained_from,
                 observed.read_from,
-                observed.collector.state
+                observed.collector.phase
             ),
             (None, None, None),
             "nothing the read took is kept"
         );
+        // With no collection read, no delay is claimed: only that what the
+        // collector had read is not known.
+        assert!(observed.incomplete.contains(&Incomplete::CollectorUnknown));
+        assert!(!observed.incomplete.contains(&Incomplete::CollectorBehind));
+        assert!(!observed.incomplete.contains(&Incomplete::CollectorPending));
         assert_eq!(observed.window.unwrap().from, since, "what was stated is");
         {
             let state = lock(&daemon.state);
@@ -1872,7 +1900,7 @@ mod tests {
             observed.collector,
             Collector {
                 enabled: None,
-                state: Some("scanning".into()),
+                phase: Some("reading".into()),
                 discovery_complete: Some(true),
                 pending_files: Some(4),
                 pending_tail_files: Some(0),
@@ -1937,9 +1965,13 @@ mod tests {
     async fn a_verdict_with_newer_words_reads_and_latches_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let (daemon, reviewer) = with_session(&tmp, 10).await;
+        let important = Findings {
+            important: 1,
+            ..Findings::default()
+        };
         let first = given(
             &daemon,
-            worded(&reviewer, "none", Findings::default(), Some(false), None),
+            worded(&reviewer, "changes", important, Some(true), None),
         )
         .await;
         let mut newer = serde_json::to_value(&first).unwrap();
@@ -1982,6 +2014,135 @@ mod tests {
             window.previous.map(|p| (p.id, p.seq)),
             Some(("newer".into(), 99))
         );
+        // Set aside, it keeps every word as the newer build wrote it: only
+        // its marks are written.
+        let answer = daemon
+            .handle(Request::SupersedeVerdict {
+                agent: HUMAN.into(),
+                project: Some(first.project.to_string()),
+                verdict: "newer".into(),
+                reason: None,
+            })
+            .await;
+        assert!(!matches!(answer, Response::Error { .. }), "{answer:?}");
+        let stored: serde_json::Value = lock(&daemon.state)
+            .store
+            .document(VERDICT, "newer")
+            .unwrap()
+            .unwrap();
+        assert!(
+            stored["superseded"]
+                .as_array()
+                .is_some_and(|marks| !marks.is_empty())
+        );
+        assert_eq!(stored["findings_presence"], "estimated");
+        assert_eq!(stored["evidence"], newer["evidence"]);
+    }
+
+    /// Verdicts kept before `seq` are read as 0 when a window's start is
+    /// inferred: the latest of them by time is the predecessor, nothing
+    /// latches, and the verdict is kept.
+    #[tokio::test]
+    async fn a_window_starts_from_a_verdict_kept_before_seq() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, reviewer) = with_session(&tmp, 10).await;
+        let template = given(
+            &daemon,
+            worded(&reviewer, "none", Findings::default(), Some(false), None),
+        )
+        .await;
+        let project = template.project.to_string();
+        {
+            let state = lock(&daemon.state);
+            // Its own `seq` would outrank theirs: only theirs are left.
+            state.store.delete_document(VERDICT, &template.id).unwrap();
+            let now = Utc::now();
+            for (id, minutes) in [("old-1", 50), ("old-2", 40)] {
+                let mut old = serde_json::to_value(&template).unwrap();
+                let fields = old.as_object_mut().unwrap();
+                for gone in ["seq", "findings_presence", "evidence", "runtime", "roles"] {
+                    fields.remove(gone);
+                }
+                fields.insert("id".into(), id.into());
+                fields.insert("verdict".into(), "comment".into());
+                fields.insert(
+                    "at".into(),
+                    serde_json::to_value(now - chrono::Duration::minutes(minutes)).unwrap(),
+                );
+                state.store.put_document(VERDICT, id, &old).unwrap();
+            }
+        }
+        let next = given(
+            &daemon,
+            worded(&reviewer, "none", Findings::default(), Some(false), None),
+        )
+        .await;
+        let window = next.evidence.unwrap().observed.unwrap().window.unwrap();
+        assert_eq!(
+            window.previous.map(|p| (p.id, p.seq)),
+            Some(("old-2".into(), 0))
+        );
+        assert!(lock(&daemon.state).storage_error.is_none());
+        let listed = rounds(
+            daemon
+                .handle(Request::Verdicts {
+                    agent: Some(reviewer.to_string()),
+                    project: Some(project),
+                    branch: "feature/x".into(),
+                })
+                .await,
+        );
+        assert_eq!(listed.len(), 3);
+    }
+
+    /// A lock another connection holds through the whole budget makes the
+    /// evidence unavailable and latches nothing: once it is let go, the
+    /// next verdict and read are served.
+    #[tokio::test]
+    async fn a_lock_held_through_the_budget_makes_the_evidence_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, reviewer) = with_session(&tmp, 10).await;
+        let (record, project) = {
+            let state = lock(&daemon.state);
+            state.store.journal_mode_for_test("DELETE").unwrap();
+            let record = state.registry.get(&reviewer).cloned().unwrap();
+            let project = record.project.as_ref().unwrap().id();
+            (record, project)
+        };
+        let other = crate::sqlite_fixture::open(tmp.path().join("state.db")).unwrap();
+        other
+            .execute_batch("BEGIN EXCLUSIVE; INSERT INTO meta(key, value) VALUES('held', '1');")
+            .unwrap();
+        let observed = daemon.observe_reviewer(
+            &project,
+            "feature/x",
+            reviewer.as_str(),
+            Some(&record),
+            Some(Utc::now() - chrono::Duration::hours(1)),
+            None,
+        );
+        assert!(
+            matches!(&observed.result, ObservedResult::Unavailable { why } if why.contains("past its budget")),
+            "{:?}",
+            observed.result
+        );
+        assert!(lock(&daemon.state).storage_error.is_none());
+        other.execute_batch("COMMIT").unwrap();
+        let next = given(
+            &daemon,
+            worded(
+                &reviewer,
+                "none",
+                Findings::default(),
+                Some(false),
+                Some(Utc::now() - chrono::Duration::hours(1)),
+            ),
+        )
+        .await;
+        assert!(matches!(
+            next.evidence.unwrap().observed.unwrap().result,
+            ObservedResult::Found(_)
+        ));
     }
 
     #[tokio::test]
