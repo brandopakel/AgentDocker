@@ -2335,11 +2335,80 @@ impl Daemon {
         let _ = ADMISSION.try_with(|admission| admission.borrow_mut().place = Some(place));
     }
 
+    /// Answer a request on a healthy daemon. The match over every request
+    /// is cut into routes of a few dozen arms each, tried in turn, each one
+    /// boxed: a debug build gives an async function's frame a slot for each
+    /// of its arms' values at once, and one match over all of them made a
+    /// frame of over a megabyte that every request, the deepest included,
+    /// ran inside. Each route handles what it matches and leaves anything
+    /// else in `rest` for the next.
     async fn handle_healthy(
         self: &Arc<Self>,
         request: Request,
         authorized: Option<acting::Authorized>,
     ) -> Response {
+        let mut authorized = authorized;
+        let mut rest = Some(request);
+        if let Some(request) = rest.take() {
+            let response = routed(|| self.route_1(request, &mut rest)).await;
+            if rest.is_none() {
+                return response;
+            }
+        }
+        if let Some(request) = rest.take() {
+            let response = routed(|| self.route_2(request, &mut authorized, &mut rest)).await;
+            if rest.is_none() {
+                return response;
+            }
+        }
+        if let Some(request) = rest.take() {
+            let response = routed(|| self.route_3(request, &mut rest)).await;
+            if rest.is_none() {
+                return response;
+            }
+        }
+        if let Some(request) = rest.take() {
+            let response = routed(|| self.route_4(request, &mut rest)).await;
+            if rest.is_none() {
+                return response;
+            }
+        }
+        if let Some(request) = rest.take() {
+            let response = routed(|| self.route_5(request, &mut rest)).await;
+            if rest.is_none() {
+                return response;
+            }
+        }
+        if let Some(request) = rest.take() {
+            let response = routed(|| self.route_6(request, &mut rest)).await;
+            if rest.is_none() {
+                return response;
+            }
+        }
+        if let Some(request) = rest.take() {
+            let response = routed(|| self.route_7(request, &mut rest)).await;
+            if rest.is_none() {
+                return response;
+            }
+        }
+        if let Some(request) = rest.take() {
+            let response = routed(|| self.route_8(request, &mut rest)).await;
+            if rest.is_none() {
+                return response;
+            }
+        }
+        if let Some(request) = rest.take() {
+            let response = routed(|| self.route_9(request, &mut rest)).await;
+            if rest.is_none() {
+                return response;
+            }
+        }
+        Response::error(ErrorCode::Internal, "a request no route takes")
+    }
+
+    /// Requests of the 1st route ([`Self::handle_healthy`]); any other is
+    /// left in `rest`.
+    async fn route_1(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
         match request {
             Request::RecordEmission { agent, emission } => self.record_emission(&agent, emission),
             Request::BuildImage { spec } => self.build_image(spec).await,
@@ -2491,6 +2560,22 @@ impl Daemon {
                 }
             }
             Request::Run { spec } => self.run(spec).await,
+            other => {
+                *rest = Some(other);
+                Response::Ok
+            }
+        }
+    }
+
+    /// Requests of the 2nd route ([`Self::handle_healthy`]); any other is
+    /// left in `rest`.
+    async fn route_2(
+        self: &Arc<Self>,
+        request: Request,
+        authorized: &mut Option<acting::Authorized>,
+        rest: &mut Option<Request>,
+    ) -> Response {
+        match request {
             Request::RunContainer {
                 spec,
                 build,
@@ -2510,7 +2595,7 @@ impl Daemon {
             }
             Request::RestartContainer { agent } => self.restart_container(&agent).await,
             Request::Register { spec, pid, session } => {
-                let registered = self.register(spec, pid, session, authorized).await;
+                let registered = self.register(spec, pid, session, authorized.take()).await;
                 self.trace_starter(&registered);
                 self.note_team(&registered).await;
                 registered
@@ -2533,7 +2618,7 @@ impl Daemon {
             Request::Discover => self.discover().await,
             Request::Runtimes => self.runtimes().await,
             Request::Adopt { pid, name, runtime } => {
-                let adopted = self.adopt(pid, name, runtime, authorized).await;
+                let adopted = self.adopt(pid, name, runtime, authorized.take()).await;
                 self.trace_starter(&adopted);
                 self.note_team(&adopted).await;
                 adopted
@@ -2636,6 +2721,17 @@ impl Daemon {
             Request::RetryController { agent } => {
                 lock(&self.state).retry_controller(&agent, Utc::now())
             }
+            other => {
+                *rest = Some(other);
+                Response::Ok
+            }
+        }
+    }
+
+    /// Requests of the 3rd route ([`Self::handle_healthy`]); any other is
+    /// left in `rest`.
+    async fn route_3(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+        match request {
             Request::ResumeInput {
                 agent,
                 predecessor,
@@ -2757,6 +2853,17 @@ impl Daemon {
                 all,
             } => self.activity(agent, project, all).await,
             Request::Waiting => self.waiting(),
+            other => {
+                *rest = Some(other);
+                Response::Ok
+            }
+        }
+    }
+
+    /// Requests of the 4th route ([`Self::handle_healthy`]); any other is
+    /// left in `rest`.
+    async fn route_4(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+        match request {
             Request::TaskCreate {
                 from,
                 project,
@@ -2905,6 +3012,17 @@ impl Daemon {
             ),
             Request::TaskArchive { agent, task } => self.task_archive(&agent, &task),
             Request::Rules { project, board } => self.rules(project, board).await,
+            other => {
+                *rest = Some(other);
+                Response::Ok
+            }
+        }
+    }
+
+    /// Requests of the 5th route ([`Self::handle_healthy`]); any other is
+    /// left in `rest`.
+    async fn route_5(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+        match request {
             Request::RuleCreate {
                 from,
                 project,
@@ -3055,6 +3173,17 @@ impl Daemon {
                 max_chars,
                 as_of,
             } => self.memory_profile(from, project, max_chars, as_of).await,
+            other => {
+                *rest = Some(other);
+                Response::Ok
+            }
+        }
+    }
+
+    /// Requests of the 6th route ([`Self::handle_healthy`]); any other is
+    /// left in `rest`.
+    async fn route_6(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+        match request {
             Request::Brief { from, project } => self.work_brief(&from, project.as_deref()).await,
             Request::MemoryForget { from, memory } => self.memory_forget(&from, &memory),
             Request::MemoryRetire {
@@ -3201,6 +3330,17 @@ impl Daemon {
                 validation,
                 score,
             } => self.contest_submit(&agent, &contest, &validation, score),
+            other => {
+                *rest = Some(other);
+                Response::Ok
+            }
+        }
+    }
+
+    /// Requests of the 7th route ([`Self::handle_healthy`]); any other is
+    /// left in `rest`.
+    async fn route_7(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+        match request {
             Request::Contests {
                 contest,
                 project,
@@ -3324,6 +3464,17 @@ impl Daemon {
                     Err(error) => *error,
                 }
             }
+            other => {
+                *rest = Some(other);
+                Response::Ok
+            }
+        }
+    }
+
+    /// Requests of the 8th route ([`Self::handle_healthy`]); any other is
+    /// left in `rest`.
+    async fn route_8(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+        match request {
             Request::Claim {
                 agent,
                 resource,
@@ -3470,6 +3621,17 @@ impl Daemon {
                 through,
                 reader,
             } => self.mark_read(conversation, through, reader),
+            other => {
+                *rest = Some(other);
+                Response::Ok
+            }
+        }
+    }
+
+    /// Requests of the 9th route ([`Self::handle_healthy`]); any other is
+    /// left in `rest`.
+    async fn route_9(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+        match request {
             Request::SearchMessages {
                 query,
                 project,
@@ -3604,6 +3766,10 @@ impl Daemon {
             | Request::AttachInput { .. }
             | Request::AttachResize { .. } => {
                 Response::error(ErrorCode::Internal, "streaming request routed as unary")
+            }
+            other => {
+                *rest = Some(other);
+                Response::Ok
             }
         }
     }
@@ -7306,6 +7472,17 @@ impl Drop for Subscription {
             self.daemon.unsubscribe(agent);
         }
     }
+}
+
+/// `route`'s future, made and boxed here, so that the frame awaiting it
+/// holds a box and none of the future's own slots.
+fn routed<'a, F>(
+    route: impl FnOnce() -> F,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send + 'a>>
+where
+    F: std::future::Future<Output = Response> + Send + 'a,
+{
+    Box::pin(route())
 }
 
 #[cfg(test)]

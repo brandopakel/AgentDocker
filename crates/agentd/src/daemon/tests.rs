@@ -16444,3 +16444,28 @@ fn concurrent_state_timing_samples_stop_at_the_limit() {
     assert_eq!(samples.load(Ordering::Relaxed), 256);
     assert!(!claim_state_timing_sample(&samples));
 }
+
+/// A request through the dispatcher fits a thread of 1 MiB in a debug
+/// build, the daemon opened on it included: the routes keep the frame any
+/// request runs inside to one route's arms. One match over every arm made
+/// that frame over a megabyte, and a test whose request went deep then
+/// overflowed a 2 MiB test thread.
+#[test]
+fn a_request_through_the_dispatcher_fits_a_small_stack() {
+    std::thread::Builder::new()
+        .stack_size(1 << 20)
+        .spawn(|| {
+            let tmp = tempfile::tempdir().unwrap();
+            let home = tmp.path().to_path_buf();
+            let daemon = Arc::new(Daemon::open(home.clone(), home.join("sock")).unwrap());
+            let answer = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(daemon.handle(Request::Ping));
+            assert!(!matches!(answer, Response::Error { .. }), "{answer:?}");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
