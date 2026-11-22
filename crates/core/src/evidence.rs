@@ -78,8 +78,9 @@ pub enum WindowSource {
 }
 
 /// The verdict a window's start was taken from: its id, its place in the
-/// project's order, and the boundary it gave, which is where its own read
-/// ended (its time, for a verdict that kept no read).
+/// project's order, and the boundary it gave: its `captured_at`, the
+/// sample-time bound fixed when its capture began (its time, for a verdict
+/// that kept no capture).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Predecessor {
     pub id: String,
@@ -285,8 +286,9 @@ impl Found {
 pub enum Incomplete {
     /// The window starts before what retention kept.
     BeforeRetention,
-    /// The collector's last walk ended before the window did: a later
-    /// ingestion may add samples.
+    /// No completed walk was recorded at or after the end of the window:
+    /// one that ended earlier, or none yet (a first walk may still be under
+    /// way). A later ingestion may add samples.
     CollectorBehind,
     /// The collector had not caught up: starting, still walking its roots,
     /// a walk that stopped early, or files still being read.
@@ -306,7 +308,9 @@ impl Incomplete {
     pub fn said(self) -> &'static str {
         match self {
             Incomplete::BeforeRetention => "the window starts before retention",
-            Incomplete::CollectorBehind => "the collector's last walk ended before the window did",
+            Incomplete::CollectorBehind => {
+                "no completed walk was recorded at or after the end of the window"
+            }
             Incomplete::CollectorPending => "the collector had not caught up",
             Incomplete::CollectorUnknown => "what the collector had read is not known",
             Incomplete::CollectorOff => "collection was off",
@@ -463,6 +467,30 @@ mod tests {
                 "{pending:?}"
             );
         }
+        // A first walk still under way has completed none: no completed
+        // walk at or after the window's end, said so, and not caught up.
+        let first = Collector::observed(
+            &Collection {
+                state: CollectionState::Unknown,
+                completed_at: None,
+                discovery_ended: false,
+                discovery_complete: false,
+                ..caught.clone()
+            },
+            Some(true),
+        );
+        assert_eq!(
+            (first.phase.as_deref(), first.last_walk),
+            (Some("discovering"), None)
+        );
+        assert_eq!(
+            incomplete(Some(&w), None, &first),
+            vec![Incomplete::CollectorBehind, Incomplete::CollectorPending]
+        );
+        assert_eq!(
+            Incomplete::CollectorBehind.said(),
+            "no completed walk was recorded at or after the end of the window"
+        );
         // A read that took no collection (one stopped at its deadline, say)
         // says only that what the collector had read is not known.
         let unread = Collector {
