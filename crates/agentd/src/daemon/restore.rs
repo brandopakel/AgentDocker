@@ -73,20 +73,21 @@ impl Daemon {
             let id = record.id.clone();
             match supervisor::reattach(self, &record).await {
                 Ok(supervisor::Reattached::Running(spawned)) => {
+                    let supervising = self.supervision_of(&id, &spawned);
                     if let Some(session) = spawned.session.clone() {
-                        lock(&self.sessions).insert(id.clone(), session);
+                        self.open_session(&supervising, session);
                     }
                     let owner_pid = spawned.owner.pid;
                     {
                         let mut state = lock(&self.state);
-                        state.supervised.insert(id.clone(), spawned.control.clone());
+                        state.install(&supervising, spawned.control.clone());
                         state.emit(EventKind::AgentOwnerReattached {
                             agent: id.clone(),
                             owner_pid,
                         });
                     }
                     info!(agent = %id.short(), owner_pid, "reattached to the session owner");
-                    supervisor::supervise(self.clone(), id, *spawned);
+                    supervisor::supervise(self.clone(), supervising, *spawned);
                 }
                 Ok(supervisor::Reattached::Exited(report)) => {
                     info!(agent = %id.short(), "the agent finished while no daemon was watching");
@@ -97,11 +98,11 @@ impl Daemon {
                     if !supervisor::owner_alive(&owner) {
                         let reason = format!("session owner lost across restart: {error:#}");
                         warn!(agent = %id.short(), %reason, "cannot reattach");
-                        self.emit(EventKind::AgentOwnerLost {
-                            agent: id.clone(),
-                            reason: reason.clone(),
-                        });
-                        self.mark_exited(&id, AgentStatus::Failed { reason });
+                        // Nothing of this run was installed here: the
+                        // record is ended only while it still carries it.
+                        let lost =
+                            self.supervision(&id, &owner, record.pid, record.process_started_at);
+                        self.owner_lost(&lost, reason);
                         continue;
                     }
                     // The owner lives but did not answer in time: the agent
@@ -110,10 +111,12 @@ impl Daemon {
                     // answers, exits or dies. Other recovery is not held up.
                     warn!(agent = %id.short(), %error, "session owner alive but not answering; retrying");
                     let (control, stopped) = tokio::sync::watch::channel(None);
-                    lock(&self.state).supervised.insert(id.clone(), control);
+                    let waiting =
+                        self.supervision(&id, &owner, record.pid, record.process_started_at);
+                    self.install(&waiting, control);
                     let daemon = self.clone();
                     tokio::spawn(async move {
-                        daemon.retry_reattach(record, stopped).await;
+                        daemon.retry_reattach(record, waiting, stopped).await;
                     });
                 }
             }
@@ -126,6 +129,7 @@ impl Daemon {
     async fn retry_reattach(
         self: Arc<Self>,
         record: AgentRecord,
+        waiting: Supervision,
         stopped: tokio::sync::watch::Receiver<Option<bool>>,
     ) {
         let id = record.id.clone();
@@ -134,11 +138,9 @@ impl Daemon {
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
             match supervisor::reattach(&self, &record).await {
                 Ok(supervisor::Reattached::Running(spawned)) => {
-                    if let Some(session) = spawned.session.clone() {
-                        lock(&self.sessions).insert(id.clone(), session);
-                    }
+                    let supervising = self.supervision_of(&id, &spawned);
                     let owner_pid = spawned.owner.pid;
-                    {
+                    let installed = {
                         let mut state = lock(&self.state);
                         // Stop requests use this same mutex. Read the pending
                         // stop and replace its target atomically so neither
@@ -146,14 +148,31 @@ impl Daemon {
                         if let Some(force) = *stopped.borrow() {
                             spawned.control.send_replace(Some(force));
                         }
-                        state.supervised.insert(id.clone(), spawned.control.clone());
-                        state.emit(EventKind::AgentOwnerReattached {
-                            agent: id.clone(),
-                            owner_pid,
-                        });
+                        // In place of the placeholder this retry installed,
+                        // and of nothing a later run put there since.
+                        let installed =
+                            state.install_after(&waiting, &supervising, spawned.control.clone());
+                        if installed {
+                            state.emit(EventKind::AgentOwnerReattached {
+                                agent: id.clone(),
+                                owner_pid,
+                            });
+                        }
+                        installed
+                    };
+                    if installed {
+                        if let Some(session) = spawned.session.clone() {
+                            self.open_session(&supervising, session);
+                        }
+                        info!(agent = %id.short(), owner_pid, "reattached to the session owner after retrying");
+                    } else {
+                        // The agent id is another run's now. This child is
+                        // still seen to its end, stopped, under a
+                        // supervision that holds nothing of the agent's.
+                        warn!(agent = %id.short(), owner_pid, "reattached to an owner whose run was replaced; stopping it");
+                        spawned.control.send_replace(Some(true));
                     }
-                    info!(agent = %id.short(), owner_pid, "reattached to the session owner after retrying");
-                    supervisor::supervise(self.clone(), id, *spawned);
+                    supervisor::supervise(self.clone(), supervising, *spawned);
                     return;
                 }
                 Ok(supervisor::Reattached::Exited(report)) => {
@@ -167,15 +186,28 @@ impl Daemon {
                 Err(error) => {
                     let reason = format!("session owner lost across restart: {error:#}");
                     warn!(agent = %id.short(), %reason, "cannot reattach");
-                    self.emit(EventKind::AgentOwnerLost {
-                        agent: id.clone(),
-                        reason: reason.clone(),
-                    });
-                    self.mark_exited(&id, AgentStatus::Failed { reason });
+                    self.owner_lost(&waiting, reason);
                     return;
                 }
             }
         }
+    }
+
+    /// A run's owner died where no daemon could see how: say so and end
+    /// the run, while the agent's control is still this supervision's (or
+    /// nobody's) and the record still carries the run. A run that replaced
+    /// it under the same id is neither reported lost nor ended.
+    fn owner_lost(&self, supervision: &Supervision, reason: String) {
+        let mut state = lock(&self.state);
+        if !state.holds(supervision) {
+            tracing::debug!(agent = %supervision.agent.short(), "a lost owner's run was already replaced");
+            return;
+        }
+        state.emit(EventKind::AgentOwnerLost {
+            agent: supervision.agent.clone(),
+            reason: reason.clone(),
+        });
+        let _ = state.end_supervised(supervision, AgentStatus::Failed { reason }, None);
     }
 
     /// Persist a recovered exit before acknowledging its owner. Check the
@@ -439,13 +471,14 @@ impl Daemon {
         let mut spawned = supervisor::spawn(self, &record).await?;
         let pid = spawned.pid;
         let process_started_at = Some(spawned.process_started_at);
+        let supervising = self.supervision_of(&id, &spawned);
         if let Some(session) = spawned.session.clone() {
-            lock(&self.sessions).insert(id.clone(), session);
+            self.open_session(&supervising, session);
         }
         let persisted = {
             let mut state = lock(&self.state);
             // Supervision must own even a child whose registration fails.
-            state.supervised.insert(id.clone(), spawned.control.clone());
+            state.install(&supervising, spawned.control.clone());
             let mut running = state.registry.get(&id).cloned().unwrap_or(record.clone());
             let cancelled = !running.spec.restore || state.run_refusal(&record).is_some();
             running.pid = Some(pid);
@@ -504,7 +537,7 @@ impl Daemon {
             // and waits for descendants before releasing any protection.
             spawned.control.send_replace(Some(true));
         }
-        let supervision = supervisor::supervise(self.clone(), id.clone(), spawned);
+        let supervision = supervisor::supervise(self.clone(), supervising, spawned);
         if !persisted || activation_error.is_some() {
             if tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision)
                 .await
@@ -796,6 +829,295 @@ impl Brief {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    /// A managed, running record carrying one run, with a policy that
+    /// would start it again were its end believed.
+    fn carrying(owner: &agentdocker_core::session::SessionOwner, pid: u32) -> AgentRecord {
+        let mut record = AgentRecord::new(
+            agentdocker_core::AgentSpec {
+                name: "worker".into(),
+                restart: agentdocker_core::RestartPolicy::Always,
+                ..Default::default()
+            },
+            true,
+            Utc::now(),
+        );
+        record.status = AgentStatus::Running;
+        record.owner = Some(owner.clone());
+        record.pid = Some(pid);
+        record.process_started_at = Some(owner.started_at);
+        record.process_group = Some(pid);
+        record
+    }
+
+    /// What an old supervision asks at its end names itself, never the
+    /// agent id. Here one is overtaken while it is still at work: by a new
+    /// run under the same id (a relaunch after the record was ended some
+    /// other way), and by another receiver for the very same run. Either
+    /// way the terminal, the control, the record and the socket that are
+    /// there now are the later installation's, and stay; nothing is
+    /// restarted on the old one's word. The old owner is let go where its
+    /// run is no longer the record's, and left to the receiver that holds
+    /// the run where it still is.
+    #[tokio::test]
+    async fn an_overtaken_supervision_ends_nothing_of_what_replaced_it() {
+        use agentdocker_core::session::{OwnerCommand, SessionOwner};
+        for same_run in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let daemon = Arc::new(
+                Daemon::open(dir.path().join("state"), dir.path().join("daemon.sock")).unwrap(),
+            );
+            let now = Utc::now();
+            let pid = std::process::id();
+            let old_owner = SessionOwner {
+                pid,
+                started_at: now,
+            };
+            let new_owner = if same_run {
+                old_owner.clone()
+            } else {
+                SessionOwner {
+                    pid,
+                    started_at: now + chrono::Duration::seconds(1),
+                }
+            };
+            let record = carrying(&new_owner, pid);
+            let id = record.id.clone();
+            assert!(matches!(
+                daemon.insert_record_for_test(record),
+                Response::Agent { .. }
+            ));
+            let (spawned, peer) = supervisor::unactivated_for_test(old_owner, pid, now).await;
+            let old = daemon.supervision_of(&id, &spawned);
+            daemon.install(&old, spawned.control.clone());
+            daemon.open_session(&old, supervisor::Session::for_test());
+
+            // The id is taken over while the old supervision still runs.
+            let (control, _stop) = watch::channel(None);
+            let new = daemon.supervision(&id, &new_owner, Some(pid), Some(new_owner.started_at));
+            daemon.install(&new, control.clone());
+            daemon.open_session(&new, supervisor::Session::for_test());
+            // And its owner serves on the id's socket, holding the id's lock.
+            #[cfg(unix)]
+            let socket = agentdocker_core::session::socket_path(&daemon.home, &id);
+            #[cfg(unix)]
+            let _serving = {
+                std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+                std::fs::write(&socket, b"").unwrap();
+                agentdocker_host::lock::try_exclusive(&socket.with_extension("lock"))
+                    .unwrap()
+                    .expect("the new owner holds the lock")
+            };
+
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                supervisor::supervise(daemon.clone(), old.clone(), spawned),
+            )
+            .await
+            .expect("the old supervision ends")
+            .unwrap();
+
+            let sent = supervisor::sent_for_test(peer).await;
+            let stop = OwnerCommand::Stop { force: true };
+            if same_run {
+                assert_eq!(sent, [stop], "the run's owner is its receiver's to let go");
+            } else {
+                assert_eq!(sent, [stop, OwnerCommand::Acknowledge]);
+            }
+            let state = lock(&daemon.state);
+            let after = state.registry.get(&id).unwrap();
+            assert_eq!(after.status, AgentStatus::Running, "same_run={same_run}");
+            assert_eq!(after.restarts, 0);
+            assert!(state.pending_restarts.is_empty(), "nothing is restarted");
+            assert!(
+                state
+                    .control(&id)
+                    .is_some_and(|installed| installed.same_channel(&control)),
+                "the later control is still installed"
+            );
+            assert!(state.holds(&new) && !state.holds(&old));
+            drop(state);
+            assert!(daemon.session(&id).is_some(), "the later terminal stays");
+            #[cfg(unix)]
+            assert!(socket.exists(), "a socket its owner still serves on stays");
+
+            // The later supervision ends what is its own.
+            daemon.end_session(&new);
+            assert!(daemon.session(&id).is_none());
+            assert!(matches!(
+                daemon.end_supervised(&new, AgentStatus::Exited { code: Some(0) }, None),
+                Ended::Recorded { .. }
+            ));
+            assert!(lock(&daemon.state).control(&id).is_none());
+            assert!(!daemon.is_live(&id));
+        }
+    }
+
+    /// A supervision whose control is gone still ends its own run, by the
+    /// run the record carries, and no other: with no installation in
+    /// place, a record that carries another run (or none yet: a relaunch
+    /// not yet spawned) is not ended on an old supervision's word.
+    #[tokio::test]
+    async fn with_no_control_in_place_a_supervision_ends_only_the_run_it_names() {
+        use agentdocker_core::session::SessionOwner;
+        let dir = TempDir::new().unwrap();
+        let daemon = Arc::new(
+            Daemon::open(dir.path().join("state"), dir.path().join("daemon.sock")).unwrap(),
+        );
+        let now = Utc::now();
+        let pid = std::process::id();
+        let owner = SessionOwner {
+            pid,
+            started_at: now,
+        };
+        let record = carrying(&owner, pid);
+        let id = record.id.clone();
+        assert!(matches!(
+            daemon.insert_record_for_test(record),
+            Response::Agent { .. }
+        ));
+        let other = SessionOwner {
+            pid,
+            started_at: now + chrono::Duration::seconds(1),
+        };
+        let stale = daemon.supervision(&id, &other, Some(pid), Some(other.started_at));
+        assert_eq!(
+            daemon.end_supervised(&stale, AgentStatus::Exited { code: Some(1) }, None),
+            Ended::Superseded { same_run: false }
+        );
+        assert!(daemon.is_live(&id));
+        // A relaunch has taken the record back to starting, its run not
+        // yet written: still not the old supervision's.
+        {
+            let mut state = lock(&daemon.state);
+            let starting = state.registry.get_mut(&id).unwrap();
+            starting.status = AgentStatus::Created;
+            starting.owner = None;
+            starting.pid = None;
+            starting.process_started_at = None;
+        }
+        let before = daemon.supervision(&id, &owner, Some(pid), Some(now));
+        assert_eq!(
+            daemon.end_supervised(&before, AgentStatus::Exited { code: Some(1) }, None),
+            Ended::Superseded { same_run: false }
+        );
+        assert!(daemon.is_live(&id));
+        // The run it names, on the record: ended.
+        {
+            let mut state = lock(&daemon.state);
+            let running = state.registry.get_mut(&id).unwrap();
+            running.status = AgentStatus::Running;
+            running.owner = Some(owner.clone());
+            running.pid = Some(pid);
+            running.process_started_at = Some(now);
+        }
+        assert!(matches!(
+            daemon.end_supervised(&before, AgentStatus::Exited { code: Some(1) }, None),
+            Ended::Recorded { .. }
+        ));
+        assert!(!daemon.is_live(&id));
+        daemon.clear_restart(&id);
+    }
+
+    /// A retry that reattaches takes the place of the placeholder it
+    /// installed, and of nothing else: where a later run's control is in
+    /// place it is left there. And an owner found dead is reported lost,
+    /// and its run ended, only while the record still carries that run.
+    #[tokio::test]
+    async fn a_late_reattachment_replaces_only_its_own_placeholder() {
+        use agentdocker_core::session::SessionOwner;
+        let dir = TempDir::new().unwrap();
+        let daemon = Arc::new(
+            Daemon::open(dir.path().join("state"), dir.path().join("daemon.sock")).unwrap(),
+        );
+        let mut events = daemon.subscribe_events();
+        let now = Utc::now();
+        let pid = std::process::id();
+        let owner = SessionOwner {
+            pid,
+            started_at: now,
+        };
+        let record = carrying(&owner, pid);
+        let id = record.id.clone();
+        assert!(matches!(
+            daemon.insert_record_for_test(record),
+            Response::Agent { .. }
+        ));
+        let waiting = daemon.supervision(&id, &owner, Some(pid), Some(now));
+        let (placeholder, _stopped) = watch::channel(None);
+        daemon.install(&waiting, placeholder);
+        let reattached = daemon.supervision(&id, &owner, Some(pid), Some(now));
+        let (control, _stop) = watch::channel(None);
+        // Its own placeholder: replaced.
+        assert!(lock(&daemon.state).install_after(&waiting, &reattached, control.clone()));
+        assert!(lock(&daemon.state).holds(&reattached));
+        // A later installation in place: left alone.
+        let late = daemon.supervision(&id, &owner, Some(pid), Some(now));
+        let (late_control, _late_stop) = watch::channel(None);
+        assert!(!lock(&daemon.state).install_after(&waiting, &late, late_control));
+        assert!(
+            lock(&daemon.state)
+                .control(&id)
+                .is_some_and(|installed| installed.same_channel(&control))
+        );
+        // The placeholder's owner is found dead after it was replaced:
+        // nothing is said or ended.
+        daemon.owner_lost(&waiting, "session owner lost across restart".into());
+        assert!(daemon.is_live(&id));
+        // The one in place is: said once, and ended.
+        daemon.owner_lost(&reattached, "session owner lost across restart".into());
+        assert!(!daemon.is_live(&id));
+        let mut lost = 0;
+        while let Ok(event) = events.try_recv() {
+            if matches!(event.kind, EventKind::AgentOwnerLost { .. }) {
+                lost += 1;
+            }
+        }
+        assert_eq!(lost, 1);
+        daemon.clear_restart(&id);
+    }
+
+    /// A restart is considered for the ending a supervision recorded, and
+    /// not for a later one: a run that came and went while the first one's
+    /// owner was being reaped is restarted, or not, on its own ending.
+    #[tokio::test]
+    async fn a_restart_is_considered_only_for_the_ending_that_was_recorded() {
+        use agentdocker_core::session::SessionOwner;
+        let dir = TempDir::new().unwrap();
+        let daemon = Arc::new(
+            Daemon::open(dir.path().join("state"), dir.path().join("daemon.sock")).unwrap(),
+        );
+        let now = Utc::now();
+        let pid = std::process::id();
+        let owner = SessionOwner {
+            pid,
+            started_at: now,
+        };
+        let record = carrying(&owner, pid);
+        let id = record.id.clone();
+        assert!(matches!(
+            daemon.insert_record_for_test(record),
+            Response::Agent { .. }
+        ));
+        let supervising = daemon.supervision(&id, &owner, Some(pid), Some(now));
+        let (control, _stop) = watch::channel(None);
+        daemon.install(&supervising, control);
+        let failed = AgentStatus::Exited { code: Some(1) };
+        let Ended::Recorded { finished_at } =
+            daemon.end_supervised(&supervising, failed.clone(), None)
+        else {
+            panic!("the end is recorded");
+        };
+        assert!(finished_at.is_some());
+        // Another ending under the same id since.
+        let later = finished_at.map(|at| at + chrono::Duration::seconds(5));
+        daemon.consider_restart_of(&id, &failed, later);
+        assert!(lock(&daemon.state).pending_restarts.is_empty());
+        // The one that was recorded.
+        daemon.consider_restart_of(&id, &failed, finished_at);
+        assert!(lock(&daemon.state).pending_restarts.contains_key(&id));
+        daemon.clear_restart(&id);
+    }
 
     #[tokio::test]
     async fn an_exit_the_store_cannot_keep_leaves_the_owner_report_in_place() {

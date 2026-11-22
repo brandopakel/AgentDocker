@@ -1454,7 +1454,7 @@ mod fence_tests {
                     Response::Agent { agent } => agent,
                     other => panic!("{other:?}"),
                 };
-                state.supervised.insert(agent.id.clone(), control);
+                state.install_for_test(&agent.id, control);
             }
             if mode == "fenced" {
                 daemon.offer_transfer(4242).unwrap();
@@ -1568,7 +1568,7 @@ mod fence_tests {
                     Response::Agent { agent } => agent,
                     other => panic!("{other:?}"),
                 };
-                state.supervised.insert(agent.id.clone(), control);
+                state.install_for_test(&agent.id, control);
                 state.store.reject_event_for_test(if restore {
                     "agent_restore_cleared"
                 } else {

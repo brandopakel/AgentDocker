@@ -32,6 +32,29 @@ impl Daemon {
     /// Called from the supervisor once the exit is recorded, so a reader
     /// of the event stream sees the exit before the restart.
     pub(crate) fn consider_restart(self: &Arc<Self>, id: &AgentId, status: &AgentStatus) {
+        self.restart_if(id, status, None);
+    }
+
+    /// [`Daemon::consider_restart`] for one ending of the agent: the one
+    /// whose record finished at `finished_at`. A supervision asks this once
+    /// its exit is recorded and its owner reaped, by when another run under
+    /// the same id may have started and ended; that run's ending is not
+    /// the one `status` speaks of, and nothing is restarted on it here.
+    pub(crate) fn consider_restart_of(
+        self: &Arc<Self>,
+        id: &AgentId,
+        status: &AgentStatus,
+        finished_at: Option<chrono::DateTime<Utc>>,
+    ) {
+        self.restart_if(id, status, Some(finished_at));
+    }
+
+    fn restart_if(
+        self: &Arc<Self>,
+        id: &AgentId,
+        status: &AgentStatus,
+        ending: Option<Option<chrono::DateTime<Utc>>>,
+    ) {
         let record = {
             let mut state = lock(&self.state);
             if state.storage_error.is_some() {
@@ -40,6 +63,9 @@ impl Daemon {
             let Some(record) = state.registry.get(id) else {
                 return;
             };
+            if ending.is_some_and(|finished_at| record.finished_at != finished_at) {
+                return;
+            }
             if !record.managed || record.container.is_some() || record.status.is_live() {
                 return;
             }
@@ -195,13 +221,14 @@ impl Daemon {
             Ok(mut spawned) => {
                 let pid = spawned.pid;
                 let started_at = Some(spawned.process_started_at);
+                let supervising = self.supervision_of(id, &spawned);
                 if let Some(session) = spawned.session.clone() {
-                    lock(&self.sessions).insert(id.clone(), session);
+                    self.open_session(&supervising, session);
                 }
                 let persisted = {
                     let mut state = lock(&self.state);
                     // The supervisor owns this child even if its durable transition fails.
-                    state.supervised.insert(id.clone(), spawned.control.clone());
+                    state.install(&supervising, spawned.control.clone());
                     let current = state.registry.get(id).cloned();
                     if state.run_refusal(&record).is_some() {
                         false
@@ -252,7 +279,7 @@ impl Daemon {
                 if !persisted || activation_failed {
                     spawned.control.send_replace(Some(true));
                 }
-                let supervision = supervisor::supervise(self.clone(), id.clone(), spawned);
+                let supervision = supervisor::supervise(self.clone(), supervising, spawned);
                 if !persisted || activation_failed {
                     let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
                 }

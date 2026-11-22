@@ -200,6 +200,67 @@ fn same_refusal(failure: &Response, response: &Response) -> bool {
     )
 }
 
+/// One installation of a run's control and terminal in the daemon's maps: a
+/// number never given twice, so what one supervision put there is told from
+/// what a later one did under the same agent id, a later receiver for the
+/// same run included.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Install(u64);
+
+/// Which run of an agent id a supervision is for: its owner and its child,
+/// as the record carries them once the run is written there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RunKey {
+    pub owner: agentdocker_core::session::SessionOwner,
+    pub pid: Option<u32>,
+    pub started_at: Option<DateTime<Utc>>,
+}
+
+impl RunKey {
+    /// The record still carries this run.
+    pub(crate) fn is(&self, record: &AgentRecord) -> bool {
+        record.owner.as_ref() == Some(&self.owner)
+            && record.pid == self.pid
+            && record.process_started_at == self.started_at
+    }
+}
+
+/// What one supervision holds of its own, and names with everything it
+/// asks of the daemon afterwards: the agent, the run, and its installation.
+/// An agent id alone names whatever is there now, which a supervision that
+/// was overtaken (a relaunch, a restart, another receiver) must not touch.
+#[derive(Clone, Debug)]
+pub(crate) struct Supervision {
+    pub agent: AgentId,
+    install: Install,
+    run: RunKey,
+}
+
+/// The stop channel of a supervised run, with the installation it is.
+struct Control {
+    install: Install,
+    sender: watch::Sender<Option<bool>>,
+}
+
+/// What became of a supervision's word that its run ended
+/// ([`Daemon::end_supervised`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Ended {
+    /// The end is the record's: written by this call, or found written.
+    /// `finished_at` is the record's as it then stood, which tells this
+    /// ending from a later run's.
+    Recorded { finished_at: Option<DateTime<Utc>> },
+    /// Nothing was written: the store is unavailable or refused. Whatever
+    /// evidence of the exit the caller holds is kept.
+    NotWritten,
+    /// Not this supervision's to end: another installation holds the
+    /// agent's control, or the record carries another run. Nothing was
+    /// changed. `same_run` says the record's live run is this
+    /// supervision's own, held now by another receiver, whose business the
+    /// run's end and its owner are.
+    Superseded { same_run: bool },
+}
+
 /// What became of one attempt to end a run ([`State::end_run`]).
 #[must_use]
 pub(super) enum RunEnded {
@@ -381,7 +442,10 @@ pub struct Daemon {
     /// Terminals of managed agents that were given one, so `attach` can
     /// find them. Held here rather than under the state lock: attaching
     /// is I/O and must not block a coordination request.
-    sessions: Mutex<HashMap<AgentId, supervisor::Session>>,
+    sessions: Mutex<HashMap<AgentId, (Install, supervisor::Session)>>,
+    /// The next [`Install`]: counted outside every lock, since a terminal
+    /// and a control are installed under two different ones.
+    installs: std::sync::atomic::AtomicU64,
     /// One scan at a time: the tick and an on-demand `discover` must not
     /// interleave scans. A flag and notification allow callers to join a
     /// pending scan without holding any lock across async work.
@@ -555,7 +619,7 @@ struct State {
     /// Answers to keyed sends, in memory only: a restarted daemon takes a
     /// repeated key as new.
     keyed_sends: agentdocker_core::idempotency::IdempotencyLedger<Response>,
-    supervised: HashMap<AgentId, tokio::sync::watch::Sender<Option<bool>>>,
+    supervised: HashMap<AgentId, Control>,
     /// Each scheduled restart's phase, in memory only: what a reader's
     /// restart view takes beside the record (`agentdocker_core::restart`).
     pending_restarts: HashMap<AgentId, agentdocker_core::restart::Phase>,
@@ -1193,17 +1257,62 @@ impl Daemon {
         lock(&self.state).mark_exited(id, status)
     }
 
-    /// Record an exit and say whether the store kept it. A store that was
-    /// already unavailable, or fails on this write, still retires the
-    /// supervision in memory but answers false, so the caller keeps whatever
-    /// external evidence of the exit it holds.
-    pub fn mark_ended_durably(
+    /// A supervision of its own for one run of `agent`: a new installation,
+    /// which nothing holds until [`Daemon::open_session`] and
+    /// [`Daemon::install`] put its terminal and control in place.
+    pub(crate) fn supervision(
         &self,
-        id: &AgentId,
+        agent: &AgentId,
+        owner: &agentdocker_core::session::SessionOwner,
+        pid: Option<u32>,
+        started_at: Option<DateTime<Utc>>,
+    ) -> Supervision {
+        let install = self
+            .installs
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Supervision {
+            agent: agent.clone(),
+            install: Install(install),
+            run: RunKey {
+                owner: owner.clone(),
+                pid,
+                started_at,
+            },
+        }
+    }
+
+    /// The supervision of what was just spawned or reattached.
+    pub(crate) fn supervision_of(
+        &self,
+        agent: &AgentId,
+        spawned: &supervisor::Spawned,
+    ) -> Supervision {
+        self.supervision(
+            agent,
+            &spawned.owner,
+            Some(spawned.pid),
+            Some(spawned.process_started_at),
+        )
+    }
+
+    /// Record that a supervision's run ended, if the run is still its own
+    /// to end, and say what became of that. A store that was already
+    /// unavailable, or fails on this write, still retires the supervision
+    /// in memory but answers [`Ended::NotWritten`], so the caller keeps
+    /// whatever external evidence of the exit it holds. A supervision that
+    /// was overtaken changes nothing.
+    pub(crate) fn end_supervised(
+        &self,
+        supervision: &Supervision,
         status: AgentStatus,
         ending: Option<agentdocker_core::RunEnd>,
-    ) -> bool {
-        lock(&self.state).mark_ended_durably(id, status, ending)
+    ) -> Ended {
+        lock(&self.state).end_supervised(supervision, status, ending)
+    }
+
+    /// Put a supervision's control in place of whatever the agent had.
+    pub(crate) fn install(&self, supervision: &Supervision, sender: watch::Sender<Option<bool>>) {
+        lock(&self.state).install(supervision, sender);
     }
 
     /// Lift the transient provider blocks whose retry is due.
@@ -1349,7 +1458,7 @@ impl Daemon {
             if !record.status.is_live() {
                 return Response::error(ErrorCode::Invalid, "agent has already finished");
             }
-            if let Some(control) = state.supervised.get(&id).cloned() {
+            if let Some(control) = state.control(&id) {
                 // Save the intent and event before the supervisor can signal the child.
                 let agent = match state.commit_stop(record, force) {
                     Ok(agent) => agent,
@@ -1975,6 +2084,7 @@ impl Daemon {
             watcher_attach: watch::channel(WatcherLink::Off).0,
             restricted: Mutex::new(RestrictedEndpoint::Starting),
             sessions: Mutex::new(HashMap::new()),
+            installs: std::sync::atomic::AtomicU64::new(1),
         })
     }
 
@@ -3856,16 +3966,39 @@ impl Daemon {
 
     /// The terminal of a managed agent, when it was given one.
     pub fn session(&self, agent: &AgentId) -> Option<supervisor::Session> {
-        lock(&self.sessions).get(agent).cloned()
+        lock(&self.sessions)
+            .get(agent)
+            .map(|(_, session)| session.clone())
+    }
+
+    /// Every terminal there is, by agent.
+    pub(crate) fn terminals(&self) -> HashMap<AgentId, supervisor::Session> {
+        lock(&self.sessions)
+            .iter()
+            .map(|(agent, (_, session))| (agent.clone(), session.clone()))
+            .collect()
+    }
+
+    /// A supervision's terminal, in place of whatever the agent had.
+    pub(crate) fn open_session(&self, supervision: &Supervision, session: supervisor::Session) {
+        lock(&self.sessions).insert(supervision.agent.clone(), (supervision.install, session));
     }
 
     pub fn owner_mode(&self) -> supervisor::OwnerMode {
         self.owner_mode.clone()
     }
 
-    /// The agent is gone; so is its terminal.
-    pub fn end_session(&self, agent: &AgentId) {
-        lock(&self.sessions).remove(agent);
+    /// A supervision is over; so is its terminal. A terminal a later
+    /// supervision opened under the same agent id is not this one's to
+    /// take away, and stays.
+    pub(crate) fn end_session(&self, supervision: &Supervision) {
+        let mut sessions = lock(&self.sessions);
+        if sessions
+            .get(&supervision.agent)
+            .is_some_and(|(install, _)| *install == supervision.install)
+        {
+            sessions.remove(&supervision.agent);
+        }
     }
 
     /// The restricted endpoint is serving on `socket`.
@@ -5196,6 +5329,121 @@ impl State {
         }
     }
 
+    /// A control as a supervision would install it, for a test that stands
+    /// in for one.
+    #[cfg(test)]
+    fn install_for_test(&mut self, id: &AgentId, sender: watch::Sender<Option<bool>>) {
+        self.supervised.insert(
+            id.clone(),
+            Control {
+                install: Install(0),
+                sender,
+            },
+        );
+    }
+
+    /// The stop channel of the agent's supervised run, when it has one.
+    fn control(&self, id: &AgentId) -> Option<watch::Sender<Option<bool>>> {
+        self.supervised
+            .get(id)
+            .map(|control| control.sender.clone())
+    }
+
+    /// Put a supervision's control in place of whatever the agent had: a
+    /// new run takes the id over, and what an earlier supervision asks
+    /// afterwards no longer finds its own installation there.
+    pub(super) fn install(
+        &mut self,
+        supervision: &Supervision,
+        sender: watch::Sender<Option<bool>>,
+    ) {
+        self.supervised.insert(
+            supervision.agent.clone(),
+            Control {
+                install: supervision.install,
+                sender,
+            },
+        );
+    }
+
+    /// Put a supervision's control in place of the one `before` installed,
+    /// and of nothing else: where another installation holds the agent
+    /// now, it is left alone and the answer is false. Where nothing is
+    /// installed (the earlier one was retired with its run) the new one
+    /// goes in, so the child it speaks for is still supervised to its end.
+    pub(super) fn install_after(
+        &mut self,
+        before: &Supervision,
+        supervision: &Supervision,
+        sender: watch::Sender<Option<bool>>,
+    ) -> bool {
+        match self.supervised.get(&supervision.agent) {
+            Some(control) if control.install != before.install => false,
+            _ => {
+                self.install(supervision, sender);
+                true
+            }
+        }
+    }
+
+    /// Take a supervision's own control out, and say whether the agent's
+    /// run is still this supervision's to end. It is while its
+    /// installation is the one in place; with none in place, while the
+    /// record still carries its run. Another installation in place means
+    /// it was overtaken, and nothing is taken out.
+    fn retire(&mut self, supervision: &Supervision) -> bool {
+        let holds = self.holds(supervision);
+        if holds
+            && self
+                .supervised
+                .get(&supervision.agent)
+                .is_some_and(|control| control.install == supervision.install)
+        {
+            self.supervised.remove(&supervision.agent);
+        }
+        holds
+    }
+
+    /// The agent's run is still this supervision's to end
+    /// ([`State::retire`], which also takes its control out).
+    pub(super) fn holds(&self, supervision: &Supervision) -> bool {
+        match self.supervised.get(&supervision.agent) {
+            Some(control) => control.install == supervision.install,
+            None => self
+                .registry
+                .get(&supervision.agent)
+                .is_some_and(|record| supervision.run.is(record)),
+        }
+    }
+
+    /// [`Daemon::end_supervised`].
+    pub(super) fn end_supervised(
+        &mut self,
+        supervision: &Supervision,
+        status: AgentStatus,
+        ending: Option<agentdocker_core::RunEnd>,
+    ) -> Ended {
+        if !self.retire(supervision) {
+            let same_run = self
+                .registry
+                .get(&supervision.agent)
+                .is_some_and(|record| record.status.is_live() && supervision.run.is(record));
+            return Ended::Superseded { same_run };
+        }
+        let was_available = self.storage_error.is_none();
+        let recorded = match self.end_recorded(&supervision.agent, status, ending) {
+            RunEnded::Committed(record) => Some(record),
+            RunEnded::NotWritten => None,
+            RunEnded::NotLive(record) => record,
+        };
+        match recorded {
+            Some(record) if was_available && self.storage_error.is_none() => Ended::Recorded {
+                finished_at: record.finished_at,
+            },
+            _ => Ended::NotWritten,
+        }
+    }
+
     /// [`State::mark_ended`], saying whether this call wrote the end: only
     /// [`RunEnded::Committed`] did, with its `agent_exited` published.
     pub(super) fn end_run(
@@ -5204,9 +5452,21 @@ impl State {
         status: AgentStatus,
         ending: Option<agentdocker_core::RunEnd>,
     ) -> RunEnded {
-        // Called only after the owned process group has drained. A cancellation
-        // can have made the registry terminal already; still retire its owner.
+        // Called for the run the record carries now, under the lock that
+        // read it, and only after the owned process group has drained. A
+        // cancellation can have made the registry terminal already; still
+        // retire its owner.
         self.supervised.remove(id);
+        self.end_recorded(id, status, ending)
+    }
+
+    /// Write the end of the run the record carries.
+    fn end_recorded(
+        &mut self,
+        id: &AgentId,
+        status: AgentStatus,
+        ending: Option<agentdocker_core::RunEnd>,
+    ) -> RunEnded {
         if self.storage_error.is_some() {
             return RunEnded::NotWritten;
         }

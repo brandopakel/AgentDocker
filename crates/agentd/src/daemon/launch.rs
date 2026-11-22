@@ -255,15 +255,14 @@ impl Daemon {
             Ok(mut spawned) => {
                 let pid = spawned.pid;
                 let process_started_at = Some(spawned.process_started_at);
+                let supervising = self.supervision_of(&record.id, &spawned);
                 if let Some(session) = spawned.session.clone() {
-                    lock(&self.sessions).insert(record.id.clone(), session);
+                    self.open_session(&supervising, session);
                 }
                 let mut admission_error = None;
                 let updated = {
                     let mut state = lock(&self.state);
-                    state
-                        .supervised
-                        .insert(record.id.clone(), spawned.control.clone());
+                    state.install(&supervising, spawned.control.clone());
                     let candidate = state
                         .registry
                         .get(&record.id)
@@ -317,7 +316,7 @@ impl Daemon {
                 if failed.is_some() || updated.is_none() || activation_error.is_some() {
                     spawned.control.send_replace(Some(true));
                 }
-                let supervision = supervisor::supervise(self.clone(), record.id, spawned);
+                let supervision = supervisor::supervise(self.clone(), supervising, spawned);
                 if let Some(error) =
                     failed.or_else(|| activation_error.as_ref().map(activation_refusal))
                 {
