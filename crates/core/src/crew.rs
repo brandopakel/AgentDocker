@@ -14,6 +14,8 @@
 //! name a person reads. Taking `writer` out and adding another `writer`
 //! makes a new member: nothing of the old one follows the name.
 
+pub mod seat;
+
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
@@ -429,8 +431,8 @@ pub fn save(
     })
 }
 
-/// Where a member's session stands. Nothing starts one yet, so the daemon
-/// has one answer; it is a word of its own so that a reader matches on it.
+/// Where a member's session stands, as one word a reader matches on
+/// ([`seat::standing`] works it out from the member's seat).
 ///
 /// A standing a reader does not know, from a newer daemon, or one that is
 /// missing, is `Unknown`: it is shown as unknown, never as not started.
@@ -438,6 +440,22 @@ pub fn save(
 #[serde(rename_all = "snake_case")]
 pub enum Standing {
     NotStarted,
+    /// A start is under way: reserved, or anywhere short of complete.
+    Starting,
+    /// Running as its team's member, with nothing owed.
+    Running,
+    /// Running and told its first words, with something of an earlier
+    /// session's still owed that the person has to see to.
+    NeedsAttention,
+    Stopping,
+    /// Its last start failed, at the stage the read says.
+    Failed,
+    /// A start is asked for and waits for the one before it to settle.
+    Waiting,
+    /// Whose run its session is could not be established.
+    Uncertain,
+    /// The daemon is taking over from another and may not write yet.
+    Recovering,
     #[default]
     #[serde(other)]
     Unknown,
@@ -447,6 +465,14 @@ impl Standing {
     pub fn word(self) -> &'static str {
         match self {
             Standing::NotStarted => "not started",
+            Standing::Starting => "starting",
+            Standing::Running => "running",
+            Standing::NeedsAttention => "needs attention",
+            Standing::Stopping => "stopping",
+            Standing::Failed => "failed",
+            Standing::Waiting => "waiting on the start before it",
+            Standing::Uncertain => "not confirmed",
+            Standing::Recovering => "recovering",
             Standing::Unknown => "unknown",
         }
     }
@@ -882,7 +908,7 @@ mod tests {
         // A standing this build does not know, and one that is missing,
         // are unknown: never read as not started.
         assert_eq!(
-            serde_json::from_value::<Standing>(serde_json::json!("stopping")).unwrap(),
+            serde_json::from_value::<Standing>(serde_json::json!("a_later_builds_word")).unwrap(),
             Standing::Unknown
         );
         let mut member =
