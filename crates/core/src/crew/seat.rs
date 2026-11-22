@@ -11,10 +11,18 @@
 //! is answered from the evidence there is and never from what a missing
 //! marker might mean.
 //!
-//! Nothing here acts. The daemon reads the evidence (the session's record,
-//! whether a driver of this start is alive in this process, what the
-//! owner of a run answered) and commits what these functions decide; so
-//! each rule is one place and each can be held to its table.
+//! Four things read a seat: a Start, a Stop, a release, and whoever is
+//! shown where a member stands. They read it one way. Everything they
+//! are given is first put to one question, [`Seat::case`], which says
+//! what kind of situation this is (nothing there, ended, a stop asked,
+//! at work, or not to be trusted), and each then answers within that.
+//! So a pair of facts that cannot both be true is "not confirmed" to all
+//! four, and never a cancellation to one and a running session to
+//! another.
+//!
+//! Nothing here acts. The daemon reads the evidence and commits what
+//! these functions decide; so each rule is one place and each can be
+//! held to its table.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -44,6 +52,26 @@ impl From<&str> for StartId {
     }
 }
 
+/// The one run a start made: written in the commit that makes the record
+/// running, from what identifies that run's owner and child, and never
+/// changed. An agent's id can come to name a later run; this cannot. The
+/// daemon makes it and compares it; here it is only the same or not.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RunId(String);
+
+impl RunId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for RunId {
+    fn from(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+}
+
 /// How far a start has got: the last stage whose commit was made. Each
 /// is named for what its commit proves, and they are reached in this
 /// order.
@@ -57,11 +85,12 @@ pub enum Stage {
     /// The session's record is inserted, with its roles and the seat's
     /// binding, in one commit. A created record proves no process.
     RecordBound,
-    /// The launch committed the record as running, before the owner was
-    /// told to let the command run: a spawned child held by its owner,
-    /// not a command that ran.
+    /// The launch committed the record as running, and the start's run
+    /// with it, before the owner was told to let the command run: a
+    /// spawned child held by its owner, not a command that ran.
     Running,
-    /// The owner answered the activation: the command runs.
+    /// The owner answered the activation: the command runs. It does not
+    /// say the run was handed to supervision.
     Activated,
     /// Every card owed to the member is handed, excluded or owed.
     CardsSettled,
@@ -86,8 +115,8 @@ impl Stage {
     }
 }
 
-/// How a start stopped short of complete. It went no further than its
-/// stage, whose effects stand as committed.
+/// How a start stopped short of complete, or stopped being the team's.
+/// It went no further than its stage, whose effects stand as committed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "how", rename_all = "snake_case")]
 pub enum End {
@@ -99,19 +128,11 @@ pub enum End {
         why: String,
     },
     /// The session was released from the team while running: it lives on
-    /// as a plain session, and the team hands it nothing more and ends
-    /// nothing of it.
+    /// as a plain session. Written in the one commit that releases it,
+    /// so there is no moment at which a release is asked and not made;
+    /// from it on the team hands the session nothing, ends nothing of it
+    /// and removes nothing of its checkout.
     Released,
-}
-
-/// What the person asked to become of a start's session. Set once, under
-/// the lock, and never changed: a stop cannot later be read as a release,
-/// nor a release as a stop.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Disposition {
-    Stop,
-    Release,
 }
 
 /// The worktree reserved for a member that works in one of its own: fixed
@@ -146,6 +167,30 @@ pub struct Cards {
     pub owed: Vec<Held>,
 }
 
+/// Words for a member's session, under the id they are queued by. The id
+/// is reserved before the words exist; once they are prepared they are
+/// kept here, and that id never carries other words: a start that could
+/// not queue them, and is tried again after what they say has changed,
+/// queues the words it prepared, not new ones.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Words {
+    pub id: MessageId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+}
+
+impl Words {
+    pub fn reserved(id: MessageId) -> Self {
+        Self { id, text: None }
+    }
+
+    /// The words under this id: `text` if none were prepared yet, and
+    /// otherwise the ones that were, whatever `text` says now.
+    pub fn prepare(&mut self, text: impl Into<String>) -> &str {
+        self.text.get_or_insert_with(|| text.into())
+    }
+}
+
 /// One start of one member.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Start {
@@ -162,15 +207,23 @@ pub struct Start {
     pub session: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree: Option<Checkout>,
-    /// The id its first words are queued under: reserved, so that trying
-    /// again never makes a second message, and never reused for other
-    /// words.
-    pub first_words: MessageId,
+    /// The run this start made, from the commit that made it running.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunId>,
+    /// Its first words, and what it is told later when the last thing
+    /// owed is resolved: each under an id of its own.
+    pub first_words: Words,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub follow_up: Option<Words>,
     pub stage: Stage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<End>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disposition: Option<Disposition>,
+    /// A stop was asked of it and has not been seen to finish. Set once,
+    /// under the lock: from then on it is not released, nothing more of
+    /// the team's is done for it, and the stop stays owed until the run
+    /// is seen to end, whoever has to relay it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub stopping: bool,
     #[serde(default)]
     pub cards: Cards,
     /// Something of this start is still to be undone or seen to end: a
@@ -199,12 +252,19 @@ impl Start {
     pub fn needs_attention(&self) -> bool {
         self.end.is_none() && self.stage == Stage::Instructed && !self.cards.owed.is_empty()
     }
+
+    /// Released: its session is no longer the team's to end or to clean
+    /// up after.
+    pub fn released(&self) -> bool {
+        self.end == Some(End::Released)
+    }
 }
 
 /// A start asked for while the one before it still owns something. It
 /// reserves no name and no checkout; it carries its own authorisation
 /// and the member as it was when asked, and begins when the earlier one
-/// has settled. A seat has at most one.
+/// has settled. A seat has at most one, and the first one asked stands:
+/// a repeated Start meets it, and does not replace it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Wanted {
     pub revision: u64,
@@ -240,16 +300,31 @@ impl Seat {
         }
     }
 
-    /// Whether a driver that began `start` at `generation` may still
-    /// write to this seat. Every write a driver makes is this comparison
-    /// first: one that no longer matches writes nothing here, and may
-    /// stop only the run it made itself.
+    /// Whether a driver that began `start` at `generation` may still go
+    /// on with it. Every write a driver makes for a start's progress is
+    /// this comparison first. The generation must be the seat's now and
+    /// the start's own: one a stop left behind does not pass with the
+    /// seat's newer number, and nothing passes for a start that has
+    /// ended or been asked to stop.
     pub fn owns(&self, generation: u64, start: &StartId) -> bool {
         self.generation == generation
-            && self
-                .start
-                .as_ref()
-                .is_some_and(|current| current.id == *start && current.end.is_none())
+            && self.start.as_ref().is_some_and(|current| {
+                current.id == *start
+                    && current.generation == generation
+                    && current.end.is_none()
+                    && !current.stopping
+            })
+    }
+
+    /// Whether the cleanup of `start` may still be done: its own, still
+    /// owed, of a start the team has not released. This is not progress
+    /// and needs no current generation; it is the one thing an operation
+    /// a stop left behind is still let do, and it writes nothing but
+    /// that its cleanup is done.
+    pub fn may_clean(&self, start: &StartId) -> bool {
+        self.start.as_ref().is_some_and(|current| {
+            current.id == *start && current.cleanup_owed && !current.released()
+        })
     }
 }
 
@@ -264,128 +339,207 @@ pub enum Record {
     Ended,
 }
 
+/// Whether the record's run is the one the start made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Run {
+    /// The run the record shows is the start's own, positively matched.
+    Same,
+    /// It is another run under the same agent id.
+    Other,
+    /// It could not be shown to be either.
+    Unproven,
+}
+
+/// What, in this daemon, is at work on the start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Driver {
+    /// Nothing. That proves nothing about a process: the record and its
+    /// owner do.
+    None,
+    /// The task that launches it and drives it on. It holds the run's
+    /// receiver until the run is handed to supervision.
+    Launching,
+    /// A recovery of the exact run through its owner. There is no
+    /// receiver to relay through until it has finished.
+    Recovering,
+}
+
 /// What a request can see when it meets a seat.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Evidence {
     pub record: Record,
-    /// A driver of the seat's current start is alive in this daemon. Its
-    /// absence proves nothing about a process: the record and its owner
-    /// do.
-    pub driver: bool,
+    /// Read for a start that has made a run, and ignored before.
+    pub run: Run,
+    pub driver: Driver,
+    /// A supervised receiver exists for this exact run: a stop can be
+    /// relayed to it, and the run is known to be let run.
+    pub relay: bool,
     /// This daemon holds the authority to write. One that is taking over
     /// from another does not yet, and its empty memory says nothing of
     /// the other's drivers.
     pub writer: bool,
 }
 
+/// What kind of situation a seat and its evidence are: the one question
+/// every reader of a seat asks first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Case<'a> {
+    /// This daemon may not write yet: it shows and does nothing.
+    Fenced,
+    /// No start holds the seat.
+    Empty,
+    /// The start is marked uncertain, or what is stored and what is seen
+    /// cannot both be true, or the run seen is not shown to be the
+    /// start's own. Nothing is claimed and nothing is replaced.
+    Unclear(&'a Start),
+    /// The start has ended (failed, cancelled or released).
+    Ended(&'a Start),
+    /// A stop was asked and has not been seen to finish.
+    StopAsked(&'a Start),
+    /// The start is at work, and its evidence agrees with it.
+    Live(&'a Start),
+}
+
+/// Whether what a start has stored and what is seen can both be true.
+///
+/// - Reserved has committed no record: any record is not its doing.
+/// - Record bound has a created record, or one that ended before it ran.
+///   A running one would have written its stage and its run in the same
+///   commit; a missing one is not an exit anybody saw.
+/// - From running on, the record is running, stopping or ended, and its
+///   run is positively the start's own. A created record says less than
+///   was proved, a missing one establishes nothing, and another run
+///   under the same agent id is another run.
+fn agrees(start: &Start, evidence: Evidence) -> bool {
+    match (start.stage, evidence.record) {
+        (Stage::Reserved, record) => record == Record::None,
+        (Stage::RecordBound, record) => matches!(record, Record::Created | Record::Ended),
+        (_, Record::Running | Record::Stopping | Record::Ended) => {
+            start.run.is_some() && evidence.run == Run::Same
+        }
+        (_, Record::None | Record::Created) => false,
+    }
+}
+
+impl Seat {
+    /// The situation `seat` and `evidence` are.
+    pub fn case(seat: Option<&Seat>, evidence: Evidence) -> Case<'_> {
+        if !evidence.writer {
+            return Case::Fenced;
+        }
+        let Some(start) = seat.and_then(|seat| seat.start.as_ref()) else {
+            return Case::Empty;
+        };
+        if start.uncertain {
+            return Case::Unclear(start);
+        }
+        if start.end.is_some() {
+            return Case::Ended(start);
+        }
+        if !agrees(start, evidence) {
+            return Case::Unclear(start);
+        }
+        if start.stopping {
+            Case::StopAsked(start)
+        } else {
+            Case::Live(start)
+        }
+    }
+}
+
 /// What a Start finds, and so what the daemon does for that member.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Admit {
-    /// No operation holds the seat: reserve a new start.
+    /// No operation holds the seat and none waits: reserve a new start
+    /// from this request.
     Reserve,
-    /// Running as its team's member with nothing owed: nothing is done.
+    /// The seat is free and a start has been waiting for it: that one
+    /// begins, from the member and the authorisation it was asked with,
+    /// not from this request. Promoting it empties the wait, so it
+    /// happens once.
+    Promote,
+    /// Running as its team's member with nothing owed, its relay
+    /// verified: nothing is done.
     AlreadyActive,
-    /// A driver is at work on it in this daemon: nothing is done.
+    /// A launch or a recovery is at work on it in this daemon: nothing
+    /// is done.
     Starting,
-    /// Reserved, with no record and no driver: nothing was committed
-    /// beyond the reservation, so the same start goes on with what it
-    /// reserved.
+    /// Reserved, with no record and nothing at work: nothing was
+    /// committed beyond the reservation, so the same start goes on with
+    /// what it reserved.
     Continue,
-    /// Activated or beyond with no driver: the same start goes on with
-    /// what it still owes (the cards, the first words), for the same
-    /// session.
+    /// Its run is let run and under supervision here (a verified relay),
+    /// and nothing drives its start: the same start goes on with what it
+    /// still owes (the cards, the first words), for the same session.
+    /// Without a verified relay this is never the answer, whatever stage
+    /// is recorded: see [`Admit::Recover`].
     Resume,
-    /// Told its first words with something still owed: what is owed is
-    /// tried again for the same session, and said again if it still is.
+    /// Told its first words with something still owed, under a verified
+    /// relay: what is owed is tried again for the same session, and said
+    /// again if it still is.
     RetryOwed,
-    /// The record was created and never ran, and its driver is gone: the
+    /// The record was created and never ran, and nothing drives it: the
     /// record is failed through the launch's own exit and the start with
     /// it; only then may another be reserved.
     FailUnstarted,
-    /// A run nobody here is driving, whose command may or may not have
-    /// been let run: the exact run is recovered through its owner before
-    /// anything else is decided. Its activation is never sent again.
+    /// A running record with nothing driving it and no verified relay,
+    /// at any stage from running to complete: whether its command was
+    /// let run, and whether anything still supervises it, is not known
+    /// here. The exact run is recovered through its owner before
+    /// anything else is decided, and its activation is never sent again.
     Recover,
-    /// A stop was asked and has not finished.
+    /// The record is being stopped.
     Stopping,
     /// The session ended before its start was complete: the start is
     /// failed at its stage.
     FailEnded,
-    /// The start before this one still owns something: this one is
-    /// recorded as wanted and begins when that has settled.
+    /// The start before this one still owns something, or a stop of it
+    /// has not finished: this request is recorded as the wanted start.
     Wait,
-    /// A start is already waiting for this seat: the same one answers.
+    /// A start is already waiting for this seat: it stands, and answers.
     Waiting,
-    /// Whose run it is could not be established: nothing replaces it
+    /// Nothing is claimed of the start there is, and nothing replaces it
     /// until the person settles it.
     Uncertain,
-    /// This daemon may not write yet: it shows the seat as recovering and
-    /// does nothing.
+    /// This daemon may not write yet.
     Recovering,
 }
 
 /// What a Start does for a member, from its seat and the evidence.
 pub fn admit(seat: Option<&Seat>, evidence: Evidence) -> Admit {
-    if !evidence.writer {
-        return Admit::Recovering;
-    }
-    let Some(seat) = seat else {
-        return Admit::Reserve;
+    let waiting = seat.is_some_and(|seat| seat.wanted.is_some());
+    let free = if waiting {
+        Admit::Promote
+    } else {
+        Admit::Reserve
     };
-    let Some(start) = &seat.start else {
-        return Admit::Reserve;
-    };
-    let waits = || {
-        if seat.wanted.is_some() {
-            Admit::Waiting
-        } else {
-            Admit::Wait
-        }
-    };
-    if start.uncertain {
-        return Admit::Uncertain;
-    }
-    if start.end.is_some() {
-        return if start.settled() {
-            Admit::Reserve
-        } else {
-            waits()
-        };
-    }
-    if evidence.driver {
-        return Admit::Starting;
-    }
-    if start.disposition == Some(Disposition::Stop) {
-        // Stopped and not yet seen to end: a new start waits for it.
-        return waits();
-    }
-    match (start.stage, evidence.record) {
-        (Stage::Reserved, Record::None) => Admit::Continue,
-        // A record under a start that never committed one is not this
-        // start's doing.
-        (Stage::Reserved, _) => Admit::Uncertain,
-        (_, Record::Stopping) => Admit::Stopping,
-        (Stage::Complete, Record::Created | Record::Running) => Admit::AlreadyActive,
-        (Stage::Complete, Record::Ended | Record::None) => {
-            if start.cleanup_owed {
-                waits()
-            } else {
-                Admit::Reserve
-            }
-        }
-        (_, Record::Ended | Record::None) => Admit::FailEnded,
-        (Stage::RecordBound, Record::Created) => Admit::FailUnstarted,
-        // A record that says less than its start's stage proved.
-        (_, Record::Created) => Admit::Uncertain,
-        (Stage::RecordBound | Stage::Running | Stage::Activated, Record::Running) => Admit::Recover,
-        (Stage::CardsSettled, Record::Running) => Admit::Resume,
-        (Stage::Instructed, Record::Running) => {
-            if start.cards.owed.is_empty() {
-                Admit::Resume
-            } else {
-                Admit::RetryOwed
-            }
-        }
+    let held = if waiting { Admit::Waiting } else { Admit::Wait };
+    match Seat::case(seat, evidence) {
+        Case::Fenced => Admit::Recovering,
+        Case::Empty => free,
+        Case::Unclear(_) => Admit::Uncertain,
+        Case::Ended(start) if start.settled() => free,
+        // A stop that has won holds the seat until it is seen to finish,
+        // whether or not the driver it stopped is still alive.
+        Case::Ended(_) | Case::StopAsked(_) => held,
+        Case::Live(_) if evidence.driver != Driver::None => Admit::Starting,
+        Case::Live(start) => match (start.stage, evidence.record) {
+            (Stage::Reserved, _) => Admit::Continue,
+            (Stage::RecordBound, Record::Created) => Admit::FailUnstarted,
+            (Stage::Complete, Record::Ended) if start.cleanup_owed => held,
+            // An exit that was seen, of a start that owed nothing: the
+            // member is simply not running.
+            (Stage::Complete, Record::Ended) => free,
+            (_, Record::Ended) => Admit::FailEnded,
+            (_, Record::Stopping) => Admit::Stopping,
+            _ if !evidence.relay => Admit::Recover,
+            // Supervised, with its activation not yet recorded: the same
+            // recovery records it, and keeps the relay there is.
+            (Stage::Running, _) => Admit::Recover,
+            (Stage::Instructed, _) if !start.cards.owed.is_empty() => Admit::RetryOwed,
+            (Stage::Complete, _) => Admit::AlreadyActive,
+            _ => Admit::Resume,
+        },
     }
 }
 
@@ -402,103 +556,132 @@ pub enum Reattached {
     Unidentified,
 }
 
-/// What a recovery does with what the owner answered.
+/// What a recovery does with what the owner answered. It reads the
+/// start again first: what the person asked while the recovery ran wins
+/// over going on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Recovered {
-    /// The run gets a fresh supervised receiver under its own identity,
-    /// and its start goes on from activated with what it still owes.
-    Resume,
+    /// The run is under supervision, and its start goes on from
+    /// activated with what it still owes. `install` is whether a
+    /// supervised receiver is still to be made for it: one that is
+    /// already there is kept and never displaced.
+    Resume { install: bool },
+    /// A stop is owed: it is relayed through the run's receiver, made
+    /// first if there is none, and nothing more of the team's is done.
+    RelayStop { install: bool },
     /// The child is ended through its owner; when that outcome is known
     /// and committed, the start is failed at running. A stop that was
     /// only sent proves nothing.
     EndUnactivated,
     /// The exit is committed before it is acknowledged; the start is
-    /// failed.
+    /// failed, or cancelled where a stop was owed.
     CommitExit,
     /// Nothing is claimed: the start is marked uncertain.
     Uncertain,
+    /// The session was released meanwhile: it is not the team's, and the
+    /// recovery leaves it as it found it.
+    Leave,
 }
 
-pub fn recovered(answer: Reattached) -> Recovered {
+pub fn recovered(start: &Start, answer: Reattached, relay: bool) -> Recovered {
+    if start.released() {
+        return Recovered::Leave;
+    }
     match answer {
-        Reattached::Activated => Recovered::Resume,
-        Reattached::Unactivated => Recovered::EndUnactivated,
-        Reattached::Exited => Recovered::CommitExit,
         Reattached::Unidentified => Recovered::Uncertain,
+        Reattached::Exited => Recovered::CommitExit,
+        Reattached::Unactivated => Recovered::EndUnactivated,
+        Reattached::Activated if start.stopping => Recovered::RelayStop { install: !relay },
+        Reattached::Activated => Recovered::Resume { install: !relay },
     }
 }
 
-/// What a Stop finds.
+/// What a Stop does about the run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stop {
-    /// Nothing runs and nothing waits.
+pub enum StopRun {
+    /// Nothing of the team's runs.
     Nothing,
-    /// Only a wanted start waits: it is withdrawn, and what the start
-    /// before it still owes is left as it is.
-    Withdraw,
     /// Nothing was committed beyond the reservation: the start is
     /// cancelled, and its reserved worktree, if it was made, is owed its
     /// cleanup.
     CancelReserved,
-    /// A record exists and its command has not been let run: the seat's
-    /// generation is advanced, and the launch's own check, made under the
-    /// lock before it commits running, ends the child unactivated. Where
-    /// running was already committed, the ordinary stop follows.
+    /// The launch is alive and has not yet committed running: the seat's
+    /// generation is advanced, and the launch's own check, made under
+    /// the lock before that commit, ends the child unactivated. The
+    /// command never runs.
     Refuse,
-    /// The run is stopped by the ordinary stop, for that exact run.
-    StopRun,
-    /// A stop was already asked.
+    /// A created record with nothing launching it: it never ran. It is
+    /// failed through the launch's own exit, as a Start would.
+    EndUnstarted,
+    /// The stop can be relayed now, to this exact run: through its
+    /// supervised receiver, or through the launch that still holds it.
+    Relay,
+    /// A recovery of the run is at work and there is nothing to relay
+    /// through yet: the stop is owed, durably, and the recovery relays
+    /// it.
+    Owe,
+    /// Nothing here can relay a stop and nothing is recovering the run:
+    /// the stop is owed, durably, and the exact run is recovered through
+    /// its owner to relay it.
+    Recover,
+    /// A stop was already asked and can still be relayed, or is being.
     Already,
-    /// Whose run it is is not established: a stop cannot be confirmed,
-    /// and is not answered as stopping.
+    /// Nothing is claimed of the run: a stop cannot be confirmed, and is
+    /// not answered as stopping.
     NotConfirmable,
     /// This daemon may not write yet.
     Recovering,
 }
 
-/// What a Stop does for a member. In every case but `Nothing`,
-/// `Recovering` and `NotConfirmable` a wanted start is withdrawn too.
+/// What a Stop does for a member: about the run, and about a start that
+/// waits for the seat. The two are decided apart: a wanted start is
+/// withdrawn whatever is known of the run before it, and withdrawing it
+/// changes nothing of what that run still owes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Stop {
+    pub run: StopRun,
+    pub withdraw: bool,
+}
+
 pub fn stop(seat: Option<&Seat>, evidence: Evidence) -> Stop {
-    if !evidence.writer {
-        return Stop::Recovering;
-    }
-    let Some(seat) = seat else {
-        return Stop::Nothing;
-    };
-    let Some(start) = &seat.start else {
-        return if seat.wanted.is_some() {
-            Stop::Withdraw
-        } else {
-            Stop::Nothing
-        };
-    };
-    if start.uncertain {
-        return Stop::NotConfirmable;
-    }
-    if start.end.is_some() {
-        // Ended already; a released session is not the team's to stop.
-        return if seat.wanted.is_some() {
-            Stop::Withdraw
-        } else {
-            Stop::Nothing
-        };
-    }
-    if start.disposition.is_some() {
-        return Stop::Already;
-    }
-    match (start.stage, evidence.record) {
-        (Stage::Reserved, _) => Stop::CancelReserved,
-        (_, Record::Ended | Record::None) => {
-            if seat.wanted.is_some() {
-                Stop::Withdraw
+    let case = Seat::case(seat, evidence);
+    let withdraw = case != Case::Fenced && seat.is_some_and(|seat| seat.wanted.is_some());
+    // Whether a stop can reach the run now, or will without help.
+    let reach = |record: Record| match (evidence.relay, evidence.driver) {
+        (true, _) | (false, Driver::Launching) => {
+            if record == Record::Stopping {
+                StopRun::Already
             } else {
-                Stop::Nothing
+                StopRun::Relay
             }
         }
-        (_, Record::Stopping) => Stop::Already,
-        (Stage::RecordBound | Stage::Running, _) => Stop::Refuse,
-        (_, Record::Created | Record::Running) => Stop::StopRun,
-    }
+        (false, Driver::Recovering) => StopRun::Owe,
+        (false, Driver::None) => StopRun::Recover,
+    };
+    let run = match case {
+        Case::Fenced => StopRun::Recovering,
+        // Ended already; a released session is not the team's to stop.
+        Case::Empty | Case::Ended(_) => StopRun::Nothing,
+        Case::Unclear(_) => StopRun::NotConfirmable,
+        Case::StopAsked(start) => match (start.stage, evidence.record) {
+            (_, Record::Ended) => StopRun::Nothing,
+            (Stage::Reserved | Stage::RecordBound, _) => StopRun::Already,
+            // Asked before, and whether it can still be relayed is read
+            // again: a receiver that was lost is recovered.
+            (_, record) => match reach(record) {
+                StopRun::Relay => StopRun::Already,
+                other => other,
+            },
+        },
+        Case::Live(start) => match (start.stage, evidence.record) {
+            (Stage::Reserved, _) => StopRun::CancelReserved,
+            (_, Record::Ended) => StopRun::Nothing,
+            (Stage::RecordBound, _) if evidence.driver == Driver::Launching => StopRun::Refuse,
+            (Stage::RecordBound, _) => StopRun::EndUnstarted,
+            (_, record) => reach(record),
+        },
+    };
+    Stop { run, withdraw }
 }
 
 /// What a release of a member's session does: it stays a plain session
@@ -508,9 +691,9 @@ pub enum Release {
     /// There is no session yet to keep: the start is cancelled, and the
     /// answer says the session had not been created.
     Cancel,
-    /// The run is marked released, durably, for that exact run. From then
-    /// on no stop, cleanup or late driver of the team ends it or removes
-    /// its checkout.
+    /// The start is ended as released, in one commit, for that exact
+    /// run. From then on no stop, cleanup or late driver of the team
+    /// ends it or removes its checkout.
     Mark,
 }
 
@@ -522,79 +705,70 @@ pub const RELEASE_ENDED: &str = "its session has ended; there is nothing to rele
 pub const RELEASE_NOTHING: &str = "it has no session to release";
 pub const RELEASE_UNCERTAIN: &str =
     "whose run its session is is not established; settle that before releasing it";
+pub const RELEASE_UNSUPERVISED: &str = "its session is not confirmed running under this daemon; start it again to recover it, or stop it";
+pub const RELEASE_RECOVERING: &str =
+    "the daemon is taking over from another and decides nothing yet; ask again in a moment";
 
 /// What a release does for a member, or why it is refused. A refusal
 /// changes nothing and authorises nothing.
-pub fn release(seat: Option<&Seat>, record: Record) -> Result<Release, &'static str> {
-    let start = seat
-        .and_then(|seat| seat.start.as_ref())
-        .ok_or(RELEASE_NOTHING)?;
-    if start.uncertain {
-        return Err(RELEASE_UNCERTAIN);
-    }
-    if start.end.is_some() {
-        return Err(match start.end {
-            Some(End::Released) => RELEASE_NOTHING,
-            _ => RELEASE_ENDED,
-        });
-    }
-    if start.disposition.is_some() {
-        return Err(RELEASE_STOPPED);
-    }
-    match (start.stage, record) {
-        (Stage::Reserved, _) => Ok(Release::Cancel),
-        (_, Record::Ended | Record::None) => Err(RELEASE_ENDED),
-        (_, Record::Stopping) => Err(RELEASE_STOPPED),
-        (Stage::RecordBound | Stage::Running, _) => Err(RELEASE_STARTING),
-        (_, Record::Created) => Err(RELEASE_STARTING),
-        (_, Record::Running) => Ok(Release::Mark),
+///
+/// A release and a stop exclude each other, and it is whichever was
+/// admitted first that stands: after a stop was asked, or a start has
+/// ended and its cleanup been admitted, nothing is released; after a
+/// release, the start has ended as released and nothing of the team's
+/// is admitted for it. A release is given only for a run that is
+/// positively this start's, let run, and supervised here.
+pub fn release(seat: Option<&Seat>, evidence: Evidence) -> Result<Release, &'static str> {
+    match Seat::case(seat, evidence) {
+        Case::Fenced => Err(RELEASE_RECOVERING),
+        Case::Empty => Err(RELEASE_NOTHING),
+        Case::Unclear(_) => Err(RELEASE_UNCERTAIN),
+        Case::Ended(start) if start.released() => Err(RELEASE_NOTHING),
+        Case::Ended(_) => Err(RELEASE_ENDED),
+        Case::StopAsked(_) => Err(RELEASE_STOPPED),
+        Case::Live(start) => match (start.stage, evidence.record) {
+            (Stage::Reserved, _) => Ok(Release::Cancel),
+            (_, Record::Ended) => Err(RELEASE_ENDED),
+            (_, Record::Stopping) => Err(RELEASE_STOPPED),
+            (Stage::RecordBound | Stage::Running, _) => Err(RELEASE_STARTING),
+            _ if evidence.relay => Ok(Release::Mark),
+            _ if evidence.driver != Driver::None => Err(RELEASE_STARTING),
+            _ => Err(RELEASE_UNSUPERVISED),
+        },
     }
 }
 
 /// Where a member's session stands, for a reader: one word from the seat
-/// and the evidence, the same one a Start would act on.
+/// and the evidence, by the same situation a Start, a Stop and a release
+/// read. Running is said only of a run that is supervised here; one that
+/// is being recovered, or is yet to be, is starting.
 pub fn standing(seat: Option<&Seat>, evidence: Evidence) -> Standing {
-    let Some(seat) = seat else {
-        return Standing::NotStarted;
-    };
-    let Some(start) = &seat.start else {
-        return if seat.wanted.is_some() {
-            Standing::Waiting
-        } else {
-            Standing::NotStarted
-        };
-    };
-    if !evidence.writer {
-        return Standing::Recovering;
-    }
-    if start.uncertain {
-        return Standing::Uncertain;
-    }
-    if seat.wanted.is_some() {
-        return Standing::Waiting;
-    }
-    match &start.end {
-        Some(End::Failed { .. }) => return Standing::Failed,
-        Some(End::Cancelled { .. }) => {
-            return if start.cleanup_owed {
-                Standing::Stopping
+    let waiting = seat.is_some_and(|seat| seat.wanted.is_some());
+    match Seat::case(seat, evidence) {
+        Case::Fenced => {
+            if seat.is_some_and(|seat| seat.start.is_some() || seat.wanted.is_some()) {
+                Standing::Recovering
             } else {
                 Standing::NotStarted
-            };
+            }
         }
-        Some(End::Released) => return Standing::NotStarted,
-        None => {}
-    }
-    if start.disposition == Some(Disposition::Stop) || evidence.record == Record::Stopping {
-        return Standing::Stopping;
-    }
-    match (start.stage, evidence.record) {
-        (Stage::Complete, Record::Created | Record::Running) => Standing::Running,
-        (Stage::Complete, _) => Standing::NotStarted,
-        (Stage::Reserved, Record::None) => Standing::Starting,
-        (_, Record::Ended | Record::None) => Standing::Failed,
-        _ if start.needs_attention() => Standing::NeedsAttention,
-        _ => Standing::Starting,
+        Case::Unclear(_) => Standing::Uncertain,
+        _ if waiting => Standing::Waiting,
+        Case::Empty => Standing::NotStarted,
+        Case::Ended(start) => match &start.end {
+            Some(End::Failed { .. }) => Standing::Failed,
+            Some(End::Cancelled { .. }) if start.cleanup_owed => Standing::Stopping,
+            _ => Standing::NotStarted,
+        },
+        Case::StopAsked(_) => Standing::Stopping,
+        Case::Live(start) => match (start.stage, evidence.record) {
+            (_, Record::Stopping) => Standing::Stopping,
+            (Stage::Complete, Record::Ended) => Standing::NotStarted,
+            (_, Record::Ended) => Standing::Failed,
+            (Stage::Complete, _) if evidence.relay => Standing::Running,
+            _ if evidence.relay && start.needs_attention() => Standing::NeedsAttention,
+            _ => Standing::Starting,
+        },
     }
 }
 
@@ -628,10 +802,12 @@ mod tests {
                 path: "/work/app/.agentdocker/worktrees/writer".into(),
                 branch: "team/writer".into(),
             }),
-            first_words: MessageId::from("message-one".to_owned()),
+            run: (stage >= Stage::Running).then(|| RunId::from("run-one")),
+            first_words: Words::reserved(MessageId::from("message-one".to_owned())),
+            follow_up: None,
             stage,
             end: None,
-            disposition: None,
+            stopping: false,
             cards: Cards::default(),
             cleanup_owed: false,
             uncertain: false,
@@ -649,20 +825,39 @@ mod tests {
         }
     }
 
-    fn wanted() -> Wanted {
+    fn wanted(revision: u64) -> Wanted {
         Wanted {
-            revision: 2,
+            revision,
             member: member(),
             authorised_by: "user".into(),
             at: "2026-01-02T03:05:05Z".parse().unwrap(),
         }
     }
 
-    fn seen(record: Record) -> Evidence {
+    /// The record seen, of the start's own run, with nothing at work on
+    /// it here and no relay.
+    fn orphan(record: Record) -> Evidence {
         Evidence {
             record,
-            driver: false,
+            run: Run::Same,
+            driver: Driver::None,
+            relay: false,
             writer: true,
+        }
+    }
+
+    /// The same, under a verified relay.
+    fn supervised(record: Record) -> Evidence {
+        Evidence {
+            relay: true,
+            ..orphan(record)
+        }
+    }
+
+    fn driven(record: Record, driver: Driver) -> Evidence {
+        Evidence {
+            driver,
+            ..orphan(record)
         }
     }
 
@@ -682,6 +877,15 @@ mod tests {
         Record::Stopping,
         Record::Ended,
     ];
+
+    /// The record a stage's own commit leaves: what agrees with it.
+    fn record_of(stage: Stage) -> Record {
+        match stage {
+            Stage::Reserved => Record::None,
+            Stage::RecordBound => Record::Created,
+            _ => Record::Running,
+        }
+    }
 
     /// The stages are reached in the order of their commits, and each
     /// has its word and its wire form.
@@ -705,120 +909,256 @@ mod tests {
         assert_eq!(Stage::RecordBound.word(), "record bound");
     }
 
-    /// A start with no driver, by its stage and its record: the table of
-    /// what the next Start does. Nothing is inferred from a driver's
-    /// absence but that nobody here is driving.
+    /// A start with nothing at work on it, by its stage and its record:
+    /// what the next Start does. Whether the run is supervised here (a
+    /// verified relay) decides between going on and recovering it; a
+    /// recorded stage alone never does.
     #[test]
-    fn what_a_start_finds_with_no_driver() {
+    fn what_a_start_finds_with_nothing_at_work() {
         use Admit::*;
         use Record as R;
+        // (stage, record, with no relay, under a verified relay)
         let table = [
             // Nothing committed beyond the reservation: the same start.
-            (Stage::Reserved, R::None, Continue),
-            // A record this start never committed is not its doing.
-            (Stage::Reserved, R::Created, Uncertain),
-            (Stage::Reserved, R::Running, Uncertain),
+            (Stage::Reserved, R::None, Continue, Continue),
             // Created and never ran: no command was let run.
-            (Stage::RecordBound, R::Created, FailUnstarted),
-            // The launch committed running after the stage was written:
-            // the record is the evidence, and the run is recovered.
-            (Stage::RecordBound, R::Running, Recover),
-            (Stage::Running, R::Running, Recover),
-            // Activated, and whether it was handed to supervision is not
-            // known here: the same recovery tells.
-            (Stage::Activated, R::Running, Recover),
-            (Stage::CardsSettled, R::Running, Resume),
-            (Stage::Instructed, R::Running, Resume),
-            (Stage::Complete, R::Running, AlreadyActive),
-            (Stage::Complete, R::Created, AlreadyActive),
+            (Stage::RecordBound, R::Created, FailUnstarted, FailUnstarted),
+            // Running with its activation unrecorded: recovered either
+            // way; a relay that is there is kept by the recovery.
+            (Stage::Running, R::Running, Recover, Recover),
+            // Activated says the owner answered; it does not say the
+            // run reached supervision. Only a verified relay does.
+            (Stage::Activated, R::Running, Recover, Resume),
+            (Stage::CardsSettled, R::Running, Recover, Resume),
+            (Stage::Instructed, R::Running, Recover, Resume),
+            (Stage::Complete, R::Running, Recover, AlreadyActive),
             // Ended before complete, at whatever stage.
-            (Stage::RecordBound, R::Ended, FailEnded),
-            (Stage::Running, R::Ended, FailEnded),
-            (Stage::Activated, R::None, FailEnded),
-            (Stage::Instructed, R::Ended, FailEnded),
-            // Complete and ended: simply not running.
-            (Stage::Complete, R::Ended, Reserve),
-            (Stage::Complete, R::None, Reserve),
-            // A record that says less than its start proved.
-            (Stage::Running, R::Created, Uncertain),
-            (Stage::Instructed, R::Created, Uncertain),
+            (Stage::RecordBound, R::Ended, FailEnded, FailEnded),
+            (Stage::Running, R::Ended, FailEnded, FailEnded),
+            (Stage::Instructed, R::Ended, FailEnded, FailEnded),
+            // Complete, and an exit that was seen: simply not running.
+            (Stage::Complete, R::Ended, Reserve, Reserve),
+            (Stage::Activated, R::Stopping, Stopping, Stopping),
+            (Stage::Complete, R::Stopping, Stopping, Stopping),
         ];
-        for (stage, record, expected) in table {
+        for (stage, record, alone, relayed) in table {
+            let seat = seat(start(stage));
             assert_eq!(
-                admit(Some(&seat(start(stage))), seen(record)),
-                expected,
-                "{stage:?} with the record {record:?}"
+                admit(Some(&seat), orphan(record)),
+                alone,
+                "{stage:?} with the record {record:?} and no relay"
             );
-        }
-        // A record being stopped answers stopping at every stage past
-        // the reservation.
-        for stage in &STAGES[1..] {
             assert_eq!(
-                admit(Some(&seat(start(*stage))), seen(Record::Stopping)),
-                Stopping,
-                "{stage:?}"
+                admit(Some(&seat), supervised(record)),
+                relayed,
+                "{stage:?} with the record {record:?} under a relay"
             );
         }
         // No seat, or a seat nothing was started in.
-        assert_eq!(admit(None, seen(Record::None)), Reserve);
+        assert_eq!(admit(None, orphan(Record::None)), Reserve);
         assert_eq!(
             admit(
                 Some(&Seat::new(MemberId::from("member-one"))),
-                seen(Record::None)
+                orphan(Record::None)
             ),
             Reserve
         );
     }
 
-    /// A driver alive here means starting, whatever the stage and the
-    /// record, and nothing is done; a daemon that may not write does
-    /// nothing at all, driver or no driver.
+    /// A launch or a recovery at work here means starting, at every
+    /// stage with the record that agrees with it, and nothing is done;
+    /// a daemon that may not write does nothing at all, whatever it
+    /// sees, for a Start, a Stop, a release and a reader alike.
     #[test]
-    fn a_driver_at_work_and_a_daemon_that_may_not_write() {
+    fn something_at_work_and_a_daemon_that_may_not_write() {
         for stage in STAGES {
-            for record in RECORDS {
-                let seat = seat(start(stage));
+            let seat = seat(start(stage));
+            for driver in [Driver::Launching, Driver::Recovering] {
                 assert_eq!(
-                    admit(
-                        Some(&seat),
-                        Evidence {
-                            record,
-                            driver: true,
-                            writer: true
-                        }
-                    ),
+                    admit(Some(&seat), driven(record_of(stage), driver)),
                     Admit::Starting,
-                    "{stage:?} {record:?}"
+                    "{stage:?} {driver:?}"
                 );
-                for driver in [true, false] {
-                    let fenced = Evidence {
-                        record,
-                        driver,
-                        writer: false,
-                    };
-                    assert_eq!(admit(Some(&seat), fenced), Admit::Recovering);
-                    assert_eq!(stop(Some(&seat), fenced), Stop::Recovering);
-                    assert_eq!(standing(Some(&seat), fenced), Standing::Recovering);
+            }
+            for record in RECORDS {
+                for driver in [Driver::None, Driver::Launching, Driver::Recovering] {
+                    for relay in [true, false] {
+                        let fenced = Evidence {
+                            record,
+                            run: Run::Same,
+                            driver,
+                            relay,
+                            writer: false,
+                        };
+                        assert_eq!(Seat::case(Some(&seat), fenced), Case::Fenced);
+                        assert_eq!(admit(Some(&seat), fenced), Admit::Recovering);
+                        assert_eq!(
+                            stop(Some(&seat), fenced),
+                            Stop {
+                                run: StopRun::Recovering,
+                                withdraw: false
+                            }
+                        );
+                        assert_eq!(release(Some(&seat), fenced), Err(RELEASE_RECOVERING));
+                        assert_eq!(standing(Some(&seat), fenced), Standing::Recovering);
+                    }
                 }
             }
         }
+        let fenced = Evidence {
+            writer: false,
+            ..orphan(Record::None)
+        };
         assert_eq!(
-            admit(
-                None,
-                Evidence {
-                    record: Record::None,
-                    driver: false,
-                    writer: false
-                }
-            ),
+            admit(None, fenced),
             Admit::Recovering,
             "a reservation is a write too"
+        );
+        assert_eq!(standing(None, fenced), Standing::NotStarted);
+    }
+
+    /// What is stored and what is seen that cannot both be true is one
+    /// situation to all four readers: nothing is claimed. A reservation
+    /// with a record it never committed; a bound or later start whose
+    /// record is missing, which is not an exit anybody saw; a start that
+    /// proved a process and a record that says none ever was.
+    #[test]
+    fn what_cannot_both_be_true_is_not_confirmed_to_every_reader() {
+        use Record as R;
+        let contradictions = [
+            (Stage::Reserved, R::Created),
+            (Stage::Reserved, R::Running),
+            (Stage::Reserved, R::Stopping),
+            (Stage::Reserved, R::Ended),
+            (Stage::RecordBound, R::None),
+            (Stage::RecordBound, R::Running),
+            (Stage::RecordBound, R::Stopping),
+            (Stage::Running, R::None),
+            (Stage::Running, R::Created),
+            (Stage::Activated, R::None),
+            (Stage::Instructed, R::Created),
+            (Stage::Complete, R::None),
+            (Stage::Complete, R::Created),
+        ];
+        for (stage, record) in contradictions {
+            let seat = seat(start(stage));
+            for evidence in [
+                orphan(record),
+                supervised(record),
+                driven(record, Driver::Launching),
+                driven(record, Driver::Recovering),
+            ] {
+                let said = format!("{stage:?} with the record {record:?}: {evidence:?}");
+                assert!(
+                    matches!(Seat::case(Some(&seat), evidence), Case::Unclear(_)),
+                    "{said}"
+                );
+                assert_eq!(admit(Some(&seat), evidence), Admit::Uncertain, "{said}");
+                assert_eq!(
+                    stop(Some(&seat), evidence).run,
+                    StopRun::NotConfirmable,
+                    "{said}"
+                );
+                assert_eq!(
+                    release(Some(&seat), evidence),
+                    Err(RELEASE_UNCERTAIN),
+                    "{said}"
+                );
+                assert_eq!(
+                    standing(Some(&seat), evidence),
+                    Standing::Uncertain,
+                    "{said}"
+                );
+            }
+        }
+        // A start marked uncertain is the same, at every stage, whatever
+        // is seen; and it is not settled.
+        for stage in STAGES {
+            let mut unsure = start(stage);
+            unsure.uncertain = true;
+            assert!(!unsure.settled());
+            let seat = seat(unsure);
+            for record in RECORDS {
+                let evidence = supervised(record);
+                assert_eq!(admit(Some(&seat), evidence), Admit::Uncertain);
+                assert_eq!(stop(Some(&seat), evidence).run, StopRun::NotConfirmable);
+                assert_eq!(release(Some(&seat), evidence), Err(RELEASE_UNCERTAIN));
+                assert_eq!(standing(Some(&seat), evidence), Standing::Uncertain);
+            }
+        }
+    }
+
+    /// An action is for the run the start made, and for no other. A
+    /// later run under the same agent id, with the same status and even
+    /// a relay of its own, is not the old healthy session: it is not
+    /// already active, not stopped, not released and not shown as
+    /// running; and neither is one that cannot be shown to be either.
+    /// Both runs are protected.
+    #[test]
+    fn two_runs_under_one_agent_id_are_two_runs() {
+        for stage in &STAGES[2..] {
+            for record in [Record::Running, Record::Stopping, Record::Ended] {
+                for run in [Run::Other, Run::Unproven] {
+                    for relay in [true, false] {
+                        let seat = seat(start(*stage));
+                        let evidence = Evidence {
+                            run,
+                            relay,
+                            ..orphan(record)
+                        };
+                        let said = format!("{stage:?} {record:?} {run:?} relay {relay}");
+                        assert_eq!(admit(Some(&seat), evidence), Admit::Uncertain, "{said}");
+                        assert_eq!(
+                            stop(Some(&seat), evidence).run,
+                            StopRun::NotConfirmable,
+                            "{said}"
+                        );
+                        assert_eq!(
+                            release(Some(&seat), evidence),
+                            Err(RELEASE_UNCERTAIN),
+                            "{said}"
+                        );
+                        assert_eq!(
+                            standing(Some(&seat), evidence),
+                            Standing::Uncertain,
+                            "{said}"
+                        );
+                    }
+                }
+            }
+        }
+        // The same sight, positively matched, is the healthy session.
+        let healthy = seat(start(Stage::Complete));
+        assert_eq!(
+            admit(Some(&healthy), supervised(Record::Running)),
+            Admit::AlreadyActive
+        );
+        // A start that reached running without a run of its own written
+        // down cannot match anything.
+        let mut unbound = start(Stage::Complete);
+        unbound.run = None;
+        assert_eq!(
+            admit(Some(&seat(unbound)), supervised(Record::Running)),
+            Admit::Uncertain
+        );
+        // Before a run exists there is none to compare: the field is
+        // not read.
+        let reserved = seat(start(Stage::Reserved));
+        assert_eq!(
+            admit(
+                Some(&reserved),
+                Evidence {
+                    run: Run::Unproven,
+                    ..orphan(Record::None)
+                }
+            ),
+            Admit::Continue
         );
     }
 
     /// With something owed after its first words, the member is tried
     /// again for the same session; with nothing owed the start only has
-    /// to be completed.
+    /// to be completed. Both need the run to be supervised here.
     #[test]
     fn what_is_owed_is_tried_again_for_the_same_session() {
         let mut owing = start(Stage::Instructed);
@@ -828,225 +1168,501 @@ mod tests {
         });
         assert!(owing.needs_attention());
         let owing = seat(owing);
-        assert_eq!(admit(Some(&owing), seen(Record::Running)), Admit::RetryOwed);
         assert_eq!(
-            standing(Some(&owing), seen(Record::Running)),
+            admit(Some(&owing), supervised(Record::Running)),
+            Admit::RetryOwed
+        );
+        assert_eq!(
+            standing(Some(&owing), supervised(Record::Running)),
             Standing::NeedsAttention
         );
-        let clear = seat(start(Stage::Instructed));
-        assert_eq!(admit(Some(&clear), seen(Record::Running)), Admit::Resume);
+        assert_eq!(admit(Some(&owing), orphan(Record::Running)), Admit::Recover);
         assert_eq!(
-            standing(Some(&clear), seen(Record::Running)),
+            standing(Some(&owing), orphan(Record::Running)),
             Standing::Starting
         );
+        let clear = seat(start(Stage::Instructed));
+        assert_eq!(
+            admit(Some(&clear), supervised(Record::Running)),
+            Admit::Resume
+        );
     }
 
-    /// A replacement waits for the start before it to settle: while that
-    /// one owns anything (a cleanup, an unconfirmed stop), a Start is
-    /// recorded as wanted, a second Start meets the same wanted one, and
-    /// only a settled start gives the seat up. An ended record alone
-    /// settles nothing.
+    /// The waiting start, through its whole life. Stop, then Start while
+    /// the stopped driver is still held: the request is recorded as
+    /// wanted, not answered as starting. A repeat meets the same wanted
+    /// start. The old operation settles: the wanted one is promoted,
+    /// from its own snapshot, once. A later Stop withdraws a wanted
+    /// start and leaves the predecessor's unfinished business alone.
     #[test]
-    fn a_replacement_waits_for_the_old_start_to_settle() {
-        let mut ended = start(Stage::Running);
-        ended.end = Some(End::Cancelled {
+    fn a_waiting_start_is_made_met_promoted_once_and_withdrawn() {
+        let a_seat = seat;
+        // Stop won; its driver is still alive and its run still there.
+        let mut stopped = start(Stage::Activated);
+        stopped.stopping = true;
+        let mut seat = seat(stopped);
+        seat.generation = 2;
+        let held = driven(Record::Running, Driver::Launching);
+        assert_eq!(admit(Some(&seat), held), Admit::Wait, "not Starting");
+        // The daemon records the request as the wanted start.
+        seat.wanted = Some(wanted(2));
+        assert_eq!(admit(Some(&seat), held), Admit::Waiting);
+        assert_eq!(admit(Some(&seat), orphan(Record::Stopping)), Admit::Waiting);
+        assert_eq!(standing(Some(&seat), held), Standing::Waiting);
+        // The run is seen to end, with its cleanup still to do.
+        let old = seat.start.as_mut().unwrap();
+        old.end = Some(End::Cancelled {
             why: "stopped".into(),
         });
-        ended.cleanup_owed = true;
-        assert!(!ended.settled());
-        let mut waiting = seat(ended.clone());
-        for record in RECORDS {
-            assert_eq!(
-                admit(Some(&waiting), seen(record)),
-                Admit::Wait,
-                "{record:?}"
-            );
-        }
-        waiting.wanted = Some(wanted());
-        for record in RECORDS {
-            assert_eq!(
-                admit(Some(&waiting), seen(record)),
-                Admit::Waiting,
-                "{record:?}"
-            );
-        }
+        old.cleanup_owed = true;
+        assert_eq!(admit(Some(&seat), orphan(Record::Ended)), Admit::Waiting);
+        // A later Stop withdraws the wanted start and keeps what the old
+        // one owes.
         assert_eq!(
-            standing(Some(&waiting), seen(Record::Ended)),
-            Standing::Waiting
+            stop(Some(&seat), orphan(Record::Ended)),
+            Stop {
+                run: StopRun::Nothing,
+                withdraw: true
+            }
         );
-        // Its cleanup done: settled, and the seat can be reserved.
-        ended.cleanup_owed = false;
-        assert!(ended.settled());
+        // (Not withdrawn here.) The cleanup is done, also after the
+        // daemon reopened with no driver: settled, and the first
+        // authorised snapshot begins.
+        seat.start.as_mut().unwrap().cleanup_owed = false;
+        assert_eq!(admit(Some(&seat), orphan(Record::Ended)), Admit::Promote);
         assert_eq!(
-            admit(Some(&seat(ended)), seen(Record::Ended)),
+            seat.wanted.as_ref().unwrap().revision,
+            2,
+            "its own snapshot"
+        );
+        // The daemon promotes it: the wait is emptied in the commit that
+        // reserves the new start, so it cannot be promoted again.
+        let mut promoted = start(Stage::Reserved);
+        promoted.id = StartId::from("start-two");
+        promoted.generation = 3;
+        promoted.revision = seat.wanted.take().unwrap().revision;
+        seat.generation = 3;
+        seat.start = Some(promoted);
+        assert_eq!(admit(Some(&seat), orphan(Record::None)), Admit::Continue);
+        assert!(seat.wanted.is_none());
+        // With nothing waiting, a free seat is reserved from the request.
+        let mut ended = start(Stage::Running);
+        ended.end = Some(End::Failed {
+            why: "its owner went away".into(),
+        });
+        assert_eq!(
+            admit(Some(&a_seat(ended.clone())), orphan(Record::Ended)),
             Admit::Reserve
         );
-        // A stop asked and not yet seen to end, with no end written:
-        // still the old start's.
-        let mut stopping = start(Stage::Activated);
-        stopping.disposition = Some(Disposition::Stop);
-        assert_eq!(
-            admit(Some(&seat(stopping.clone())), seen(Record::Running)),
-            Admit::Wait
-        );
-        assert_eq!(
-            standing(Some(&seat(stopping)), seen(Record::Running)),
-            Standing::Stopping
-        );
-        // A complete start whose session ended, with a cleanup still
-        // owed, is waited for too.
-        let mut complete = start(Stage::Complete);
-        complete.cleanup_owed = true;
-        assert_eq!(
-            admit(Some(&seat(complete)), seen(Record::Ended)),
-            Admit::Wait
-        );
-    }
-
-    /// A run whose owner could not be identified is nobody's to replace
-    /// or to claim stopped, at any stage and whatever its record says.
-    #[test]
-    fn an_uncertain_run_is_not_replaced_and_not_claimed_stopped() {
-        for stage in STAGES {
-            let mut unsure = start(stage);
-            unsure.uncertain = true;
-            assert!(!unsure.settled());
-            let unsure = seat(unsure);
-            for record in RECORDS {
-                assert_eq!(admit(Some(&unsure), seen(record)), Admit::Uncertain);
-                assert_eq!(stop(Some(&unsure), seen(record)), Stop::NotConfirmable);
-                assert_eq!(release(Some(&unsure), record), Err(RELEASE_UNCERTAIN));
-                assert_eq!(standing(Some(&unsure), seen(record)), Standing::Uncertain);
-            }
-        }
-    }
-
-    /// What the owner answered decides a recovery, and activation is in
-    /// none of its outcomes.
-    #[test]
-    fn a_recovery_follows_what_the_owner_answered() {
-        assert_eq!(recovered(Reattached::Activated), Recovered::Resume);
-        assert_eq!(
-            recovered(Reattached::Unactivated),
-            Recovered::EndUnactivated
-        );
-        assert_eq!(recovered(Reattached::Exited), Recovered::CommitExit);
-        assert_eq!(recovered(Reattached::Unidentified), Recovered::Uncertain);
-    }
-
-    /// A stop against every unfinished stage.
-    #[test]
-    fn what_a_stop_finds() {
-        use Record as R;
-        let table = [
-            (Stage::Reserved, R::None, Stop::CancelReserved),
-            // Created, or running and not yet let run: the launch's own
-            // check refuses it, and the command never runs.
-            (Stage::RecordBound, R::Created, Stop::Refuse),
-            (Stage::RecordBound, R::Running, Stop::Refuse),
-            (Stage::Running, R::Running, Stop::Refuse),
-            (Stage::Activated, R::Running, Stop::StopRun),
-            (Stage::CardsSettled, R::Running, Stop::StopRun),
-            (Stage::Instructed, R::Running, Stop::StopRun),
-            (Stage::Complete, R::Running, Stop::StopRun),
-            (Stage::Complete, R::Stopping, Stop::Already),
-            (Stage::Activated, R::Stopping, Stop::Already),
-            (Stage::Complete, R::Ended, Stop::Nothing),
-            (Stage::Running, R::Ended, Stop::Nothing),
-        ];
-        for (stage, record, expected) in table {
+        // An ended start with a cleanup owed and nothing yet waiting.
+        ended.cleanup_owed = true;
+        assert!(!ended.settled());
+        for record in [Record::Running, Record::Ended] {
             assert_eq!(
-                stop(Some(&seat(start(stage))), seen(record)),
-                expected,
-                "{stage:?} with the record {record:?}"
+                admit(Some(&a_seat(ended.clone())), orphan(record)),
+                Admit::Wait
             );
         }
-        assert_eq!(stop(None, seen(Record::None)), Stop::Nothing);
-        // A second stop, and a stop after a release.
-        let mut stopped = start(Stage::Activated);
-        stopped.disposition = Some(Disposition::Stop);
+        // A complete start whose session was seen to end waits for a
+        // cleanup it owes, and promotes what waited behind it after.
+        let mut complete = start(Stage::Complete);
+        complete.cleanup_owed = true;
+        let mut after = a_seat(complete);
+        assert_eq!(admit(Some(&after), orphan(Record::Ended)), Admit::Wait);
+        after.wanted = Some(wanted(4));
+        assert_eq!(admit(Some(&after), orphan(Record::Ended)), Admit::Waiting);
+        after.start.as_mut().unwrap().cleanup_owed = false;
+        assert_eq!(admit(Some(&after), orphan(Record::Ended)), Admit::Promote);
+        // A wanted start in a seat with no start at all is promoted too.
+        let mut bare = Seat::new(MemberId::from("member-one"));
+        bare.wanted = Some(wanted(5));
+        assert_eq!(admit(Some(&bare), orphan(Record::None)), Admit::Promote);
         assert_eq!(
-            stop(Some(&seat(stopped)), seen(Record::Running)),
-            Stop::Already
+            standing(Some(&bare), orphan(Record::None)),
+            Standing::Waiting
         );
+    }
+
+    /// A wanted start is withdrawn by a Stop whatever is known of the
+    /// run before it, a run nothing can be claimed of included.
+    #[test]
+    fn a_stop_withdraws_what_waits_whatever_the_run_before_it() {
+        let mut unsure = start(Stage::Activated);
+        unsure.uncertain = true;
+        let mut seat = seat(unsure);
+        seat.wanted = Some(wanted(2));
+        assert_eq!(
+            stop(Some(&seat), orphan(Record::Running)),
+            Stop {
+                run: StopRun::NotConfirmable,
+                withdraw: true
+            }
+        );
+        seat.wanted = None;
+        assert!(!stop(Some(&seat), orphan(Record::Running)).withdraw);
+    }
+
+    /// A stop goes where it can be delivered. To a run supervised here,
+    /// or still held by its launch, it is relayed. While the run is
+    /// being recovered there is nothing to relay through: it is owed.
+    /// With nothing at work and no relay, in either window a driver can
+    /// be lost in (running committed and the command not yet let run;
+    /// let run and not yet handed to supervision), it is owed and the
+    /// run is recovered to relay it. Refusing at the launch's own check
+    /// is only for a launch that is alive and has not committed running.
+    #[test]
+    fn a_stop_goes_where_it_can_be_delivered() {
+        use Driver as D;
+        use Record as R;
+        use StopRun::*;
+        // (stage, record, no relay: nothing at work / launching /
+        // recovering, under a relay)
+        let table = [
+            (
+                Stage::Reserved,
+                R::None,
+                CancelReserved,
+                CancelReserved,
+                CancelReserved,
+                CancelReserved,
+            ),
+            (
+                Stage::RecordBound,
+                R::Created,
+                EndUnstarted,
+                Refuse,
+                EndUnstarted,
+                EndUnstarted,
+            ),
+            // The first window: running committed, activation unknown.
+            (Stage::Running, R::Running, Recover, Relay, Owe, Relay),
+            // The second: let run, supervision not shown.
+            (Stage::Activated, R::Running, Recover, Relay, Owe, Relay),
+            (Stage::Instructed, R::Running, Recover, Relay, Owe, Relay),
+            (Stage::Complete, R::Running, Recover, Relay, Owe, Relay),
+            // Being stopped: already, where a receiver is there to have
+            // taken it; where the receiver was lost, recovered.
+            (Stage::Complete, R::Stopping, Recover, Already, Owe, Already),
+            (
+                Stage::Complete,
+                R::Ended,
+                Nothing,
+                Nothing,
+                Nothing,
+                Nothing,
+            ),
+            (Stage::Running, R::Ended, Nothing, Nothing, Nothing, Nothing),
+            (
+                Stage::RecordBound,
+                R::Ended,
+                Nothing,
+                Nothing,
+                Nothing,
+                Nothing,
+            ),
+        ];
+        for (stage, record, alone, launching, recovering, relayed) in table {
+            let seat = seat(start(stage));
+            let said = |how: &str| format!("{stage:?} with the record {record:?}, {how}");
+            assert_eq!(
+                stop(Some(&seat), orphan(record)).run,
+                alone,
+                "{}",
+                said("nothing at work")
+            );
+            assert_eq!(
+                stop(Some(&seat), driven(record, D::Launching)).run,
+                launching,
+                "{}",
+                said("its launch alive")
+            );
+            assert_eq!(
+                stop(Some(&seat), driven(record, D::Recovering)).run,
+                recovering,
+                "{}",
+                said("being recovered")
+            );
+            assert_eq!(
+                stop(Some(&seat), supervised(record)).run,
+                relayed,
+                "{}",
+                said("under a relay")
+            );
+        }
+        assert_eq!(
+            stop(None, orphan(Record::None)),
+            Stop {
+                run: Nothing,
+                withdraw: false
+            }
+        );
+        // A second stop: already, while the first can still arrive; and
+        // where its receiver was lost since, the run is recovered.
+        let mut asked = start(Stage::Activated);
+        asked.stopping = true;
+        let asked = seat(asked);
+        assert_eq!(stop(Some(&asked), supervised(Record::Running)).run, Already);
+        assert_eq!(
+            stop(Some(&asked), driven(Record::Running, D::Launching)).run,
+            Already
+        );
+        assert_eq!(
+            stop(Some(&asked), driven(Record::Running, D::Recovering)).run,
+            Owe
+        );
+        assert_eq!(stop(Some(&asked), orphan(Record::Running)).run, Recover);
+        assert_eq!(stop(Some(&asked), orphan(Record::Stopping)).run, Recover);
+        assert_eq!(stop(Some(&asked), orphan(Record::Ended)).run, Nothing);
+        // A released session is not the team's to stop.
         let mut released = start(Stage::Complete);
         released.end = Some(End::Released);
         assert_eq!(
-            stop(Some(&seat(released)), seen(Record::Running)),
-            Stop::Nothing,
-            "a released session is not the team's to stop"
+            stop(Some(&seat(released)), supervised(Record::Running)).run,
+            Nothing
         );
-        // A wanted start alone is withdrawn, and the start before it
-        // keeps what it owes.
-        let mut old = start(Stage::Running);
-        old.end = Some(End::Failed {
-            why: "it could not be started".into(),
-        });
-        old.cleanup_owed = true;
-        let mut waiting = seat(old);
-        waiting.wanted = Some(wanted());
-        assert_eq!(stop(Some(&waiting), seen(Record::Ended)), Stop::Withdraw);
     }
 
-    /// A release is decided for the exact run: with no session yet it
-    /// cancels; while the session is starting it is refused, promising
-    /// nothing the launch could not keep; once activated it is marked;
-    /// and a stop already asked is never turned into a release.
+    /// A recovery reads the start again before it goes on: a stop asked
+    /// while it ran is relayed and the team's work is not continued; a
+    /// session released meanwhile is left as found; and a receiver that
+    /// is already there is never displaced by a new one.
+    #[test]
+    fn a_recovery_follows_the_owner_and_what_was_asked_meanwhile() {
+        let going = start(Stage::Activated);
+        for relay in [true, false] {
+            assert_eq!(
+                recovered(&going, Reattached::Activated, relay),
+                Recovered::Resume { install: !relay }
+            );
+        }
+        assert_eq!(
+            recovered(&going, Reattached::Unactivated, false),
+            Recovered::EndUnactivated
+        );
+        assert_eq!(
+            recovered(&going, Reattached::Exited, false),
+            Recovered::CommitExit
+        );
+        assert_eq!(
+            recovered(&going, Reattached::Unidentified, true),
+            Recovered::Uncertain
+        );
+        // A stop became owed during the recovery.
+        let mut asked = start(Stage::Activated);
+        asked.stopping = true;
+        for relay in [true, false] {
+            assert_eq!(
+                recovered(&asked, Reattached::Activated, relay),
+                Recovered::RelayStop { install: !relay },
+                "never resumed"
+            );
+        }
+        assert_eq!(
+            recovered(&asked, Reattached::Unactivated, false),
+            Recovered::EndUnactivated
+        );
+        // Released during the recovery: whatever the owner answers.
+        let mut released = start(Stage::Activated);
+        released.end = Some(End::Released);
+        for answer in [
+            Reattached::Activated,
+            Reattached::Unactivated,
+            Reattached::Exited,
+            Reattached::Unidentified,
+        ] {
+            assert_eq!(recovered(&released, answer, false), Recovered::Leave);
+        }
+    }
+
+    /// A release is given only for a run that is this start's, let run
+    /// and supervised here. With no session yet it cancels; while the
+    /// session is starting, or its supervision is not shown, it is
+    /// refused, promising nothing the launch could not keep.
     #[test]
     fn what_a_release_finds() {
         use Record as R;
+        // (stage, record, with nothing at work and no relay, under a
+        // relay)
         let table = [
-            (Stage::Reserved, R::None, Ok(Release::Cancel)),
-            (Stage::RecordBound, R::Created, Err(RELEASE_STARTING)),
-            (Stage::RecordBound, R::Running, Err(RELEASE_STARTING)),
-            (Stage::Running, R::Running, Err(RELEASE_STARTING)),
-            (Stage::Activated, R::Running, Ok(Release::Mark)),
-            (Stage::CardsSettled, R::Running, Ok(Release::Mark)),
-            (Stage::Instructed, R::Running, Ok(Release::Mark)),
-            (Stage::Complete, R::Running, Ok(Release::Mark)),
-            (Stage::Complete, R::Stopping, Err(RELEASE_STOPPED)),
-            (Stage::Complete, R::Ended, Err(RELEASE_ENDED)),
-            (Stage::Activated, R::None, Err(RELEASE_ENDED)),
+            (
+                Stage::Reserved,
+                R::None,
+                Ok(Release::Cancel),
+                Ok(Release::Cancel),
+            ),
+            (
+                Stage::RecordBound,
+                R::Created,
+                Err(RELEASE_STARTING),
+                Err(RELEASE_STARTING),
+            ),
+            (
+                Stage::Running,
+                R::Running,
+                Err(RELEASE_STARTING),
+                Err(RELEASE_STARTING),
+            ),
+            (
+                Stage::Activated,
+                R::Running,
+                Err(RELEASE_UNSUPERVISED),
+                Ok(Release::Mark),
+            ),
+            (
+                Stage::CardsSettled,
+                R::Running,
+                Err(RELEASE_UNSUPERVISED),
+                Ok(Release::Mark),
+            ),
+            (
+                Stage::Instructed,
+                R::Running,
+                Err(RELEASE_UNSUPERVISED),
+                Ok(Release::Mark),
+            ),
+            (
+                Stage::Complete,
+                R::Running,
+                Err(RELEASE_UNSUPERVISED),
+                Ok(Release::Mark),
+            ),
+            (
+                Stage::Complete,
+                R::Stopping,
+                Err(RELEASE_STOPPED),
+                Err(RELEASE_STOPPED),
+            ),
+            (
+                Stage::Complete,
+                R::Ended,
+                Err(RELEASE_ENDED),
+                Err(RELEASE_ENDED),
+            ),
+            (
+                Stage::RecordBound,
+                R::Ended,
+                Err(RELEASE_ENDED),
+                Err(RELEASE_ENDED),
+            ),
         ];
-        for (stage, record, expected) in table {
+        for (stage, record, alone, relayed) in table {
+            let seat = seat(start(stage));
             assert_eq!(
-                release(Some(&seat(start(stage))), record),
-                expected,
-                "{stage:?} with the record {record:?}"
+                release(Some(&seat), orphan(record)),
+                alone,
+                "{stage:?} with the record {record:?} and no relay"
+            );
+            assert_eq!(
+                release(Some(&seat), supervised(record)),
+                relayed,
+                "{stage:?} with the record {record:?} under a relay"
             );
         }
-        assert_eq!(release(None, R::None), Err(RELEASE_NOTHING));
+        // Let run, in the gap before supervision, its launch still at
+        // work: still starting.
+        for driver in [Driver::Launching, Driver::Recovering] {
+            assert_eq!(
+                release(
+                    Some(&seat(start(Stage::Activated))),
+                    driven(Record::Running, driver)
+                ),
+                Err(RELEASE_STARTING)
+            );
+        }
+        assert_eq!(release(None, orphan(R::None)), Err(RELEASE_NOTHING));
+    }
+
+    /// A release, a stop and a cleanup exclude one another, and the one
+    /// admitted first stands. After a stop, nothing is released. After
+    /// a start has ended and its cleanup been admitted, nothing is
+    /// released. After a release, the start has ended as released in
+    /// that one commit, and nothing of the team's is admitted for it: no
+    /// progress, no cleanup, no stop, and no resuming by a late
+    /// recovery. There is no state in which a release is asked and not
+    /// yet made.
+    #[test]
+    fn the_first_of_a_release_a_stop_and_a_cleanup_stands() {
+        let id = StartId::from("start-one");
+        // A stop first.
         let mut stopped = start(Stage::Complete);
-        stopped.disposition = Some(Disposition::Stop);
+        stopped.stopping = true;
+        let stopped = seat(stopped);
         assert_eq!(
-            release(Some(&seat(stopped)), R::Running),
+            release(Some(&stopped), supervised(Record::Running)),
             Err(RELEASE_STOPPED)
         );
+        assert!(!stopped.owns(1, &id), "nothing more of the team's for it");
+        // A cleanup first.
+        let mut cleaning = start(Stage::Running);
+        cleaning.end = Some(End::Cancelled {
+            why: "stopped".into(),
+        });
+        cleaning.cleanup_owed = true;
+        let cleaning = seat(cleaning);
+        assert_eq!(
+            release(Some(&cleaning), supervised(Record::Running)),
+            Err(RELEASE_ENDED)
+        );
+        assert!(cleaning.may_clean(&id));
+        // A release first: the commit that makes it ends the start.
         let mut released = start(Stage::Complete);
         released.end = Some(End::Released);
+        released.cleanup_owed = true;
+        assert!(released.released());
+        let released = seat(released);
+        assert!(!released.owns(1, &id), "no progress");
+        assert!(
+            !released.may_clean(&id),
+            "no cleanup of what is not the team's"
+        );
         assert_eq!(
-            release(Some(&seat(released)), R::Running),
-            Err(RELEASE_NOTHING)
+            stop(Some(&released), supervised(Record::Running)).run,
+            StopRun::Nothing
+        );
+        assert_eq!(
+            release(Some(&released), supervised(Record::Running)),
+            Err(RELEASE_NOTHING),
+            "not twice"
+        );
+        assert_eq!(
+            standing(Some(&released), supervised(Record::Running)),
+            Standing::NotStarted,
+            "a plain session, not the member's"
         );
     }
 
-    /// A driver writes to a seat only while it is that seat's current,
-    /// unended start at that generation: after a stop advanced the
-    /// generation, after a new start took the seat, or after its own
-    /// start ended, it writes nothing there.
+    /// A driver goes on with a start only at the generation that is the
+    /// seat's now and the start's own. After a stop advanced the seat's
+    /// generation and kept the old start, neither the old number nor
+    /// the seat's new one passes for it; what the old operation may
+    /// still do is its own cleanup, and only that.
     #[test]
-    fn an_old_driver_cannot_write_to_a_seat_that_moved_on() {
+    fn an_old_driver_cannot_go_on_in_a_seat_that_moved_on() {
         let mine = StartId::from("start-one");
         let mut seat = seat(start(Stage::Running));
         assert!(seat.owns(1, &mine));
         assert!(!seat.owns(1, &StartId::from("another")));
+        // A stop: the seat's generation moves, the old start is kept.
         seat.generation = 2;
-        assert!(!seat.owns(1, &mine), "a stop advanced the generation");
+        seat.start.as_mut().unwrap().stopping = true;
+        seat.start.as_mut().unwrap().cleanup_owed = true;
+        assert!(!seat.owns(1, &mine), "the generation it was begun at");
+        assert!(!seat.owns(2, &mine), "the seat's current one, read anew");
+        assert!(seat.may_clean(&mine), "its own cleanup is still its to do");
+        assert!(!seat.may_clean(&StartId::from("another")));
+        // The generation alone, without the stop being written, does
+        // not pass either.
+        seat.start.as_mut().unwrap().stopping = false;
+        assert!(!seat.owns(1, &mine) && !seat.owns(2, &mine));
+        // Its own start ended.
         seat.generation = 1;
         seat.start.as_mut().unwrap().end = Some(End::Cancelled {
             why: "stopped".into(),
         });
-        assert!(!seat.owns(1, &mine), "its own start has ended");
+        assert!(!seat.owns(1, &mine));
+        seat.start.as_mut().unwrap().cleanup_owed = false;
+        assert!(!seat.may_clean(&mine), "nothing left to clean");
+        // A new start took the seat.
         let mut next = start(Stage::Reserved);
         next.id = StartId::from("start-two");
         next.generation = 3;
@@ -1057,26 +1673,114 @@ mod tests {
         assert!(!Seat::new(MemberId::from("member-one")).owns(0, &mine));
     }
 
-    /// A reader's word for a member, stage by stage.
+    /// An id carries the words first prepared under it and no others.
+    /// The first words could not be queued (a full inbox); what is owed
+    /// changed before the start was tried again; the seat was stored and
+    /// read back in between: the retry queues the words it prepared.
+    /// What the member is told later goes under an id of its own.
+    #[test]
+    fn an_id_carries_the_words_first_prepared_under_it() {
+        let mut interrupted = start(Stage::CardsSettled);
+        assert_eq!(
+            interrupted.first_words.text, None,
+            "reserved before they exist"
+        );
+        let first = "You are the writer. AD-7 is yours; AD-9 waits on a lease.";
+        assert_eq!(interrupted.first_words.prepare(first), first);
+        // Stored and read back, as a daemon that reopened would.
+        let stored = serde_json::to_value(seat(interrupted)).unwrap();
+        let mut reopened: Seat = serde_json::from_value(stored).unwrap();
+        let again = reopened.start.as_mut().unwrap();
+        assert_eq!(
+            again.first_words.id,
+            MessageId::from("message-one".to_owned())
+        );
+        // The lease ended meanwhile: the words that would be written
+        // now are different, and are not what goes under that id.
+        let now = "You are the writer. AD-7 and AD-9 are yours.";
+        assert_eq!(again.first_words.prepare(now), first);
+        assert_eq!(again.first_words.text.as_deref(), Some(first));
+        // The later word has its own id and its own text.
+        again.follow_up = Some(Words::reserved(MessageId::from("message-two".to_owned())));
+        let follow_up = again.follow_up.as_mut().unwrap();
+        assert_eq!(follow_up.prepare(now), now);
+        assert_ne!(follow_up.id, again.first_words.id);
+        assert_eq!(again.first_words.text.as_deref(), Some(first));
+    }
+
+    /// A reader's word for a member, by the same situation the others
+    /// read. Running is said only of a supervised run.
     #[test]
     fn where_a_member_stands_for_a_reader() {
-        assert_eq!(standing(None, seen(Record::None)), Standing::NotStarted);
+        assert_eq!(standing(None, orphan(Record::None)), Standing::NotStarted);
+        // (stage, record, with no relay, under a relay)
         let table = [
-            (Stage::Reserved, Record::None, Standing::Starting),
-            (Stage::RecordBound, Record::Created, Standing::Starting),
-            (Stage::Running, Record::Running, Standing::Starting),
-            (Stage::Activated, Record::Running, Standing::Starting),
-            (Stage::CardsSettled, Record::Running, Standing::Starting),
-            (Stage::Complete, Record::Running, Standing::Running),
-            (Stage::Complete, Record::Stopping, Standing::Stopping),
-            (Stage::Complete, Record::Ended, Standing::NotStarted),
-            (Stage::Activated, Record::Ended, Standing::Failed),
+            (
+                Stage::Reserved,
+                Record::None,
+                Standing::Starting,
+                Standing::Starting,
+            ),
+            (
+                Stage::RecordBound,
+                Record::Created,
+                Standing::Starting,
+                Standing::Starting,
+            ),
+            (
+                Stage::Running,
+                Record::Running,
+                Standing::Starting,
+                Standing::Starting,
+            ),
+            (
+                Stage::Activated,
+                Record::Running,
+                Standing::Starting,
+                Standing::Starting,
+            ),
+            (
+                Stage::CardsSettled,
+                Record::Running,
+                Standing::Starting,
+                Standing::Starting,
+            ),
+            (
+                Stage::Complete,
+                Record::Running,
+                Standing::Starting,
+                Standing::Running,
+            ),
+            (
+                Stage::Complete,
+                Record::Stopping,
+                Standing::Stopping,
+                Standing::Stopping,
+            ),
+            (
+                Stage::Complete,
+                Record::Ended,
+                Standing::NotStarted,
+                Standing::NotStarted,
+            ),
+            (
+                Stage::Activated,
+                Record::Ended,
+                Standing::Failed,
+                Standing::Failed,
+            ),
         ];
-        for (stage, record, expected) in table {
+        for (stage, record, alone, relayed) in table {
+            let seat = seat(start(stage));
             assert_eq!(
-                standing(Some(&seat(start(stage))), seen(record)),
-                expected,
-                "{stage:?} with the record {record:?}"
+                standing(Some(&seat), orphan(record)),
+                alone,
+                "{stage:?} with the record {record:?} and no relay"
+            );
+            assert_eq!(
+                standing(Some(&seat), supervised(record)),
+                relayed,
+                "{stage:?} with the record {record:?} under a relay"
             );
         }
         let mut failed = start(Stage::RecordBound);
@@ -1084,7 +1788,7 @@ mod tests {
             why: "the runtime is not installed".into(),
         });
         assert_eq!(
-            standing(Some(&seat(failed)), seen(Record::Ended)),
+            standing(Some(&seat(failed)), orphan(Record::Ended)),
             Standing::Failed
         );
         let mut cancelled = start(Stage::Running);
@@ -1093,13 +1797,19 @@ mod tests {
         });
         cancelled.cleanup_owed = true;
         assert_eq!(
-            standing(Some(&seat(cancelled.clone())), seen(Record::Running)),
+            standing(Some(&seat(cancelled.clone())), orphan(Record::Running)),
             Standing::Stopping
         );
         cancelled.cleanup_owed = false;
         assert_eq!(
-            standing(Some(&seat(cancelled)), seen(Record::Ended)),
+            standing(Some(&seat(cancelled)), orphan(Record::Ended)),
             Standing::NotStarted
+        );
+        let mut asked = start(Stage::Activated);
+        asked.stopping = true;
+        assert_eq!(
+            standing(Some(&seat(asked)), supervised(Record::Running)),
+            Standing::Stopping
         );
         // Every word has its wire form, and a reader that does not know
         // a word reads unknown, never not started.
@@ -1145,34 +1855,44 @@ mod tests {
             card: TaskId::from("task-two".to_owned()),
             why: "another session holds a lease on it".into(),
         });
+        stored.first_words.prepare("You are the writer.");
         let mut seat = seat(stored);
-        seat.wanted = Some(wanted());
+        seat.wanted = Some(wanted(2));
         let json = serde_json::to_value(&seat).unwrap();
         assert_eq!(serde_json::from_value::<Seat>(json.clone()).unwrap(), seat);
         let written = json["start"].as_object().unwrap();
-        for unset in ["end", "disposition", "cleanup_owed", "uncertain"] {
+        for unset in ["end", "stopping", "cleanup_owed", "uncertain", "follow_up"] {
             assert!(!written.contains_key(unset), "{unset}");
         }
         assert_eq!(json["start"]["stage"], "instructed");
+        assert_eq!(json["start"]["run"], "run-one");
+        assert_eq!(json["start"]["first_words"]["text"], "You are the writer.");
         assert_eq!(json["start"]["cards"]["owed"][0]["card"], "task-two");
-        // A bare seat.
+        // A bare seat, and a reserved start with no run yet.
         let bare = Seat::new(MemberId::from("member-one"));
         assert_eq!(
             serde_json::to_value(&bare).unwrap(),
             serde_json::json!({"member": "member-one", "generation": 0})
         );
-        // An end, as it is written.
+        let reserved = serde_json::to_value(start(Stage::Reserved)).unwrap();
+        assert!(reserved.get("run").is_none());
+        assert!(reserved["first_words"].get("text").is_none());
+        // An end, and a stop asked, as they are written.
         let mut failed = start(Stage::Running);
         failed.end = Some(End::Failed {
             why: "its owner went away".into(),
         });
-        failed.disposition = Some(Disposition::Stop);
+        failed.stopping = true;
         let json = serde_json::to_value(&failed).unwrap();
         assert_eq!(
             json["end"],
             serde_json::json!({"how": "failed", "why": "its owner went away"})
         );
-        assert_eq!(json["disposition"], "stop");
+        assert_eq!(json["stopping"], true);
         assert_eq!(serde_json::from_value::<Start>(json).unwrap(), failed);
+        assert_eq!(
+            serde_json::to_value(End::Released).unwrap(),
+            serde_json::json!({"how": "released"})
+        );
     }
 }
