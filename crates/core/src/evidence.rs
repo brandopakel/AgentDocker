@@ -21,9 +21,11 @@ pub enum FindingsPresence {
     Stated,
     /// The reviewer gave none: the counts say nothing.
     NotStated,
-    /// Given by a client or daemon from before this was kept: the counts
-    /// are as recorded, and whether they were stated cannot be told.
+    /// Given by a client or daemon from before this was kept, or a word a
+    /// newer build wrote: the counts are as recorded, and whether they were
+    /// stated cannot be told.
     #[default]
+    #[serde(other)]
     Unknown,
 }
 
@@ -69,14 +71,33 @@ pub enum WindowSource {
     PreviousVerdict,
     /// Inferred: the reviewer's record's start.
     RecordStart,
+    /// A word a newer build wrote.
+    #[serde(other)]
+    Unknown,
 }
 
-/// The samples read: those whose own time is in `[from, to]`.
+/// The verdict a window's start was taken from: its id, its place in the
+/// project's order, and the boundary it gave, which is where its own read
+/// ended (its time, for a verdict that kept no read).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Predecessor {
+    pub id: String,
+    pub seq: u64,
+    pub boundary: DateTime<Utc>,
+}
+
+/// The samples read: those whose own time is in `[from, to)`. `to` is
+/// where the read ended (`captured_at`), and a next round inferred from
+/// this one starts exactly there, so no sample falls between two rounds
+/// and none is in both.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Window {
     pub from: DateTime<Utc>,
     pub to: DateTime<Utc>,
     pub source: WindowSource,
+    /// The verdict `from` was taken from, for a `previous_verdict` window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous: Option<Predecessor>,
 }
 
 /// The window for a verdict given at `to`: the reviewer's stated start,
@@ -84,7 +105,7 @@ pub struct Window {
 /// `None` when none is known. A stated start after the verdict is refused.
 pub fn window(
     stated: Option<DateTime<Utc>>,
-    previous: Option<DateTime<Utc>>,
+    previous: Option<Predecessor>,
     record_start: Option<DateTime<Utc>>,
     to: DateTime<Utc>,
 ) -> Result<Option<Window>, &'static str> {
@@ -96,21 +117,44 @@ pub fn window(
             from,
             to,
             source: WindowSource::Stated,
+            previous: None,
         }));
     }
-    let inferred = previous
-        .map(|from| (from, WindowSource::PreviousVerdict))
-        .or_else(|| record_start.map(|from| (from, WindowSource::RecordStart)));
+    let inferred = match previous {
+        Some(previous) => Some((
+            previous.boundary,
+            WindowSource::PreviousVerdict,
+            Some(previous),
+        )),
+        None => record_start.map(|from| (from, WindowSource::RecordStart, None)),
+    };
     Ok(inferred
-        .filter(|(from, _)| *from <= to)
-        .map(|(from, source)| Window { from, to, source }))
+        .filter(|(from, _, _)| *from <= to)
+        .map(|(from, source, previous)| Window {
+            from,
+            to,
+            source,
+            previous,
+        }))
 }
 
-/// The collector's facts as they were at capture, labelled so.
+/// The collector's facts as they were at capture, labelled so; each
+/// absent when it could not be read, which is never the same as off.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Collector {
-    /// Whether collection was configured on at capture.
-    pub enabled: bool,
+    /// Whether collection was configured on at capture; absent when the
+    /// configuration could not be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// The collection's phase as it recorded it (`scanning`, `caught_up`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_complete: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_files: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_tail_files: Option<u64>,
     /// When the collector last finished a walk of its sources, if it has.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_walk: Option<DateTime<Utc>>,
@@ -126,6 +170,11 @@ pub struct Observed {
     /// The earliest usage time retention kept at capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub retained_from: Option<DateTime<Utc>>,
+    /// The lower bound actually read: the window's start, or the retention
+    /// cutoff when that is later, so an expired sample not yet pruned is
+    /// never counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_from: Option<DateTime<Utc>>,
     pub collector: Collector,
     pub result: ObservedResult,
     /// Why what was found may not be all there was, each said.
@@ -146,6 +195,9 @@ pub enum ObservedResult {
     },
     /// No read could be made or finished: nothing is claimed.
     Unavailable { why: String },
+    /// A word a newer build wrote: nothing is claimed.
+    #[serde(other)]
+    Unknown,
 }
 
 /// A completed read's comparison facts, kept whole, apart from what is
@@ -190,9 +242,11 @@ pub const MAX_PROVIDERS: usize = 64;
 pub const MAX_PAIRS: usize = 8;
 
 impl Found {
-    /// Whether these facts are complete enough for a comparison to say the
-    /// providers differ: every sample named one, and the list is whole.
-    pub fn eligible_for_different(&self) -> bool {
+    /// Whether these facts are complete: every sample named a provider,
+    /// and the list is whole. Only completeness: whether a provider string
+    /// is a known vendor is the comparison's to judge, from the strings
+    /// kept as recorded.
+    pub fn complete(&self) -> bool {
         !self.providers_truncated && self.unknown_provider == 0
     }
 }
@@ -206,8 +260,29 @@ pub enum Incomplete {
     /// The collector's last walk ended before the window did: a later
     /// ingestion may add samples.
     CollectorBehind,
+    /// The collector had not caught up (still discovering, scanning, or
+    /// with files pending), or its state could not be read.
+    CollectorPending,
     /// Collection was off at capture.
     CollectorOff,
+    /// Whether collection was on could not be read.
+    EnabledUnknown,
+    /// A word a newer build wrote.
+    #[serde(other)]
+    Unknown,
+}
+
+impl Incomplete {
+    pub fn said(self) -> &'static str {
+        match self {
+            Incomplete::BeforeRetention => "the window starts before retention",
+            Incomplete::CollectorBehind => "the collector's last walk ended before the window did",
+            Incomplete::CollectorPending => "the collector had not caught up",
+            Incomplete::CollectorOff => "collection was off",
+            Incomplete::EnabledUnknown => "whether collection was on is unknown",
+            Incomplete::Unknown => "an unknown limitation",
+        }
+    }
 }
 
 /// The reasons that hold for a window, retention and collector.
@@ -227,8 +302,18 @@ pub fn incomplete(
     {
         reasons.push(Incomplete::CollectorBehind);
     }
-    if !collector.enabled {
-        reasons.push(Incomplete::CollectorOff);
+    // The collector's own rule for having caught up, each fact known.
+    let caught_up = collector.state.as_deref() == Some("caught_up")
+        && collector.discovery_complete == Some(true)
+        && collector.pending_files == Some(0)
+        && collector.pending_tail_files == Some(0);
+    if !caught_up {
+        reasons.push(Incomplete::CollectorPending);
+    }
+    match collector.enabled {
+        Some(true) => {}
+        Some(false) => reasons.push(Incomplete::CollectorOff),
+        None => reasons.push(Incomplete::EnabledUnknown),
     }
     reasons
 }
@@ -244,20 +329,32 @@ mod tests {
     #[test]
     fn a_window_is_stated_or_named_as_inferred() {
         let to = at(100);
-        let stated = window(Some(at(10)), Some(at(50)), Some(at(0)), to)
+        let before = |minutes| Predecessor {
+            id: "v1".into(),
+            seq: 4,
+            boundary: at(minutes),
+        };
+        let stated = window(Some(at(10)), Some(before(50)), Some(at(0)), to)
             .unwrap()
             .unwrap();
-        assert_eq!((stated.from, stated.source), (at(10), WindowSource::Stated));
+        assert_eq!(
+            (stated.from, stated.source, stated.previous),
+            (at(10), WindowSource::Stated, None)
+        );
         assert!(window(Some(at(101)), None, None, to).is_err());
-        let previous = window(None, Some(at(50)), Some(at(0)), to)
+        // The previous round's boundary, and which round gave it.
+        let previous = window(None, Some(before(50)), Some(at(0)), to)
             .unwrap()
             .unwrap();
-        assert_eq!(previous.source, WindowSource::PreviousVerdict);
+        assert_eq!(
+            (previous.from, previous.source, previous.previous),
+            (at(50), WindowSource::PreviousVerdict, Some(before(50)))
+        );
         let start = window(None, None, Some(at(0)), to).unwrap().unwrap();
         assert_eq!(start.source, WindowSource::RecordStart);
         assert_eq!(window(None, None, None, to).unwrap(), None);
         // An inferred start after the verdict forms no window.
-        assert_eq!(window(None, Some(at(200)), None, to).unwrap(), None);
+        assert_eq!(window(None, Some(before(200)), None, to).unwrap(), None);
     }
 
     #[test]
@@ -266,9 +363,14 @@ mod tests {
             from: at(10),
             to: at(100),
             source: WindowSource::PreviousVerdict,
+            previous: None,
         };
         let on = Collector {
-            enabled: true,
+            enabled: Some(true),
+            state: Some("caught_up".into()),
+            discovery_complete: Some(true),
+            pending_files: Some(0),
+            pending_tail_files: Some(0),
             last_walk: Some(at(120)),
         };
         assert!(incomplete(Some(&w), Some(at(0)), &on).is_empty());
@@ -277,27 +379,68 @@ mod tests {
             vec![Incomplete::BeforeRetention]
         );
         let behind = Collector {
-            enabled: true,
             last_walk: Some(at(90)),
+            ..on.clone()
         };
         assert_eq!(
             incomplete(Some(&w), None, &behind),
             vec![Incomplete::CollectorBehind]
         );
+        // A recent walk does not hide one still under way or with files
+        // pending, and a state that could not be read is not caught up.
+        for pending in [
+            Collector {
+                state: Some("scanning".into()),
+                ..on.clone()
+            },
+            Collector {
+                discovery_complete: Some(false),
+                ..on.clone()
+            },
+            Collector {
+                pending_files: Some(3),
+                ..on.clone()
+            },
+            Collector {
+                pending_tail_files: None,
+                ..on.clone()
+            },
+            Collector {
+                enabled: Some(true),
+                last_walk: Some(at(120)),
+                ..Collector::default()
+            },
+        ] {
+            assert_eq!(
+                incomplete(Some(&w), None, &pending),
+                vec![Incomplete::CollectorPending],
+                "{pending:?}"
+            );
+        }
         let off = Collector {
-            enabled: false,
-            last_walk: Some(at(120)),
+            enabled: Some(false),
+            ..on.clone()
         };
         assert_eq!(
             incomplete(Some(&w), None, &off),
             vec![Incomplete::CollectorOff]
         );
+        // A configuration that could not be read is not "off".
+        let unread = Collector {
+            enabled: None,
+            ..on.clone()
+        };
+        assert_eq!(
+            incomplete(Some(&w), None, &unread),
+            vec![Incomplete::EnabledUnknown]
+        );
     }
 
-    /// A truncated list or a sample with no provider can never support
-    /// "different".
+    /// A truncated list or a sample with no provider is never complete;
+    /// whether a complete list's providers are known vendors is the
+    /// comparison's to judge.
     #[test]
-    fn only_whole_provider_facts_can_differ() {
+    fn only_whole_provider_facts_are_complete() {
         let whole = Found {
             samples: 3,
             providers: vec![ProviderCount {
@@ -306,20 +449,20 @@ mod tests {
             }],
             ..Found::default()
         };
-        assert!(whole.eligible_for_different());
+        assert!(whole.complete());
         assert!(
             !Found {
                 providers_truncated: true,
                 ..whole.clone()
             }
-            .eligible_for_different()
+            .complete()
         );
         assert!(
             !Found {
                 unknown_provider: 1,
                 ..whole.clone()
             }
-            .eligible_for_different()
+            .complete()
         );
     }
 
@@ -335,6 +478,7 @@ mod tests {
                 window: None,
                 captured_at: at(0),
                 retained_from: None,
+                read_from: None,
                 collector: Collector::default(),
                 result: ObservedResult::Unavailable {
                     why: "the reviewer's session is not known".into(),
@@ -352,5 +496,29 @@ mod tests {
             FindingsPresence::Stated
         );
         assert_eq!(FindingsPresence::default(), FindingsPresence::Unknown);
+    }
+
+    /// A word a newer build writes reads as unknown, never as a decoding
+    /// failure that would stop every read of the verdicts beside it.
+    #[test]
+    fn a_newer_word_reads_as_unknown() {
+        assert_eq!(
+            serde_json::from_str::<FindingsPresence>("\"estimated\"").unwrap(),
+            FindingsPresence::Unknown
+        );
+        let observed: Observed = serde_json::from_value(serde_json::json!({
+            "window": {"from": at(0), "to": at(1), "source": "from_a_card"},
+            "captured_at": at(1),
+            "collector": {},
+            "result": {"result": "sampled", "share": 3},
+            "incomplete": ["clock_skew", "collector_off"],
+        }))
+        .unwrap();
+        assert_eq!(observed.window.unwrap().source, WindowSource::Unknown);
+        assert_eq!(observed.result, ObservedResult::Unknown);
+        assert_eq!(
+            observed.incomplete,
+            vec![Incomplete::Unknown, Incomplete::CollectorOff]
+        );
     }
 }

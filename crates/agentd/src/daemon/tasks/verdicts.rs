@@ -207,11 +207,14 @@ impl State {
 }
 
 impl Daemon {
-    /// What answered the reviewer's own session, in a hold of its own: the
-    /// window from its stated start, else its previous verdict on this
-    /// branch, else its record's start; the retained data's facts at
-    /// capture; and the bounded read. A read that cannot be made or
-    /// finished is unavailable, never an empty success.
+    /// What answered the reviewer's own session, in a hold of its own and
+    /// one bounded snapshot of the store, its deadline started with the
+    /// hold: the window from its stated start, else where its previous
+    /// verdict on this branch ended its read, else its record's start; the
+    /// retention cutoff and the collector's facts as the same snapshot had
+    /// them; and the reviewer's own usage from the later of the window's
+    /// start and the cutoff. A read that cannot be made or finished is
+    /// unavailable, with nothing it read kept, never an empty success.
     fn observe_reviewer(
         &self,
         project: &ProjectId,
@@ -221,79 +224,133 @@ impl Daemon {
         since: Option<DateTime<Utc>>,
         config: Option<&agentdocker_core::config::UsageConfig>,
     ) -> Observed {
-        let captured_at = Utc::now();
+        use agentdocker_core::evidence::Window;
         let mut state = lock(&self.state);
-        let previous = state.project_verdicts(project).ok().and_then(|verdicts| {
-            verdicts
-                .into_iter()
-                .filter(|v| v.by.as_str() == reviewer && v.branch == branch)
-                .max_by_key(|v| v.seq)
-                .map(|v| v.at)
-        });
-        let window = agentdocker_core::evidence::window(
-            since,
-            previous,
-            record.and_then(|r| r.started_at),
-            captured_at,
-        )
-        .ok()
-        .flatten();
-        let last_walk = state
-            .store_read("usage collection", |store| store.usage_collection())
-            .flatten()
-            .and_then(|collection| collection.completed_at);
-        let collector = Collector {
-            enabled: config.is_some_and(|config| config.enabled),
-            last_walk,
-        };
-        let retained_from =
+        let deadline = std::time::Instant::now() + OBSERVE_BUDGET;
+        let captured_at = Utc::now();
+        let configured_cutoff =
             config.map(|config| crate::daemon::usage::retained(captured_at, config));
-        let retained_from = match retained_from {
-            Some(requested) => state
-                .store_read("usage retention", |store| {
-                    store.usage_retained_since(requested)
-                })
-                .or(Some(requested)),
-            None => None,
-        };
+        let record_start = record.and_then(|r| r.started_at);
         let session = record.and_then(|r| r.spec.labels.get("session_id").cloned());
-        let result = match (record, &session, &window) {
-            (None, _, _) | (_, None, _) => ObservedResult::Unavailable {
-                why: "the reviewer's session is not known".to_owned(),
-            },
-            (_, _, None) => ObservedResult::Unavailable {
-                why: "no observation window is known".to_owned(),
-            },
-            (Some(record), Some(session), Some(window)) => {
-                let own = crate::store::usage::OwnSession {
-                    agent: reviewer,
-                    runtime: &record.spec.runtime,
-                    session,
-                    from: window.from,
-                    to: window.to,
+        struct Read {
+            window: Option<Window>,
+            collection: Option<agentdocker_core::usage::report::Collection>,
+            retained_from: Option<DateTime<Utc>>,
+            read_from: Option<DateTime<Utc>>,
+            found: Option<agentdocker_core::evidence::Found>,
+        }
+        let read = state.store_read("usage evidence", |store| {
+            store.bounded_snapshot(deadline, |snapshot| {
+                let previous = match since {
+                    Some(_) => None,
+                    None => snapshot.predecessor(VERDICT, project.as_str(), branch, reviewer)?,
                 };
-                match state.store_read("usage evidence", |store| {
-                    store.observed_usage(&own, OBSERVE_BUDGET)
-                }) {
-                    Some(Ok(found)) if found.samples == 0 => ObservedResult::NoneFound {
-                        other_sessions: found.other_sessions,
-                    },
-                    Some(Ok(found)) => ObservedResult::Found(found),
-                    Some(Err(_)) => ObservedResult::Unavailable {
-                        why: "the usage read ran past its budget and was stopped".to_owned(),
-                    },
-                    None => ObservedResult::Unavailable {
-                        why: "the usage store could not be read".to_owned(),
-                    },
-                }
+                let window =
+                    agentdocker_core::evidence::window(since, previous, record_start, captured_at)
+                        .ok()
+                        .flatten();
+                let collection = snapshot.collection()?;
+                let retained_from = snapshot.retention_floor()?.max(configured_cutoff);
+                let read_from = window
+                    .as_ref()
+                    .map(|w| retained_from.map_or(w.from, |cutoff| cutoff.max(w.from)));
+                let found = match (record, &session, &window, read_from) {
+                    (Some(record), Some(session), Some(window), Some(from)) if from < window.to => {
+                        Some(snapshot.own_usage(&crate::store::usage::OwnSession {
+                            agent: reviewer,
+                            runtime: &record.spec.runtime,
+                            session,
+                            from,
+                            to: window.to,
+                        })?)
+                    }
+                    _ => None,
+                };
+                Ok(Read {
+                    window,
+                    collection,
+                    retained_from,
+                    read_from,
+                    found,
+                })
+            })
+        });
+        let enabled = config.map(|config| config.enabled);
+        let unavailable = |why: &str| {
+            // Nothing the read took is kept: only what was stated.
+            let window = since.map(|from| Window {
+                from,
+                to: captured_at,
+                source: agentdocker_core::evidence::WindowSource::Stated,
+                previous: None,
+            });
+            let collector = Collector {
+                enabled,
+                ..Collector::default()
+            };
+            Observed {
+                incomplete: agentdocker_core::evidence::incomplete(
+                    window.as_ref(),
+                    None,
+                    &collector,
+                ),
+                window,
+                captured_at,
+                retained_from: None,
+                read_from: None,
+                collector,
+                result: ObservedResult::Unavailable {
+                    why: why.to_owned(),
+                },
             }
         };
-        let incomplete =
-            agentdocker_core::evidence::incomplete(window.as_ref(), retained_from, &collector);
+        let read = match read {
+            None => return unavailable("the usage store could not be read"),
+            Some(Err(_)) => {
+                return unavailable("the usage read ran past its budget and was stopped");
+            }
+            Some(Ok(read)) => read,
+        };
+        let collector = Collector {
+            enabled,
+            state: read.collection.as_ref().and_then(|collection| {
+                serde_json::to_value(collection.state)
+                    .ok()
+                    .and_then(|word| word.as_str().map(str::to_owned))
+            }),
+            discovery_complete: read.collection.as_ref().map(|c| c.discovery_complete),
+            pending_files: read.collection.as_ref().and_then(|c| c.pending_files),
+            pending_tail_files: read.collection.as_ref().and_then(|c| c.pending_tail_files),
+            last_walk: read.collection.as_ref().and_then(|c| c.completed_at),
+        };
+        let result = match (&session, &read.window, read.read_from, read.found) {
+            (None, _, _, _) => ObservedResult::Unavailable {
+                why: "the reviewer's session is not known".to_owned(),
+            },
+            (_, None, _, _) => ObservedResult::Unavailable {
+                why: "no observation window is known".to_owned(),
+            },
+            (_, _, _, Some(found)) if found.samples > 0 => ObservedResult::Found(found),
+            (_, _, _, Some(found)) => ObservedResult::NoneFound {
+                other_sessions: found.other_sessions,
+            },
+            (_, Some(window), Some(from), None) if from > window.from => {
+                ObservedResult::Unavailable {
+                    why: "the window is wholly before what retention kept".to_owned(),
+                }
+            }
+            _ => ObservedResult::NoneFound { other_sessions: 0 },
+        };
+        let incomplete = agentdocker_core::evidence::incomplete(
+            read.window.as_ref(),
+            read.retained_from,
+            &collector,
+        );
         Observed {
-            window,
+            window: read.window,
             captured_at,
-            retained_from,
+            retained_from: read.retained_from,
+            read_from: read.read_from,
             collector,
             result,
             incomplete,
@@ -1168,6 +1225,7 @@ mod tests {
     }
 
     use super::*;
+    use agentdocker_core::evidence::{Incomplete, Predecessor};
     use tempfile::TempDir;
 
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -1362,6 +1420,16 @@ mod tests {
                 ErrorCode::Invalid
             ));
         }
+        // Counts said not to be stated are none: a request for changes
+        // carrying one is refused before it is kept, never read as unstated.
+        for counted in [important, nit] {
+            assert!(refused(
+                daemon
+                    .handle(worded(&reviewer, "changes", counted, Some(false), None))
+                    .await,
+                ErrorCode::Invalid
+            ));
+        }
         // A stated start after now is refused.
         let later = Utc::now() + chrono::Duration::hours(1);
         assert!(refused(
@@ -1458,23 +1526,67 @@ mod tests {
         );
         assert_eq!(found.providers[0].provider, "openai");
         assert_eq!(found.other_sessions, 1);
-        // The next verdict's window opens at the first: nothing since.
+        // A sample at the moment the first read ended, before its verdict
+        // was kept, is the next round's: the windows meet, and neither
+        // counts what the other does.
+        let boundary = observed.captured_at;
+        assert_eq!(observed.window.as_ref().unwrap().to, boundary);
+        assert!(boundary <= first.at);
+        lock(&daemon.state)
+            .store
+            .insert_test_sample(
+                "between",
+                boundary,
+                reviewer.as_str(),
+                "codex",
+                "s1",
+                Some("openai"),
+                Some("model-b"),
+            )
+            .unwrap();
+        // Rounds observed before either is kept overlap, and each names
+        // the round its start came from.
+        let (record, project) = {
+            let state = lock(&daemon.state);
+            let record = state.registry.get(&reviewer).cloned().unwrap();
+            let project = record.project.as_ref().unwrap().id();
+            (record, project)
+        };
+        let overlapping = daemon.observe_reviewer(
+            &project,
+            "feature/x",
+            reviewer.as_str(),
+            Some(&record),
+            None,
+            None,
+        );
         let second = given(
             &daemon,
             worded(&reviewer, "none", Findings::default(), Some(false), None),
         )
         .await;
         let observed = second.evidence.unwrap().observed.unwrap();
-        let window = observed.window.unwrap();
+        let window = observed.window.clone().unwrap();
+        let named = Predecessor {
+            id: first.id.clone(),
+            seq: first.seq,
+            boundary,
+        };
         assert_eq!(
-            window.source,
-            agentdocker_core::evidence::WindowSource::PreviousVerdict
+            (window.source, window.from, window.previous),
+            (
+                agentdocker_core::evidence::WindowSource::PreviousVerdict,
+                boundary,
+                Some(named.clone())
+            )
         );
-        assert_eq!(window.from, first.at);
-        assert!(
-            matches!(observed.result, ObservedResult::NoneFound { .. }),
-            "{:?}",
-            observed.result
+        assert_eq!(overlapping.window.unwrap().previous, Some(named));
+        let ObservedResult::Found(found) = &observed.result else {
+            panic!("{observed:?}")
+        };
+        assert_eq!(
+            found.samples, 1,
+            "the sample between the first's read and its verdict"
         );
         // No session on the record: unavailable, never a guess.
         lock(&daemon.state)
@@ -1523,6 +1635,352 @@ mod tests {
         assert_eq!(
             verdicts.iter().map(|v| v.id.clone()).collect::<Vec<_>>(),
             vec![first.id, second.id, third.id, person.id]
+        );
+    }
+
+    /// A reviewer whose record has a Codex session `s1`, and one sample of
+    /// it from `minutes` ago.
+    async fn with_session(tmp: &TempDir, minutes: i64) -> (Arc<Daemon>, AgentId) {
+        let (daemon, reviewer) = reviewing(tmp).await;
+        let mut state = lock(&daemon.state);
+        let record = state.registry.get_mut(&reviewer).unwrap();
+        record.spec.runtime = "codex".into();
+        record.spec.labels.insert("session_id".into(), "s1".into());
+        state
+            .store
+            .insert_test_sample(
+                "own",
+                Utc::now() - chrono::Duration::minutes(minutes),
+                reviewer.as_str(),
+                "codex",
+                "s1",
+                Some("openai"),
+                Some("model-b"),
+            )
+            .unwrap();
+        drop(state);
+        (daemon, reviewer)
+    }
+
+    fn rounds(response: Response) -> Vec<CodeVerdict> {
+        match response {
+            Response::Verdicts { verdicts, .. } => verdicts,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A read whose deadline passes after its first aggregate keeps
+    /// nothing it read and latches nothing: the verdict is kept with its
+    /// evidence unavailable, and the next read and write are served.
+    #[tokio::test]
+    async fn a_read_stopped_after_its_first_aggregate_keeps_nothing_it_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, reviewer) = with_session(&tmp, 30).await;
+        let since = Utc::now() - chrono::Duration::hours(1);
+        // A stated start reads no predecessor: the collection, the cutoff
+        // and the provider aggregate complete, and the deadline has passed
+        // before the pairs.
+        lock(&daemon.state).store.evidence_stages.set(Some(3));
+        let stopped = given(
+            &daemon,
+            worded(
+                &reviewer,
+                "none",
+                Findings::default(),
+                Some(false),
+                Some(since),
+            ),
+        )
+        .await;
+        let observed = stopped.evidence.unwrap().observed.unwrap();
+        assert!(
+            matches!(&observed.result, ObservedResult::Unavailable { why } if why.contains("past its budget")),
+            "{:?}",
+            observed.result
+        );
+        assert_eq!(
+            (
+                observed.retained_from,
+                observed.read_from,
+                observed.collector.state
+            ),
+            (None, None, None),
+            "nothing the read took is kept"
+        );
+        assert_eq!(observed.window.unwrap().from, since, "what was stated is");
+        {
+            let state = lock(&daemon.state);
+            assert!(
+                state.storage_error.is_none(),
+                "an interruption latches nothing"
+            );
+            state.store.evidence_stages.set(None);
+        }
+        let next = given(
+            &daemon,
+            worded(
+                &reviewer,
+                "none",
+                Findings::default(),
+                Some(false),
+                Some(since),
+            ),
+        )
+        .await;
+        assert!(matches!(
+            next.evidence.unwrap().observed.unwrap().result,
+            ObservedResult::Found(_)
+        ));
+        let listed = rounds(
+            daemon
+                .handle(Request::Verdicts {
+                    agent: Some(reviewer.to_string()),
+                    project: None,
+                    branch: "feature/x".into(),
+                })
+                .await,
+        );
+        assert_eq!(listed.len(), 2);
+    }
+
+    /// The retention cutoff bounds what is counted: a sample past it that
+    /// is not yet pruned is never counted, the window stays as asked with
+    /// its limitation said, and a window wholly before the cutoff claims
+    /// nothing.
+    #[tokio::test]
+    async fn retention_bounds_the_samples_a_verdict_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, reviewer) = with_session(&tmp, 10).await;
+        let now = Utc::now();
+        let cutoff = now - chrono::Duration::minutes(30);
+        {
+            let state = lock(&daemon.state);
+            state
+                .store
+                .put_document("usage", "retained_since", &cutoff)
+                .unwrap();
+            state
+                .store
+                .insert_test_sample(
+                    "expired",
+                    cutoff - chrono::Duration::minutes(1),
+                    reviewer.as_str(),
+                    "codex",
+                    "s1",
+                    Some("google"),
+                    Some("model-c"),
+                )
+                .unwrap();
+        }
+        let since = now - chrono::Duration::hours(1);
+        let bounded = given(
+            &daemon,
+            worded(
+                &reviewer,
+                "none",
+                Findings::default(),
+                Some(false),
+                Some(since),
+            ),
+        )
+        .await;
+        let observed = bounded.evidence.unwrap().observed.unwrap();
+        assert_eq!(observed.window.as_ref().unwrap().from, since);
+        assert_eq!(
+            (observed.retained_from, observed.read_from),
+            (Some(cutoff), Some(cutoff))
+        );
+        assert!(observed.incomplete.contains(&Incomplete::BeforeRetention));
+        let ObservedResult::Found(found) = &observed.result else {
+            panic!("{observed:?}")
+        };
+        let providers: Vec<_> = found
+            .providers
+            .iter()
+            .map(|p| p.provider.as_str())
+            .collect();
+        assert_eq!(
+            providers,
+            vec!["openai"],
+            "the expired sample is not counted"
+        );
+        // A cutoff after the window's end leaves nothing to read.
+        lock(&daemon.state)
+            .store
+            .put_document(
+                "usage",
+                "retained_since",
+                &(now + chrono::Duration::hours(1)),
+            )
+            .unwrap();
+        let before = given(
+            &daemon,
+            worded(
+                &reviewer,
+                "none",
+                Findings::default(),
+                Some(false),
+                Some(since),
+            ),
+        )
+        .await;
+        assert!(matches!(
+            before.evidence.unwrap().observed.unwrap().result,
+            ObservedResult::Unavailable { why } if why.contains("wholly before")
+        ));
+    }
+
+    /// The collector's facts as they stood: a recent walk with files
+    /// pending says so, and a configuration that cannot be read is never
+    /// collection off.
+    #[tokio::test]
+    async fn the_collectors_facts_are_kept_as_they_stood() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, reviewer) = with_session(&tmp, 10).await;
+        let collection = agentdocker_core::usage::report::Collection {
+            state: agentdocker_core::usage::report::CollectionState::Scanning,
+            completed_at: Some(Utc::now()),
+            discovery_complete: true,
+            pending_files: Some(4),
+            pending_tail_files: Some(0),
+            ..Default::default()
+        };
+        lock(&daemon.state)
+            .store
+            .put_document("usage", "collection", &collection)
+            .unwrap();
+        std::fs::write(
+            tmp.path().join(agentdocker_core::config::FILE_NAME),
+            "usage = [",
+        )
+        .unwrap();
+        let since = Utc::now() - chrono::Duration::hours(1);
+        let given = given(
+            &daemon,
+            worded(
+                &reviewer,
+                "none",
+                Findings::default(),
+                Some(false),
+                Some(since),
+            ),
+        )
+        .await;
+        let observed = given.evidence.unwrap().observed.unwrap();
+        assert!(matches!(observed.result, ObservedResult::Found(_)));
+        assert_eq!(
+            observed.collector,
+            Collector {
+                enabled: None,
+                state: Some("scanning".into()),
+                discovery_complete: Some(true),
+                pending_files: Some(4),
+                pending_tail_files: Some(0),
+                last_walk: collection.completed_at,
+            }
+        );
+        assert!(observed.incomplete.contains(&Incomplete::CollectorPending));
+        assert!(observed.incomplete.contains(&Incomplete::EnabledUnknown));
+        assert!(!observed.incomplete.contains(&Incomplete::CollectorOff));
+    }
+
+    /// A verdict set aside keeps whether its counts were stated and its
+    /// evidence. An older daemon, whose set-aside rewrites the document
+    /// without them, is refused this store by its schema.
+    #[tokio::test]
+    async fn a_verdict_set_aside_keeps_its_facts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, reviewer) = with_session(&tmp, 10).await;
+        let important = Findings {
+            important: 1,
+            ..Findings::default()
+        };
+        let since = Utc::now() - chrono::Duration::hours(1);
+        let changes = given(
+            &daemon,
+            worded(&reviewer, "changes", important, Some(true), Some(since)),
+        )
+        .await;
+        assert!(changes.evidence.is_some());
+        let project = changes.project.to_string();
+        let answer = daemon
+            .handle(Request::SupersedeVerdict {
+                agent: HUMAN.into(),
+                project: Some(project.clone()),
+                verdict: changes.id.clone(),
+                reason: None,
+            })
+            .await;
+        assert!(!matches!(answer, Response::Error { .. }), "{answer:?}");
+        let kept: Vec<CodeVerdict> = lock(&daemon.state)
+            .store
+            .documents_where(VERDICT, "project", &project, 10)
+            .unwrap();
+        let kept = kept.into_iter().find(|v| v.id == changes.id).unwrap();
+        assert!(!kept.superseded.is_empty(), "set aside");
+        assert_eq!(
+            (kept.findings_presence, kept.evidence),
+            (changes.findings_presence, changes.evidence)
+        );
+        const {
+            assert!(
+                crate::store::SCHEMA_VERSION >= 33,
+                "a schema-32 daemon's set-aside drops these facts: it must be refused the store"
+            );
+        }
+    }
+
+    /// A verdict a newer build wrote, with words this one does not know,
+    /// reads with them as unknown: the branch's rounds are listed, nothing
+    /// latches, and a verdict after it is kept, its window from that one.
+    #[tokio::test]
+    async fn a_verdict_with_newer_words_reads_and_latches_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, reviewer) = with_session(&tmp, 10).await;
+        let first = given(
+            &daemon,
+            worded(&reviewer, "none", Findings::default(), Some(false), None),
+        )
+        .await;
+        let mut newer = serde_json::to_value(&first).unwrap();
+        newer["id"] = "newer".into();
+        newer["seq"] = 99.into();
+        newer["findings_presence"] = "estimated".into();
+        newer["evidence"] = serde_json::json!({"observed": {
+            "window": {"from": first.at, "to": first.at, "source": "from_a_card"},
+            "captured_at": first.at,
+            "collector": {},
+            "result": {"result": "sampled", "share": 3},
+            "incomplete": ["clock_skew"],
+        }});
+        lock(&daemon.state)
+            .store
+            .put_document(VERDICT, "newer", &newer)
+            .unwrap();
+        let listed = rounds(
+            daemon
+                .handle(Request::Verdicts {
+                    agent: Some(reviewer.to_string()),
+                    project: None,
+                    branch: "feature/x".into(),
+                })
+                .await,
+        );
+        let read = listed.iter().find(|v| v.id == "newer").unwrap();
+        assert_eq!(read.findings_presence, FindingsPresence::Unknown);
+        let observed = read.evidence.as_ref().unwrap().observed.as_ref().unwrap();
+        assert_eq!(observed.result, ObservedResult::Unknown);
+        assert_eq!(observed.incomplete, vec![Incomplete::Unknown]);
+        assert!(lock(&daemon.state).storage_error.is_none());
+        let after = given(
+            &daemon,
+            worded(&reviewer, "none", Findings::default(), Some(false), None),
+        )
+        .await;
+        let window = after.evidence.unwrap().observed.unwrap().window.unwrap();
+        assert_eq!(
+            window.previous.map(|p| (p.id, p.seq)),
+            Some(("newer".into(), 99))
         );
     }
 

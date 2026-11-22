@@ -114,9 +114,13 @@ fn parse_since(text: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
         return Ok(at.with_timezone(&chrono::Utc));
     }
     let (number, unit) = text.split_at(text.trim_end_matches(char::is_alphabetic).len());
-    let amount: i64 = number.parse().map_err(|_| {
-        "a start is an RFC 3339 time or a duration ago (`90m`, `2h`, `1d`)".to_owned()
-    })?;
+    let amount = number
+        .parse::<u64>()
+        .ok()
+        .and_then(|amount| i64::try_from(amount).ok())
+        .ok_or_else(|| {
+            "a start is an RFC 3339 time or a duration ago (`90m`, `2h`, `1d`)".to_owned()
+        })?;
     let seconds = match unit {
         "s" => 1,
         "m" => 60,
@@ -124,7 +128,11 @@ fn parse_since(text: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
         "d" => 86_400,
         _ => return Err("a duration ago ends in s, m, h or d".to_owned()),
     };
-    Ok(chrono::Utc::now() - chrono::Duration::seconds(amount.saturating_mul(seconds)))
+    amount
+        .checked_mul(seconds)
+        .and_then(chrono::Duration::try_seconds)
+        .and_then(|ago| chrono::Utc::now().checked_sub_signed(ago))
+        .ok_or_else(|| "that start is further back than a time can be".to_owned())
 }
 
 const FINDINGS_FORM: &str = "findings are three counts, important,nit,pre-existing (`0,1,0`)";
@@ -489,7 +497,17 @@ pub async fn verdicts(client: &Client, args: VerdictsArgs) -> Result<()> {
 
 /// One round: its order, word, commit, reviewer, counts and model evidence.
 fn round(v: &CodeVerdict) -> String {
+    use crate::out::text::shown;
     use agentdocker_core::evidence::{ObservedResult, WindowSource};
+    // A provider or model is what a record or a usage source said: shown
+    // with its controls and direction marks made visible.
+    let pair = |provider: Option<&str>, model: Option<&str>| {
+        format!(
+            "{}/{}",
+            shown(provider.unwrap_or("?")),
+            shown(model.unwrap_or("?"))
+        )
+    };
     let mut said = format!(
         "#{} {} at {} by {}{}",
         v.seq,
@@ -512,47 +530,61 @@ fn round(v: &CodeVerdict) -> String {
     };
     if let Some(configured) = &evidence.configured {
         said.push_str(&format!(
-            "; configured {}/{}",
-            configured.provider.as_deref().unwrap_or("?"),
-            configured.model.as_deref().unwrap_or("?")
+            "; configured {}",
+            pair(configured.provider.as_deref(), configured.model.as_deref())
         ));
     }
     if let Some(observed) = &evidence.observed {
-        let window = match observed.window.as_ref().map(|w| w.source) {
-            Some(WindowSource::Stated) => "since the stated start",
-            Some(WindowSource::PreviousVerdict) => "since its previous verdict (inferred)",
-            Some(WindowSource::RecordStart) => "since its record started (inferred)",
-            None => "with no window",
+        let window = match observed.window.as_ref() {
+            Some(window) => match (window.source, &window.previous) {
+                (WindowSource::Stated, _) => "since the stated start".to_owned(),
+                (WindowSource::PreviousVerdict, Some(previous)) => {
+                    format!("since its verdict #{} (inferred)", previous.seq)
+                }
+                (WindowSource::PreviousVerdict, None) => {
+                    "since its previous verdict (inferred)".to_owned()
+                }
+                (WindowSource::RecordStart, _) => "since its record started (inferred)".to_owned(),
+                (WindowSource::Unknown, _) => "in a window of a kind not known here".to_owned(),
+            },
+            None => "with no window".to_owned(),
+        };
+        let others = |count: u64| match count {
+            0 => String::new(),
+            1 => "; 1 sample attributed to it from another session".to_owned(),
+            n => format!("; {n} samples attributed to it from other sessions"),
         };
         match &observed.result {
             ObservedResult::Found(found) => {
                 let pairs: Vec<String> = found
                     .pairs
                     .iter()
-                    .map(|p| {
-                        format!(
-                            "{}/{}",
-                            p.provider.as_deref().unwrap_or("?"),
-                            p.model.as_deref().unwrap_or("?")
-                        )
-                    })
+                    .map(|p| pair(p.provider.as_deref(), p.model.as_deref()))
                     .collect();
                 said.push_str(&format!(
-                    "; observed {window}: {}{} in {} samples of retained data",
+                    "; observed {window}: {}{} in {} samples of retained data{}",
                     pairs.join(", "),
                     if found.pairs_truncated { ", …" } else { "" },
-                    found.samples
+                    found.samples,
+                    others(found.other_sessions)
                 ));
             }
-            ObservedResult::NoneFound { .. } => {
-                said.push_str(&format!("; observed {window}: none found in retained data"));
+            ObservedResult::NoneFound { other_sessions } => {
+                said.push_str(&format!(
+                    "; observed {window}: none of its own session in retained data{}",
+                    others(*other_sessions)
+                ));
             }
             ObservedResult::Unavailable { why } => {
-                said.push_str(&format!("; observed: unavailable ({why})"));
+                said.push_str(&format!("; observed: unavailable ({})", shown(why)));
+            }
+            ObservedResult::Unknown => {
+                said.push_str("; observed: a result of a kind not known here");
             }
         }
         if !observed.incomplete.is_empty() {
-            said.push_str(" (may be incomplete)");
+            let reasons: Vec<&str> = observed.incomplete.iter().map(|r| r.said()).collect();
+            said.push_str(&format!(" (may be incomplete: {})", reasons.join("; ")));
         }
     }
     said
@@ -989,6 +1021,73 @@ mod tests {
             evidence: None,
             superseded: Vec::new(),
         })
+    }
+
+    /// A start is a time or a duration ago; one too far back for a time
+    /// to hold, or negative, is refused, never a panic.
+    #[test]
+    fn a_start_too_far_back_is_refused() {
+        let ago = parse_since("90m").unwrap();
+        assert!(ago < chrono::Utc::now());
+        for far in [
+            "1000000000d",
+            "9223372036854775807s",
+            "99999999999999999999d",
+            "-5m",
+        ] {
+            assert!(parse_since(far).is_err(), "{far}");
+        }
+    }
+
+    /// A round says which limitations apply, the usage attributed to the
+    /// reviewer from other sessions, and the strings a source supplied
+    /// with their direction marks made visible.
+    #[test]
+    fn a_round_says_what_its_evidence_can_and_cannot_establish() {
+        use agentdocker_core::evidence::*;
+        let mut v = *verdict(&"a".repeat(40));
+        let at = chrono::Utc::now();
+        v.evidence = Some(ModelEvidence {
+            configured: Some(Configured {
+                provider: Some("open\u{202e}ai".into()),
+                model: Some("model-b".into()),
+            }),
+            session: Some("s1".into()),
+            observed: Some(Observed {
+                window: Some(Window {
+                    from: at,
+                    to: at,
+                    source: WindowSource::PreviousVerdict,
+                    previous: Some(Predecessor {
+                        id: "v1".into(),
+                        seq: 4,
+                        boundary: at,
+                    }),
+                }),
+                captured_at: at,
+                retained_from: None,
+                read_from: None,
+                collector: Collector::default(),
+                result: ObservedResult::NoneFound { other_sessions: 3 },
+                incomplete: vec![Incomplete::BeforeRetention, Incomplete::CollectorOff],
+            }),
+        });
+        let line = round(&v);
+        assert!(
+            line.contains("configured open\\u{202e}ai/model-b"),
+            "{line}"
+        );
+        assert!(line.contains("since its verdict #4 (inferred)"), "{line}");
+        assert!(
+            line.contains("none of its own session in retained data; 3 samples attributed to it from other sessions"),
+            "{line}"
+        );
+        assert!(
+            line.contains(
+                "may be incomplete: the window starts before retention; collection was off"
+            ),
+            "{line}"
+        );
     }
 
     #[test]

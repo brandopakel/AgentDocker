@@ -294,6 +294,13 @@ impl CodeVerdict {
         if self.verdict == Word::Pass && self.findings.important > 0 {
             return Err("a pass cannot carry an important finding: ask for changes");
         }
+        // Counts said not to be stated are none, or they would be kept and
+        // read as unstated.
+        if self.findings_presence == crate::evidence::FindingsPresence::NotStated
+            && self.findings != Findings::default()
+        {
+            return Err("a verdict that states no counts carries none: state them, or give none");
+        }
         Ok(())
     }
 
