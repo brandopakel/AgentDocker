@@ -1814,6 +1814,22 @@ pub enum Request {
         project: Option<String>,
         branch: String,
     },
+    /// The retained receipts of commits witnessed on a branch (by its name
+    /// or full ref) in `agent`'s project, or `project`: oldest first by
+    /// their place in the project's order, after `after`, at most `limit`
+    /// (and never more than 200), with what they cannot establish. Answers
+    /// `authorship`.
+    Authorship {
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        project: Option<String>,
+        branch: String,
+        #[serde(default)]
+        after: Option<u64>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     /// Record a local gate run (`scripts/verify.sh check`, `quick` or
     /// `test`) as its runner reported it. `agent` is the caller the run
     /// was started for, when it was known: absent, the run's `by` is
@@ -2175,6 +2191,16 @@ pub enum Response {
         verdicts: Vec<crate::gate::CodeVerdict>,
         /// How many verdicts a project keeps.
         retained: usize,
+    },
+    Authorship {
+        project: crate::ProjectId,
+        /// The full ref read, `refs/heads/<name>`.
+        branch: String,
+        receipts: Vec<crate::gate::AuthorshipReceipt>,
+        /// Where the next page starts (`after`), when there is one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        next: Option<u64>,
+        coverage: crate::gate::AuthorshipCoverage,
     },
     GateRun {
         run: crate::verification::GateRun,

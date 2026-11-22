@@ -408,7 +408,7 @@ impl Daemon {
     }
 
     /// The project a verdict or a gate names, else the caller's own.
-    async fn verdict_project(
+    pub(in crate::daemon) async fn verdict_project(
         self: &Arc<Self>,
         agent: Option<&str>,
         project: Option<String>,

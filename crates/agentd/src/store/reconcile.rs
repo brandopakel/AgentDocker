@@ -255,6 +255,8 @@ impl Store {
             read_capacity: std::cell::Cell::new(agentdocker_core::config::READ_SET_CAPACITY),
             #[cfg(test)]
             evidence_stages: std::cell::Cell::new(None),
+            #[cfg(test)]
+            receipt_cap: std::cell::Cell::new(None),
         })
     }
 

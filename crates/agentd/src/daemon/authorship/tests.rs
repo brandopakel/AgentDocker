@@ -910,6 +910,225 @@ fn a_chained_copy_of_ours_never_loops() {
 /// The daemon's own commit in a witnessed worktree runs the hook too; the
 /// report it sends while the commit is in flight records nothing, and the
 /// commit path records the commit once, as the agent's that asked.
+fn read_authorship(agent: &AgentId, branch: &str) -> Request {
+    Request::Authorship {
+        agent: Some(agent.to_string()),
+        project: None,
+        branch: branch.into(),
+        after: None,
+        limit: None,
+    }
+}
+
+/// Each receipt says how its agent was named, from the record as it was
+/// checked when the commit was kept: a hook's report sent unauthenticated
+/// names the worktree's owner, one authenticated as the owner's session
+/// names its session, and the daemon's own commit names who asked. The
+/// read labels the full ref and says what it cannot establish, on an empty
+/// ref too.
+#[tokio::test]
+async fn a_receipt_says_how_its_agent_was_named_and_who_it_was() {
+    if hooks_path_everywhere() {
+        return;
+    }
+    use agentdocker_core::gate::{Basis, Unreceipted};
+    let tmp = tempfile::tempdir().unwrap();
+    let daemon = open(&tmp);
+    let (cli, _) = logging_cli(tmp.path());
+    *lock(&daemon.witness_cli) = Some(cli);
+    let repo = tmp.path().join("repo");
+    repository(&repo, "main");
+    let writer = register(&daemon, "writer", &repo).await;
+    lock(&daemon.state)
+        .registry
+        .get_mut(&writer.id)
+        .unwrap()
+        .spec
+        .model = Some("model-a".into());
+    let (wt, _) = create_worktree(&daemon, &writer.id, &tmp.path().join("wt"), "feature/w").await;
+    git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "one"]);
+    assert!(matches!(
+        daemon.handle(report_of(&wt)).await,
+        Response::CommitWitnessed { recorded: true, .. }
+    ));
+    git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "two"]);
+    let Request::ReportCommit {
+        checkout,
+        token,
+        head,
+        branch,
+        ..
+    } = report_of(&wt)
+    else {
+        unreachable!()
+    };
+    assert!(matches!(
+        daemon
+            .report_commit(checkout, token, head, branch, Some(writer.id.to_string()))
+            .await,
+        Response::CommitWitnessed { recorded: true, .. }
+    ));
+    let Response::Authorship {
+        project,
+        branch,
+        receipts,
+        next,
+        coverage,
+    } = daemon
+        .handle(read_authorship(&writer.id, "feature/w"))
+        .await
+    else {
+        panic!("no receipts")
+    };
+    assert_eq!(branch, "refs/heads/feature/w");
+    assert_eq!(project, writer.project.as_ref().unwrap().id());
+    assert_eq!(
+        receipts.iter().map(|r| r.basis).collect::<Vec<_>>(),
+        vec![Basis::HookOwner, Basis::HookSession]
+    );
+    let author = receipts[0].author.as_ref().unwrap();
+    assert_eq!(
+        (
+            author.name.as_str(),
+            author.configured.as_ref().and_then(|c| c.model.as_deref())
+        ),
+        ("writer", Some("model-a"))
+    );
+    assert_eq!((next, coverage.page_may_miss), (None, false));
+    assert_eq!(coverage.unreceipted, Unreceipted::Counted { count: 0 });
+    // The daemon's own commit, on the agent's own branch.
+    std::fs::write(repo.join("work.txt"), "x\n").unwrap();
+    git_in(&repo, &["add", "."]);
+    assert!(matches!(
+        daemon
+            .handle(Request::Commit {
+                agent: writer.id.to_string(),
+                message: "through the daemon".into(),
+                all: false,
+                push: false,
+            })
+            .await,
+        Response::Committed { .. }
+    ));
+    let Response::Authorship { receipts, .. } = daemon
+        .handle(read_authorship(&writer.id, "refs/heads/main"))
+        .await
+    else {
+        panic!("no receipts")
+    };
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].basis, Basis::DaemonCommit);
+    // An empty ref still says what it cannot establish; a bad name is
+    // refused.
+    let Response::Authorship {
+        receipts, coverage, ..
+    } = daemon
+        .handle(read_authorship(&writer.id, "feature/none"))
+        .await
+    else {
+        panic!("no answer")
+    };
+    assert!(receipts.is_empty());
+    assert_eq!(coverage.unreceipted, Unreceipted::Counted { count: 0 });
+    assert!(coverage.capture_since.is_some());
+    // A look that runs out of its budget is unknown, never zero.
+    lock(&daemon.state).store.evidence_stages.set(Some(0));
+    let Response::Authorship { coverage, .. } = daemon
+        .handle(read_authorship(&writer.id, "feature/w"))
+        .await
+    else {
+        panic!("no answer")
+    };
+    lock(&daemon.state).store.evidence_stages.set(None);
+    assert_eq!(coverage.unreceipted, Unreceipted::Unknown);
+    assert!(lock(&daemon.state).storage_error.is_none());
+    assert_eq!(
+        refusal(daemon.handle(read_authorship(&writer.id, "a..b")).await).map(|(code, _)| code),
+        Some(ErrorCode::Invalid)
+    );
+}
+
+/// A commit whose receipt the bound has pruned, made under a former id,
+/// stays its author's own once the checkout has moved on and across a
+/// restart: the check the verdict and succession both read is the rows',
+/// never the receipts'.
+#[tokio::test]
+async fn a_pruned_receipt_never_frees_its_author_to_review() {
+    use agentdocker_core::gate::Basis;
+    let tmp = tempfile::tempdir().unwrap();
+    let daemon = open(&tmp);
+    let repo = tmp.path().join("repo");
+    repository(&repo, "feature/mine");
+    let reviewer = register(&daemon, "reviewer", &repo).await;
+    let project = reviewer.project.as_ref().unwrap().id();
+    {
+        let state = lock(&daemon.state);
+        state.store.receipt_cap.set(Some(1));
+        state
+            .store
+            .put_document(
+                "identity_alias",
+                "old-id",
+                &serde_json::json!({"retired": "old-id", "canonical": reviewer.id.as_str(),
+                                    "reconciled_at": Utc::now()}),
+            )
+            .unwrap();
+        for (n, agent, branch) in [
+            (1, "old-id", "refs/heads/feature/mine"),
+            (2, "someone", "refs/heads/other"),
+        ] {
+            let seq = state.store.max_event_seq().unwrap() + 1;
+            state
+                .store
+                .record_authorship(
+                    &Authorship {
+                        project: project.clone(),
+                        agent: AgentId::from(agent),
+                        branch: branch.into(),
+                        commit: format!("{n:040x}"),
+                        witness: Witness::Hook,
+                        basis: Basis::HookSession,
+                        author: None,
+                        at: Utc::now(),
+                    },
+                    seq,
+                )
+                .unwrap();
+        }
+        assert!(
+            state
+                .store
+                .receipts(&project, "refs/heads/feature/mine", 0, 10)
+                .unwrap()
+                .receipts
+                .is_empty(),
+            "its receipt is pruned"
+        );
+    }
+    git_in(&repo, &["checkout", "-q", "-b", "elsewhere"]);
+    drop(daemon);
+    let daemon = open(&tmp);
+    lock(&daemon.state)
+        .registry
+        .get_mut(&reviewer.id)
+        .unwrap()
+        .status = AgentStatus::Running;
+    give_role(&daemon, &reviewer.id, "reviewer");
+    assert!(
+        lock(&daemon.state)
+            .has_authored(&project, &reviewer.id, "feature/mine")
+            .unwrap()
+    );
+    let (code, message) = refusal(
+        daemon
+            .handle(verdict(reviewer.id.as_str(), None, "feature/mine", A))
+            .await,
+    )
+    .expect("refused");
+    assert_eq!(code, ErrorCode::Forbidden, "{message}");
+    assert!(message.contains("committed to"), "{message}");
+}
+
 #[tokio::test]
 async fn the_daemon_s_own_commit_in_a_witnessed_worktree_is_recorded_once() {
     if hooks_path_everywhere() {

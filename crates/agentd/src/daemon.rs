@@ -311,6 +311,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::ReviewGate { .. }
             | Request::GateRuns { .. }
             | Request::Verdicts { .. }
+            | Request::Authorship { .. }
             | Request::List { .. }
             | Request::Inspect { .. }
             | Request::Restarts { .. }
@@ -3566,6 +3567,16 @@ impl Daemon {
                 project,
                 branch,
             } => self.verdicts(agent.as_deref(), project, &branch).await,
+            Request::Authorship {
+                agent,
+                project,
+                branch,
+                after,
+                limit,
+            } => {
+                self.authorship(agent.as_deref(), project, &branch, after, limit)
+                    .await
+            }
             Request::RecordGateRun { agent, runner, run } => {
                 self.record_gate_run(agent, runner, run).await
             }

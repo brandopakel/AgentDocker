@@ -499,6 +499,164 @@ pub async fn verdicts(client: &Client, args: VerdictsArgs) -> Result<()> {
     Ok(())
 }
 
+#[derive(clap::Args, Debug)]
+pub struct AuthorshipArgs {
+    /// Asker; defaults to this agent's identity, or `user` in a human terminal.
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    agent: Option<String>,
+    /// A pull request (`#402` or `402`, read with `gh`) or a branch.
+    target: String,
+    /// Project id, root or unique prefix (default: the asker's, or this checkout's).
+    #[arg(long, value_name = "ID|PATH")]
+    project: Option<String>,
+    /// Start after this receipt (the `next` a page printed).
+    #[arg(long)]
+    after: Option<u64>,
+    /// At most this many receipts (up to 200).
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Print the page as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+/// A branch's retained receipts, oldest first, labelled with the project
+/// and the full ref, and what they cannot establish.
+pub async fn authorship(client: &Client, args: AuthorshipArgs) -> Result<()> {
+    let agent = sender::resolve(client, args.agent).await?;
+    let branch = match pull_request(&args.target) {
+        Some(_) => branch_and_head(&args.target, None)?.0,
+        None => args.target.clone(),
+    };
+    let response = client
+        .call(&Request::Authorship {
+            project: project(client, args.project, agent.as_deref().unwrap_or(HUMAN)).await?,
+            agent,
+            branch,
+            after: args.after,
+            limit: args.limit,
+        })
+        .await?;
+    let Response::Authorship {
+        project,
+        branch,
+        receipts,
+        next,
+        coverage,
+    } = response
+    else {
+        bail!("the daemon did not list the branch's receipts");
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "project": project, "branch": branch, "receipts": receipts,
+                "next": next, "coverage": coverage,
+            }))?
+        );
+        return Ok(());
+    }
+    print!(
+        "{}",
+        receipts_said(&project, &branch, &receipts, next, &coverage)
+    );
+    Ok(())
+}
+
+/// A page of receipts as lines: the project and ref it is of, a line per
+/// receipt, and what the page cannot establish.
+fn receipts_said(
+    project: &agentdocker_core::ProjectId,
+    branch: &str,
+    receipts: &[agentdocker_core::gate::AuthorshipReceipt],
+    next: Option<u64>,
+    coverage: &agentdocker_core::gate::AuthorshipCoverage,
+) -> String {
+    use crate::out::text::shown;
+    use agentdocker_core::gate::{Basis, Unreceipted};
+    let mut out = format!("{} in project {project}\n", shown(branch));
+    if receipts.is_empty() {
+        out.push_str("no receipt retained on this ref\n");
+    }
+    for receipt in receipts {
+        let how = match receipt.basis {
+            Basis::DaemonCommit => "made by the daemon for it",
+            Basis::HookSession => "reported from its own session",
+            Basis::HookOwner => {
+                "reported unauthenticated; its worktree, not shown to be its commit"
+            }
+            Basis::Unknown => "named before the basis was kept",
+        };
+        let who = match &receipt.author {
+            Some(author) => {
+                let configured = author.configured.as_ref().map_or_else(String::new, |c| {
+                    format!(
+                        ", configured {}/{}",
+                        shown(c.provider.as_deref().unwrap_or("?")),
+                        shown(c.model.as_deref().unwrap_or("?"))
+                    )
+                });
+                format!(
+                    "{} ({}{configured})",
+                    shown(&author.name),
+                    shown(&author.runtime)
+                )
+            }
+            None => format!("{} (not captured)", receipt.agent.short()),
+        };
+        out.push_str(&format!(
+            "#{} {} by {who} at {}: {}, {how}\n",
+            receipt.seq,
+            short(&receipt.commit),
+            receipt.at.format("%Y-%m-%d %H:%M:%S UTC"),
+            shown(&receipt.witness),
+        ));
+    }
+    if let Some(next) = next {
+        out.push_str(&format!("more after #{next} (--after {next})\n"));
+    }
+    out.push_str(&format!(
+        "(a project keeps its newest {} receipts; a ref's receipts do not by themselves identify a change's commits, since a branch reused, force-pushed or named alike in a fork can put others under it; a configured model is what the record asked for, not what wrote the change)\n",
+        coverage.retained
+    ));
+    if let Some(since) = coverage.capture_since {
+        out.push_str(&format!(
+            "receipts kept since {}; those from before name no basis and no author\n",
+            since.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
+    }
+    if let Some(pruned) = coverage.pruned_through {
+        out.push_str(&format!(
+            "the project's bound has pruned receipts through #{pruned}, on any ref\n"
+        ));
+    }
+    if coverage.seed_skipped > 0 {
+        out.push_str(&format!(
+            "{} commits witnessed before receipts were kept were past the bound and have none\n",
+            coverage.seed_skipped
+        ));
+    }
+    if coverage.page_may_miss {
+        out.push_str("this page may be missing receipts the bound pruned\n");
+    }
+    match coverage.unreceipted {
+        Unreceipted::Counted { count: 0 } => out.push_str(
+            "every commit still recorded as witnessed on this ref has a receipt (which does not show capture was continuous)\n",
+        ),
+        Unreceipted::Counted { count } => out.push_str(&format!(
+            "{count} commits recorded as witnessed on this ref have no receipt, for a cause that cannot be told\n"
+        )),
+        Unreceipted::AtLeast { count } => out.push_str(&format!(
+            "at least {count} commits recorded as witnessed on this ref have no receipt, for a cause that cannot be told\n"
+        )),
+        Unreceipted::Unknown => out.push_str(
+            "whether commits recorded as witnessed on this ref lack a receipt is unknown: the look ran out of time\n",
+        ),
+    }
+    out
+}
+
 /// One round: its order, word, commit, reviewer, counts and model evidence.
 fn round(v: &CodeVerdict) -> String {
     use crate::out::text::shown;
@@ -1025,6 +1183,66 @@ mod tests {
             evidence: None,
             superseded: Vec::new(),
         })
+    }
+
+    /// A page of receipts names the project and the full ref, says how each
+    /// agent was named and who it was (escaped), and what the page cannot
+    /// establish.
+    #[test]
+    fn receipts_say_who_wrote_them_and_what_they_cannot_establish() {
+        use agentdocker_core::gate::*;
+        let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let receipt = |seq, basis, author| AuthorshipReceipt {
+            seq,
+            commit: "a".repeat(40),
+            agent: AgentId::from("agent-1-id"),
+            witness: "hook".into(),
+            basis,
+            author,
+            at,
+        };
+        let author = AuthorSnapshot {
+            name: "writ\u{202e}er".into(),
+            runtime: "codex".into(),
+            configured: Some(agentdocker_core::evidence::Configured {
+                provider: Some("openai".into()),
+                model: Some("model-a".into()),
+            }),
+            session: None,
+        };
+        let coverage = AuthorshipCoverage {
+            retained: 20_000,
+            capture_since: Some(at),
+            pruned_through: Some(4),
+            seed_skipped: 2,
+            page_may_miss: true,
+            unreceipted: Unreceipted::Unknown,
+        };
+        let said = receipts_said(
+            &ProjectId::from("p"),
+            "refs/heads/feature/x",
+            &[
+                receipt(5, Basis::HookSession, Some(author)),
+                receipt(6, Basis::HookOwner, None),
+            ],
+            Some(6),
+            &coverage,
+        );
+        for expected in [
+            "refs/heads/feature/x in project p",
+            "#5 aaaaaaaa by writ\\u{202e}er (codex, configured openai/model-a)",
+            "reported from its own session",
+            "reported unauthenticated; its worktree, not shown to be its commit",
+            "(not captured)",
+            "more after #6 (--after 6)",
+            "do not by themselves identify a change's commits",
+            "pruned receipts through #4",
+            "2 commits witnessed before receipts were kept",
+            "this page may be missing receipts",
+            "is unknown: the look ran out of time",
+        ] {
+            assert!(said.contains(expected), "{expected:?} in {said}");
+        }
     }
 
     /// A start is a time or a duration ago; one too far back for a time

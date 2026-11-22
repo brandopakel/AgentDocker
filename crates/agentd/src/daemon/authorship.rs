@@ -18,12 +18,20 @@
 //! verdict's current-checkout refusal covers them.
 use super::*;
 use crate::store::authorship::WitnessedWorktree;
-use agentdocker_core::gate::{self, Authorship, WITNESS_FILE, Witness, WitnessFile};
+use agentdocker_core::gate::{
+    self, AuthorSnapshot, Authorship, Basis, WITNESS_FILE, Witness, WitnessFile,
+};
 use agentdocker_core::secret::SecretText;
 use sha2::{Digest, Sha256};
 
 /// The line that marks a post-commit hook as AgentDocker's.
 const HOOK_MARK: &str = "# agentdocker: witness hook";
+/// How long the look for a ref's witnessed commits without a receipt may
+/// run; past it, how many there are is unknown.
+const UNRECEIPTED_BUDGET: std::time::Duration = std::time::Duration::from_secs(1);
+/// How many such commits the look counts before it says "at least".
+const UNRECEIPTED_LOOK: u64 = 1_000;
+
 /// What a post-commit hook that was already there is renamed to; ours runs
 /// it after reporting.
 pub(super) const CHAINED: &str = "post-commit.agentdocker-chained";
@@ -417,6 +425,8 @@ impl State {
             branch: branch.to_owned(),
             commit: commit.to_owned(),
             witness: Witness::Commit,
+            basis: Basis::DaemonCommit,
+            author: Some(AuthorSnapshot::of(record)),
             at: Utc::now(),
         };
         authorship.check().ok()?;
@@ -555,6 +565,7 @@ impl Daemon {
                 "a report names the full commit id HEAD is at",
             );
         }
+        let session_named = agent.is_some();
         let (worktree, who) = {
             let mut state = lock(&self.state);
             if state.committing.contains(&checkout) {
@@ -616,12 +627,21 @@ impl Daemon {
         let Some(branch) = now_ref.filter(|r| r.starts_with("refs/heads/")) else {
             return not_recorded("HEAD is detached, on no branch");
         };
-        let authorship = Authorship {
+        let mut authorship = Authorship {
             project: worktree.project.clone(),
             agent: who.clone(),
             branch: branch.clone(),
             commit: head,
             witness: Witness::Hook,
+            // Only an owner `authenticate_report` found the report sent
+            // from inside the session of is named by its session; else the
+            // worktree's owner was named, which says whose worktree it is.
+            basis: if session_named {
+                Basis::HookSession
+            } else {
+                Basis::HookOwner
+            },
+            author: None,
             at: Utc::now(),
         };
         if let Err(reason) = authorship.check() {
@@ -638,6 +658,8 @@ impl Daemon {
                 "who holds the worktree changed while the report was checked; nothing was recorded",
             );
         }
+        // Who the agent is, from its record as checked in this hold.
+        authorship.author = state.registry.get(&who).map(AuthorSnapshot::of);
         if let Some(error) = state.write_failure() {
             return error;
         }
@@ -649,6 +671,76 @@ impl Daemon {
                 note: (!added).then(|| "already recorded".to_owned()),
             },
             Err(response) => *response,
+        }
+    }
+
+    /// A branch's retained receipts in the caller's project (or the one
+    /// named), a page at a time, with what they cannot establish: the
+    /// project's bounds, when capture began, whether this page may miss
+    /// pruned receipts, and how many of the ref's witnessed commits have
+    /// none, as far as a bounded look can tell (unknown past its budget).
+    pub(super) async fn authorship(
+        self: &Arc<Self>,
+        agent: Option<&str>,
+        project: Option<String>,
+        branch: &str,
+        after: Option<u64>,
+        limit: Option<usize>,
+    ) -> Response {
+        use agentdocker_core::gate::{AuthorshipCoverage, RECEIPTS_PER_PAGE, Unreceipted};
+        let project = match self.verdict_project(agent, project).await {
+            Ok(project) => project,
+            Err(response) => return *response,
+        };
+        let branch = branch.trim();
+        let name = branch.strip_prefix("refs/heads/").unwrap_or(branch);
+        if !gate::branch_name(name) {
+            return Response::invalid("that is not a branch name");
+        }
+        let full = format!("refs/heads/{name}");
+        let after = after.unwrap_or(0);
+        let limit = limit
+            .unwrap_or(RECEIPTS_PER_PAGE)
+            .clamp(1, RECEIPTS_PER_PAGE);
+        let mut state = lock(&self.state);
+        let unreadable = |state: &State| {
+            state.storage_failure().unwrap_or_else(|| {
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "the branch's receipts could not be read",
+                )
+            })
+        };
+        let Some(page) = state.store_read("authorship receipts", |store| {
+            store.receipts(&project, &full, after, limit)
+        }) else {
+            return unreadable(&state);
+        };
+        let deadline = std::time::Instant::now() + UNRECEIPTED_BUDGET;
+        let unreceipted = match state.store_read("authorship coverage", |store| {
+            store.bounded_snapshot(deadline, |_| {
+                store.unreceipted(&project, &full, UNRECEIPTED_LOOK)
+            })
+        }) {
+            Some(Ok(count)) if count >= UNRECEIPTED_LOOK => Unreceipted::AtLeast { count },
+            Some(Ok(count)) => Unreceipted::Counted { count },
+            Some(Err(_)) => Unreceipted::Unknown,
+            None => return unreadable(&state),
+        };
+        let retained = state.store.receipt_cap();
+        Response::Authorship {
+            project,
+            branch: full,
+            receipts: page.receipts,
+            next: page.next,
+            coverage: AuthorshipCoverage {
+                retained,
+                capture_since: page.capture_since,
+                pruned_through: page.pruned_through,
+                seed_skipped: page.seed_skipped,
+                page_may_miss: AuthorshipCoverage::page_may_miss(page.pruned_through, after),
+                unreceipted,
+            },
         }
     }
 

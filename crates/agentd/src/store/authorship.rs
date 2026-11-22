@@ -2,8 +2,23 @@
 //! the daemon made for an agent or a worktree's hook reported, never
 //! pruned with the journal; and the worktrees whose hook may report, each
 //! with the hash of its witness token and who it was created for.
+//!
+//! Beside each new row, a receipt of it (`authorship_history`): its place
+//! in the project's order, how its agent was named and who that agent was,
+//! a project keeping its newest `RECEIPTS_PER_PROJECT`. The review gate
+//! reads only the rows, which no bound prunes; a receipt outlives its
+//! agent's record, which takes its rows with it when it is forgotten.
 use super::*;
-use agentdocker_core::gate::Authorship;
+use agentdocker_core::gate::{Authorship, AuthorshipReceipt, Basis, RECEIPTS_PER_PROJECT};
+
+/// A page of a ref's receipts and the project's bounds beside it.
+pub(crate) struct ReceiptPage {
+    pub receipts: Vec<AuthorshipReceipt>,
+    pub next: Option<u64>,
+    pub capture_since: Option<DateTime<Utc>>,
+    pub pruned_through: Option<u64>,
+    pub seed_skipped: u64,
+}
 
 /// A worktree the daemon created and gave a post-commit hook: where it is,
 /// whose project, who it was made for, and the hash of the token only its
@@ -48,15 +63,228 @@ impl Store {
                     branch: authorship.branch.clone(),
                     commit: authorship.commit.clone(),
                     witness: authorship.witness,
+                    basis: authorship.basis,
                 },
                 authorship.at,
             );
             event.seq = first;
             self.append_event(&event)?;
             events.push(event);
+            self.keep_receipt(authorship)?;
         }
         tx.commit()?;
         Ok((events, added))
+    }
+
+    /// The receipts a project keeps.
+    pub(crate) fn receipt_cap(&self) -> usize {
+        #[cfg(test)]
+        if let Some(cap) = self.receipt_cap.get() {
+            return cap;
+        }
+        RECEIPTS_PER_PROJECT
+    }
+
+    /// A receipt of a commit newly kept, pruning the project to its bound,
+    /// in the caller's transaction. A receipt still kept for the same
+    /// project, ref and commit (its agent's record forgotten since, and
+    /// the commit reported again) stands as it was, and the bound is not
+    /// moved; any other failure is the write's.
+    fn keep_receipt(&self, authorship: &Authorship) -> Result<()> {
+        let author = authorship
+            .author
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
+        let kept = self.conn.execute(
+            "INSERT INTO authorship_history (project, branch, commit_id, agent, witness, basis, author, at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT (project, branch, commit_id) DO NOTHING",
+            params![
+                authorship.project.as_str(),
+                authorship.branch,
+                authorship.commit,
+                authorship.agent.as_str(),
+                authorship.witness.as_str(),
+                authorship.basis.as_str(),
+                author,
+                authorship.at.to_rfc3339(),
+            ],
+        )? == 1;
+        if !kept {
+            return Ok(());
+        }
+        let cut: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT seq FROM authorship_history WHERE project = ?1
+                 ORDER BY seq DESC LIMIT 1 OFFSET ?2",
+                params![
+                    authorship.project.as_str(),
+                    i64::try_from(self.receipt_cap())?
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(cut) = cut {
+            self.conn.execute(
+                "DELETE FROM authorship_history WHERE project = ?1 AND seq <= ?2",
+                params![authorship.project.as_str(), cut],
+            )?;
+            self.conn.execute(
+                "INSERT INTO authorship_history_bounds (project, pruned_through) VALUES (?1, ?2)
+                 ON CONFLICT (project) DO UPDATE SET
+                 pruned_through = max(pruned_through, excluded.pruned_through)",
+                params![authorship.project.as_str(), cut],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Once, atomically with the time capture began and the mark that it
+    /// was done: a receipt of each row kept before receipts were, newest
+    /// `cap` per project in the order (time, commit, ref), with basis
+    /// `unknown` and no snapshot, and how many rows each project had past
+    /// the bound. Nothing later seeds again, repopulates a pruned receipt,
+    /// or fills one in from the registry as it is now.
+    pub(super) fn seed_receipts(conn: &Connection, cap: usize, now: DateTime<Utc>) -> Result<()> {
+        let tx = write_transaction(conn)?;
+        let seeded: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM meta WHERE key = 'authorship_receipts_seeded')",
+            [],
+            |row| row.get(0),
+        )?;
+        if seeded {
+            return Ok(());
+        }
+        let projects: Vec<(String, i64)> = conn
+            .prepare("SELECT project, COUNT(*) FROM authorship GROUP BY project")?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        let cap = i64::try_from(cap)?;
+        for (project, rows) in projects {
+            let skipped = (rows - cap).max(0);
+            conn.execute(
+                "INSERT INTO authorship_history (project, branch, commit_id, agent, witness, basis, author, at)
+                 SELECT project, branch, commit_id, agent, witness, 'unknown', NULL, at
+                 FROM authorship WHERE project = ?1
+                 ORDER BY at, commit_id, branch LIMIT -1 OFFSET ?2",
+                params![project, skipped],
+            )?;
+            if skipped > 0 {
+                conn.execute(
+                    "INSERT INTO authorship_history_bounds (project, seed_skipped) VALUES (?1, ?2)
+                     ON CONFLICT (project) DO UPDATE SET seed_skipped = excluded.seed_skipped",
+                    params![project, skipped],
+                )?;
+            }
+        }
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('authorship_receipts_since', ?1)",
+            [now.to_rfc3339()],
+        )?;
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('authorship_receipts_seeded', '1')",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// `branch`'s receipts in `project` after `after` in their order, at
+    /// most `limit`, with where the next page starts and the project's
+    /// bounds.
+    pub(crate) fn receipts(
+        &self,
+        project: &ProjectId,
+        branch: &str,
+        after: u64,
+        limit: usize,
+    ) -> Result<ReceiptPage> {
+        let time = |text: &str| -> Result<DateTime<Utc>> {
+            Ok(DateTime::parse_from_rfc3339(text)?.with_timezone(&Utc))
+        };
+        let mut statement = self.conn.prepare_cached(
+            "SELECT seq, commit_id, agent, witness, basis, author, at FROM authorship_history
+             WHERE project = ?1 AND branch = ?2 AND seq > ?3 ORDER BY seq LIMIT ?4",
+        )?;
+        let rows = statement
+            .query_map(
+                params![
+                    project.as_str(),
+                    branch,
+                    i64::try_from(after)?,
+                    i64::try_from(limit + 1)?
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                },
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let more = rows.len() > limit;
+        let mut receipts = Vec::with_capacity(rows.len().min(limit));
+        for (seq, commit, agent, witness, basis, author, at) in rows.into_iter().take(limit) {
+            receipts.push(AuthorshipReceipt {
+                seq: u64::try_from(seq)?,
+                commit,
+                agent: AgentId::from(agent.as_str()),
+                witness,
+                basis: Basis::parse(&basis),
+                author: author.map(|text| serde_json::from_str(&text)).transpose()?,
+                at: time(&at)?,
+            });
+        }
+        let next = more.then(|| receipts.last().map(|r| r.seq)).flatten();
+        let (pruned_through, seed_skipped) = self
+            .conn
+            .query_row(
+                "SELECT pruned_through, seed_skipped FROM authorship_history_bounds WHERE project = ?1",
+                [project.as_str()],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .optional()?
+            .unwrap_or((0, 0));
+        let capture_since = self
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'authorship_receipts_since'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|text| time(&text))
+            .transpose()?;
+        Ok(ReceiptPage {
+            receipts,
+            next,
+            capture_since,
+            pruned_through: (pruned_through > 0)
+                .then(|| u64::try_from(pruned_through))
+                .transpose()?,
+            seed_skipped: u64::try_from(seed_skipped)?,
+        })
+    }
+
+    /// How many of `branch`'s rows in `project` have no receipt, counted to
+    /// `limit` at most.
+    pub(crate) fn unreceipted(&self, project: &ProjectId, branch: &str, limit: u64) -> Result<u64> {
+        Ok(u64::try_from(self.conn.query_row(
+            "SELECT COUNT(*) FROM (SELECT 1 FROM authorship AS g
+             WHERE g.project = ?1 AND g.branch = ?2 AND NOT EXISTS (
+                 SELECT 1 FROM authorship_history AS h
+                 WHERE h.project = g.project AND h.branch = g.branch AND h.commit_id = g.commit_id)
+             LIMIT ?3)",
+            params![project.as_str(), branch, i64::try_from(limit)?],
+            |row| row.get::<_, i64>(0),
+        )?)?)
     }
 
     /// Whether any of `agents` made a commit on `branch` (a full ref) in
@@ -109,6 +337,9 @@ impl Store {
                     commit,
                     witness: agentdocker_core::gate::Witness::parse(&witness)
                         .with_context(|| format!("unknown authorship witness {witness:?}"))?,
+                    // The rows keep neither: they are the receipts'.
+                    basis: Basis::Unknown,
+                    author: None,
                     at: DateTime::parse_from_rfc3339(&at)?.with_timezone(&Utc),
                 })
             })
@@ -184,6 +415,8 @@ mod tests {
             branch: branch.to_owned(),
             commit: commit.to_owned(),
             witness,
+            basis: agentdocker_core::gate::Basis::Unknown,
+            author: None,
             at: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
         }
     }
@@ -326,5 +559,298 @@ mod tests {
             store.witnessed_worktree(Path::new("/w/other")).unwrap(),
             None
         );
+    }
+
+    /// A full commit id from a number.
+    fn commit(n: u32) -> String {
+        format!("{n:040x}")
+    }
+
+    fn page(store: &Store, branch: &str, after: u64, limit: usize) -> ReceiptPage {
+        store
+            .receipts(&ProjectId::from("p"), branch, after, limit)
+            .unwrap()
+    }
+
+    fn seqs(page: &ReceiptPage) -> Vec<u64> {
+        page.receipts.iter().map(|r| r.seq).collect()
+    }
+
+    fn missing(store: &Store, branch: &str) -> u64 {
+        store
+            .unreceipted(&ProjectId::from("p"), branch, 1_000)
+            .unwrap()
+    }
+
+    fn forget(store: &Store, agent: &str) {
+        let id = AgentId::from(agent);
+        let mut removed = Event::new(EventKind::AgentRemoved { agent: id.clone() }, Utc::now());
+        removed.seq = store.max_event_seq().unwrap() + 1;
+        store.delete_agent(&id, &removed).unwrap();
+    }
+
+    /// A new row gets a receipt with its basis and who its agent was; the
+    /// same commit reported again changes nothing: no second event, no
+    /// second receipt, the bound not moved.
+    #[test]
+    fn a_receipt_is_kept_beside_a_new_row_and_a_repeat_changes_nothing() {
+        let store = Store::in_memory().unwrap();
+        let mut first = authored("a", "refs/heads/x", A, Witness::Hook);
+        first.basis = Basis::HookSession;
+        first.author = Some(agentdocker_core::gate::AuthorSnapshot {
+            name: "writer".into(),
+            runtime: "codex".into(),
+            configured: None,
+            session: Some("s1".into()),
+        });
+        let (events, added) = store.record_authorship(&first, 1).unwrap();
+        assert!(added && events.len() == 1);
+        let mut again = first.clone();
+        again.agent = AgentId::from("b");
+        again.basis = Basis::HookOwner;
+        let (events, added) = store.record_authorship(&again, 2).unwrap();
+        assert!(!added && events.is_empty());
+        let read = page(&store, "refs/heads/x", 0, 10);
+        assert_eq!(read.receipts.len(), 1);
+        let receipt = &read.receipts[0];
+        assert_eq!(
+            (
+                receipt.agent.as_str(),
+                receipt.basis,
+                receipt.witness.as_str()
+            ),
+            ("a", Basis::HookSession, "hook")
+        );
+        assert_eq!(receipt.author, first.author);
+        assert_eq!(read.pruned_through, None);
+        assert!(read.capture_since.is_some());
+    }
+
+    /// The bound prunes receipts, oldest first, and says how far; it never
+    /// touches the rows the review gate reads, through an alias included,
+    /// and the pruned commit is counted as having no receipt.
+    #[test]
+    fn the_bound_prunes_receipts_and_never_the_rows() {
+        let store = Store::in_memory().unwrap();
+        store.receipt_cap.set(Some(2));
+        store
+            .put_document(
+                "identity_alias",
+                "old",
+                &serde_json::json!({"retired": "old", "canonical": "a"}),
+            )
+            .unwrap();
+        for (n, agent) in [(1, "old"), (2, "b"), (3, "b")] {
+            store
+                .record_authorship(
+                    &authored(agent, "refs/heads/x", &commit(n), Witness::Hook),
+                    0,
+                )
+                .unwrap();
+        }
+        let read = page(&store, "refs/heads/x", 0, 10);
+        assert_eq!(seqs(&read), vec![2, 3]);
+        assert_eq!(read.pruned_through, Some(1));
+        assert!(
+            store
+                .authored(
+                    &ProjectId::from("p"),
+                    "refs/heads/x",
+                    &[AgentId::from("a"), AgentId::from("old")]
+                )
+                .unwrap(),
+            "the gate still reads the pruned commit's row"
+        );
+        assert_eq!(missing(&store, "refs/heads/x"), 1);
+    }
+
+    /// A receipt outlives its agent's record: forgotten, its row goes, and
+    /// the same commit reported for another owner is a new row and event
+    /// while the first receipt stands as it was. Once that receipt is
+    /// pruned, the commit reported again starts a new one.
+    #[test]
+    fn a_receipt_outlives_a_forget_and_the_next_owner() {
+        let store = Store::in_memory().unwrap();
+        let a = authored("a", "refs/heads/x", A, Witness::Hook);
+        store.record_authorship(&a, 0).unwrap();
+        forget(&store, "a");
+        let mut b = authored("b", "refs/heads/x", A, Witness::Hook);
+        b.basis = Basis::HookOwner;
+        let (events, added) = store.record_authorship(&b, 0).unwrap();
+        assert!(added && events.len() == 1, "the gate row and event are new");
+        let read = page(&store, "refs/heads/x", 0, 10);
+        assert_eq!(read.receipts.len(), 1);
+        assert_eq!(
+            (read.receipts[0].agent.as_str(), read.receipts[0].seq),
+            ("a", 1),
+            "the first receipt, as it was"
+        );
+        assert_eq!(read.pruned_through, None, "the bound did not move");
+        // Pruned, then forgotten and reported again: a new receipt.
+        store.receipt_cap.set(Some(1));
+        store
+            .record_authorship(&authored("c", "refs/heads/y", B, Witness::Hook), 0)
+            .unwrap();
+        assert!(page(&store, "refs/heads/x", 0, 10).receipts.is_empty());
+        forget(&store, "b");
+        store
+            .record_authorship(&authored("d", "refs/heads/x", A, Witness::Hook), 0)
+            .unwrap();
+        // A new place in the order: later than every one before, gaps
+        // allowed (a report that met a kept receipt used one up).
+        let read = page(&store, "refs/heads/x", 0, 10);
+        assert_eq!(
+            read.receipts
+                .iter()
+                .map(|r| r.agent.as_str())
+                .collect::<Vec<_>>(),
+            vec!["d"]
+        );
+        assert!(read.receipts[0].seq > 2, "{}", read.receipts[0].seq);
+    }
+
+    /// Which commit lost its receipt to the bound and which got none from
+    /// an older daemon cannot be told apart: both are counted alike, as
+    /// having no receipt. An older daemon's row whose agent is forgotten
+    /// leaves nothing to count, so a zero proves no continuity.
+    #[test]
+    fn a_missing_receipt_is_counted_and_its_cause_never_assigned() {
+        let older = |store: &Store, n: u32, branch: &str| {
+            store
+                .conn
+                .execute(
+                    "INSERT INTO authorship (project, commit_id, branch, agent, witness, at)
+                     VALUES ('p', ?1, ?2, 'old', 'hook', '2023-11-14T22:13:20+00:00')",
+                    params![commit(n), branch],
+                )
+                .unwrap();
+        };
+        let capture = |store: &Store, n: u32, branch: &str| {
+            store
+                .record_authorship(&authored("a", branch, &commit(n), Witness::Hook), 0)
+                .unwrap();
+        };
+        let mut seen = Vec::new();
+        for exchanged in [false, true] {
+            let store = Store::in_memory().unwrap();
+            store.receipt_cap.set(Some(1));
+            let (x, y) = if exchanged {
+                ("refs/heads/y", "refs/heads/x")
+            } else {
+                ("refs/heads/x", "refs/heads/y")
+            };
+            capture(&store, 1, x);
+            older(&store, 2, y);
+            capture(&store, 3, "refs/heads/z");
+            seen.push((
+                missing(&store, "refs/heads/x"),
+                missing(&store, "refs/heads/y"),
+                page(&store, "refs/heads/z", 0, 10).pruned_through,
+            ));
+        }
+        assert_eq!(seen[0], seen[1]);
+        assert_eq!(seen[0], (1, 1, Some(1)));
+        let store = Store::in_memory().unwrap();
+        older(&store, 4, "refs/heads/w");
+        assert_eq!(missing(&store, "refs/heads/w"), 1);
+        forget(&store, "old");
+        assert_eq!(missing(&store, "refs/heads/w"), 0, "nothing left to count");
+    }
+
+    /// The seed runs once, with the time capture began and its mark in one
+    /// transaction: an interrupted seed leaves nothing, and a seed that
+    /// completes takes the newest by (time, commit, ref), says how many it
+    /// left out, and is never run again.
+    #[test]
+    fn the_seed_runs_once_with_its_ties_broken_and_never_half() {
+        let store = Store::in_memory().unwrap();
+        store
+            .conn
+            .execute_batch(
+                "DELETE FROM meta WHERE key IN ('authorship_receipts_seeded', 'authorship_receipts_since');
+                 INSERT INTO authorship (project, commit_id, branch, agent, witness, at) VALUES
+                  ('p', '1111111111111111111111111111111111111111', 'refs/heads/a', 'x', 'hook', '2023-11-14T22:13:20+00:00'),
+                  ('p', '2222222222222222222222222222222222222222', 'refs/heads/a', 'x', 'hook', '2023-11-14T22:13:21+00:00'),
+                  ('p', '2222222222222222222222222222222222222222', 'refs/heads/b', 'x', 'hook', '2023-11-14T22:13:21+00:00');
+                 CREATE TRIGGER fail BEFORE INSERT ON authorship_history
+                   WHEN NEW.branch = 'refs/heads/b' BEGIN SELECT RAISE(ABORT, 'seed fault'); END;",
+            )
+            .unwrap();
+        let now = Utc::now();
+        assert!(Store::seed_receipts(&store.conn, 2, now).is_err());
+        let count = |sql: &str| -> i64 { store.conn.query_row(sql, [], |row| row.get(0)).unwrap() };
+        assert_eq!(count("SELECT COUNT(*) FROM authorship_history"), 0);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM meta WHERE key LIKE 'authorship_receipts_%'"),
+            0,
+            "nothing of an interrupted seed is kept"
+        );
+        store.conn.execute_batch("DROP TRIGGER fail").unwrap();
+        Store::seed_receipts(&store.conn, 2, now).unwrap();
+        let a = page(&store, "refs/heads/a", 0, 10);
+        let b = page(&store, "refs/heads/b", 0, 10);
+        // At the cut, the tie between one commit at one time on two refs
+        // goes by ref: both of the newest kept, the older one left out.
+        assert_eq!(
+            (a.receipts.len(), b.receipts.len()),
+            (1, 1),
+            "{:?} {:?}",
+            seqs(&a),
+            seqs(&b)
+        );
+        assert_eq!(a.receipts[0].commit, "2".repeat(40));
+        assert!(a.receipts[0].seq < b.receipts[0].seq);
+        assert_eq!(a.receipts[0].basis, Basis::Unknown);
+        assert_eq!(a.receipts[0].author, None);
+        assert_eq!(a.seed_skipped, 1);
+        assert_eq!(
+            a.capture_since,
+            Some(
+                DateTime::parse_from_rfc3339(&now.to_rfc3339())
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        // Never again: a row added since stays without a receipt.
+        store
+            .conn
+            .execute_batch(
+                "INSERT INTO authorship (project, commit_id, branch, agent, witness, at) VALUES
+                 ('p', '3333333333333333333333333333333333333333', 'refs/heads/a', 'x', 'hook', '2023-11-14T22:13:22+00:00')",
+            )
+            .unwrap();
+        Store::seed_receipts(&store.conn, 2, now).unwrap();
+        assert_eq!(count("SELECT COUNT(*) FROM authorship_history"), 2);
+    }
+
+    /// Pages go by `seq`, a total order whatever the times (every receipt
+    /// here has the same one); two changes under one reused ref are listed
+    /// alike; and a page whose start the bound has pruned past may miss
+    /// receipts.
+    #[test]
+    fn receipts_page_in_order_and_say_when_the_bound_overtook_the_cursor() {
+        let store = Store::in_memory().unwrap();
+        for (n, agent) in [(1, "a"), (2, "a"), (3, "b"), (4, "b"), (5, "b")] {
+            store
+                .record_authorship(
+                    &authored(agent, "refs/heads/x", &commit(n), Witness::Hook),
+                    0,
+                )
+                .unwrap();
+        }
+        let first = page(&store, "refs/heads/x", 0, 2);
+        assert_eq!((seqs(&first), first.next), (vec![1, 2], Some(2)));
+        let second = page(&store, "refs/heads/x", 2, 2);
+        assert_eq!((seqs(&second), second.next), (vec![3, 4], Some(4)));
+        let last = page(&store, "refs/heads/x", 4, 2);
+        assert_eq!((seqs(&last), last.next), (vec![5], None));
+        store.receipt_cap.set(Some(3));
+        store
+            .record_authorship(&authored("c", "refs/heads/y", &commit(6), Witness::Hook), 0)
+            .unwrap();
+        let resumed = page(&store, "refs/heads/x", 2, 2);
+        assert_eq!(seqs(&resumed), vec![4, 5]);
+        assert_eq!(resumed.pruned_through, Some(3), "past the cursor at 2");
+        assert!(page(&store, "refs/heads/z", 0, 2).receipts.is_empty());
     }
 }
