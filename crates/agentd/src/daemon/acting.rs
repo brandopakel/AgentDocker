@@ -308,6 +308,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::ChannelPrune { .. }
         | R::ReviewGate { .. }
         | R::GateRuns { .. }
+        | R::Verdicts { .. }
         | R::AttachInput { .. }
         | R::AttachResize { .. }
         | R::JournalPrune { .. }

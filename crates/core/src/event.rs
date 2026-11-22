@@ -1051,6 +1051,10 @@ pub enum EventKind {
         verdict: crate::gate::Word,
         #[serde(default)]
         findings: crate::gate::Findings,
+        /// Whether those counts were stated; `unknown` on an event from
+        /// before this was kept.
+        #[serde(default)]
+        findings_presence: crate::evidence::FindingsPresence,
         #[serde(default)]
         runtime: String,
     },

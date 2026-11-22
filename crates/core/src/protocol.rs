@@ -1791,8 +1791,28 @@ pub enum Request {
         verdict: String,
         #[serde(default)]
         findings: crate::gate::Findings,
+        /// Whether `findings` was stated: a client that knows this always
+        /// says (`true` with counts, `false` without); absent, from an
+        /// older client, the verdict's counts are kept as `unknown`.
+        #[serde(default)]
+        findings_stated: Option<bool>,
+        /// When the reviewer says its review started, for the window its
+        /// model evidence is observed in; absent, the window is inferred.
+        #[serde(default)]
+        since: Option<chrono::DateTime<chrono::Utc>>,
         #[serde(default)]
         note: Option<String>,
+    },
+    /// Every retained verdict on a branch, in the order they were given
+    /// (`seq`), with the marks that set any aside. A project keeps at most
+    /// 2000 verdicts and forgets the oldest that stand for nobody, so an
+    /// absent round proves nothing. Answers `verdicts`.
+    Verdicts {
+        #[serde(default)]
+        agent: Option<String>,
+        #[serde(default)]
+        project: Option<String>,
+        branch: String,
     },
     /// Record a local gate run (`scripts/verify.sh check`, `quick` or
     /// `test`) as its runner reported it. `agent` is the caller the run
@@ -2150,6 +2170,11 @@ pub enum Response {
     },
     CodeVerdict {
         verdict: crate::gate::CodeVerdict,
+    },
+    Verdicts {
+        verdicts: Vec<crate::gate::CodeVerdict>,
+        /// How many verdicts a project keeps.
+        retained: usize,
     },
     GateRun {
         run: crate::verification::GateRun,

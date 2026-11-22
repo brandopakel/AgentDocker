@@ -82,6 +82,8 @@ fn verdict(agent: &str, project: Option<&str>, branch: &str, head: &str) -> Requ
         from: None,
         verdict: "pass".into(),
         findings: Findings::default(),
+        findings_stated: None,
+        since: None,
         note: None,
     }
 }

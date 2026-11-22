@@ -123,6 +123,20 @@ fn fingerprint<T: Serialize>(value: &T) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 
+/// One agent's own session, read for the providers and models that
+/// answered it in a window ([`Store::observed_usage`]).
+pub(crate) struct OwnSession<'a> {
+    pub agent: &'a str,
+    pub runtime: &'a str,
+    pub session: &'a str,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+}
+
+/// The read ran past its budget and was stopped: nothing is claimed.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Interrupted;
+
 pub(super) fn text(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
 }
@@ -198,6 +212,117 @@ impl Store {
 
     pub(crate) fn usage_collection(&self) -> Result<Option<Collection>> {
         self.document("usage", "collection")
+    }
+
+    /// The providers and models of one agent's own session in a window,
+    /// from aggregate queries over every retained sample (so a completed
+    /// read is complete however many there were), and how many samples are
+    /// attributed to the agent from other sessions. The whole read is
+    /// bounded by `budget`: past it the queries are interrupted and the
+    /// answer is `Interrupted`, with no partial result. A store fault is an
+    /// error, as any read's is.
+    pub(crate) fn observed_usage(
+        &self,
+        own: &OwnSession<'_>,
+        budget: std::time::Duration,
+    ) -> Result<std::result::Result<agentdocker_core::evidence::Found, Interrupted>> {
+        use agentdocker_core::evidence::{
+            Configured, Found, MAX_PAIRS, MAX_PROVIDERS, ProviderCount,
+        };
+        use std::sync::{Arc, Condvar, Mutex};
+        // A timer stops the queries at the budget; it never interrupts a
+        // statement after the read, because it checks `finished` under the
+        // same lock the read sets it under.
+        let finished = Arc::new((Mutex::new(false), Condvar::new()));
+        let handle = self.conn.get_interrupt_handle();
+        let timer = {
+            let finished = Arc::clone(&finished);
+            std::thread::spawn(move || {
+                let (lock, wake) = &*finished;
+                let done = lock
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (done, waited) = wake
+                    .wait_timeout_while(done, budget, |done| !*done)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !*done && waited.timed_out() {
+                    handle.interrupt();
+                }
+            })
+        };
+        let read = || -> rusqlite::Result<Found> {
+            const OWN: &str = "at>=?1 AND at<=?2 AND contribution IS NOT NULL \
+                AND json_extract(contribution,'$.bucket.attribution.agent')=?3";
+            const SESSION: &str = "json_extract(contribution,'$.bucket.runtime')=?4 \
+                AND json_extract(contribution,'$.session')=?5";
+            let params = rusqlite::params![
+                text(own.from),
+                text(own.to),
+                own.agent,
+                own.runtime,
+                own.session
+            ];
+            let mut found = Found::default();
+            let mut providers = self.conn.prepare(&format!(
+                "SELECT json_extract(contribution,'$.bucket.provider') AS p, COUNT(*) FROM usage_samples \
+                 WHERE {OWN} AND {SESSION} GROUP BY p ORDER BY p"
+            ))?;
+            let mut rows = providers.query(params)?;
+            while let Some(row) = rows.next()? {
+                let provider: Option<String> = row.get(0)?;
+                let samples = u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0);
+                found.samples += samples;
+                match provider {
+                    None => found.unknown_provider += samples,
+                    Some(provider) if found.providers.len() < MAX_PROVIDERS => {
+                        found.providers.push(ProviderCount { provider, samples });
+                    }
+                    Some(_) => found.providers_truncated = true,
+                }
+            }
+            let mut pairs = self.conn.prepare(&format!(
+                "SELECT json_extract(contribution,'$.bucket.provider') AS p, \
+                 json_extract(contribution,'$.bucket.model') AS m FROM usage_samples \
+                 WHERE {OWN} AND {SESSION} GROUP BY p, m ORDER BY p, m LIMIT {}",
+                MAX_PAIRS + 1
+            ))?;
+            let mut rows = pairs.query(params)?;
+            while let Some(row) = rows.next()? {
+                if found.pairs.len() == MAX_PAIRS {
+                    found.pairs_truncated = true;
+                    break;
+                }
+                found.pairs.push(Configured {
+                    provider: row.get(0)?,
+                    model: row.get(1)?,
+                });
+            }
+            found.other_sessions = u64::try_from(self.conn.query_row(
+                &format!("SELECT COUNT(*) FROM usage_samples WHERE {OWN} AND NOT ({SESSION})"),
+                params,
+                |row| row.get::<_, i64>(0),
+            )?)
+            .unwrap_or(0);
+            Ok(found)
+        };
+        let answer = read();
+        {
+            let (lock, wake) = &*finished;
+            *lock
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            wake.notify_all();
+        }
+        let _ = timer.join();
+        match answer {
+            Ok(found) => Ok(Ok(found)),
+            Err(rusqlite::Error::SqliteFailure(error, _))
+                if error.code == rusqlite::ErrorCode::OperationInterrupted =>
+            {
+                Ok(Err(Interrupted))
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// Increasing the configured retention cannot recover already discarded
@@ -1291,6 +1416,217 @@ impl Store {
             )?,
             context: BTreeMap::new(),
         }))
+    }
+}
+
+#[cfg(test)]
+impl Store {
+    /// A retained sample, written as attribution writes one, for tests of
+    /// the reads over it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn insert_test_sample(
+        &self,
+        id: &str,
+        at: DateTime<Utc>,
+        agent: &str,
+        runtime: &str,
+        session: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<()> {
+        let contribution = serde_json::json!({
+            "bucket": {"attribution": {"agent": agent}, "runtime": runtime,
+                       "provider": provider, "model": model, "hour": text(at)},
+            "session": session,
+            "counters": {},
+        });
+        self.conn.execute(
+            "INSERT INTO usage_samples VALUES (?1,'test',?2,?3)",
+            rusqlite::params![id, text(at), contribution.to_string()],
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod observed_tests {
+    use super::*;
+    use std::time::Duration as Budget;
+
+    fn at(minutes: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000 + minutes * 60, 0).unwrap()
+    }
+
+    fn fresh() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("state.db")).unwrap();
+        (dir, store)
+    }
+
+    fn own<'a>() -> OwnSession<'a> {
+        OwnSession {
+            agent: "reviewer",
+            runtime: "codex",
+            session: "s1",
+            from: at(0),
+            to: at(100),
+        }
+    }
+
+    /// The reviewer's own session's providers, models and counts, apart
+    /// from a child session's usage attributed to it, and nothing outside
+    /// the window.
+    #[test]
+    fn only_the_reviewers_own_session_in_the_window_is_observed() {
+        let (_dir, store) = fresh();
+        let sample = |id: &str, minute, session, provider, model| {
+            store
+                .insert_test_sample(
+                    id,
+                    at(minute),
+                    "reviewer",
+                    "codex",
+                    session,
+                    provider,
+                    model,
+                )
+                .unwrap()
+        };
+        sample("1", 10, "s1", Some("anthropic"), Some("model-a"));
+        sample("2", 20, "s1", Some("anthropic"), Some("model-a"));
+        sample("3", 30, "s1", Some("openai"), Some("model-b"));
+        sample("4", 40, "s1", None, None);
+        // An unregistered child thread's usage, attributed to the reviewer.
+        sample("5", 50, "child", Some("google"), Some("model-c"));
+        sample("6", 60, "child", Some("google"), Some("model-c"));
+        // Outside the window.
+        sample("7", 200, "s1", Some("google"), Some("model-c"));
+        let found = store
+            .observed_usage(&own(), Budget::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.samples, 4);
+        let providers: Vec<_> = found
+            .providers
+            .iter()
+            .map(|p| (p.provider.as_str(), p.samples))
+            .collect();
+        assert_eq!(providers, vec![("anthropic", 2), ("openai", 1)]);
+        assert_eq!(found.unknown_provider, 1);
+        assert!(!found.eligible_for_different(), "a sample with no provider");
+        assert_eq!(found.other_sessions, 2);
+        assert_eq!(found.pairs.len(), 3);
+        assert!(!found.pairs_truncated);
+        // Only provider-less samples: found, never none found.
+        let (_dir, alone) = fresh();
+        alone
+            .insert_test_sample("1", at(10), "reviewer", "codex", "s1", None, None)
+            .unwrap();
+        let found = alone
+            .observed_usage(&own(), Budget::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!((found.samples, found.unknown_provider), (1, 1));
+        assert!(found.providers.is_empty());
+    }
+
+    /// The display cap never hides a provider: eight pairs of one and a
+    /// ninth of another keep both providers; past 64 providers the list
+    /// says it is truncated.
+    #[test]
+    fn the_comparison_facts_are_kept_whole_past_the_display_cap() {
+        let (_dir, store) = fresh();
+        for index in 0..8 {
+            let model = format!("model-{index}");
+            store
+                .insert_test_sample(
+                    &format!("a{index}"),
+                    at(10),
+                    "reviewer",
+                    "codex",
+                    "s1",
+                    Some("anthropic"),
+                    Some(&model),
+                )
+                .unwrap();
+        }
+        store
+            .insert_test_sample(
+                "o",
+                at(10),
+                "reviewer",
+                "codex",
+                "s1",
+                Some("openai"),
+                Some("model-z"),
+            )
+            .unwrap();
+        let found = store
+            .observed_usage(&own(), Budget::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.pairs.len(), 8);
+        assert!(found.pairs_truncated);
+        let providers: Vec<_> = found
+            .providers
+            .iter()
+            .map(|p| p.provider.as_str())
+            .collect();
+        assert_eq!(providers, vec!["anthropic", "openai"]);
+        assert!(!found.providers_truncated);
+        let (_dir, many) = fresh();
+        for index in 0..65 {
+            let provider = format!("provider-{index:02}");
+            many.insert_test_sample(
+                &format!("p{index}"),
+                at(10),
+                "reviewer",
+                "codex",
+                "s1",
+                Some(&provider),
+                None,
+            )
+            .unwrap();
+        }
+        let found = many
+            .observed_usage(&own(), Budget::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.providers.len(), 64);
+        assert!(found.providers_truncated);
+        assert_eq!(found.samples, 65);
+        assert!(!found.eligible_for_different());
+    }
+
+    /// A read past its budget is interrupted and claims nothing, and the
+    /// connection serves the next read.
+    #[test]
+    fn a_read_past_its_budget_is_interrupted() {
+        let (_dir, store) = fresh();
+        store
+            .conn
+            .execute_batch(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 300000)
+                 INSERT INTO usage_samples SELECT 'x' || i, 'test', '2023-11-14T22:30:00.000000000Z',
+                 json_object('bucket', json_object('attribution', json_object('agent', 'reviewer'),
+                   'runtime', 'codex', 'provider', 'p' || (i % 50), 'model', 'm' || i), 'session', 's1')
+                 FROM n;",
+            )
+            .unwrap();
+        let wide = OwnSession {
+            from: DateTime::from_timestamp(0, 0).unwrap(),
+            to: at(1_000_000),
+            ..own()
+        };
+        assert_eq!(
+            store.observed_usage(&wide, Budget::from_millis(1)).unwrap(),
+            Err(Interrupted)
+        );
+        let found = store
+            .observed_usage(&wide, Budget::from_secs(60))
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.samples, 300_000);
     }
 }
 

@@ -18,6 +18,7 @@ pub use conversation::{
 };
 pub mod elicitation;
 pub mod event;
+pub mod evidence;
 pub mod hold;
 pub use elicitation::{FormField, FormKind, McpForm};
 pub mod idempotency;

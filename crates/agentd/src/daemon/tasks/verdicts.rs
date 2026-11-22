@@ -11,6 +11,9 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::*;
+use agentdocker_core::evidence::{
+    Collector, Configured, FindingsPresence, ModelEvidence, Observed, ObservedResult,
+};
 use agentdocker_core::gate::{
     self, CodeVerdict, Findings, GATE_ROLE, Lifted, NOTE_CHARS, SupersedeReason, Supersession,
     VERDICTS_PER_PROJECT, Word, full_commit,
@@ -18,6 +21,9 @@ use agentdocker_core::gate::{
 use agentdocker_core::{HUMAN_RUNTIME, JournalEntry, JournalKind, SummarySource};
 
 pub(in crate::daemon) const VERDICT: &str = "code_verdict";
+
+/// The most the observed read of a reviewer's usage may take.
+const OBSERVE_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl State {
     /// Whether the journal holds a commit on `branch` in `project`
@@ -201,6 +207,125 @@ impl State {
 }
 
 impl Daemon {
+    /// What answered the reviewer's own session, in a hold of its own: the
+    /// window from its stated start, else its previous verdict on this
+    /// branch, else its record's start; the retained data's facts at
+    /// capture; and the bounded read. A read that cannot be made or
+    /// finished is unavailable, never an empty success.
+    fn observe_reviewer(
+        &self,
+        project: &ProjectId,
+        branch: &str,
+        reviewer: &str,
+        record: Option<&AgentRecord>,
+        since: Option<DateTime<Utc>>,
+        config: Option<&agentdocker_core::config::UsageConfig>,
+    ) -> Observed {
+        let captured_at = Utc::now();
+        let mut state = lock(&self.state);
+        let previous = state.project_verdicts(project).ok().and_then(|verdicts| {
+            verdicts
+                .into_iter()
+                .filter(|v| v.by.as_str() == reviewer && v.branch == branch)
+                .max_by_key(|v| v.seq)
+                .map(|v| v.at)
+        });
+        let window = agentdocker_core::evidence::window(
+            since,
+            previous,
+            record.and_then(|r| r.started_at),
+            captured_at,
+        )
+        .ok()
+        .flatten();
+        let last_walk = state
+            .store_read("usage collection", |store| store.usage_collection())
+            .flatten()
+            .and_then(|collection| collection.completed_at);
+        let collector = Collector {
+            enabled: config.is_some_and(|config| config.enabled),
+            last_walk,
+        };
+        let retained_from =
+            config.map(|config| crate::daemon::usage::retained(captured_at, config));
+        let retained_from = match retained_from {
+            Some(requested) => state
+                .store_read("usage retention", |store| {
+                    store.usage_retained_since(requested)
+                })
+                .or(Some(requested)),
+            None => None,
+        };
+        let session = record.and_then(|r| r.spec.labels.get("session_id").cloned());
+        let result = match (record, &session, &window) {
+            (None, _, _) | (_, None, _) => ObservedResult::Unavailable {
+                why: "the reviewer's session is not known".to_owned(),
+            },
+            (_, _, None) => ObservedResult::Unavailable {
+                why: "no observation window is known".to_owned(),
+            },
+            (Some(record), Some(session), Some(window)) => {
+                let own = crate::store::usage::OwnSession {
+                    agent: reviewer,
+                    runtime: &record.spec.runtime,
+                    session,
+                    from: window.from,
+                    to: window.to,
+                };
+                match state.store_read("usage evidence", |store| {
+                    store.observed_usage(&own, OBSERVE_BUDGET)
+                }) {
+                    Some(Ok(found)) if found.samples == 0 => ObservedResult::NoneFound {
+                        other_sessions: found.other_sessions,
+                    },
+                    Some(Ok(found)) => ObservedResult::Found(found),
+                    Some(Err(_)) => ObservedResult::Unavailable {
+                        why: "the usage read ran past its budget and was stopped".to_owned(),
+                    },
+                    None => ObservedResult::Unavailable {
+                        why: "the usage store could not be read".to_owned(),
+                    },
+                }
+            }
+        };
+        let incomplete =
+            agentdocker_core::evidence::incomplete(window.as_ref(), retained_from, &collector);
+        Observed {
+            window,
+            captured_at,
+            retained_from,
+            collector,
+            result,
+            incomplete,
+        }
+    }
+
+    /// Every retained verdict on a branch, in `seq` order.
+    pub(in crate::daemon) async fn verdicts(
+        self: &Arc<Self>,
+        agent: Option<&str>,
+        project: Option<String>,
+        branch: &str,
+    ) -> Response {
+        let project = match self.verdict_project(agent, project).await {
+            Ok(project) => project,
+            Err(response) => return *response,
+        };
+        let mut state = lock(&self.state);
+        let mut verdicts: Vec<CodeVerdict> = match state.project_verdicts(&project) {
+            Ok(verdicts) => verdicts
+                .into_iter()
+                .filter(|v| v.branch == branch.trim())
+                .collect(),
+            Err(response) => return *response,
+        };
+        verdicts.sort_by_key(|v| v.seq);
+        Response::Verdicts {
+            verdicts,
+            retained: VERDICTS_PER_PROJECT,
+        }
+    }
+
     /// The project a verdict or a gate names, else the caller's own.
     async fn verdict_project(
         self: &Arc<Self>,
@@ -228,10 +353,18 @@ impl Daemon {
         from: Option<String>,
         verdict: &str,
         findings: Findings,
+        findings_stated: Option<bool>,
+        since: Option<DateTime<Utc>>,
         note: Option<String>,
     ) -> Response {
         // One spelling of each, checked and kept alike.
         let (branch, head) = (branch.trim(), head.trim());
+        if since.is_some_and(|since| since > Utc::now()) {
+            return Response::error(
+                ErrorCode::Invalid,
+                "a review's stated start is no later than the verdict",
+            );
+        }
         let Some(word) = Word::parse(verdict) else {
             return Response::error(ErrorCode::Invalid, "verdict must be pass, changes, or none");
         };
@@ -310,6 +443,22 @@ impl Daemon {
                 }
             }
         }
+        // The reviewer's model evidence, read in a hold of its own before the
+        // verdict's: the usage configuration from its file first, then the
+        // bounded read of what answered the reviewer's own session.
+        let observed = if actor.human {
+            None
+        } else {
+            let config = crate::daemon::usage::configuration(&self.home).ok();
+            Some(self.observe_reviewer(
+                &project,
+                branch,
+                &actor.id,
+                record.as_ref(),
+                since,
+                config.as_ref(),
+            ))
+        };
         let mut state = lock(&self.state);
         // What was checked before the branch was read must still hold: the
         // same record, in the same project, with the same roles.
@@ -422,6 +571,44 @@ impl Daemon {
             },
             verdict: word,
             findings,
+            findings_presence: match findings_stated {
+                Some(true) => FindingsPresence::Stated,
+                Some(false) => FindingsPresence::NotStated,
+                None => FindingsPresence::Unknown,
+            },
+            // The person's word keeps no model; an agent's keeps what its
+            // record, as checked in this hold, asked for, and what was
+            // observed of the same record's session.
+            evidence: observed.map(|observed| {
+                let now = state.registry.get(&AgentId::from(actor.id.as_str()));
+                let then = record.as_ref();
+                let session = |r: Option<&AgentRecord>| {
+                    r.and_then(|r| r.spec.labels.get("session_id").cloned())
+                };
+                let unchanged = now.map(|r| &r.spec.runtime) == then.map(|r| &r.spec.runtime)
+                    && session(now) == session(then);
+                let observed = if unchanged {
+                    observed
+                } else {
+                    Observed {
+                        result: ObservedResult::Unavailable {
+                            why: "the reviewer's record changed while its usage was read"
+                                .to_owned(),
+                        },
+                        ..observed
+                    }
+                };
+                ModelEvidence {
+                    configured: now
+                        .filter(|r| r.spec.provider.is_some() || r.spec.model.is_some())
+                        .map(|r| Configured {
+                            provider: r.spec.provider.clone(),
+                            model: r.spec.model.clone(),
+                        }),
+                    session: session(now),
+                    observed: Some(observed),
+                }
+            }),
             note: note.map(|n| n.trim().to_owned()).unwrap_or_default(),
             at,
             superseded: Vec::new(),
@@ -446,6 +633,7 @@ impl Daemon {
             by: given.by.clone(),
             verdict: word,
             findings: given.findings,
+            findings_presence: given.findings_presence,
             runtime: given.runtime.clone(),
         }];
         if let Some(error) = state.commit_change(
@@ -920,7 +1108,7 @@ fn journal_entry(verdict: &CodeVerdict) -> JournalEntry {
         "{word} {} at {range} as {} ({})",
         verdict.branch,
         verdict.runtime_said(),
-        verdict.findings.said()
+        verdict.findings.said_as(verdict.findings_presence)
     );
     if !verdict.note.is_empty() {
         let note: String = verdict.note.chars().take(300).collect();
@@ -1034,6 +1222,8 @@ mod tests {
             from: None,
             verdict: word.into(),
             findings: Findings::default(),
+            findings_stated: None,
+            since: None,
             note: Some("read it".into()),
         }
     }
@@ -1066,6 +1256,274 @@ mod tests {
 
     fn refused(response: Response, code: ErrorCode) -> bool {
         matches!(response, Response::Error { code: c, .. } if c == code)
+    }
+
+    /// A reviewer of `feature/x` in a repository on main, with an author.
+    async fn reviewing(tmp: &TempDir) -> (Arc<Daemon>, AgentId) {
+        let daemon = open(tmp);
+        let repo = tmp.path().join("repo");
+        repository(&repo, "main");
+        register(&daemon, "author", &repo).await;
+        let reviewer = register(&daemon, "reviewer", &repo).await;
+        give_role(&daemon, &reviewer.id, "reviewer");
+        (daemon, reviewer.id)
+    }
+
+    fn worded(
+        reviewer: &AgentId,
+        word: &str,
+        findings: Findings,
+        stated: Option<bool>,
+        since: Option<DateTime<Utc>>,
+    ) -> Request {
+        let Request::CodeVerdict {
+            agent,
+            project,
+            branch,
+            head,
+            from,
+            verdict,
+            note,
+            ..
+        } = verdict(reviewer.as_str(), None, "feature/x", A, word)
+        else {
+            unreachable!()
+        };
+        Request::CodeVerdict {
+            agent,
+            project,
+            branch,
+            head,
+            from,
+            verdict,
+            findings,
+            findings_stated: stated,
+            since,
+            note,
+        }
+    }
+
+    async fn given(daemon: &Arc<Daemon>, request: Request) -> CodeVerdict {
+        match daemon.handle(request).await {
+            Response::CodeVerdict { verdict } => verdict,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Whether counts were stated is kept; an older client's are unknown,
+    /// never a stated zero; a pass with an important count is refused
+    /// whatever the presence.
+    #[tokio::test]
+    async fn a_verdict_keeps_whether_its_counts_were_stated() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, reviewer) = reviewing(&tmp).await;
+        let nit = Findings {
+            nit: 1,
+            ..Findings::default()
+        };
+        let stated = given(&daemon, worded(&reviewer, "pass", nit, Some(true), None)).await;
+        assert_eq!(stated.findings_presence, FindingsPresence::Stated);
+        assert!(
+            stated.line().contains("findings=stated important=0 nit=1"),
+            "{}",
+            stated.line()
+        );
+        let unstated = given(
+            &daemon,
+            worded(&reviewer, "none", Findings::default(), Some(false), None),
+        )
+        .await;
+        assert_eq!(unstated.findings_presence, FindingsPresence::NotStated);
+        assert_eq!(
+            unstated.findings.said_as(unstated.findings_presence),
+            "counts not stated"
+        );
+        let old_nonzero = given(&daemon, worded(&reviewer, "pass", nit, None, None)).await;
+        assert_eq!(old_nonzero.findings_presence, FindingsPresence::Unknown);
+        assert_eq!(old_nonzero.findings, nit, "the counts are kept as recorded");
+        let old_zero = given(
+            &daemon,
+            worded(&reviewer, "pass", Findings::default(), None, None),
+        )
+        .await;
+        assert_eq!(
+            old_zero.findings.said_as(old_zero.findings_presence),
+            "0 recorded, not known to have been stated"
+        );
+        let important = Findings {
+            important: 1,
+            ..Findings::default()
+        };
+        for presence in [None, Some(false), Some(true)] {
+            assert!(refused(
+                daemon
+                    .handle(worded(&reviewer, "pass", important, presence, None))
+                    .await,
+                ErrorCode::Invalid
+            ));
+        }
+        // A stated start after now is refused.
+        let later = Utc::now() + chrono::Duration::hours(1);
+        assert!(refused(
+            daemon
+                .handle(worded(
+                    &reviewer,
+                    "none",
+                    Findings::default(),
+                    Some(false),
+                    Some(later)
+                ))
+                .await,
+            ErrorCode::Invalid
+        ));
+    }
+
+    /// A reviewer's evidence: what its record asked for, its session, and
+    /// what the retained data showed for that session alone in the window
+    /// it states, then in the window its previous verdict opens; with no
+    /// session known, unavailable.
+    #[tokio::test]
+    async fn a_reviewers_model_evidence_is_its_own_session_in_its_window() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (daemon, reviewer) = reviewing(&tmp).await;
+        let now = Utc::now();
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&reviewer).unwrap();
+            record.spec.runtime = "codex".into();
+            record.spec.provider = Some("openai".into());
+            record.spec.model = Some("model-b".into());
+            record.spec.labels.insert("session_id".into(), "s1".into());
+            let id = reviewer.to_string();
+            let earlier = now - chrono::Duration::minutes(30);
+            state
+                .store
+                .insert_test_sample(
+                    "own",
+                    earlier,
+                    &id,
+                    "codex",
+                    "s1",
+                    Some("openai"),
+                    Some("model-b"),
+                )
+                .unwrap();
+            state
+                .store
+                .insert_test_sample(
+                    "child",
+                    earlier,
+                    &id,
+                    "codex",
+                    "child",
+                    Some("google"),
+                    Some("model-c"),
+                )
+                .unwrap();
+        }
+        let first = given(
+            &daemon,
+            worded(
+                &reviewer,
+                "none",
+                Findings::default(),
+                Some(false),
+                Some(now - chrono::Duration::hours(1)),
+            ),
+        )
+        .await;
+        let evidence = first
+            .evidence
+            .clone()
+            .expect("an agent's verdict keeps evidence");
+        assert_eq!(
+            evidence.configured,
+            Some(Configured {
+                provider: Some("openai".into()),
+                model: Some("model-b".into())
+            })
+        );
+        assert_eq!(evidence.session.as_deref(), Some("s1"));
+        let observed = evidence.observed.unwrap();
+        assert_eq!(
+            observed.window.as_ref().unwrap().source,
+            agentdocker_core::evidence::WindowSource::Stated
+        );
+        let ObservedResult::Found(found) = &observed.result else {
+            panic!("{observed:?}")
+        };
+        assert_eq!(
+            found.samples, 1,
+            "the child's sample is not the reviewer's own"
+        );
+        assert_eq!(found.providers[0].provider, "openai");
+        assert_eq!(found.other_sessions, 1);
+        // The next verdict's window opens at the first: nothing since.
+        let second = given(
+            &daemon,
+            worded(&reviewer, "none", Findings::default(), Some(false), None),
+        )
+        .await;
+        let observed = second.evidence.unwrap().observed.unwrap();
+        let window = observed.window.unwrap();
+        assert_eq!(
+            window.source,
+            agentdocker_core::evidence::WindowSource::PreviousVerdict
+        );
+        assert_eq!(window.from, first.at);
+        assert!(
+            matches!(observed.result, ObservedResult::NoneFound { .. }),
+            "{:?}",
+            observed.result
+        );
+        // No session on the record: unavailable, never a guess.
+        lock(&daemon.state)
+            .registry
+            .get_mut(&reviewer)
+            .unwrap()
+            .spec
+            .labels
+            .remove("session_id");
+        let third = given(
+            &daemon,
+            worded(&reviewer, "none", Findings::default(), Some(false), None),
+        )
+        .await;
+        let evidence = third.evidence.unwrap();
+        assert_eq!(evidence.session, None);
+        assert!(matches!(
+            evidence.observed.unwrap().result,
+            ObservedResult::Unavailable { why } if why.contains("session is not known")
+        ));
+        // The person's word keeps no model evidence.
+        let project = lock(&daemon.state)
+            .registry
+            .get(&reviewer)
+            .and_then(|r| r.project.as_ref().map(|p| p.id().to_string()))
+            .unwrap();
+        let person = given(
+            &daemon,
+            verdict(HUMAN, Some(&project), "feature/x", A, "none"),
+        )
+        .await;
+        assert!(person.human);
+        assert_eq!(person.evidence, None);
+        // The branch's rounds, in the order given.
+        let Response::Verdicts { verdicts, retained } = daemon
+            .handle(Request::Verdicts {
+                agent: Some(reviewer.to_string()),
+                project: None,
+                branch: "feature/x".into(),
+            })
+            .await
+        else {
+            panic!("listed")
+        };
+        assert_eq!(retained, VERDICTS_PER_PROJECT);
+        assert_eq!(
+            verdicts.iter().map(|v| v.id.clone()).collect::<Vec<_>>(),
+            vec![first.id, second.id, third.id, person.id]
+        );
     }
 
     #[tokio::test]
@@ -1179,12 +1637,12 @@ mod tests {
         assert!(lines.iter().any(|e| {
             e.head_after.as_deref() == Some(B)
                 && e.summary
-                    .starts_with("passed feature/x at bbbbbbbb as human (important 0,")
+                    .starts_with("passed feature/x at bbbbbbbb as human (0 recorded, not known to have been stated")
         }));
         assert!(
-            lines.iter().any(|e| e
-                .summary
-                .contains("as unknown (important 1, nit 2, pre-existing 3)")),
+            lines.iter().any(|e| e.summary.contains(
+                "as unknown (important 1, nit 2, pre-existing 3, not known to have been stated)"
+            )),
             "{lines:?}"
         );
     }
@@ -1225,7 +1683,7 @@ mod tests {
         assert_eq!(
             given.line(),
             format!(
-                "verdict=none head={A} important=0 nit=2 pre_existing=0 runtime=codex by=reviewer"
+                "verdict=none head={A} findings=unknown important=0 nit=2 pre_existing=0 runtime=codex by=reviewer"
             )
         );
         let events = daemon.recent_events(200);

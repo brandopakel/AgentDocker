@@ -1219,6 +1219,12 @@ impl<B: Backend> McpServer<B> {
                 .await
             }
             "review_verdict" => {
+                // Whether counts were given is this call's own fact.
+                let mut arguments = arguments;
+                if let Some(object) = arguments.as_object_mut() {
+                    let stated = object.contains_key("findings");
+                    object.insert("findings_stated".into(), json!(stated));
+                }
                 self.forward(tagged_request(arguments, "code_verdict", &me)?)
                     .await
             }
@@ -2911,7 +2917,7 @@ fn bare_tool_definitions() -> Vec<Value> {
         }),
         json!({
             "name": "review_verdict",
-            "description": "Give your verdict on a branch at the exact commit you read: `pass` (no important finding), `changes`, or `none` (you read it and give no verdict). Count what you found as important (must be fixed before it lands), nit (worth fixing, not blocking) and pre_existing (not caused by this change); counts you leave out are zero. It counts at the review gate for the roles the person gave you, and only for that commit: any later commit, a merge included, needs your word again. Refused on a branch you hold, are checked out on, or committed to: the author does not pass its own change. Name the earlier commit in `from` when you read only what came after it. Say what you checked in the note.",
+            "description": "Give your verdict on a branch at the exact commit you read: `pass` (no important finding), `changes`, or `none` (you read it and give no verdict). Count what you found as important (must be fixed before it lands), nit (worth fixing, not blocking) and pre_existing (not caused by this change); leave `findings` out and the verdict says its counts were not stated. Give `since` (an RFC 3339 time) for when your review started: the window the verdict reads your model evidence in; left out, it is inferred and said so. It counts at the review gate for the roles the person gave you, and only for that commit: any later commit, a merge included, needs your word again. Refused on a branch you hold, are checked out on, or committed to: the author does not pass its own change. Name the earlier commit in `from` when you read only what came after it. Say what you checked in the note.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -2928,6 +2934,7 @@ fn bare_tool_definitions() -> Vec<Value> {
                         },
                         "additionalProperties": false
                     },
+                    "since": { "type": "string", "description": "When your review started, an RFC 3339 time." },
                     "note": { "type": "string" },
                     "project": { "type": "string", "description": "Omit for your own project." }
                 },
@@ -3997,6 +4004,44 @@ mod tests {
             Ownership::Absent,
             "and let go after it"
         );
+    }
+
+    /// A verdict through MCP says whether its counts were given: a call
+    /// with `findings` states them, one without states none, and neither is
+    /// left for the daemon to read as an older client's.
+    #[tokio::test]
+    async fn a_verdict_through_mcp_says_whether_its_counts_were_given() {
+        let head = "a".repeat(40);
+        for (arguments, stated) in [
+            (
+                json!({"branch": "feature/x", "head": head, "verdict": "pass",
+                    "findings": {"nit": 1}}),
+                true,
+            ),
+            (
+                json!({"branch": "feature/x", "head": head, "verdict": "none"}),
+                false,
+            ),
+        ] {
+            let server = server(vec![Response::Ok]);
+            let reply = server
+                .handle(rpc(
+                    1,
+                    "tools/call",
+                    json!({"name": "review_verdict", "arguments": arguments}),
+                ))
+                .await
+                .unwrap();
+            assert!(reply["error"].is_null(), "{reply}");
+            let requests = server.backend.requests();
+            assert!(
+                requests.iter().any(|request| matches!(
+                    request,
+                    Request::CodeVerdict { findings_stated: Some(given), .. } if *given == stated
+                )),
+                "{requests:?}"
+            );
+        }
     }
 
     fn server(responses: Vec<Response>) -> McpServer<Mock> {

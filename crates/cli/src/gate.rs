@@ -54,9 +54,12 @@ pub struct VerdictArgs {
     #[arg(long, group = "word", visible_alias = "comment")]
     /// Read, and no verdict given: neither passes nor blocks.
     none: bool,
-    /// Findings by severity, as `important,nit,pre-existing` counts (`0,1,0`; all zero when absent).
-    #[arg(long, value_parser = parse_findings, default_value = "0,0,0")]
-    findings: Findings,
+    /// Findings by severity, as `important,nit,pre-existing` counts (`0,1,0`). Absent, the verdict says its counts were not stated.
+    #[arg(long, value_parser = parse_findings)]
+    findings: Option<Findings>,
+    /// When your review of this branch started (an RFC 3339 time, or a duration ago such as `90m` or `2h`): the window your model evidence is read in. Absent, the window is inferred and said so.
+    #[arg(long, value_parser = parse_since)]
+    since: Option<chrono::DateTime<chrono::Utc>>,
     /// Project id, root or unique prefix (default: the reviewer's, or this checkout's).
     #[arg(long, value_name = "ID|PATH")]
     project: Option<String>,
@@ -67,7 +70,7 @@ pub struct VerdictArgs {
     #[arg(
         long,
         value_name = "VERDICT",
-        conflicts_with_all = ["branch", "head", "from", "pass", "changes", "none", "findings", "note"]
+        conflicts_with_all = ["branch", "head", "from", "pass", "changes", "none", "findings", "since", "note"]
     )]
     supersede: Option<String>,
     /// Why the verdict is set aside (with --supersede).
@@ -76,7 +79,7 @@ pub struct VerdictArgs {
     #[arg(
         long,
         requires = "supersede",
-        conflicts_with_all = ["branch", "head", "from", "pass", "changes", "none", "findings", "note"]
+        conflicts_with_all = ["branch", "head", "from", "pass", "changes", "none", "findings", "since", "note"]
     )]
     reason: Option<String>,
 }
@@ -103,6 +106,25 @@ pub struct GateArgs {
     /// Print the answer as JSON.
     #[arg(long)]
     json: bool,
+}
+
+/// A stated start: an RFC 3339 time, or a duration ago (`90m`, `2h`, `1d`).
+fn parse_since(text: &str) -> Result<chrono::DateTime<chrono::Utc>, String> {
+    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Ok(at.with_timezone(&chrono::Utc));
+    }
+    let (number, unit) = text.split_at(text.trim_end_matches(char::is_alphabetic).len());
+    let amount: i64 = number.parse().map_err(|_| {
+        "a start is an RFC 3339 time or a duration ago (`90m`, `2h`, `1d`)".to_owned()
+    })?;
+    let seconds = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86_400,
+        _ => return Err("a duration ago ends in s, m, h or d".to_owned()),
+    };
+    Ok(chrono::Utc::now() - chrono::Duration::seconds(amount.saturating_mul(seconds)))
 }
 
 const FINDINGS_FORM: &str = "findings are three counts, important,nit,pre-existing (`0,1,0`)";
@@ -259,7 +281,7 @@ fn who(v: &CodeVerdict) -> String {
         "{} ({}; {})",
         v.by_name,
         v.runtime_said(),
-        v.findings.said()
+        v.findings.said_as(v.findings_presence)
     )
 }
 
@@ -395,7 +417,9 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
         head: commit(&head)?,
         from: args.from.as_deref().map(commit).transpose()?,
         verdict: word.to_owned(),
-        findings: args.findings,
+        findings_stated: Some(args.findings.is_some()),
+        findings: args.findings.unwrap_or_default(),
+        since: args.since,
         note: args.note,
     };
     let Response::CodeVerdict { verdict } = client.call(&request).await? else {
@@ -406,6 +430,132 @@ pub async fn verdict(client: &Client, args: VerdictArgs) -> Result<()> {
     println!("{}", verdict.id);
     eprintln!("{} {}", verdict.branch, verdict.line());
     Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+pub struct VerdictsArgs {
+    /// Asker; defaults to this agent's identity, or `user` in a human terminal.
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    agent: Option<String>,
+    /// A pull request (`#402` or `402`, read with `gh`) or a branch.
+    target: String,
+    /// Project id, root or unique prefix (default: the asker's, or this checkout's).
+    #[arg(long, value_name = "ID|PATH")]
+    project: Option<String>,
+    /// Print the verdicts as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+/// Every retained verdict on a branch, oldest first, each with what it
+/// kept of its reviewer's model.
+pub async fn verdicts(client: &Client, args: VerdictsArgs) -> Result<()> {
+    let agent = sender::resolve(client, args.agent).await?;
+    let branch = match pull_request(&args.target) {
+        Some(_) => branch_and_head(&args.target, None)?.0,
+        None => args.target.clone(),
+    };
+    let Response::Verdicts { verdicts, retained } = client
+        .call(&Request::Verdicts {
+            project: project(client, args.project, agent.as_deref().unwrap_or(HUMAN)).await?,
+            agent,
+            branch: branch.clone(),
+        })
+        .await?
+    else {
+        bail!("the daemon did not list the verdicts");
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "branch": branch, "verdicts": verdicts, "retained": retained,
+            }))?
+        );
+        return Ok(());
+    }
+    if verdicts.is_empty() {
+        eprintln!("no verdict retained on {branch} (a project keeps at most {retained})");
+        return Ok(());
+    }
+    for verdict in &verdicts {
+        println!("{}", round(verdict));
+    }
+    eprintln!(
+        "(only retained verdicts are listed: a project keeps at most {retained}, so an absent round proves nothing)"
+    );
+    Ok(())
+}
+
+/// One round: its order, word, commit, reviewer, counts and model evidence.
+fn round(v: &CodeVerdict) -> String {
+    use agentdocker_core::evidence::{ObservedResult, WindowSource};
+    let mut said = format!(
+        "#{} {} at {} by {}{}",
+        v.seq,
+        v.verdict,
+        short(&v.head),
+        who(v),
+        if v.superseded.is_empty() {
+            ""
+        } else {
+            " (set aside)"
+        }
+    );
+    let Some(evidence) = &v.evidence else {
+        said.push_str(if v.human {
+            "; the person's word"
+        } else {
+            "; no model evidence kept"
+        });
+        return said;
+    };
+    if let Some(configured) = &evidence.configured {
+        said.push_str(&format!(
+            "; configured {}/{}",
+            configured.provider.as_deref().unwrap_or("?"),
+            configured.model.as_deref().unwrap_or("?")
+        ));
+    }
+    if let Some(observed) = &evidence.observed {
+        let window = match observed.window.as_ref().map(|w| w.source) {
+            Some(WindowSource::Stated) => "since the stated start",
+            Some(WindowSource::PreviousVerdict) => "since its previous verdict (inferred)",
+            Some(WindowSource::RecordStart) => "since its record started (inferred)",
+            None => "with no window",
+        };
+        match &observed.result {
+            ObservedResult::Found(found) => {
+                let pairs: Vec<String> = found
+                    .pairs
+                    .iter()
+                    .map(|p| {
+                        format!(
+                            "{}/{}",
+                            p.provider.as_deref().unwrap_or("?"),
+                            p.model.as_deref().unwrap_or("?")
+                        )
+                    })
+                    .collect();
+                said.push_str(&format!(
+                    "; observed {window}: {}{} in {} samples of retained data",
+                    pairs.join(", "),
+                    if found.pairs_truncated { ", …" } else { "" },
+                    found.samples
+                ));
+            }
+            ObservedResult::NoneFound { .. } => {
+                said.push_str(&format!("; observed {window}: none found in retained data"));
+            }
+            ObservedResult::Unavailable { why } => {
+                said.push_str(&format!("; observed: unavailable ({why})"));
+            }
+        }
+        if !observed.incomplete.is_empty() {
+            said.push_str(" (may be incomplete)");
+        }
+    }
+    said
 }
 
 /// Ask the gate. `Ok(true)` when the branch may land at that commit.
@@ -835,6 +985,8 @@ mod tests {
             },
             note: String::new(),
             at: chrono::Utc::now(),
+            findings_presence: agentdocker_core::evidence::FindingsPresence::Stated,
+            evidence: None,
             superseded: Vec::new(),
         })
     }
