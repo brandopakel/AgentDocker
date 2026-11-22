@@ -106,7 +106,11 @@ pub struct TaskTransition<'a> {
 // would ignore them and count each marked verdict again: a request for
 // changes a successor's pass lifted would block once more, and a pass the
 // person set aside would open the gate it was taken out of. It must refuse.
-pub(crate) const SCHEMA_VERSION: i64 = 31;
+// v32 lets a `gate_run` document name the `fuzz_build` step and carry a
+// gate version. An older daemon's step reader is closed: it would latch a
+// storage failure on the first gate run it read. It must refuse. Step names
+// added later read as `unknown` from here on and need no bump.
+pub(crate) const SCHEMA_VERSION: i64 = 32;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS usage_emissions (

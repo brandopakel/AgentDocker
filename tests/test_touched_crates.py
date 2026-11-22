@@ -77,6 +77,60 @@ class TouchedCrates(unittest.TestCase):
         self.assertEqual(TOUCHED.touched(["crates/tools/Cargo.toml"], self.packages), set())
         self.assertEqual(TOUCHED.touched(["tools/Cargo.toml"], self.packages), {"tools"})
 
+    # The fuzz workspace's own graph: the fuzz crate depends on agentd,
+    # which depends on core; host only through agentd; the CLI not at all.
+    FUZZ_METADATA = {
+        "packages": [
+            {"id": "fuzz", "name": "agentdocker-fuzz", "source": None},
+            {"id": "agentd", "name": "agentd", "source": None},
+            {"id": "core", "name": "agentdocker-core", "source": None},
+            {"id": "host", "name": "agentdocker-host", "source": None},
+            {"id": "serde", "name": "serde", "source": "registry+https://example.invalid"},
+        ],
+        "resolve": {
+            "root": "fuzz",
+            "nodes": [
+                {"id": "fuzz", "deps": [{"pkg": "agentd"}, {"pkg": "serde"}]},
+                {"id": "agentd", "deps": [{"pkg": "core"}, {"pkg": "host"}]},
+                {"id": "host", "deps": [{"pkg": "core"}]},
+                {"id": "core", "deps": []},
+                {"id": "serde", "deps": []},
+            ],
+        },
+    }
+
+    def test_the_fuzz_targets_are_reached_directly_or_not(self):
+        closure = TOUCHED.fuzz_closure(self.FUZZ_METADATA)
+        self.assertEqual(closure, {"agentd", "agentdocker-core", "agentdocker-host"})
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "fuzz-metadata.json"
+            path.write_text(json.dumps(self.FUZZ_METADATA))
+            reached = lambda paths, names: TOUCHED.fuzz_reached(paths, names, str(path))
+            # Reached only through agentd: still reached.
+            self.assertTrue(reached(["crates/host/src/lib.rs"], {"agentdocker-host"}))
+            # The CLI alone: not reached.
+            self.assertFalse(reached(["crates/cli/src/main.rs"], {"agentdocker"}))
+            # A change under fuzz/ alone, with no package selected.
+            self.assertTrue(reached(["fuzz/fuzz_targets/protocol.rs"], set()))
+            # Nothing selected, nothing under fuzz/.
+            self.assertFalse(reached(["docs/GUIDE.md"], set()))
+            # The whole workspace.
+            self.assertTrue(reached(["Cargo.lock"], None))
+        # Metadata that cannot be read: the targets are compiled.
+        self.assertTrue(TOUCHED.fuzz_reached(["crates/cli/src/main.rs"], {"agentdocker"}, "/nonexistent.json"))
+        self.assertIsNone(TOUCHED.fuzz_closure({"packages": []}))
+        # A graph that cannot be walked from the fuzz crate is not told:
+        # its root missing from the nodes, or no graph at all.
+        rootless = json.loads(json.dumps(self.FUZZ_METADATA))
+        rootless["resolve"]["nodes"] = [node for node in rootless["resolve"]["nodes"] if node["id"] != "fuzz"]
+        self.assertIsNone(TOUCHED.fuzz_closure(rootless))
+        self.assertIsNone(TOUCHED.fuzz_closure({**self.FUZZ_METADATA, "resolve": None}))
+        with tempfile.TemporaryDirectory() as folder:
+            for broken in (rootless, {**self.FUZZ_METADATA, "resolve": None}):
+                path = Path(folder) / "broken.json"
+                path.write_text(json.dumps(broken))
+                self.assertTrue(TOUCHED.fuzz_reached(["crates/cli/src/main.rs"], {"agentdocker"}, str(path)))
+
     def test_selectors_name_each_package_or_the_workspace(self):
         self.assertEqual(TOUCHED.selectors({"top", "base"}), ["-p", "base", "-p", "top"])
         self.assertEqual(TOUCHED.selectors(None), ["--workspace"])

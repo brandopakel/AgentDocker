@@ -113,6 +113,8 @@ def classify(argv: list):
         return "fmt", None
     if head == ["cargo", "metadata"] and "fuzz/Cargo.toml" in argv:
         return "fuzz_lock", None
+    if head == ["cargo", "check"] and "fuzz/Cargo.toml" in argv:
+        return "fuzz_build", None
     if head == ["cargo", "clippy"]:
         return "clippy", None
     if head == ["cargo", "nextest"]:
@@ -197,7 +199,16 @@ def scope(folder: Path):
         return None
     if not FULL.match(base):
         return None
-    return {"base": base, "packages": packages, "doc_packages": docs}
+    found = {"base": base, "packages": packages, "doc_packages": docs}
+    # Whether the change reached the fuzz targets, only when the selection
+    # said: a missing word leaves the run incomplete, never assumed.
+    try:
+        word = (folder / "fuzz").read_text().strip()
+    except OSError:
+        word = None
+    if word in ("true", "false"):
+        found["fuzz"] = word == "true"
+    return found
 
 
 def report(folder: Path, mode: str, exit_status: int) -> dict:
@@ -215,6 +226,9 @@ def report(folder: Path, mode: str, exit_status: int) -> dict:
         if counts is not None:
             step["counts"] = counts
     run = {
+        # The steps this verify.sh's modes require: 2 since the fuzz
+        # targets are compiled.
+        "gate_version": 2,
         "run_key": state["run_key"],
         "checkout": state["checkout"],
         "mode": mode,

@@ -213,6 +213,7 @@ mod tests {
     fn report(checkout: &Path, key: &str, branch: &str, head: &str) -> GateRunReport {
         let now = Utc::now();
         GateRunReport {
+            gate_version: 1,
             run_key: key.into(),
             checkout: checkout.to_path_buf(),
             branch: Some(branch.into()),
