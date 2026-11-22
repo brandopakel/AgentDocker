@@ -722,9 +722,20 @@ pub fn recovered(
     }
     // An ended start that owes nothing is done with: no reply, whatever
     // it says, changes that or casts doubt on it, so nothing that waits
-    // behind it is held up by an answer that came late.
+    // behind it is held up by an answer that came late. One thing is
+    // still due, and it is the owner's, not the start's: a report of
+    // this very run's exit, which the record already shows, is
+    // acknowledged and retired, or its owner would wait out its time
+    // and leave the report behind. The seat stays settled.
     if start.end.is_some() && !start.cleanup_owed && !start.uncertain {
-        return Recovered::Nothing;
+        let durable = answer == Reattached::Exited
+            && evidence.record == Record::Ended
+            && agrees(start, evidence);
+        return if durable {
+            Recovered::Acknowledge
+        } else {
+            Recovered::Nothing
+        };
     }
     // What is seen now must still be this start's own run: the registry
     // can have moved to another run under the same agent id while the
@@ -742,10 +753,12 @@ pub fn recovered(
             _ => Recovered::Nothing,
         };
     }
-    // An owner that says the child was never let run, of a start whose
-    // activation is written down, contradicts what is proved: nothing
-    // is claimed, ended start or not.
-    if answer == Reattached::Unactivated && start.stage >= Stage::Activated {
+    // An owner that says the child was never let run contradicts what
+    // is proved where the start's activation is written down, and
+    // equally where a supervised receiver is verified for the run, which
+    // proves the same before the stage is written: nothing is claimed,
+    // ended start or not, and above all the child is not ended.
+    if answer == Reattached::Unactivated && (start.stage >= Stage::Activated || evidence.relay) {
         return Recovered::Uncertain;
     }
     let install = !evidence.relay;
@@ -2359,9 +2372,17 @@ mod tests {
             Reattached::Unidentified,
         ] {
             for record in [Record::Running, Record::Ended] {
+                // One reply still has something due, and it is the
+                // owner's: the report of this run's exit, already on
+                // the record. Everything else is nothing.
+                let due = answer == Reattached::Exited && record == Record::Ended;
                 assert_eq!(
                     recovered(Some(&settled), expected, answer, orphan(record)),
-                    Recovered::Nothing,
+                    if due {
+                        Recovered::Acknowledge
+                    } else {
+                        Recovered::Nothing
+                    },
                     "{answer:?} {record:?}"
                 );
             }
@@ -2448,6 +2469,46 @@ mod tests {
                 recovered(Some(&seat), expected, Reattached::Activated, after),
                 Recovered::Nothing
             );
+            // Through settlement: the exit is written to the start (as
+            // exited or failed), nothing is owed, a start waits behind
+            // it, and the daemon is interrupted once more before the
+            // acknowledgement. The same report is still acknowledged,
+            // the seat stays settled, and what waits is promoted.
+            let mut ended = start(stage);
+            ended.end = Some(match exit {
+                Exit::Ordinary => End::Exited,
+                _ => End::Failed {
+                    why: "its session ended before its start was complete".into(),
+                },
+            });
+            assert!(ended.settled());
+            let mut settled = crate::crew::seat::tests::seat(ended);
+            settled.wanted = Some(wanted(2));
+            assert_eq!(
+                recovered(Some(&settled), expected, Reattached::Exited, after),
+                Recovered::Acknowledge,
+                "{stage:?}: acknowledged after settlement too"
+            );
+            assert_eq!(admit(Some(&settled), after), Admit::Promote);
+            assert!(settled.start.as_ref().unwrap().settled());
+            // Still not for another run, or one that cannot be told; and
+            // a late reply that identified nobody stays harmless.
+            for now in [Run::Other, Run::Unproven] {
+                assert_eq!(
+                    recovered(
+                        Some(&settled),
+                        expected,
+                        Reattached::Exited,
+                        Evidence { run: now, ..after }
+                    ),
+                    Recovered::Nothing,
+                    "{now:?}"
+                );
+            }
+            assert_eq!(
+                recovered(Some(&settled), expected, Reattached::Unidentified, after),
+                Recovered::Nothing
+            );
         }
         // An ended start that still owes its cleanup acknowledges the
         // same way.
@@ -2526,6 +2587,60 @@ mod tests {
                 ..orphan(Record::Ended)
             }
         ));
+    }
+
+    /// A verified relay proves a run was let run before its stage says
+    /// so, to a recovery as to a Start and a release. An owner's older
+    /// answer that the child was never let run, arriving for a
+    /// running-stage start that is supervised here, is a contradiction:
+    /// nothing is claimed, and the child its supervisor proves is
+    /// running is not ended. With no such evidence the held child is
+    /// ended, as before. The same for an ended start that still owes
+    /// its cleanup.
+    #[test]
+    fn a_child_its_supervisor_proves_running_is_not_ended_as_unactivated() {
+        let id = StartId::from("start-one");
+        let run = RunId::from("run-one");
+        let expected = Expected {
+            start: &id,
+            run: &run,
+        };
+        let relayed = supervised(Record::Running);
+        let alone = orphan(Record::Running);
+        let live = seat(start(Stage::Running));
+        // The three readers agree on the relayed case.
+        assert_eq!(admit(Some(&live), relayed), Admit::RecordActivation);
+        assert_eq!(release(Some(&live), relayed), Ok(Release::Mark));
+        assert_eq!(
+            recovered(Some(&live), expected, Reattached::Unactivated, relayed),
+            Recovered::Uncertain,
+            "not EndUnactivated"
+        );
+        // No evidence of activation: the held child is ended.
+        assert_eq!(
+            recovered(Some(&live), expected, Reattached::Unactivated, alone),
+            Recovered::EndUnactivated
+        );
+        // An ended running-stage start that still owes its cleanup.
+        let mut failed = start(Stage::Running);
+        failed.end = Some(End::Failed {
+            why: "its owner went away".into(),
+        });
+        failed.cleanup_owed = true;
+        let owing = seat(failed);
+        assert_eq!(
+            recovered(Some(&owing), expected, Reattached::Unactivated, relayed),
+            Recovered::Uncertain
+        );
+        assert_eq!(
+            recovered(Some(&owing), expected, Reattached::Unactivated, alone),
+            Recovered::EndUnactivated
+        );
+        // An activated answer under the relay keeps the relay.
+        assert_eq!(
+            recovered(Some(&live), expected, Reattached::Activated, relayed),
+            Recovered::Resume { install: false }
+        );
     }
 
     /// A release is given only for a run that is this start's, let run
