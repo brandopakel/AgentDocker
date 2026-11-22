@@ -127,6 +127,11 @@ pub enum End {
     Cancelled {
         why: String,
     },
+    /// Its session ended after its start was complete: an ordinary exit
+    /// of a member that was running, not a start that failed. The same
+    /// whether the daemon saw the exit as it happened or found it saved
+    /// by the run's owner later.
+    Exited,
     /// The session was released from the team while running: it lives on
     /// as a plain session. Written in the one commit that releases it,
     /// so there is no moment at which a release is asked and not made;
@@ -258,6 +263,17 @@ impl Start {
     pub fn released(&self) -> bool {
         self.end == Some(End::Released)
     }
+
+    /// The release itself, as its one commit writes it: the start ends
+    /// as released, and whatever cleanup the team still owed for it is
+    /// given up with it, since what it would have cleaned (the session,
+    /// its checkout) is now the session's own to keep. So a released
+    /// start is settled at once, and never left owing a cleanup nobody
+    /// may do.
+    pub fn release(&mut self) {
+        self.end = Some(End::Released);
+        self.cleanup_owed = false;
+    }
 }
 
 /// A start asked for while the one before it still owns something. It
@@ -313,17 +329,26 @@ impl Seat {
                     && current.generation == generation
                     && current.end.is_none()
                     && !current.stopping
+                    && !current.uncertain
             })
     }
 
-    /// Whether the cleanup of `start` may still be done: its own, still
-    /// owed, of a start the team has not released. This is not progress
-    /// and needs no current generation; it is the one thing an operation
-    /// a stop left behind is still let do, and it writes nothing but
-    /// that its cleanup is done.
+    /// Whether the cleanup of `start` may be done: its own, still owed,
+    /// of a start that has ended and was not released, and whose run is
+    /// not in doubt. A start that is still live has no cleanup to admit:
+    /// that is what keeps a cleanup and a release from both being let at
+    /// the same session, since a release is given only to a live start
+    /// and ends it. This is not progress and needs no current
+    /// generation; it is the one thing an operation a stop left behind
+    /// is still let do, and it writes nothing but that its cleanup is
+    /// done.
     pub fn may_clean(&self, start: &StartId) -> bool {
         self.start.as_ref().is_some_and(|current| {
-            current.id == *start && current.cleanup_owed && !current.released()
+            current.id == *start
+                && current.cleanup_owed
+                && current.end.is_some()
+                && !current.released()
+                && !current.uncertain
         })
     }
 }
@@ -374,6 +399,10 @@ pub struct Evidence {
     /// A supervised receiver exists for this exact run: a stop can be
     /// relayed to it, and the run is known to be let run.
     pub relay: bool,
+    /// The receiver there is now is known to have been given the stop
+    /// that was asked. That a receiver exists does not show it: one made
+    /// since the stop was asked has not been given it.
+    pub stop_delivered: bool,
     /// This daemon holds the authority to write. One that is taking over
     /// from another does not yet, and its empty memory says nothing of
     /// the other's drivers.
@@ -487,7 +516,14 @@ pub enum Admit {
     /// let run, and whether anything still supervises it, is not known
     /// here. The exact run is recovered through its owner before
     /// anything else is decided, and its activation is never sent again.
+    /// Reattaching to an owner takes its controller over, so this is
+    /// never the answer for a run that is supervised.
     Recover,
+    /// Supervised here, with its activation not yet written down: a
+    /// verified relay proves the command was let run. The activation is
+    /// recorded and the start goes on under the relay there is, which is
+    /// not touched.
+    RecordActivation,
     /// The record is being stopped.
     Stopping,
     /// The session ended before its start was complete: the start is
@@ -520,7 +556,9 @@ pub fn admit(seat: Option<&Seat>, evidence: Evidence) -> Admit {
         Case::Unclear(_) => Admit::Uncertain,
         Case::Ended(start) if start.settled() => free,
         // A stop that has won holds the seat until it is seen to finish,
-        // whether or not the driver it stopped is still alive.
+        // whether or not the driver it stopped is still alive. Whatever
+        // of that stop is still to be done is [`pending`]'s to say, and
+        // is done on this request as on any other.
         Case::Ended(_) | Case::StopAsked(_) => held,
         Case::Live(_) if evidence.driver != Driver::None => Admit::Starting,
         Case::Live(start) => match (start.stage, evidence.record) {
@@ -533,9 +571,7 @@ pub fn admit(seat: Option<&Seat>, evidence: Evidence) -> Admit {
             (_, Record::Ended) => Admit::FailEnded,
             (_, Record::Stopping) => Admit::Stopping,
             _ if !evidence.relay => Admit::Recover,
-            // Supervised, with its activation not yet recorded: the same
-            // recovery records it, and keeps the relay there is.
-            (Stage::Running, _) => Admit::Recover,
+            (Stage::Running, _) => Admit::RecordActivation,
             (Stage::Instructed, _) if !start.cards.owed.is_empty() => Admit::RetryOwed,
             (Stage::Complete, _) => Admit::AlreadyActive,
             _ => Admit::Resume,
@@ -556,9 +592,27 @@ pub enum Reattached {
     Unidentified,
 }
 
-/// What a recovery does with what the owner answered. It reads the
-/// start again first: what the person asked while the recovery ran wins
-/// over going on.
+/// How an exit that a recovery found saved is committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Exit {
+    /// The start was complete: its member ran and has ended. The start
+    /// ends as [`End::Exited`], as it would had the daemon seen the exit
+    /// when it happened.
+    Ordinary,
+    /// The start was not complete: it is failed at its stage.
+    Failed,
+    /// A stop was asked: it is cancelled.
+    Cancelled,
+    /// The start had ended already: its end stands, and only the
+    /// record's exit is committed.
+    AlreadyEnded,
+}
+
+/// What a recovery does with what the owner answered. It reads the seat
+/// again first, and is given the start and the run it set out to
+/// recover: what the person asked while it ran wins over going on, and
+/// a reply that comes back to a seat that has moved on authorises
+/// nothing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Recovered {
     /// The run is under supervision, and its start goes on from
@@ -566,33 +620,76 @@ pub enum Recovered {
     /// supervised receiver is still to be made for it: one that is
     /// already there is kept and never displaced.
     Resume { install: bool },
-    /// A stop is owed: it is relayed through the run's receiver, made
-    /// first if there is none, and nothing more of the team's is done.
+    /// The run lives and is to be stopped: a stop was asked, or the
+    /// start has ended and stopping its run is the cleanup it owes. It
+    /// is relayed through the run's receiver, made first if there is
+    /// none, and nothing more of the team's is done.
     RelayStop { install: bool },
     /// The child is ended through its owner; when that outcome is known
-    /// and committed, the start is failed at running. A stop that was
-    /// only sent proves nothing.
+    /// and committed, the start is failed at running if it has not ended
+    /// already. A stop that was only sent proves nothing.
     EndUnactivated,
-    /// The exit is committed before it is acknowledged; the start is
-    /// failed, or cancelled where a stop was owed.
-    CommitExit,
-    /// Nothing is claimed: the start is marked uncertain.
+    /// The exit is committed before it is acknowledged, as the kind of
+    /// exit it is.
+    CommitExit(Exit),
+    /// Nothing is claimed: the start is, or is now marked, uncertain.
+    /// Nothing is installed.
     Uncertain,
     /// The session was released meanwhile: it is not the team's, and the
     /// recovery leaves it as it found it.
     Leave,
+    /// The seat no longer holds the start, or the run, this recovery
+    /// set out for: another has taken its place. Nothing is written,
+    /// nothing is installed, and the reply is dropped.
+    Stale,
+    /// This daemon lost the authority to write while the recovery ran:
+    /// the same, until it is given back.
+    Fenced,
 }
 
-pub fn recovered(start: &Start, answer: Reattached, relay: bool) -> Recovered {
+/// The start and the run a recovery set out to recover.
+#[derive(Clone, Copy, Debug)]
+pub struct Expected<'a> {
+    pub start: &'a StartId,
+    pub run: &'a RunId,
+}
+
+pub fn recovered(
+    seat: Option<&Seat>,
+    expected: Expected<'_>,
+    answer: Reattached,
+    evidence: Evidence,
+) -> Recovered {
+    if !evidence.writer {
+        return Recovered::Fenced;
+    }
+    let Some(start) = seat
+        .and_then(|seat| seat.start.as_ref())
+        .filter(|start| start.id == *expected.start && start.run.as_ref() == Some(expected.run))
+    else {
+        return Recovered::Stale;
+    };
     if start.released() {
         return Recovered::Leave;
     }
-    match answer {
-        Reattached::Unidentified => Recovered::Uncertain,
-        Reattached::Exited => Recovered::CommitExit,
-        Reattached::Unactivated => Recovered::EndUnactivated,
-        Reattached::Activated if start.stopping => Recovered::RelayStop { install: !relay },
-        Reattached::Activated => Recovered::Resume { install: !relay },
+    if start.uncertain || answer == Reattached::Unidentified {
+        return Recovered::Uncertain;
+    }
+    let install = !evidence.relay;
+    match (answer, &start.end) {
+        (Reattached::Exited, Some(_)) => Recovered::CommitExit(Exit::AlreadyEnded),
+        (Reattached::Exited, None) if start.stopping => Recovered::CommitExit(Exit::Cancelled),
+        (Reattached::Exited, None) if start.stage == Stage::Complete => {
+            Recovered::CommitExit(Exit::Ordinary)
+        }
+        (Reattached::Exited, None) => Recovered::CommitExit(Exit::Failed),
+        (Reattached::Unactivated, _) => Recovered::EndUnactivated,
+        // An ended start's live run is a cleanup it owes, never work to
+        // go on with.
+        (Reattached::Activated, Some(_)) => Recovered::RelayStop { install },
+        (Reattached::Activated, None) if start.stopping => Recovered::RelayStop { install },
+        (Reattached::Activated, None) => Recovered::Resume { install },
+        (Reattached::Unidentified, _) => Recovered::Uncertain,
     }
 }
 
@@ -624,7 +721,9 @@ pub enum StopRun {
     /// the stop is owed, durably, and the exact run is recovered through
     /// its owner to relay it.
     Recover,
-    /// A stop was already asked and can still be relayed, or is being.
+    /// A stop was already asked, and the receiver there is now is known
+    /// to have been given it, or the launch's own check is about to
+    /// refuse the run: there is nothing more to do but wait.
     Already,
     /// Nothing is claimed of the run: a stop cannot be confirmed, and is
     /// not answered as stopping.
@@ -646,10 +745,12 @@ pub struct Stop {
 pub fn stop(seat: Option<&Seat>, evidence: Evidence) -> Stop {
     let case = Seat::case(seat, evidence);
     let withdraw = case != Case::Fenced && seat.is_some_and(|seat| seat.wanted.is_some());
-    // Whether a stop can reach the run now, or will without help.
-    let reach = |record: Record| match (evidence.relay, evidence.driver) {
+    // Whether a stop can reach the run now, or will without help. A
+    // receiver that is there is given the stop unless it is known to
+    // have it: that it exists does not show it was told.
+    let reach = || match (evidence.relay, evidence.driver) {
         (true, _) | (false, Driver::Launching) => {
-            if record == Record::Stopping {
+            if evidence.stop_delivered {
                 StopRun::Already
             } else {
                 StopRun::Relay
@@ -663,25 +764,43 @@ pub fn stop(seat: Option<&Seat>, evidence: Evidence) -> Stop {
         // Ended already; a released session is not the team's to stop.
         Case::Empty | Case::Ended(_) => StopRun::Nothing,
         Case::Unclear(_) => StopRun::NotConfirmable,
-        Case::StopAsked(start) => match (start.stage, evidence.record) {
-            (_, Record::Ended) => StopRun::Nothing,
-            (Stage::Reserved | Stage::RecordBound, _) => StopRun::Already,
-            // Asked before, and whether it can still be relayed is read
-            // again: a receiver that was lost is recovered.
-            (_, record) => match reach(record) {
-                StopRun::Relay => StopRun::Already,
-                other => other,
-            },
-        },
-        Case::Live(start) => match (start.stage, evidence.record) {
-            (Stage::Reserved, _) => StopRun::CancelReserved,
-            (_, Record::Ended) => StopRun::Nothing,
-            (Stage::RecordBound, _) if evidence.driver == Driver::Launching => StopRun::Refuse,
-            (Stage::RecordBound, _) => StopRun::EndUnstarted,
-            (_, record) => reach(record),
-        },
+        // A stop asked before is not a stop done. What it still needs is
+        // worked out again from what is there now, so that one whose
+        // delivery was interrupted is finished by the next request or
+        // the next reopening and not answered as already under way.
+        Case::Live(start) | Case::StopAsked(start) => {
+            match (start.stage, evidence.record) {
+                (_, Record::Ended) => StopRun::Nothing,
+                (Stage::Reserved, _) => StopRun::CancelReserved,
+                (Stage::RecordBound, _) if evidence.driver == Driver::Launching => {
+                    if start.stopping {
+                        // The launch's check has the stop to find.
+                        StopRun::Already
+                    } else {
+                        StopRun::Refuse
+                    }
+                }
+                // Created, and nothing is launching it: it never ran,
+                // whether or not a stop was asked while something was.
+                (Stage::RecordBound, _) => StopRun::EndUnstarted,
+                _ => reach(),
+            }
+        }
     };
     Stop { run, withdraw }
+}
+
+/// What a stop that was asked still needs done, if anything: for the
+/// daemon to do on any request that meets the seat, and when it reopens.
+/// None where no stop is asked, or the one asked needs only waiting for.
+pub fn pending(seat: Option<&Seat>, evidence: Evidence) -> Option<StopRun> {
+    match Seat::case(seat, evidence) {
+        Case::StopAsked(_) => match stop(seat, evidence).run {
+            StopRun::Already | StopRun::Nothing => None,
+            needed => Some(needed),
+        },
+        _ => None,
+    }
 }
 
 /// What a release of a member's session does: it stays a plain session
@@ -692,8 +811,9 @@ pub enum Release {
     /// answer says the session had not been created.
     Cancel,
     /// The start is ended as released, in one commit, for that exact
-    /// run. From then on no stop, cleanup or late driver of the team
-    /// ends it or removes its checkout.
+    /// run ([`Start::release`]), and the team's cleanup for it is given
+    /// up in the same commit. From then on no stop, cleanup or late
+    /// driver of the team ends it or removes its checkout.
     Mark,
 }
 
@@ -758,6 +878,7 @@ pub fn standing(seat: Option<&Seat>, evidence: Evidence) -> Standing {
         Case::Ended(start) => match &start.end {
             Some(End::Failed { .. }) => Standing::Failed,
             Some(End::Cancelled { .. }) if start.cleanup_owed => Standing::Stopping,
+            // Cancelled and cleaned up, released, or an ordinary exit.
             _ => Standing::NotStarted,
         },
         Case::StopAsked(_) => Standing::Stopping,
@@ -842,6 +963,7 @@ mod tests {
             run: Run::Same,
             driver: Driver::None,
             relay: false,
+            stop_delivered: false,
             writer: true,
         }
     }
@@ -923,9 +1045,12 @@ mod tests {
             (Stage::Reserved, R::None, Continue, Continue),
             // Created and never ran: no command was let run.
             (Stage::RecordBound, R::Created, FailUnstarted, FailUnstarted),
-            // Running with its activation unrecorded: recovered either
-            // way; a relay that is there is kept by the recovery.
-            (Stage::Running, R::Running, Recover, Recover),
+            // Running with its activation unrecorded. With no relay the
+            // run is recovered through its owner. Under a verified
+            // relay the activation is proved: it is written down and the
+            // start goes on, and the owner is not reattached, which
+            // would take the controller there is away.
+            (Stage::Running, R::Running, Recover, RecordActivation),
             // Activated says the owner answered; it does not say the
             // run reached supervision. Only a verified relay does.
             (Stage::Activated, R::Running, Recover, Resume),
@@ -988,6 +1113,7 @@ mod tests {
                             run: Run::Same,
                             driver,
                             relay,
+                            stop_delivered: false,
                             writer: false,
                         };
                         assert_eq!(Seat::case(Some(&seat), fenced), Case::Fenced);
@@ -1340,9 +1466,10 @@ mod tests {
             (Stage::Activated, R::Running, Recover, Relay, Owe, Relay),
             (Stage::Instructed, R::Running, Recover, Relay, Owe, Relay),
             (Stage::Complete, R::Running, Recover, Relay, Owe, Relay),
-            // Being stopped: already, where a receiver is there to have
-            // taken it; where the receiver was lost, recovered.
-            (Stage::Complete, R::Stopping, Recover, Already, Owe, Already),
+            // Somebody's stop is under way already: the team's is given
+            // to the receiver there is all the same, since nothing shows
+            // it has it.
+            (Stage::Complete, R::Stopping, Recover, Relay, Owe, Relay),
             (
                 Stage::Complete,
                 R::Ended,
@@ -1396,81 +1523,330 @@ mod tests {
                 withdraw: false
             }
         );
-        // A second stop: already, while the first can still arrive; and
-        // where its receiver was lost since, the run is recovered.
-        let mut asked = start(Stage::Activated);
-        asked.stopping = true;
-        let asked = seat(asked);
-        assert_eq!(stop(Some(&asked), supervised(Record::Running)).run, Already);
-        assert_eq!(
-            stop(Some(&asked), driven(Record::Running, D::Launching)).run,
-            Already
-        );
-        assert_eq!(
-            stop(Some(&asked), driven(Record::Running, D::Recovering)).run,
-            Owe
-        );
-        assert_eq!(stop(Some(&asked), orphan(Record::Running)).run, Recover);
-        assert_eq!(stop(Some(&asked), orphan(Record::Stopping)).run, Recover);
-        assert_eq!(stop(Some(&asked), orphan(Record::Ended)).run, Nothing);
         // A released session is not the team's to stop.
         let mut released = start(Stage::Complete);
-        released.end = Some(End::Released);
+        released.release();
         assert_eq!(
             stop(Some(&seat(released)), supervised(Record::Running)).run,
             Nothing
         );
     }
 
-    /// A recovery reads the start again before it goes on: a stop asked
-    /// while it ran is relayed and the team's work is not continued; a
-    /// session released meanwhile is left as found; and a receiver that
-    /// is already there is never displaced by a new one.
+    /// A stop that was asked is not a stop that was done. Its delivery
+    /// can be interrupted at two points, and what it still needs is
+    /// worked out again from what is there, on the next Stop, the next
+    /// Start, or the daemon's reopening.
+    ///
+    /// Before running: the launch that was to refuse the run at its own
+    /// check dies first. The created record is abandoned, and is ended
+    /// as one that never ran, exactly as it would be with no stop asked.
+    ///
+    /// After running: the stop was written down and the receiver went
+    /// before it was given it. A receiver that is there afterwards, a
+    /// newly made one included, has not been told because it exists: it
+    /// is given the stop, unless it is known to carry it.
     #[test]
-    fn a_recovery_follows_the_owner_and_what_was_asked_meanwhile() {
-        let going = start(Stage::Activated);
-        for relay in [true, false] {
+    fn a_stop_that_was_asked_is_finished_by_whoever_comes_next() {
+        use StopRun::*;
+        // The first point.
+        let mut bound = start(Stage::RecordBound);
+        let live = seat(bound.clone());
+        assert_eq!(
+            stop(Some(&live), driven(Record::Created, Driver::Launching)).run,
+            Refuse
+        );
+        bound.stopping = true;
+        let asked = seat(bound);
+        // While its launch lives, the launch's check has it: wait.
+        let launching = driven(Record::Created, Driver::Launching);
+        assert_eq!(stop(Some(&asked), launching).run, Already);
+        assert_eq!(pending(Some(&asked), launching), None);
+        // The launch died: nothing will refuse the run now.
+        let abandoned = orphan(Record::Created);
+        assert_eq!(
+            stop(Some(&asked), abandoned).run,
+            EndUnstarted,
+            "not Already"
+        );
+        assert_eq!(pending(Some(&asked), abandoned), Some(EndUnstarted));
+        assert_eq!(
+            admit(Some(&asked), abandoned),
+            Admit::Wait,
+            "and a Start waits for it"
+        );
+        // Once it is ended there is nothing left of the stop.
+        assert_eq!(stop(Some(&asked), orphan(Record::Ended)).run, Nothing);
+        assert_eq!(pending(Some(&asked), orphan(Record::Ended)), None);
+
+        // The second point, at every stage from running on.
+        for stage in &STAGES[2..] {
+            let mut running = start(*stage);
+            running.stopping = true;
+            let asked = seat(running);
+            // The receiver was lost before it was given the stop.
             assert_eq!(
-                recovered(&going, Reattached::Activated, relay),
+                pending(Some(&asked), orphan(Record::Running)),
+                Some(Recover)
+            );
+            assert_eq!(
+                pending(Some(&asked), driven(Record::Running, Driver::Recovering)),
+                Some(Owe)
+            );
+            // A receiver made since has not been told: it is given the
+            // stop, whether the record still says running or already
+            // says stopping.
+            for record in [Record::Running, Record::Stopping] {
+                assert_eq!(
+                    stop(Some(&asked), supervised(record)).run,
+                    Relay,
+                    "{stage:?} {record:?}: not Already"
+                );
+                assert_eq!(pending(Some(&asked), supervised(record)), Some(Relay));
+                assert_eq!(
+                    stop(Some(&asked), driven(record, Driver::Launching)).run,
+                    Relay
+                );
+                // Known to carry it: nothing more to do but wait.
+                let told = Evidence {
+                    stop_delivered: true,
+                    ..supervised(record)
+                };
+                assert_eq!(stop(Some(&asked), told).run, Already);
+                assert_eq!(pending(Some(&asked), told), None);
+            }
+        }
+        // A stop asked of a reservation that was not cancelled yet.
+        let mut reserved = start(Stage::Reserved);
+        reserved.stopping = true;
+        assert_eq!(
+            pending(Some(&seat(reserved)), orphan(Record::None)),
+            Some(CancelReserved)
+        );
+        // No stop asked, nothing pending.
+        assert_eq!(
+            pending(Some(&seat(start(Stage::Complete))), orphan(Record::Running)),
+            None
+        );
+    }
+
+    /// A recovery's reply is judged against the seat as it is when the
+    /// reply comes, and against the start and the run the recovery set
+    /// out for. A stop asked while it ran is relayed and the team's work
+    /// is not continued; a session released meanwhile is left as found;
+    /// a receiver that is already there is never displaced. A reply that
+    /// comes back to a seat another start has taken, to a daemon that
+    /// lost its authority, or to a start marked uncertain or ended while
+    /// the recovery was away, resumes nothing and installs nothing.
+    #[test]
+    fn a_recovery_is_judged_against_the_seat_it_comes_back_to() {
+        let id = StartId::from("start-one");
+        let run = RunId::from("run-one");
+        let expected = Expected {
+            start: &id,
+            run: &run,
+        };
+        let answers = [
+            Reattached::Activated,
+            Reattached::Unactivated,
+            Reattached::Exited,
+            Reattached::Unidentified,
+        ];
+        let going = seat(start(Stage::Activated));
+        for relay in [true, false] {
+            let seen = Evidence {
+                relay,
+                ..orphan(Record::Running)
+            };
+            assert_eq!(
+                recovered(Some(&going), expected, Reattached::Activated, seen),
                 Recovered::Resume { install: !relay }
             );
         }
+        let seen = orphan(Record::Running);
         assert_eq!(
-            recovered(&going, Reattached::Unactivated, false),
+            recovered(Some(&going), expected, Reattached::Unactivated, seen),
             Recovered::EndUnactivated
         );
         assert_eq!(
-            recovered(&going, Reattached::Exited, false),
-            Recovered::CommitExit
-        );
-        assert_eq!(
-            recovered(&going, Reattached::Unidentified, true),
+            recovered(Some(&going), expected, Reattached::Unidentified, seen),
             Recovered::Uncertain
         );
         // A stop became owed during the recovery.
         let mut asked = start(Stage::Activated);
         asked.stopping = true;
+        let asked = seat(asked);
         for relay in [true, false] {
+            let seen = Evidence {
+                relay,
+                ..orphan(Record::Running)
+            };
             assert_eq!(
-                recovered(&asked, Reattached::Activated, relay),
+                recovered(Some(&asked), expected, Reattached::Activated, seen),
                 Recovered::RelayStop { install: !relay },
                 "never resumed"
             );
         }
-        assert_eq!(
-            recovered(&asked, Reattached::Unactivated, false),
-            Recovered::EndUnactivated
-        );
         // Released during the recovery: whatever the owner answers.
         let mut released = start(Stage::Activated);
-        released.end = Some(End::Released);
-        for answer in [
-            Reattached::Activated,
-            Reattached::Unactivated,
-            Reattached::Exited,
-            Reattached::Unidentified,
-        ] {
-            assert_eq!(recovered(&released, answer, false), Recovered::Leave);
+        released.release();
+        let released = seat(released);
+        for answer in answers {
+            assert_eq!(
+                recovered(Some(&released), expected, answer, seen),
+                Recovered::Leave
+            );
+        }
+        // An old reply after the seat was given to another start, or
+        // after its run was replaced under the same start id: dropped.
+        let mut replaced = start(Stage::Running);
+        replaced.id = StartId::from("start-two");
+        let replaced = seat(replaced);
+        let mut another_run = start(Stage::Activated);
+        another_run.run = Some(RunId::from("run-two"));
+        let another_run = seat(another_run);
+        for answer in answers {
+            for relay in [true, false] {
+                let seen = Evidence {
+                    relay,
+                    ..orphan(Record::Running)
+                };
+                assert_eq!(
+                    recovered(Some(&replaced), expected, answer, seen),
+                    Recovered::Stale
+                );
+                assert_eq!(
+                    recovered(Some(&another_run), expected, answer, seen),
+                    Recovered::Stale
+                );
+                assert_eq!(recovered(None, expected, answer, seen), Recovered::Stale);
+                // The daemon lost its authority while it was away.
+                let fenced = Evidence {
+                    writer: false,
+                    ..seen
+                };
+                assert_eq!(
+                    recovered(Some(&going), expected, answer, fenced),
+                    Recovered::Fenced
+                );
+            }
+        }
+        // Marked uncertain while the recovery was away: nothing is
+        // resumed and nothing installed, whatever the owner says; and
+        // such a start's driver may not go on either.
+        let mut unsure = start(Stage::Activated);
+        unsure.uncertain = true;
+        let unsure = seat(unsure);
+        for answer in answers {
+            assert_eq!(
+                recovered(Some(&unsure), expected, answer, seen),
+                Recovered::Uncertain
+            );
+        }
+        assert!(!unsure.owns(1, &id), "no progress on a start in doubt");
+        assert!(going.owns(1, &id));
+        // Ended while the recovery was away: a live run is the cleanup
+        // it owes and is stopped, never gone on with; an exit is only
+        // committed, and its end stands.
+        let mut failed = start(Stage::Activated);
+        failed.end = Some(End::Failed {
+            why: "its cards could not be read".into(),
+        });
+        failed.cleanup_owed = true;
+        let failed = seat(failed);
+        assert_eq!(
+            recovered(Some(&failed), expected, Reattached::Activated, seen),
+            Recovered::RelayStop { install: true }
+        );
+        assert_eq!(
+            recovered(Some(&failed), expected, Reattached::Exited, seen),
+            Recovered::CommitExit(Exit::AlreadyEnded)
+        );
+        assert_eq!(
+            recovered(Some(&failed), expected, Reattached::Unactivated, seen),
+            Recovered::EndUnactivated
+        );
+    }
+
+    /// An exit means what it is, not when the daemon learned of it. A
+    /// member whose start was complete and whose session then ended has
+    /// simply stopped running: that is so when the record already shows
+    /// the exit, and equally when the record still says running and the
+    /// exit is found saved by the run's owner at a recovery. An exit
+    /// before the start was complete is a start that failed; one after
+    /// a stop was asked is the stop done.
+    #[test]
+    fn an_exit_is_the_same_exit_whenever_it_is_learned_of() {
+        let id = StartId::from("start-one");
+        let run = RunId::from("run-one");
+        let expected = Expected {
+            start: &id,
+            run: &run,
+        };
+        let stale = orphan(Record::Running);
+        // Complete, the record stale: recovered, and the saved exit is
+        // an ordinary one.
+        let complete = seat(start(Stage::Complete));
+        assert_eq!(admit(Some(&complete), stale), Admit::Recover);
+        assert_eq!(
+            recovered(Some(&complete), expected, Reattached::Exited, stale),
+            Recovered::CommitExit(Exit::Ordinary)
+        );
+        // The same exit, already on the record: the seat is given up,
+        // and the reader is told the same.
+        assert_eq!(
+            admit(Some(&complete), orphan(Record::Ended)),
+            Admit::Reserve
+        );
+        assert_eq!(
+            standing(Some(&complete), orphan(Record::Ended)),
+            Standing::NotStarted
+        );
+        // And once the ordinary exit is committed as the start's end.
+        let mut exited = start(Stage::Complete);
+        exited.end = Some(End::Exited);
+        assert!(exited.settled());
+        assert_eq!(
+            admit(Some(&seat(exited.clone())), orphan(Record::Ended)),
+            Admit::Reserve
+        );
+        assert_eq!(
+            standing(Some(&seat(exited.clone())), orphan(Record::Ended)),
+            Standing::NotStarted
+        );
+        // With a cleanup outstanding the seat is waited for either way,
+        // and the cleanup is the ended start's own to do.
+        let mut owing = start(Stage::Complete);
+        owing.cleanup_owed = true;
+        assert_eq!(
+            admit(Some(&seat(owing)), orphan(Record::Ended)),
+            Admit::Wait
+        );
+        exited.cleanup_owed = true;
+        let exited = seat(exited);
+        assert_eq!(admit(Some(&exited), orphan(Record::Ended)), Admit::Wait);
+        assert!(exited.may_clean(&id));
+        // An unfinished start's exit is a failure, learned of either way.
+        for stage in &STAGES[2..6] {
+            let unfinished = seat(start(*stage));
+            assert_eq!(
+                recovered(Some(&unfinished), expected, Reattached::Exited, stale),
+                Recovered::CommitExit(Exit::Failed),
+                "{stage:?}"
+            );
+            assert_eq!(
+                admit(Some(&unfinished), orphan(Record::Ended)),
+                Admit::FailEnded,
+                "{stage:?}"
+            );
+        }
+        // After a stop was asked, it is the stop done, complete or not.
+        for stage in [Stage::Activated, Stage::Complete] {
+            let mut asked = start(stage);
+            asked.stopping = true;
+            assert_eq!(
+                recovered(Some(&seat(asked)), expected, Reattached::Exited, stale),
+                Recovered::CommitExit(Exit::Cancelled)
+            );
         }
     }
 
@@ -1573,11 +1949,14 @@ mod tests {
     }
 
     /// A release, a stop and a cleanup exclude one another, and the one
-    /// admitted first stands. After a stop, nothing is released. After
-    /// a start has ended and its cleanup been admitted, nothing is
-    /// released. After a release, the start has ended as released in
-    /// that one commit, and nothing of the team's is admitted for it: no
-    /// progress, no cleanup, no stop, and no resuming by a late
+    /// admitted first stands. After a stop, nothing is released. A
+    /// cleanup is admitted only for a start that has ended, and a
+    /// release only for one that is live, so the two are never both let
+    /// at one session: not after an end is written, and not before. A
+    /// release ends the start as released in its one commit and gives
+    /// up the team's cleanup with it, so the start is settled and the
+    /// seat free at once; nothing of the team's is admitted for it
+    /// after: no progress, no cleanup, no stop, no resuming by a late
     /// recovery. There is no state in which a release is asked and not
     /// yet made.
     #[test]
@@ -1592,7 +1971,7 @@ mod tests {
             Err(RELEASE_STOPPED)
         );
         assert!(!stopped.owns(1, &id), "nothing more of the team's for it");
-        // A cleanup first.
+        // A cleanup first: the start has ended, and is not released.
         let mut cleaning = start(Stage::Running);
         cleaning.end = Some(End::Cancelled {
             why: "stopped".into(),
@@ -1604,12 +1983,26 @@ mod tests {
             Err(RELEASE_ENDED)
         );
         assert!(cleaning.may_clean(&id));
-        // A release first: the commit that makes it ends the start.
-        let mut released = start(Stage::Complete);
-        released.end = Some(End::Released);
-        released.cleanup_owed = true;
-        assert!(released.released());
-        let released = seat(released);
+        // The live combination: let run, supervised, with something of
+        // its start's still to clean. It can be released, and for that
+        // very reason nothing may clean it: a cleanup that passed its
+        // check and paused would otherwise touch a checkout that became
+        // the session's own.
+        let mut live = start(Stage::Activated);
+        live.cleanup_owed = true;
+        let mut live = seat(live);
+        assert_eq!(
+            release(Some(&live), supervised(Record::Running)),
+            Ok(Release::Mark)
+        );
+        assert!(!live.may_clean(&id), "a live start has no cleanup to admit");
+        // The release's own commit.
+        live.start.as_mut().unwrap().release();
+        let released = live;
+        let ended = released.start.as_ref().unwrap();
+        assert!(ended.released());
+        assert!(!ended.cleanup_owed, "given up with the release");
+        assert!(ended.settled(), "and so settled at once");
         assert!(!released.owns(1, &id), "no progress");
         assert!(
             !released.may_clean(&id),
@@ -1629,13 +2022,27 @@ mod tests {
             Standing::NotStarted,
             "a plain session, not the member's"
         );
+        // The next admission: the seat is free, with the released
+        // session still running under its own record.
+        assert_eq!(
+            admit(Some(&released), supervised(Record::Running)),
+            Admit::Reserve
+        );
+        // A start in doubt is cleaned by nobody, ended or not.
+        let mut unsure = start(Stage::Running);
+        unsure.end = Some(End::Failed {
+            why: "its owner could not be identified".into(),
+        });
+        unsure.cleanup_owed = true;
+        unsure.uncertain = true;
+        assert!(!seat(unsure).may_clean(&id));
     }
 
     /// A driver goes on with a start only at the generation that is the
     /// seat's now and the start's own. After a stop advanced the seat's
     /// generation and kept the old start, neither the old number nor
     /// the seat's new one passes for it; what the old operation may
-    /// still do is its own cleanup, and only that.
+    /// still do, once it has ended, is its own cleanup, and only that.
     #[test]
     fn an_old_driver_cannot_go_on_in_a_seat_that_moved_on() {
         let mine = StartId::from("start-one");
@@ -1648,18 +2055,18 @@ mod tests {
         seat.start.as_mut().unwrap().cleanup_owed = true;
         assert!(!seat.owns(1, &mine), "the generation it was begun at");
         assert!(!seat.owns(2, &mine), "the seat's current one, read anew");
-        assert!(seat.may_clean(&mine), "its own cleanup is still its to do");
-        assert!(!seat.may_clean(&StartId::from("another")));
+        assert!(!seat.may_clean(&mine), "not while its run has not ended");
         // The generation alone, without the stop being written, does
         // not pass either.
         seat.start.as_mut().unwrap().stopping = false;
         assert!(!seat.owns(1, &mine) && !seat.owns(2, &mine));
-        // Its own start ended.
-        seat.generation = 1;
+        // The stopped run is seen to end: its own cleanup is its to do.
         seat.start.as_mut().unwrap().end = Some(End::Cancelled {
             why: "stopped".into(),
         });
-        assert!(!seat.owns(1, &mine));
+        assert!(seat.may_clean(&mine));
+        assert!(!seat.may_clean(&StartId::from("another")));
+        assert!(!seat.owns(1, &mine) && !seat.owns(2, &mine));
         seat.start.as_mut().unwrap().cleanup_owed = false;
         assert!(!seat.may_clean(&mine), "nothing left to clean");
         // A new start took the seat.
@@ -1893,6 +2300,10 @@ mod tests {
         assert_eq!(
             serde_json::to_value(End::Released).unwrap(),
             serde_json::json!({"how": "released"})
+        );
+        assert_eq!(
+            serde_json::to_value(End::Exited).unwrap(),
+            serde_json::json!({"how": "exited"})
         );
     }
 }
