@@ -916,6 +916,7 @@ pub fn event_line(event: &Event) -> String {
             by,
             verdict,
             findings,
+            findings_presence,
             runtime,
             ..
         } => format!(
@@ -927,7 +928,7 @@ pub fn event_line(event: &Event) -> String {
             } else {
                 runtime.as_str()
             },
-            findings.said()
+            findings.said_as(*findings_presence)
         ),
         EventKind::CodeVerdictSuperseded {
             branch,

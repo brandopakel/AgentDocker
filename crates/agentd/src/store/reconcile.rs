@@ -253,6 +253,8 @@ impl Store {
             pending_from: std::cell::Cell::new(None),
             messages_fts: std::cell::Cell::new(false),
             read_capacity: std::cell::Cell::new(agentdocker_core::config::READ_SET_CAPACITY),
+            #[cfg(test)]
+            evidence_stages: std::cell::Cell::new(None),
         })
     }
 

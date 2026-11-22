@@ -123,6 +123,252 @@ fn fingerprint<T: Serialize>(value: &T) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
 }
 
+/// One agent's own session, read for the providers and models that
+/// answered it in a window ([`Snapshot::own_usage`]).
+pub(crate) struct OwnSession<'a> {
+    pub agent: &'a str,
+    pub runtime: &'a str,
+    pub session: &'a str,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+}
+
+/// The read ran past its budget and was stopped: nothing is claimed.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Interrupted;
+
+impl std::fmt::Display for Interrupted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the read ran past its budget and was stopped")
+    }
+}
+
+impl std::error::Error for Interrupted {}
+
+/// How many SQLite virtual-machine steps pass between two looks at a
+/// bounded read's deadline.
+const DEADLINE_STEPS: std::ffi::c_int = 1_000;
+
+/// How far short of a bounded read's deadline a lock wait may give up and
+/// still be that deadline: SQLite counts a busy timeout in whole
+/// milliseconds, so the allowance each stage sets is what is left rounded
+/// down.
+const LOCK_ROUNDING: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// Whether `error` is a bounded read's deadline: raised by its own check,
+/// by SQLite interrupting a statement, or a lock wait that ran out the
+/// allowance the deadline left it. A lock wait that gave up with time to
+/// spare is a fault like any other.
+fn interrupted(error: &anyhow::Error, deadline: std::time::Instant) -> bool {
+    let spent = std::time::Instant::now() + LOCK_ROUNDING >= deadline;
+    error.chain().any(|cause| {
+        cause.is::<Interrupted>()
+            || match cause.downcast_ref::<rusqlite::Error>() {
+                Some(rusqlite::Error::SqliteFailure(failure, _)) => {
+                    failure.code == rusqlite::ErrorCode::OperationInterrupted
+                        || (failure.code == rusqlite::ErrorCode::DatabaseBusy && spent)
+                }
+                _ => false,
+            }
+    })
+}
+
+/// What a bounded read put on the shared connection, taken off again when
+/// the read ends however it ends, an unwind included: the deadline
+/// handler, the transaction (only if this read opened it), and the lock
+/// wait.
+struct Hold<'c> {
+    conn: &'c Connection,
+    began: bool,
+    released: bool,
+}
+
+impl Hold<'_> {
+    fn release(&mut self) -> rusqlite::Result<()> {
+        self.released = true;
+        let handler = self.conn.progress_handler(0, None::<fn() -> bool>);
+        let ended = if self.began && !self.conn.is_autocommit() {
+            self.conn.execute_batch("ROLLBACK")
+        } else {
+            Ok(())
+        };
+        let restored = self.conn.busy_timeout(super::BUSY_TIMEOUT);
+        handler.and(ended).and(restored)
+    }
+}
+
+impl Drop for Hold<'_> {
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = self.release();
+        }
+    }
+}
+
+/// One bounded read of the store in one SQLite snapshot
+/// ([`Store::bounded_snapshot`]): each stage first looks at the deadline,
+/// and waits for a lock no longer than what is left of it.
+pub(crate) struct Snapshot<'s> {
+    store: &'s Store,
+    deadline: std::time::Instant,
+    stages: std::cell::Cell<usize>,
+}
+
+impl Snapshot<'_> {
+    fn stage(&self) -> Result<()> {
+        let left = self
+            .deadline
+            .saturating_duration_since(std::time::Instant::now());
+        #[cfg(test)]
+        let left = match self.store.evidence_stages.get() {
+            Some(stages) if self.stages.get() >= stages => std::time::Duration::ZERO,
+            _ => left,
+        };
+        if left.is_zero() {
+            return Err(Interrupted.into());
+        }
+        self.store.conn.busy_timeout(left)?;
+        Ok(())
+    }
+
+    fn done<T>(&self, value: T) -> Result<T> {
+        self.stages.set(self.stages.get() + 1);
+        Ok(value)
+    }
+
+    /// The latest verdict of `kind` that `by` gave on `branch` in
+    /// `project`, by the order verdicts are given in (`seq`, then time,
+    /// then id; a verdict kept before `seq` reads as 0): its id, its place,
+    /// and the boundary it gives a next window (where its own capture
+    /// ended, else its time). Only those fields are read, never a whole
+    /// verdict.
+    pub(crate) fn predecessor(
+        &self,
+        kind: &str,
+        project: &str,
+        branch: &str,
+        by: &str,
+    ) -> Result<Option<agentdocker_core::evidence::Predecessor>> {
+        self.stage()?;
+        let mut statement = self.store.conn.prepare(
+            "SELECT json_extract(json,'$.id'), COALESCE(json_extract(json,'$.seq'), 0), \
+             json_extract(json,'$.at'), json_extract(json,'$.evidence.observed.captured_at') \
+             FROM documents WHERE kind=?1 AND json_extract(json,'$.project')=?2 \
+             AND json_extract(json,'$.branch')=?3 AND json_extract(json,'$.by')=?4",
+        )?;
+        let mut rows = statement.query(rusqlite::params![kind, project, branch, by])?;
+        let time = |text: &str| -> Result<DateTime<Utc>> {
+            Ok(DateTime::parse_from_rfc3339(text)?.with_timezone(&Utc))
+        };
+        let mut latest: Option<(u64, DateTime<Utc>, String, DateTime<Utc>)> = None;
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let seq = u64::try_from(row.get::<_, i64>(1)?)?;
+            let at = time(&row.get::<_, String>(2)?)?;
+            let boundary = match row.get::<_, Option<String>>(3)? {
+                Some(captured) => time(&captured)?,
+                None => at,
+            };
+            let candidate = (seq, at, id, boundary);
+            if latest.as_ref().is_none_or(|(seq, at, id, _)| {
+                (candidate.0, candidate.1, candidate.2.as_str()) > (*seq, *at, id.as_str())
+            }) {
+                latest = Some(candidate);
+            }
+        }
+        self.done(latest.map(
+            |(seq, _, id, boundary)| agentdocker_core::evidence::Predecessor { id, seq, boundary },
+        ))
+    }
+
+    pub(crate) fn collection(&self) -> Result<Option<Collection>> {
+        self.stage()?;
+        let collection = self.store.usage_collection()?;
+        self.done(collection)
+    }
+
+    /// The retention cutoff the store committed, if it has one.
+    pub(crate) fn retention_floor(&self) -> Result<Option<DateTime<Utc>>> {
+        self.stage()?;
+        let floor = self
+            .store
+            .document::<DateTime<Utc>>("usage", "retained_since")?;
+        self.done(floor)
+    }
+
+    /// The providers and models of one agent's own session in `[from,
+    /// to)`, from aggregate queries over every retained sample (so a read
+    /// that completes is complete however many there were), and how many
+    /// samples are attributed to the agent from other sessions.
+    pub(crate) fn own_usage(
+        &self,
+        own: &OwnSession<'_>,
+    ) -> Result<agentdocker_core::evidence::Found> {
+        use agentdocker_core::evidence::{
+            Configured, Found, MAX_PAIRS, MAX_PROVIDERS, ProviderCount,
+        };
+        const OWN: &str = "at>=?1 AND at<?2 AND contribution IS NOT NULL \
+            AND json_extract(contribution,'$.bucket.attribution.agent')=?3";
+        const SESSION: &str = "json_extract(contribution,'$.bucket.runtime')=?4 \
+            AND json_extract(contribution,'$.session')=?5";
+        let params = rusqlite::params![
+            text(own.from),
+            text(own.to),
+            own.agent,
+            own.runtime,
+            own.session
+        ];
+        let conn = &self.store.conn;
+        let mut found = Found::default();
+        self.stage()?;
+        let mut providers = conn.prepare(&format!(
+            "SELECT json_extract(contribution,'$.bucket.provider') AS p, COUNT(*) FROM usage_samples \
+             WHERE {OWN} AND {SESSION} GROUP BY p ORDER BY p"
+        ))?;
+        let mut rows = providers.query(params)?;
+        while let Some(row) = rows.next()? {
+            let provider: Option<String> = row.get(0)?;
+            let samples = u64::try_from(row.get::<_, i64>(1)?).unwrap_or(0);
+            found.samples += samples;
+            match provider {
+                None => found.unknown_provider += samples,
+                Some(provider) if found.providers.len() < MAX_PROVIDERS => {
+                    found.providers.push(ProviderCount { provider, samples });
+                }
+                Some(_) => found.providers_truncated = true,
+            }
+        }
+        self.done(())?;
+        self.stage()?;
+        let mut pairs = conn.prepare(&format!(
+            "SELECT json_extract(contribution,'$.bucket.provider') AS p, \
+             json_extract(contribution,'$.bucket.model') AS m FROM usage_samples \
+             WHERE {OWN} AND {SESSION} GROUP BY p, m ORDER BY p, m LIMIT {}",
+            MAX_PAIRS + 1
+        ))?;
+        let mut rows = pairs.query(params)?;
+        while let Some(row) = rows.next()? {
+            if found.pairs.len() == MAX_PAIRS {
+                found.pairs_truncated = true;
+                break;
+            }
+            found.pairs.push(Configured {
+                provider: row.get(0)?,
+                model: row.get(1)?,
+            });
+        }
+        self.done(())?;
+        self.stage()?;
+        found.other_sessions = u64::try_from(conn.query_row(
+            &format!("SELECT COUNT(*) FROM usage_samples WHERE {OWN} AND NOT ({SESSION})"),
+            params,
+            |row| row.get::<_, i64>(0),
+        )?)
+        .unwrap_or(0);
+        self.done(found)
+    }
+}
+
 pub(super) fn text(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true)
 }
@@ -198,6 +444,53 @@ impl Store {
 
     pub(crate) fn usage_collection(&self) -> Result<Option<Collection>> {
         self.document("usage", "collection")
+    }
+
+    /// Run `read` in one SQLite snapshot, bounded by `deadline`: a read
+    /// transaction, so every stage sees the same committed state whatever
+    /// another connection commits meanwhile; a progress handler that stops
+    /// any statement running at the deadline; and a look at the deadline
+    /// before each stage and before the answer is taken. Past it the answer
+    /// is `Interrupted`, with nothing of what was read; the handler and the
+    /// transaction end with the read, so nothing reaches a later statement.
+    /// A store fault is an error, as any read's is.
+    pub(crate) fn bounded_snapshot<T>(
+        &self,
+        deadline: std::time::Instant,
+        read: impl FnOnce(&Snapshot<'_>) -> Result<T>,
+    ) -> Result<std::result::Result<T, Interrupted>> {
+        let snapshot = Snapshot {
+            store: self,
+            deadline,
+            stages: std::cell::Cell::new(0),
+        };
+        self.conn.progress_handler(
+            DEADLINE_STEPS,
+            Some(move || std::time::Instant::now() >= deadline),
+        )?;
+        let mut hold = Hold {
+            conn: &self.conn,
+            began: false,
+            released: false,
+        };
+        let answer = (|| -> Result<T> {
+            snapshot.stage()?;
+            self.conn.execute_batch("BEGIN DEFERRED")?;
+            hold.began = true;
+            let value = read(&snapshot)?;
+            snapshot.stage()?;
+            Ok(value)
+        })();
+        let busy = answer
+            .as_ref()
+            .err()
+            .is_some_and(|error| interrupted(error, deadline));
+        hold.release()?;
+        match answer {
+            Ok(value) => Ok(Ok(value)),
+            Err(_) if busy => Ok(Err(Interrupted)),
+            Err(error) => Err(error),
+        }
     }
 
     /// Increasing the configured retention cannot recover already discarded
@@ -1291,6 +1584,386 @@ impl Store {
             )?,
             context: BTreeMap::new(),
         }))
+    }
+}
+
+#[cfg(test)]
+impl Store {
+    /// Set the connection's journal mode, for a test that needs another
+    /// connection's lock to keep this one's reads out.
+    pub(crate) fn journal_mode_for_test(&self, mode: &str) -> Result<()> {
+        self.conn.pragma_update(None, "journal_mode", mode)?;
+        Ok(())
+    }
+
+    /// A retained sample, written as attribution writes one, for tests of
+    /// the reads over it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn insert_test_sample(
+        &self,
+        id: &str,
+        at: DateTime<Utc>,
+        agent: &str,
+        runtime: &str,
+        session: &str,
+        provider: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<()> {
+        let contribution = serde_json::json!({
+            "bucket": {"attribution": {"agent": agent}, "runtime": runtime,
+                       "provider": provider, "model": model, "hour": text(at)},
+            "session": session,
+            "counters": {},
+        });
+        self.conn.execute(
+            "INSERT INTO usage_samples VALUES (?1,'test',?2,?3)",
+            rusqlite::params![id, text(at), contribution.to_string()],
+        )?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod observed_tests {
+    use super::*;
+    use std::time::{Duration as Budget, Instant};
+
+    /// `own`'s usage, read in a snapshot bounded by `budget`.
+    fn observed(
+        store: &Store,
+        own: &OwnSession<'_>,
+        budget: Budget,
+    ) -> std::result::Result<agentdocker_core::evidence::Found, Interrupted> {
+        store
+            .bounded_snapshot(Instant::now() + budget, |snapshot| snapshot.own_usage(own))
+            .unwrap()
+    }
+
+    fn at(minutes: i64) -> DateTime<Utc> {
+        DateTime::from_timestamp(1_700_000_000 + minutes * 60, 0).unwrap()
+    }
+
+    fn fresh() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&dir.path().join("state.db")).unwrap();
+        (dir, store)
+    }
+
+    fn own<'a>() -> OwnSession<'a> {
+        OwnSession {
+            agent: "reviewer",
+            runtime: "codex",
+            session: "s1",
+            from: at(0),
+            to: at(100),
+        }
+    }
+
+    /// The reviewer's own session's providers, models and counts, apart
+    /// from a child session's usage attributed to it, and nothing outside
+    /// the window.
+    #[test]
+    fn only_the_reviewers_own_session_in_the_window_is_observed() {
+        let (_dir, store) = fresh();
+        let sample = |id: &str, minute, session, provider, model| {
+            store
+                .insert_test_sample(
+                    id,
+                    at(minute),
+                    "reviewer",
+                    "codex",
+                    session,
+                    provider,
+                    model,
+                )
+                .unwrap()
+        };
+        sample("1", 10, "s1", Some("anthropic"), Some("model-a"));
+        sample("2", 20, "s1", Some("anthropic"), Some("model-a"));
+        sample("3", 30, "s1", Some("openai"), Some("model-b"));
+        sample("4", 40, "s1", None, None);
+        // An unregistered child thread's usage, attributed to the reviewer.
+        sample("5", 50, "child", Some("google"), Some("model-c"));
+        sample("6", 60, "child", Some("google"), Some("model-c"));
+        // Outside the window, its end included: the window is `[from, to)`,
+        // and a sample at its end is the next round's.
+        sample("7", 200, "s1", Some("google"), Some("model-c"));
+        sample("8", 100, "s1", Some("google"), Some("model-c"));
+        let found = observed(&store, &own(), Budget::from_secs(2)).unwrap();
+        assert_eq!(found.samples, 4);
+        let providers: Vec<_> = found
+            .providers
+            .iter()
+            .map(|p| (p.provider.as_str(), p.samples))
+            .collect();
+        assert_eq!(providers, vec![("anthropic", 2), ("openai", 1)]);
+        assert_eq!(found.unknown_provider, 1);
+        assert!(!found.complete(), "a sample with no provider");
+        assert_eq!(found.other_sessions, 2);
+        assert_eq!(found.pairs.len(), 3);
+        assert!(!found.pairs_truncated);
+        // Only provider-less samples: found, never none found.
+        let (_dir, alone) = fresh();
+        alone
+            .insert_test_sample("1", at(10), "reviewer", "codex", "s1", None, None)
+            .unwrap();
+        let found = observed(&alone, &own(), Budget::from_secs(2)).unwrap();
+        assert_eq!((found.samples, found.unknown_provider), (1, 1));
+        assert!(found.providers.is_empty());
+    }
+
+    /// The display cap never hides a provider: eight pairs of one and a
+    /// ninth of another keep both providers; past 64 providers the list
+    /// says it is truncated.
+    #[test]
+    fn the_comparison_facts_are_kept_whole_past_the_display_cap() {
+        let (_dir, store) = fresh();
+        for index in 0..8 {
+            let model = format!("model-{index}");
+            store
+                .insert_test_sample(
+                    &format!("a{index}"),
+                    at(10),
+                    "reviewer",
+                    "codex",
+                    "s1",
+                    Some("anthropic"),
+                    Some(&model),
+                )
+                .unwrap();
+        }
+        store
+            .insert_test_sample(
+                "o",
+                at(10),
+                "reviewer",
+                "codex",
+                "s1",
+                Some("openai"),
+                Some("model-z"),
+            )
+            .unwrap();
+        let found = observed(&store, &own(), Budget::from_secs(2)).unwrap();
+        assert_eq!(found.pairs.len(), 8);
+        assert!(found.pairs_truncated);
+        let providers: Vec<_> = found
+            .providers
+            .iter()
+            .map(|p| p.provider.as_str())
+            .collect();
+        assert_eq!(providers, vec!["anthropic", "openai"]);
+        assert!(!found.providers_truncated);
+        let (_dir, many) = fresh();
+        for index in 0..65 {
+            let provider = format!("provider-{index:02}");
+            many.insert_test_sample(
+                &format!("p{index}"),
+                at(10),
+                "reviewer",
+                "codex",
+                "s1",
+                Some(&provider),
+                None,
+            )
+            .unwrap();
+        }
+        let found = observed(&many, &own(), Budget::from_secs(2)).unwrap();
+        assert_eq!(found.providers.len(), 64);
+        assert!(found.providers_truncated);
+        assert_eq!(found.samples, 65);
+        assert!(!found.complete());
+    }
+
+    /// A bounded read is one snapshot: what another connection commits
+    /// once the read has begun is not in it, and the read ends its
+    /// transaction, so the next read sees it.
+    #[test]
+    fn a_bounded_read_is_one_snapshot() {
+        let (dir, store) = fresh();
+        store
+            .insert_test_sample(
+                "1",
+                at(10),
+                "reviewer",
+                "codex",
+                "s1",
+                Some("anthropic"),
+                Some("model-a"),
+            )
+            .unwrap();
+        let other = crate::sqlite_fixture::open(dir.path().join("state.db")).unwrap();
+        let found = store
+            .bounded_snapshot(Instant::now() + Budget::from_secs(5), |snapshot| {
+                snapshot.collection()?;
+                other
+                    .execute(
+                        "INSERT INTO usage_samples SELECT 'late', 'test', at, contribution \
+                         FROM usage_samples LIMIT 1",
+                        [],
+                    )
+                    .unwrap();
+                snapshot.own_usage(&own())
+            })
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.samples, 1, "committed after the read began");
+        assert!(store.conn.is_autocommit(), "the read's transaction ended");
+        assert_eq!(
+            observed(&store, &own(), Budget::from_secs(5))
+                .unwrap()
+                .samples,
+            2
+        );
+    }
+
+    /// Valid verdicts kept before `seq` read as 0, so the latest by time
+    /// is the predecessor, and never a store fault.
+    #[test]
+    fn a_predecessor_is_found_among_verdicts_kept_before_seq() {
+        let (_dir, store) = fresh();
+        for (id, at) in [("old-1", at(10)), ("old-2", at(20))] {
+            store
+                .put_document(
+                    "code_verdict",
+                    id,
+                    &serde_json::json!({"id": id, "project": "p", "branch": "b",
+                        "by": "reviewer", "at": at, "verdict": "comment", "note": ""}),
+                )
+                .unwrap();
+        }
+        let found = store
+            .bounded_snapshot(Instant::now() + Budget::from_secs(5), |snapshot| {
+                snapshot.predecessor("code_verdict", "p", "b", "reviewer")
+            })
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (found.id.as_str(), found.seq, found.boundary),
+            ("old-2", 0, at(20))
+        );
+    }
+
+    /// A lock another connection holds until the deadline is the bound,
+    /// never a store fault: the read is interrupted, and once the lock is
+    /// let go the next read and write are served.
+    #[test]
+    fn a_lock_held_to_the_deadline_is_the_bound_not_a_fault() {
+        let (dir, store) = fresh();
+        // A rollback journal, so another connection's write keeps a reader
+        // out (a WAL reader is kept out only by recovery or a connection
+        // in exclusive locking mode).
+        store
+            .conn
+            .pragma_update(None, "journal_mode", "DELETE")
+            .unwrap();
+        let other = crate::sqlite_fixture::open(dir.path().join("state.db")).unwrap();
+        other
+            .execute_batch("BEGIN EXCLUSIVE; INSERT INTO meta(key, value) VALUES('held', '1');")
+            .unwrap();
+        assert_eq!(
+            observed(&store, &own(), Budget::from_millis(50)),
+            Err(Interrupted)
+        );
+        other.execute_batch("COMMIT").unwrap();
+        assert_eq!(
+            observed(&store, &own(), Budget::from_secs(5))
+                .unwrap()
+                .samples,
+            0
+        );
+        store
+            .insert_test_sample("1", at(10), "reviewer", "codex", "s1", None, None)
+            .unwrap();
+        // With time to spare, a lock is a fault as before.
+        other
+            .execute_batch("BEGIN EXCLUSIVE; INSERT INTO meta(key, value) VALUES('again', '1');")
+            .unwrap();
+        let spare = store.bounded_snapshot(Instant::now() + Budget::from_secs(60), |snapshot| {
+            store.conn.busy_timeout(Budget::from_millis(10))?;
+            snapshot
+                .store
+                .conn
+                .query_row("SELECT COUNT(*) FROM usage_samples", [], |r| {
+                    r.get::<_, i64>(0)
+                })?;
+            Ok(())
+        });
+        assert!(spare.is_err(), "{spare:?}");
+        other.execute_batch("COMMIT").unwrap();
+    }
+
+    /// A read that unwinds leaves the connection as it found it: no
+    /// transaction, no deadline handler; and a transaction it did not
+    /// open is not its to end.
+    #[test]
+    fn a_bounded_read_leaves_the_connection_clean_however_it_ends() {
+        let (_dir, store) = fresh();
+        let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = store.bounded_snapshot(Instant::now() + Budget::from_millis(20), |snapshot| {
+                snapshot.collection()?;
+                panic!("a read that unwinds");
+                #[allow(unreachable_code)]
+                Ok(())
+            });
+        }));
+        assert!(unwound.is_err());
+        std::thread::sleep(Budget::from_millis(30));
+        assert!(store.conn.is_autocommit(), "its transaction ended");
+        let counted: i64 = store
+            .conn
+            .query_row(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 100000) \
+                 SELECT COUNT(*) FROM n",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(counted, 100_000, "no deadline handler past its read");
+        store
+            .insert_test_sample("1", at(10), "reviewer", "codex", "s1", None, None)
+            .unwrap();
+        store.conn.execute_batch("BEGIN").unwrap();
+        assert!(
+            store
+                .bounded_snapshot(Instant::now() + Budget::from_secs(5), |snapshot| {
+                    snapshot.collection()
+                })
+                .is_err()
+        );
+        assert!(
+            !store.conn.is_autocommit(),
+            "the caller's transaction stands"
+        );
+        store.conn.execute_batch("ROLLBACK").unwrap();
+    }
+
+    /// A read past its budget is interrupted and claims nothing, and the
+    /// connection serves the next read.
+    #[test]
+    fn a_read_past_its_budget_is_interrupted() {
+        let (_dir, store) = fresh();
+        store
+            .conn
+            .execute_batch(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i < 300000)
+                 INSERT INTO usage_samples SELECT 'x' || i, 'test', '2023-11-14T22:30:00.000000000Z',
+                 json_object('bucket', json_object('attribution', json_object('agent', 'reviewer'),
+                   'runtime', 'codex', 'provider', 'p' || (i % 50), 'model', 'm' || i), 'session', 's1')
+                 FROM n;",
+            )
+            .unwrap();
+        let wide = OwnSession {
+            from: DateTime::from_timestamp(0, 0).unwrap(),
+            to: at(1_000_000),
+            ..own()
+        };
+        assert_eq!(
+            observed(&store, &wide, Budget::from_millis(1)),
+            Err(Interrupted)
+        );
+        let found = observed(&store, &wide, Budget::from_secs(60)).unwrap();
+        assert_eq!(found.samples, 300_000);
     }
 }
 

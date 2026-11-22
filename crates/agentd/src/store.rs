@@ -110,7 +110,16 @@ pub struct TaskTransition<'a> {
 // gate version. An older daemon's step reader is closed: it would latch a
 // storage failure on the first gate run it read. It must refuse. Step names
 // added later read as `unknown` from here on and need no bump.
-pub(crate) const SCHEMA_VERSION: i64 = 32;
+// v33 lets a `code_verdict` document say whether its counts were stated
+// and keep its reviewer's model evidence. An older daemon rewrites the whole
+// document when it sets a verdict aside or lifts it, and would drop both:
+// it must refuse. Words added later to those facts read as unknown and need
+// no bump.
+pub(crate) const SCHEMA_VERSION: i64 = 33;
+
+/// How long a statement waits for a lock another connection holds before
+/// it fails: bounded, so a request never holds the coordination lock long.
+pub(crate) const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS usage_emissions (
@@ -377,6 +386,10 @@ pub struct Store {
     /// path that writes a read set — an observation, an accepted handoff,
     /// an identity repair or a resumed session's fold — keeps to it.
     read_capacity: std::cell::Cell<usize>,
+    /// For tests: after this many stages of a bounded read, its deadline
+    /// counts as passed.
+    #[cfg(test)]
+    pub(crate) evidence_stages: std::cell::Cell<Option<usize>>,
 }
 
 /// A journal query; see [`Store::journal`].
@@ -1154,7 +1167,7 @@ impl Store {
         // than failing, because a failed write latches the daemon
         // read-only until it is restarted. The wait is bounded so a
         // request never holds the coordination lock for long.
-        conn.busy_timeout(std::time::Duration::from_secs(1))?;
+        conn.busy_timeout(BUSY_TIMEOUT)?;
         conn.pragma_update_and_check(None, "journal_mode", "WAL", |_| Ok(()))?;
         crate::startup_checkpoint("store_wal_ready");
         conn.pragma_update(None, "synchronous", "FULL")?;
@@ -1311,6 +1324,8 @@ impl Store {
             fts,
             pending_from: std::cell::Cell::new(pending_from),
             read_capacity: std::cell::Cell::new(agentdocker_core::config::READ_SET_CAPACITY),
+            #[cfg(test)]
+            evidence_stages: std::cell::Cell::new(None),
         })
     }
 

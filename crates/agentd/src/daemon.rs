@@ -310,6 +310,7 @@ pub fn mutates(request: &Request) -> bool {
             | Request::ReviewBranch { .. }
             | Request::ReviewGate { .. }
             | Request::GateRuns { .. }
+            | Request::Verdicts { .. }
             | Request::List { .. }
             | Request::Inspect { .. }
             | Request::Restarts { .. }
@@ -3523,10 +3524,21 @@ impl Daemon {
                 from,
                 verdict,
                 findings,
+                findings_stated,
+                since,
                 note,
             } => {
                 self.code_verdict(
-                    &agent, project, &branch, &head, from, &verdict, findings, note,
+                    &agent,
+                    project,
+                    &branch,
+                    &head,
+                    from,
+                    &verdict,
+                    findings,
+                    findings_stated,
+                    since,
+                    note,
                 )
                 .await
             }
@@ -3549,6 +3561,11 @@ impl Daemon {
                 self.supersede_verdict(&agent, project, &verdict, reason)
                     .await
             }
+            Request::Verdicts {
+                agent,
+                project,
+                branch,
+            } => self.verdicts(agent.as_deref(), project, &branch).await,
             Request::RecordGateRun { agent, runner, run } => {
                 self.record_gate_run(agent, runner, run).await
             }

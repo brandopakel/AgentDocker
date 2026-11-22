@@ -547,6 +547,8 @@ enum Command {
     },
     /// Give your verdict on a branch at the commit you read. An approval counts at the gate for the roles you hold; any later commit makes it stale.
     Verdict(gate::VerdictArgs),
+    /// Every retained verdict on a branch or pull request, oldest first: its word, commit, reviewer, counts and what it kept of the reviewer's model.
+    Verdicts(gate::VerdictsArgs),
     /// Whether a pull request or branch may land: approved at its head as it is now. Exits 1 when not.
     Gate(gate::GateArgs),
     /// Record a local gate run (scripts/verify.sh does this when it ends).
@@ -4838,6 +4840,7 @@ async fn run() -> Result<()> {
             }
         }
         Command::Verdict(args) => gate::verdict(&client, args).await?,
+        Command::Verdicts(args) => gate::verdicts(&client, args).await?,
         Command::Gate(args) => {
             if !gate::gate(&client, args).await? {
                 std::process::exit(1);

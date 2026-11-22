@@ -74,6 +74,23 @@ impl Findings {
             self.important, self.nit, self.pre_existing
         )
     }
+
+    /// The counts as a person reads them, by whether they were stated: the
+    /// counts; that none were stated; or, from before that was kept, the
+    /// counts as recorded, an all-zero record never said as a stated zero.
+    pub fn said_as(&self, presence: crate::evidence::FindingsPresence) -> String {
+        use crate::evidence::FindingsPresence;
+        match presence {
+            FindingsPresence::Stated => self.said(),
+            FindingsPresence::NotStated => "counts not stated".to_owned(),
+            FindingsPresence::Unknown if *self == Findings::default() => {
+                "0 recorded, not known to have been stated".to_owned()
+            }
+            FindingsPresence::Unknown => {
+                format!("{}, not known to have been stated", self.said())
+            }
+        }
+    }
 }
 
 /// A reviewer's word on a branch at a commit: the fixed vocabulary as
@@ -215,6 +232,14 @@ pub struct CodeVerdict {
     pub verdict: Word,
     #[serde(default)]
     pub findings: Findings,
+    /// Whether its reviewer stated the counts above; `unknown` on a
+    /// verdict given before this was kept, whose counts are as recorded.
+    #[serde(default)]
+    pub findings_presence: crate::evidence::FindingsPresence,
+    /// What it kept of its reviewer's model; absent for the person's word
+    /// and on a verdict given before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub evidence: Option<crate::evidence::ModelEvidence>,
     pub note: String,
     pub at: DateTime<Utc>,
     /// Where it was set aside, one mark per role (or one for every gate):
@@ -269,6 +294,13 @@ impl CodeVerdict {
         if self.verdict == Word::Pass && self.findings.important > 0 {
             return Err("a pass cannot carry an important finding: ask for changes");
         }
+        // Counts said not to be stated are none, or they would be kept and
+        // read as unstated.
+        if self.findings_presence == crate::evidence::FindingsPresence::NotStated
+            && self.findings != Findings::default()
+        {
+            return Err("a verdict that states no counts carries none: state them, or give none");
+        }
         Ok(())
     }
 
@@ -319,9 +351,10 @@ impl CodeVerdict {
     /// character).
     pub fn line(&self) -> String {
         format!(
-            "verdict={} head={} {} runtime={} by={}",
+            "verdict={} head={} findings={} {} runtime={} by={}",
             self.verdict,
             self.head,
+            self.findings_presence.word(),
             self.findings.line(),
             token(self.runtime_said()),
             self.by_name
@@ -795,6 +828,8 @@ mod tests {
             runtime: if by == "user" { "human" } else { "codex" }.into(),
             verdict: word,
             findings: Findings::default(),
+            findings_presence: Default::default(),
+            evidence: None,
             note: String::new(),
             at,
             superseded: Vec::new(),
@@ -1339,6 +1374,7 @@ mod tests {
             by: AgentId::from("r"),
             verdict: Word::Pass,
             findings: passed.findings,
+            findings_presence: Default::default(),
             runtime: "codex".into(),
         };
         let json = serde_json::to_value(&event).unwrap();
@@ -1364,7 +1400,7 @@ mod tests {
         assert_eq!(
             passed.line(),
             format!(
-                "verdict=pass head={A} important=0 nit=2 pre_existing=0 runtime=codex by=Reviewer One"
+                "verdict=pass head={A} findings=unknown important=0 nit=2 pre_existing=0 runtime=codex by=Reviewer One"
             )
         );
         assert_eq!(passed.findings.said(), "important 0, nit 2, pre-existing 0");
@@ -1374,7 +1410,7 @@ mod tests {
         assert_eq!(
             approved.line("feature/x", A),
             format!(
-                "gate=approved branch=feature/x head={A} verdict=pass head={A} important=0 nit=2 pre_existing=0 runtime=codex by=Reviewer One"
+                "gate=approved branch=feature/x head={A} verdict=pass head={A} findings=unknown important=0 nit=2 pre_existing=0 runtime=codex by=Reviewer One"
             )
         );
         let stale = Gate::Stale {
@@ -1407,7 +1443,9 @@ mod tests {
             fields.iter().find(|(key, _)| *key == "runtime").unwrap().1,
             "custom%20runtime%0A%3D100%25%09"
         );
-        assert_eq!(fields.len(), 6, "{fields:?}");
+        // The word, the head, whether the counts were stated, the three
+        // counts and the runtime, before `by=`.
+        assert_eq!(fields.len(), 7, "{fields:?}");
         assert_eq!(token("codex"), "codex");
         assert_eq!(token("é b"), "é%20b");
     }
