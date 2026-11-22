@@ -25,6 +25,7 @@ mod hooks;
 mod input_status;
 mod mcp;
 mod opencode_plugin;
+mod out;
 mod provider_status;
 mod rtk;
 mod secret_review;
@@ -351,6 +352,8 @@ enum Command {
         /// Show input readiness and reconnect guidance for sessions needing attention.
         #[arg(long)]
         input_details: bool,
+        #[command(flatten)]
+        look: out::Look,
     },
     /// Find running agent processes (Claude Code, Codex, ...) nobody registered.
     Discover,
@@ -964,6 +967,8 @@ enum Command {
         /// Only leases overlapping this resource.
         #[arg(long)]
         resource: Option<String>,
+        #[command(flatten)]
+        look: out::Look,
     },
     /// Run agentd as a login service, or start, stop, and inspect it.
     Daemon(service::DaemonArgs),
@@ -1488,6 +1493,8 @@ enum TaskAction {
     /// One card in full: fields, comments and history.
     Show {
         task: String,
+        #[command(flatten)]
+        look: out::Look,
     },
     /// Take a card from the pull source nobody else holds: yours, in the
     /// pull target. With no card named, the next ready one.
@@ -1785,6 +1792,8 @@ enum TaskAction {
         /// last one said it went on.
         #[arg(long, default_value_t = 0)]
         offset: usize,
+        #[command(flatten)]
+        look: out::Look,
     },
 }
 
@@ -2985,7 +2994,14 @@ async fn run() -> Result<()> {
             labels,
             no_discover,
             input_details,
+            look,
         } => {
+            let caps = out::Caps::stdout(look);
+            // What could not be read, for a person to be told: a column
+            // that is empty because its answer did not come is not a
+            // column of nothing. A script's output says what it always
+            // has.
+            let mut unread: Vec<&str> = Vec::new();
             let request = Request::List {
                 all,
                 project: project.as_deref().map(project_selector),
@@ -3030,7 +3046,10 @@ async fn run() -> Result<()> {
                 .await
             {
                 Ok(Response::Activity { activity }) => activity,
-                _ => Vec::new(),
+                _ => {
+                    unread.push("what each is doing");
+                    Vec::new()
+                }
             };
             // What each one's provider reported over the last day, beside
             // what it is doing. Nothing to show — collection off, or no
@@ -3046,31 +3065,66 @@ async fn run() -> Result<()> {
                 .await
             {
                 Ok(Response::Usage { report }) => format::tokens_by_agent(&report),
-                _ => HashMap::new(),
+                _ => {
+                    unread.push("the day's tokens");
+                    HashMap::new()
+                }
             };
             // Whether each ended one comes back, from the daemon that
             // schedules it; a daemon that cannot say adds nothing.
             let restarts = match client.call(&Request::Restarts { agent: None }).await {
                 Ok(Response::Restarts { outlooks }) => outlooks,
-                _ => BTreeMap::new(),
+                _ => {
+                    unread.push("whether an ended one comes back");
+                    BTreeMap::new()
+                }
             };
-            print_agents(&agents, &unadopted, &activity, sources, &tokens, &restarts);
+            // One moment for everything this command says: the table's
+            // states and times and the detail under it are worked out at
+            // the same instant, so the detail cannot contradict a row
+            // that was printed a moment before it.
+            let now = chrono::Utc::now();
+            print_agents(
+                &Fleet {
+                    agents: &agents,
+                    unadopted: &unadopted,
+                    activity: &activity,
+                    input_sources: sources,
+                    tokens: &tokens,
+                    restarts: &restarts,
+                },
+                now,
+                Printed {
+                    caps,
+                    unread: &unread,
+                },
+            )?;
             if input_details {
-                let now = chrono::Utc::now();
-                for agent in &agents {
-                    let blocked = agentdocker_core::readiness::provider_issue(agent, sources);
-                    if let Some(issue) =
-                        agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
-                    {
+                for issue in readiness_details(&agents, sources, now) {
+                    if caps.human {
+                        // For a person: what is said of an agent cannot
+                        // break the line it is said on.
+                        for line in format::recipient_lines(&issue) {
+                            eprintln!("{}", out::text::shown(&line));
+                        }
+                    } else {
                         format::recipient_readiness(&issue);
                     }
                 }
             }
             if !unadopted.is_empty() {
-                eprintln!(
+                let note = format!(
                     "{} running agent process(es) nobody registered; `agentdocker adopt <pid>` brings one in",
                     unadopted.len()
                 );
+                // The same words on stderr; set back where stderr itself
+                // is a terminal with colour, whatever stdout is.
+                let stderr = out::Caps::stderr(look);
+                if caps.human && stderr.color {
+                    eprintln!("{}", out::paint(&note, out::FAINT, stderr));
+                } else {
+                    eprintln!("{note}");
+                }
             }
         }
         Command::Changes {
@@ -4073,8 +4127,49 @@ async fn run() -> Result<()> {
                         }
                     }
                 }
-                TaskAction::Show { task } => {
-                    detail(client.call(&Request::TaskGet { task }).await?);
+                TaskAction::Show { task, look } => {
+                    let caps = out::Caps::stdout(look);
+                    match client.call(&Request::TaskGet { task }).await? {
+                        Response::TaskDetail {
+                            task,
+                            board,
+                            comments,
+                            history,
+                            blockers,
+                            children,
+                            lease,
+                            plan,
+                            files,
+                            times,
+                            usage,
+                        } if caps.human => {
+                            // Who holds it and who wrote what, by name:
+                            // read only for a person, so a script's
+                            // output and its one request are as before.
+                            let names = agent_names(&client).await;
+                            out::print(&out::views::card(
+                                &out::views::Card {
+                                    task: &task,
+                                    board: &board,
+                                    comments: &comments,
+                                    history: &history,
+                                    blockers: &blockers,
+                                    children: &children,
+                                    lease: lease.as_ref(),
+                                    plan: plan.as_ref(),
+                                    files: &files,
+                                    times: times.as_ref(),
+                                    usage: usage.as_ref(),
+                                },
+                                &names,
+                                // Each moment in the zone it fell in here:
+                                // a summer one keeps summer's offset.
+                                &chrono::Local,
+                                caps,
+                            ))?;
+                        }
+                        other => detail(other),
+                    }
                 }
                 TaskAction::Pull {
                     task,
@@ -4537,7 +4632,9 @@ async fn run() -> Result<()> {
                     archived,
                     limit,
                     offset,
+                    look,
                 } => {
+                    let caps = out::Caps::stdout(look);
                     let agent = sender::resolve(&client, agent).await?;
                     let request = Request::Tasks {
                         project: Some(project.map_or_else(here, Ok)?),
@@ -4591,15 +4688,42 @@ async fn run() -> Result<()> {
                                     ]
                                 })
                                 .collect();
-                            format::table(
-                                &["CARD", "LANE", "IN LANE", "TITLE", "HOLDER", ""],
-                                &rows,
-                            );
-                            if more {
-                                println!(
-                                    "and more: the board goes on; --offset {} shows the next page",
-                                    offset + tasks.len()
+                            if caps.human {
+                                // The same cells, each card's lane in
+                                // its tone, fitted to the terminal.
+                                let cards: Vec<out::views::CardRow<'_>> = tasks
+                                    .iter()
+                                    .zip(&rows)
+                                    .map(|(task, row)| out::views::CardRow {
+                                        task,
+                                        in_lane: row[2].clone(),
+                                        holder: row[4].clone(),
+                                    })
+                                    .collect();
+                                let mut said = out::views::cards(&cards, caps);
+                                if more {
+                                    said.push_str(&out::paint(
+                                        &format!(
+                                            "and more: the board goes on; --offset {} shows the next page",
+                                            offset + tasks.len()
+                                        ),
+                                        out::FAINT,
+                                        caps,
+                                    ));
+                                    said.push('\n');
+                                }
+                                out::print(&said)?;
+                            } else {
+                                format::table(
+                                    &["CARD", "LANE", "IN LANE", "TITLE", "HOLDER", ""],
+                                    &rows,
                                 );
+                                if more {
+                                    println!(
+                                        "and more: the board goes on; --offset {} shows the next page",
+                                        offset + tasks.len()
+                                    );
+                                }
                             }
                         }
                     }
@@ -5916,13 +6040,22 @@ async fn run() -> Result<()> {
             }
         }
         Command::Journal(args) => journal_command(&client, args).await?,
-        Command::Leases { agent, resource } => {
+        Command::Leases {
+            agent,
+            resource,
+            look,
+        } => {
             let request = Request::Leases {
                 agent,
                 resource: resource.as_deref().map(resource_key),
             };
             if let Response::Leases { leases } = client.call(&request).await? {
-                print_leases(&leases);
+                let caps = out::Caps::stdout(look);
+                if caps.human {
+                    out::print(&out::views::leases(&leases, chrono::Utc::now(), caps))?;
+                } else {
+                    print_leases(&leases);
+                }
             }
         }
         Command::Daemon(args) => service::run(socket, args).await?,
@@ -6628,18 +6761,6 @@ async fn print_activity(client: &Client, activity: &[AgentActivity]) {
 
 /// Agents, then — dimmed — running agent processes nobody registered,
 /// shown under the name `adopt` would give them.
-/// The restart view `ps` shows beside a record: only one read against the
-/// very run it shows.
-fn restart_known(
-    outlooks: &BTreeMap<agentdocker_core::AgentId, agentdocker_core::restart::Outlook>,
-    record: &AgentRecord,
-) -> Option<agentdocker_core::restart::RestartView> {
-    match agentdocker_core::restart::Outlook::known_for(outlooks.get(&record.id), record) {
-        agentdocker_core::restart::Known::Known(view) => view,
-        agentdocker_core::restart::Known::Unknown => None,
-    }
-}
-
 /// `inspect`'s JSON: the record as it is, every key kept, with one more
 /// key, `restart`, where the daemon's answer was read against this very
 /// run: the view, or null where none applies. Unknown leaves the key out,
@@ -6654,16 +6775,51 @@ fn inspect_json(agent: &AgentRecord, known: agentdocker_core::restart::Known) ->
     Ok(json)
 }
 
-/// What `ps` says in an agent's STATUS column.
+/// The restart view beside a record: only one read against the very run
+/// it shows. The tests' way to ask, as `ps` asked before a person's
+/// reading and a script's parted.
+#[cfg(test)]
+fn restart_known(
+    outlooks: &BTreeMap<agentdocker_core::AgentId, agentdocker_core::restart::Outlook>,
+    record: &AgentRecord,
+) -> Option<agentdocker_core::restart::RestartView> {
+    match agentdocker_core::restart::Outlook::known_for(outlooks.get(&record.id), record) {
+        agentdocker_core::restart::Known::Known(view) => view,
+        agentdocker_core::restart::Known::Unknown => None,
+    }
+}
+
+/// What `ps` says in an agent's STATUS column, as a script reads it.
+#[cfg(test)]
 fn status_cell(
     a: &AgentRecord,
     now: chrono::DateTime<chrono::Utc>,
     restart: Option<&agentdocker_core::restart::RestartView>,
 ) -> String {
+    let known = agentdocker_core::restart::Known::Known(restart.copied());
+    status(a, now, known, false).0
+}
+
+/// An agent's state as `ps` shows it: the words of its STATUS column and
+/// the tone of that same state, worked out together so that one cannot
+/// say "not connected" while the other says running.
+///
+/// `known` is what the daemon answered about this very run coming back.
+/// For a person, an ended run whose answer was for another run, or did
+/// not come, is said to be unknown; a script reads what it always read,
+/// where that case and "it does not come back" are the same words.
+fn status(
+    a: &AgentRecord,
+    now: chrono::DateTime<chrono::Utc>,
+    known: agentdocker_core::restart::Known,
+    human: bool,
+) -> (String, agentdocker_core::Tone) {
+    use agentdocker_core::restart::Known;
+    let tone = agentdocker_core::Tone::of_agent(a, now);
     // A browser agent, or a conversation known by its key alone, no
     // process ends: registered until revoked or ended, but not connected
     // once unheard from.
-    if a.connector_absent(now) || a.session_absent(now) {
+    let words = if a.connector_absent(now) || a.session_absent(now) {
         "not connected".to_owned()
     } else if let Some(dead_end) = a.container_dead_end() {
         // Refused at a dead end, which 'created' would hide.
@@ -6673,26 +6829,107 @@ fn status_cell(
         // ended run, whether it comes back.
         let mut words = a.ended_words();
         if !a.status.is_live() {
-            let more = restart
+            let view = match known {
+                Known::Known(view) => view,
+                Known::Unknown => None,
+            };
+            let more = view
                 .map(|view| view.words(now))
-                .or_else(|| a.restart_cleared_words());
+                .or_else(|| a.restart_cleared_words())
+                .or_else(|| {
+                    (human && known == Known::Unknown)
+                        .then(|| "whether it comes back is not known".to_owned())
+                });
             if let Some(more) = more {
                 words.push_str(" · ");
                 words.push_str(&more);
             }
         }
         words
-    }
+    };
+    (words, tone)
+}
+
+/// How `ps` is printed, and what it could not read: said to a person,
+/// and left out of what a script reads, which is what it always was.
+struct Printed<'a> {
+    caps: out::Caps,
+    unread: &'a [&'a str],
+}
+
+/// What `ps` read from the daemon.
+#[derive(Clone, Copy)]
+struct Fleet<'a> {
+    agents: &'a [AgentRecord],
+    unadopted: &'a [DiscoveredProcess],
+    activity: &'a [AgentActivity],
+    input_sources: &'a [AgentRecord],
+    tokens: &'a HashMap<String, String>,
+    restarts: &'a BTreeMap<agentdocker_core::AgentId, agentdocker_core::restart::Outlook>,
+}
+
+/// The table `ps` prints: its headers, a row an agent and then a row a
+/// process nobody registered (from `set_back` on), and each agent's
+/// state's tone.
+struct AgentTable {
+    headers: Vec<&'static str>,
+    rows: Vec<Vec<String>>,
+    tones: Vec<agentdocker_core::Tone>,
+    set_back: usize,
+}
+
+/// What `ps --input-details` says under its table: each agent that
+/// cannot be told something now, at the same `now` the table was made at.
+fn readiness_details(
+    agents: &[AgentRecord],
+    input_sources: &[AgentRecord],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<agentdocker_core::RecipientReadiness> {
+    agents
+        .iter()
+        .filter_map(|agent| {
+            let blocked = agentdocker_core::readiness::provider_issue(agent, input_sources);
+            agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
+        })
+        .collect()
 }
 
 fn print_agents(
-    agents: &[AgentRecord],
-    unadopted: &[DiscoveredProcess],
-    activity: &[AgentActivity],
-    input_sources: &[AgentRecord],
-    tokens: &HashMap<String, String>,
-    restarts: &BTreeMap<agentdocker_core::AgentId, agentdocker_core::restart::Outlook>,
-) {
+    fleet: &Fleet<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+    printed: Printed<'_>,
+) -> Result<()> {
+    let Printed { caps, unread } = printed;
+    let table = agent_table(fleet, now, caps.human);
+    if !caps.human {
+        // What a script reads: every column, nothing set back, the same
+        // bytes at a terminal as in a pipe.
+        format::table(&table.headers, &table.rows);
+        return Ok(());
+    }
+    out::print(&out::views::agents(
+        &table.headers,
+        table.rows,
+        &table.tones,
+        table.set_back,
+        unread,
+        caps,
+    ))?;
+    Ok(())
+}
+
+/// `ps`'s table from what was read, against one clock: every cell that
+/// says a time or a state that depends on one is worked out at `now`.
+fn agent_table(fleet: &Fleet<'_>, now: chrono::DateTime<chrono::Utc>, human: bool) -> AgentTable {
+    let Fleet {
+        agents,
+        unadopted,
+        activity,
+        input_sources,
+        tokens,
+        restarts,
+    } = *fleet;
+    let mut tones = Vec::with_capacity(agents.len());
     let with_tokens = agents.iter().any(|a| tokens.contains_key(a.id.as_str()));
     let doing = |id: &agentdocker_core::AgentId| {
         activity
@@ -6745,11 +6982,17 @@ fn print_agents(
                     .to_owned(),
                 a.spec.runtime.clone(),
                 a.spec.model.clone().unwrap_or_else(|| "-".to_owned()),
-                status_cell(a, chrono::Utc::now(), restart_known(restarts, a).as_ref()),
+                {
+                    let known =
+                        agentdocker_core::restart::Outlook::known_for(restarts.get(&a.id), a);
+                    let (words, tone) = status(a, now, known, human);
+                    tones.push(tone);
+                    words
+                },
                 if a.spec.runtime == agentdocker_core::HUMAN_RUNTIME {
                     "App inbox".into()
                 } else {
-                    agentdocker_core::readiness::decide_among(a, input_sources, chrono::Utc::now())
+                    agentdocker_core::readiness::decide_among(a, input_sources, now)
                         .state
                         .label()
                         .into()
@@ -6778,7 +7021,7 @@ fn print_agents(
                     .map(|p| p.to_string())
                     .unwrap_or_else(|| "-".to_owned()),
             );
-            row.push(format::ago(a.created_at));
+            row.push(agentdocker_core::journal::ago(now, a.created_at));
             row
         })
         .collect();
@@ -6814,7 +7057,7 @@ fn print_agents(
         row.push(p.pid.to_string());
         row.push(
             p.started_at
-                .map(format::ago)
+                .map(|at| agentdocker_core::journal::ago(now, at))
                 .unwrap_or_else(|| "-".to_owned()),
         );
         row
@@ -6836,7 +7079,12 @@ fn print_agents(
         headers.push("TEAM");
     }
     headers.extend(["PID", "CREATED"]);
-    format::table_dimming(&headers, &rows, |i| i >= first_unadopted);
+    AgentTable {
+        headers,
+        rows,
+        tones,
+        set_back: first_unadopted,
+    }
 }
 
 /// The `ps` THREAD cell: what the provider says of the agent's own thread.
@@ -8001,5 +8249,209 @@ mod tests {
             resource_key(&format!("path:{}", cwd.display())),
             format!("path:{}", cwd.canonicalize().unwrap().display())
         );
+    }
+}
+
+#[cfg(test)]
+mod ps_table_tests {
+    use super::*;
+    use agentdocker_core::restart::{Outlook, RunEvidence};
+    use agentdocker_core::{AgentSpec, AgentStatus, Tone};
+
+    fn at(clock: &str) -> chrono::DateTime<chrono::Utc> {
+        clock.parse().unwrap()
+    }
+
+    fn record(id: &str, name: &str, created: &str) -> AgentRecord {
+        let mut record = AgentRecord::new(
+            AgentSpec {
+                name: name.into(),
+                runtime: "claude-code".into(),
+                ..Default::default()
+            },
+            false,
+            at(created),
+        );
+        record.id = id.into();
+        record.status = AgentStatus::Running;
+        record.pid = Some(4242);
+        record
+    }
+
+    fn table(
+        agents: &[AgentRecord],
+        restarts: &BTreeMap<agentdocker_core::AgentId, Outlook>,
+        now: &str,
+        human: bool,
+    ) -> AgentTable {
+        agent_table(
+            &Fleet {
+                agents,
+                unadopted: &[],
+                activity: &[],
+                input_sources: agents,
+                tokens: &HashMap::new(),
+                restarts,
+            },
+            at(now),
+            human,
+        )
+    }
+
+    fn cell<'a>(table: &'a AgentTable, row: usize, header: &str) -> &'a str {
+        let column = table.headers.iter().position(|h| *h == header).unwrap();
+        &table.rows[row][column]
+    }
+
+    /// A state's words and its tone are of one state. A browser agent
+    /// nothing has been heard from for longer than its presence allows is
+    /// live by its record and "not connected" to a reader, and is never
+    /// painted as a running one; the one beside it, heard from a minute
+    /// ago, is running and reads so. Every time in the row is of the one
+    /// clock the table was made at.
+    #[test]
+    fn a_states_words_and_tone_are_of_one_state() {
+        let connector = |id: &str, name: &str, last_seen: &str| {
+            let mut record = record(id, name, "2026-01-02T00:04:05Z");
+            record.pid = None;
+            record
+                .spec
+                .labels
+                .insert("connector".to_owned(), "true".to_owned());
+            record.last_seen = at(last_seen);
+            record
+        };
+        let agents = [
+            connector("aaaa", "gone-quiet", "2026-01-02T01:00:00Z"),
+            connector("bbbb", "here", "2026-01-02T03:03:05Z"),
+        ];
+        assert!(agents[0].via_connector() && agents[1].via_connector());
+        for human in [false, true] {
+            let made = table(&agents, &BTreeMap::new(), "2026-01-02T03:04:05Z", human);
+            assert_eq!(cell(&made, 0, "STATUS"), "not connected");
+            assert_eq!(made.tones[0], Tone::Attention, "never a running one's");
+            assert_eq!(cell(&made, 1, "STATUS"), "running");
+            assert_eq!(made.tones[1], Tone::Positive);
+            assert_eq!(cell(&made, 0, "CREATED"), "3h ago");
+            assert_eq!(cell(&made, 1, "CREATED"), "3h ago");
+        }
+        // The same records an hour and a half later, by the table's clock
+        // alone: the second has gone quiet too.
+        let later = table(&agents, &BTreeMap::new(), "2026-01-02T04:34:05Z", true);
+        assert_eq!(cell(&later, 1, "STATUS"), "not connected");
+        assert_eq!(later.tones[1], Tone::Attention);
+        assert_eq!(cell(&later, 1, "CREATED"), "4h ago");
+    }
+
+    /// The table and the detail under it are of one moment. A receiver
+    /// heard from thirty seconds ago is receiving, and nothing is said
+    /// of it underneath; the same record ninety seconds on has gone quiet
+    /// in the table and in the detail alike. Worked out at two clocks,
+    /// a row could say receiving above a detail that says it is not.
+    #[test]
+    fn the_table_and_the_detail_are_of_one_moment() {
+        use agentdocker_core::input::{
+            AdapterContact, AdapterKind, InputDelivery, InputReceipt, ReceivedInput,
+        };
+        let birth = "2026-01-02T03:00:00Z";
+        let mut receiver = record("aaaa", "writer", birth);
+        receiver.process_started_at = Some(at(birth));
+        for adapter in [AdapterKind::Mcp, AdapterKind::Hooks] {
+            receiver.adapter_contacts.insert(
+                adapter,
+                AdapterContact {
+                    process_started_at: at(birth),
+                    observed_at: at(birth),
+                },
+            );
+        }
+        receiver.input_delivery = Some(InputDelivery {
+            process_started_at: at(birth),
+            paused: false,
+            pause_reason: None,
+            reported_at: at(birth),
+            received: Some(ReceivedInput {
+                messages: vec!["earlier-message".to_owned().into()],
+                receipt: InputReceipt::ClaudeChannel,
+            }),
+            received_at: Some(at(birth)),
+            typing_until: None,
+        });
+        let agents = [receiver];
+        let both = |now: &str| {
+            let made = table(&agents, &BTreeMap::new(), now, true);
+            (
+                cell(&made, 0, "INPUT").to_owned(),
+                readiness_details(&agents, &agents, at(now)),
+            )
+        };
+        let (input, detail) = both("2026-01-02T03:00:30Z");
+        assert_eq!(input, "Receiving messages");
+        assert!(detail.is_empty(), "{detail:?}");
+        let (input, detail) = both("2026-01-02T03:01:30Z");
+        assert_eq!(input, "Not heard from recently");
+        assert_eq!(detail.len(), 1);
+        assert_eq!(
+            detail[0].label(),
+            input,
+            "the row and its detail say one thing"
+        );
+        // Second by second across the edge, the two never part.
+        for second in 0..120 {
+            let now = (at(birth) + chrono::Duration::seconds(second)).to_rfc3339();
+            let (input, detail) = both(&now);
+            match detail.first() {
+                None => assert_eq!(input, "Receiving messages", "{second}s"),
+                Some(detail) => assert_eq!(detail.label(), input, "{second}s"),
+            }
+        }
+    }
+
+    /// An ended agent whose restart answer was read against another run
+    /// is not shown to a person as one that does not come back: the
+    /// answer is not known, and that is said. A script reads what it
+    /// always read, where the two are the same words.
+    #[test]
+    fn an_answer_for_another_run_is_not_an_answer() {
+        let mut ended = record("aaaa", "writer", "2026-01-02T00:04:05Z");
+        ended.status = AgentStatus::Exited { code: Some(0) };
+        ended.finished_at = Some(at("2026-01-02T03:00:00Z"));
+        let agents = [ended.clone()];
+        let matched = BTreeMap::from([(
+            ended.id.clone(),
+            Outlook {
+                run: RunEvidence::of(&ended),
+                view: None,
+            },
+        )]);
+        let mut other_run = ended.clone();
+        other_run.restarts += 1;
+        let mismatched = BTreeMap::from([(
+            ended.id.clone(),
+            Outlook {
+                run: RunEvidence::of(&other_run),
+                view: None,
+            },
+        )]);
+        let now = "2026-01-02T03:04:05Z";
+        let said = |restarts, human| {
+            let made = table(&agents, restarts, now, human);
+            cell(&made, 0, "STATUS").to_owned()
+        };
+        // For a person: matched and none says only how it ended; an
+        // answer for another run, or none at all, says it is not known.
+        let none = BTreeMap::new();
+        let known = said(&matched, true);
+        assert!(!known.contains("not known"), "{known}");
+        for unknown in [&mismatched, &none] {
+            assert_eq!(
+                said(unknown, true),
+                format!("{known} · whether it comes back is not known")
+            );
+        }
+        // For a script: the same words in all three, as before.
+        for restarts in [&matched, &mismatched, &none] {
+            assert_eq!(said(restarts, false), known);
+        }
     }
 }

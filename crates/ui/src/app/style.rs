@@ -35,23 +35,9 @@ pub const fn weight(weight: iced::font::Weight) -> Font {
     Font { weight, ..UI }
 }
 
-/// How a state's chip is coloured. Five, so the colour adds weight to
-/// the word without having to be learnt: the word always says it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tone {
-    /// Quiet: idle, ended, a draft, nothing known.
-    Neutral,
-    /// Healthy: receiving, delivered, passed, done, live.
-    Positive,
-    /// Waits on the person, or something stands in the way: needs you,
-    /// paused, time running.
-    Attention,
-    /// Failed, overdue, nearly out of time.
-    Alert,
-    /// News, or on its way: finished since you looked, sent, ready, in
-    /// progress.
-    Info,
-}
+/// How a state's chip is coloured: core's five tones, which say which
+/// tone a state has for the terminal as well; the colours are this file's.
+pub use agentdocker_core::Tone;
 
 #[derive(Clone, Copy)]
 pub struct Colors {

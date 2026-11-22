@@ -675,6 +675,70 @@ The class holds wherever the answer was read — a `daemon reload` refusal, an
 tries every process, ends with the class of the first refusal after naming
 each one by pid.
 
+### What a command prints
+
+A command has two readers, and each gets its own. A script, or an agent,
+reads what it has always read: every column, every cell whole, no colour, the
+same JSON and the same id alone on its line. A person at a terminal reads a
+table that fits the terminal and a state in its colour.
+
+`ps`, `leases`, `task list` and `task show` print for a person when stdout is
+a terminal and plainly when it is not (a pipe, a file, a command substitution);
+the other commands print plainly everywhere. Two flags on those four say
+otherwise:
+
+- `--format human` prints for a person even where stdout is not a terminal
+  (into a pager, say), and `--format plain` prints as a script reads it even
+  at a terminal.
+- `--color auto|always|never` is colour in what a person reads. `auto`, the
+  default: a non-empty `NO_COLOR` turns it off; otherwise a `CLICOLOR_FORCE`
+  that is set and not `0` turns it on; otherwise `TERM=dumb` turns it off;
+  otherwise it is on at a terminal. Plain output is never coloured, whatever
+  is asked.
+
+What a person reads:
+
+- **A table fits the terminal's width.** Each column is one of three things
+  to its row: what the row is a row of (an agent's id, a card's key, a
+  lease's id), which is never left out and never shortened; something always
+  shown, the longest of which is shortened with `…` when room runs out; or
+  something a narrow terminal does without. Those go first, the least needed
+  first, and a last line names them: `not shown at this width: MODEL, PID`.
+  A row is one line. On a terminal too narrow for even that (every
+  shortened column at its least), the table gives way to a block a row: what
+  the row is a row of on a line of its own, then each field on a labelled
+  line, nothing left out and nothing shortened. A process nobody registered
+  has no agent id, so wherever `ps` lists one its process id stays. The
+  width is the terminal's own, and one that says it has no columns is taken
+  as the narrowest; where stdout is not a terminal, `COLUMNS` when it is set,
+  and otherwise nothing is fitted.
+- **A state has a tone**, the same five the app uses: quiet (ended, nothing
+  known), positive (running, done), attention (stopping, in review, a lease
+  with under a minute left, an agent not connected), alert (failed, blocked,
+  expired, a container at a dead end) and on its way (created, ready, in
+  progress). The word and the tone are of one state. The word always says
+  the state; the colour
+  only adds weight, and what is not known is never given the colour of good
+  news. The colours are the terminal's own sixteen, so its palette decides.
+- **An answer that did not come is said.** `ps` reads what each agent is
+  doing, the day's tokens and whether an ended one comes back; when one of
+  those reads fails, a last line says which could not be read, rather than
+  leaving its column looking like a column of nothing. An ended agent whose
+  answer was for another run of it reads `whether it comes back is not
+  known`, where a script still reads only how it ended.
+- **A time has its zone** (`YYYY-MM-DD HH:MM +00:00`), the offset that
+  moment had where the reader is, so a summer moment read in winter keeps
+  summer's; and a holder or an author is named where the daemon knows the
+  name.
+- **A report that could not be written is an error.** Only a reader that
+  went away (a pager closed) ends it quietly.
+- **Nothing somebody wrote can act on the terminal.** A control character in
+  a name, a title, a note or a comment is written out (`\e`, `\n`,
+  `\u{202e}`), as is a mark that reorders text.
+
+Each stream is decided for itself: stdout in a pipe with stderr at a terminal
+prints plainly on stdout.
+
 ### Look at the fleet
 
 | Command | What it does |
@@ -887,6 +951,7 @@ be set.
 | `AGENTDOCKER_SOCKET` | daemon, commands, app | The socket to serve or connect to (`<home>/agentd.sock`). |
 | `AGENTDOCKER_AGENT_ID`, `AGENTDOCKER_AGENT_NAME` | commands, hooks, MCP | Who is speaking: the default for `--as` and `--from`. `run` sets both in a managed agent's environment. An agent speaks only as itself: a command acting as an agent is answered only from inside that agent's own session (its shell, hooks, MCP server, and what they start) or from yours (the app, your own terminal, outside every agent's session); from inside another agent's session it is refused `identity_mismatch` (exit 5), whatever `--as`, `--from` or this variable says. |
 | `AGENTDOCKER_NO_AUTOSTART=1` | commands, app | A client that cannot connect does not start a daemon. |
+| `NO_COLOR`, `CLICOLOR_FORCE`, `TERM`, `COLUMNS` | commands that print for a person | Colour and width in what a person reads at a terminal, in the order [What a command prints](#what-a-command-prints) gives: a non-empty `NO_COLOR` turns colour off, a `CLICOLOR_FORCE` that is not `0` turns it on, `TERM=dumb` turns it off; `COLUMNS` is the width only where stdout is not a terminal. None changes what a script reads. |
 | `AGENTDOCKER_CLAUDE_CHANNEL_INPUT=1` | `agentdocker mcp --claude-channel` | On a session launched with the channel: the MCP entry serves the channel. The parent `claude`'s own flag wins where it can be read. The hooks do not read it: they leave the queue to a channel adapter that holds the session, deliver it when none does, and take over the one message a holding adapter stalled on (see [Claude channel setup](CLAUDE-CHANNEL-INPUT.md)). `run --claude-channel` sets it. |
 | `AGENTDOCKER_CODEX_INPUT=1` | Codex hooks, bridge | On a Codex process AgentDocker launched with input: delivery goes through the bridge. `run --codex-input` and the app's **Idle messages: On** set it. |
 | `AGENTDOCKER_NO_NOTIFICATIONS=1` | daemon | Post no desktop notifications. |

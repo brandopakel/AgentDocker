@@ -163,6 +163,8 @@ dependencies = [
  "agentd",
  "agentdocker-core",
  "agentdocker-host",
+ "anstream",
+ "anstyle",
  "anyhow",
  "base64 0.22.1",
  "chrono",

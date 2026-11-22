@@ -45,11 +45,13 @@ pub mod provider;
 pub mod task;
 pub mod team;
 pub mod timing;
+pub mod tone;
 pub use provider::{
     ClearedBy, ProviderAvailability, ProviderIssue, ProviderIssueKind, ProviderReport,
     ProviderStanding, provider_block,
 };
 pub use team::{Team, TeamMembership, TeamRole, Teammate};
+pub use tone::Tone;
 pub mod registry;
 pub mod restart;
 pub mod secret;

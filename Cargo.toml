@@ -14,6 +14,8 @@ rust-version = "1.87"
 agentd = { path = "crates/agentd", version = "0.2.0-beta.14" }
 agentdocker-core = { path = "crates/core", version = "0.2.0-beta.14" }
 agentdocker-host = { path = "crates/host", version = "0.2.0-beta.14" }
+anstream = "1"
+anstyle = "1"
 anyhow = "1"
 base64 = "0.22"
 criterion = "0.5.1"
