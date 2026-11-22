@@ -403,6 +403,19 @@ impl State {
         }
         match self.witnessed(checkout, token) {
             Ok(current) if current == *worktree => {}
+            // The store could not be read: that refusal, never "changed".
+            Err(refusal)
+                if matches!(
+                    *refusal,
+                    Response::Error {
+                        code: ErrorCode::StorageUnavailable,
+                        ..
+                    }
+                ) =>
+            {
+                return *refusal;
+            }
+            // Gone, or another witness (its token another): it changed.
             Ok(_) | Err(_) => {
                 return Response::error(
                     ErrorCode::Conflict,
@@ -725,8 +738,9 @@ impl Daemon {
         }
         let mut state = lock(&self.state);
         let mut known = state.registry.project_ids();
-        let Some(kept) = state.store_read("receipt projects", |store| store.receipt_projects())
-        else {
+        let Some(kept) = state.store_read("receipt projects", |store| {
+            store.receipt_projects(&selector)
+        }) else {
             return Err(Box::new(state.storage_failure().unwrap_or_else(|| {
                 Response::error(
                     ErrorCode::StorageUnavailable,
@@ -816,8 +830,9 @@ impl Daemon {
     /// it) to the write, which names it with basis `hook_session`. A
     /// refusal, or a final answer, when it is not to be handled. Who made
     /// the commit is never the client's to say: the request's own `agent`
-    /// is cleared. With the person check off, and for the daemon's own
-    /// callers, the handler names the worktree's first owner.
+    /// is cleared. With the person check off the handler names the
+    /// worktree's first owner; a caller of the daemon's own may name one of
+    /// its owners (checked as one), else the first. Either is `hook_owner`.
     pub(crate) async fn authenticate_report(
         self: &Arc<Self>,
         peer: Option<person::Peer>,

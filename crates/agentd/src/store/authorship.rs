@@ -286,19 +286,36 @@ impl Store {
         })
     }
 
-    /// The projects receipts are kept for, which outlive the records that
-    /// named them.
-    pub(crate) fn receipt_projects(&self) -> Result<Vec<ProjectId>> {
-        let mut statement = self
+    /// The projects receipts are kept for (which outlive the records that
+    /// named them) that `selector` may name: itself when receipts are kept
+    /// for exactly it, else at most two it is a prefix of, which is as many
+    /// as tell one from ambiguous. Each by a seek in the project index,
+    /// never a scan of the receipts.
+    pub(crate) fn receipt_projects(&self, selector: &str) -> Result<Vec<ProjectId>> {
+        let exact: bool = self
             .conn
-            .prepare_cached("SELECT DISTINCT project FROM authorship_history")?;
-        let projects = statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(projects
-            .iter()
-            .map(|project| ProjectId::from(project.as_str()))
-            .collect())
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM authorship_history WHERE project = ?1)")?
+            .query_row([selector], |row| row.get(0))?;
+        if exact {
+            return Ok(vec![ProjectId::from(selector)]);
+        }
+        let mut next = self.conn.prepare_cached(
+            "SELECT project FROM authorship_history WHERE project > ?1 ORDER BY project LIMIT 1",
+        )?;
+        let mut found = Vec::new();
+        let mut after = selector.to_owned();
+        while found.len() < 2 {
+            let Some(project) = next
+                .query_row([&after], |row| row.get::<_, String>(0))
+                .optional()?
+                .filter(|project| project.starts_with(selector))
+            else {
+                break;
+            };
+            found.push(ProjectId::from(project.as_str()));
+            after = project;
+        }
+        Ok(found)
     }
 
     /// How many of `branch`'s rows in `project` have no receipt, counted to
@@ -869,6 +886,56 @@ mod tests {
             .unwrap();
         Store::seed_receipts(&store.conn, 2, now).unwrap();
         assert_eq!(count("SELECT COUNT(*) FROM authorship_history"), 2);
+    }
+
+    /// Which projects a selector names among the receipts is found by
+    /// seeks, the work the same however many receipts unrelated projects
+    /// hold: exactly, by a unique prefix, or ambiguous between two.
+    #[test]
+    fn a_project_is_found_among_receipts_by_seeks_not_scans() {
+        let store = Store::in_memory().unwrap();
+        let keep = |project: &str, n: u32| {
+            let mut kept = authored("a", "refs/heads/x", &commit(n), Witness::Hook);
+            kept.project = ProjectId::from(project);
+            store.record_authorship(&kept, 0).unwrap();
+        };
+        keep("abc111", 1);
+        keep("abc222", 2);
+        keep("def333", 3);
+        let work = |selector: &str| {
+            let steps = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let counted = std::sync::Arc::clone(&steps);
+            store
+                .conn
+                .progress_handler(
+                    1,
+                    Some(move || {
+                        counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        false
+                    }),
+                )
+                .unwrap();
+            let found = store.receipt_projects(selector).unwrap();
+            store
+                .conn
+                .progress_handler(0, None::<fn() -> bool>)
+                .unwrap();
+            (found, steps.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        let names = |found: Vec<ProjectId>| -> Vec<String> {
+            found.iter().map(|p| p.as_str().to_owned()).collect()
+        };
+        assert_eq!(names(work("abc111").0), vec!["abc111"]);
+        assert_eq!(names(work("de").0), vec!["def333"]);
+        assert_eq!(names(work("abc").0), vec!["abc111", "abc222"]);
+        assert!(work("zzz").0.is_empty());
+        let (_, before) = work("de");
+        for n in 0..3_000 {
+            keep(&format!("abc{n:04}x"), 10 + n);
+        }
+        let (found, after) = work("de");
+        assert_eq!(names(found), vec!["def333"]);
+        assert!(after <= before + 20, "{before} steps, then {after}");
     }
 
     /// Pages go by `seq`, a total order whatever the times (every receipt

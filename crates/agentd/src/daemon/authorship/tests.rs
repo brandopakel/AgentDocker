@@ -1268,10 +1268,25 @@ async fn a_report_over_a_replaced_witness_is_not_kept() {
         author: None,
         at: Utc::now(),
     };
-    let answer = lock(&daemon.state).record_report(&checkout, &token, &found, authorship);
+    let answer = lock(&daemon.state).record_report(&checkout, &token, &found, authorship.clone());
     assert!(
         matches!(&answer, Response::Error { code: ErrorCode::Conflict, message, .. }
             if message.contains("witness changed")),
+        "{answer:?}"
+    );
+    assert!(kept(&daemon, &former.id).is_empty());
+    // A store that could not be read at that moment (a fault latched while
+    // git was read) is that refusal, never "the witness changed".
+    lock(&daemon.state).storage_error = Some("a fault while git was read".into());
+    let answer = lock(&daemon.state).record_report(&checkout, &token, &found, authorship);
+    assert!(
+        matches!(
+            &answer,
+            Response::Error {
+                code: ErrorCode::StorageUnavailable,
+                ..
+            }
+        ),
         "{answer:?}"
     );
     assert!(kept(&daemon, &former.id).is_empty());

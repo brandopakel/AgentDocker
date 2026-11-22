@@ -226,35 +226,81 @@ fn pull_request(target: &str) -> Option<u64> {
         .filter(|n| *n > 0)
 }
 
-/// Where a pull request number is read, and the project a read of it is
-/// then of. A number names another change in every repository, so the two
-/// are one: a project named by its root (an absolute path) is read there;
-/// otherwise in this checkout, which must then be the project named.
-fn pr_repository(named: Option<&str>) -> Result<(PathBuf, String)> {
+/// The project a read of a pull request is of, as the daemon names it, and
+/// the root its number is read in. A number names another change in every
+/// repository, so the two are one: a project named by its root (an
+/// absolute path) is read there; one named by id or prefix is the daemon's
+/// to resolve, and read in the root its records give; with none named, the
+/// asking agent's own project, or for the person this checkout.
+async fn pr_project(
+    client: &Client,
+    named: Option<String>,
+    agent: &str,
+) -> Result<(PathBuf, String)> {
+    use agentdocker_core::HUMAN_RUNTIME;
+    let unknown = |project: &str| {
+        format!(
+            "no record here gives project {project}'s repository, where the pull request number would be read: name the branch, or pass the project's root as --project"
+        )
+    };
     match named {
-        Some(root) if Path::new(root).is_absolute() => Ok((PathBuf::from(root), root.to_owned())),
-        Some(other) => {
-            let here = checkout_root()?;
-            let id = agentdocker_host::project::discover(&here).id();
-            ensure!(
-                id.as_str().starts_with(other),
-                "a pull request number is read in this checkout's repository, which is project {id}, not {other}: run this from {other}'s checkout, pass its root as --project, or name the branch"
-            );
-            Ok((here, other.to_owned()))
+        Some(root) if Path::new(&root).is_absolute() => Ok((PathBuf::from(&root), root)),
+        Some(selector) => {
+            let Response::Agents { agents, .. } = client
+                .call(&Request::List {
+                    all: true,
+                    project: Some(selector.clone()),
+                    labels: Default::default(),
+                })
+                .await?
+            else {
+                bail!("the daemon did not resolve project {selector}");
+            };
+            let project = agents
+                .iter()
+                .find_map(|record| record.project.clone())
+                .with_context(|| unknown(&selector))?;
+            Ok((project.root.clone(), project.id().to_string()))
         }
         None => {
-            let here = checkout_root()?;
-            let root = here.display().to_string();
-            Ok((here, root))
+            let record = if agent == HUMAN {
+                None
+            } else {
+                match client
+                    .call(&Request::Inspect {
+                        agent: agent.to_owned(),
+                    })
+                    .await?
+                {
+                    Response::Agent { agent } => Some(agent),
+                    _ => bail!("the daemon did not say who is asking"),
+                }
+            };
+            match record.filter(|record| record.spec.runtime != HUMAN_RUNTIME) {
+                Some(record) => {
+                    let project = record.project.with_context(|| unknown("of the asker"))?;
+                    Ok((project.root.clone(), project.id().to_string()))
+                }
+                None => {
+                    let here = checkout_root()?;
+                    let root = here.display().to_string();
+                    Ok((here, root))
+                }
+            }
         }
     }
 }
 
-/// The branch pull request `number` is of, as `gh` reads it in `dir`.
+/// The branch pull request `number` is of, as `gh` reads it in `dir`, the
+/// repository chosen for the read: `GH_REPO`, which would read it in
+/// another, is unset for it.
 fn pr_branch(gh: &str, dir: &Path, number: u64) -> Result<String> {
     let found = tool_in(
         dir,
         &[
+            "env",
+            "-u",
+            "GH_REPO",
             gh,
             "pr",
             "view",
@@ -272,7 +318,7 @@ fn pr_branch(gh: &str, dir: &Path, number: u64) -> Result<String> {
 }
 
 /// The branch a read names, and its project: a pull request's branch in
-/// the repository it is read in, else the branch as given.
+/// its project's repository, else the branch as given.
 async fn read_target(
     client: &Client,
     target: &str,
@@ -281,7 +327,7 @@ async fn read_target(
 ) -> Result<(String, Option<String>)> {
     match pull_request(target) {
         Some(number) => {
-            let (dir, project) = pr_repository(named.as_deref())?;
+            let (dir, project) = pr_project(client, named, agent).await?;
             Ok((pr_branch("gh", &dir, number)?, Some(project)))
         }
         None => Ok((target.to_owned(), project(client, named, agent).await?)),
@@ -694,7 +740,7 @@ fn receipts_said(
     ));
     if let Some(since) = coverage.capture_since {
         out.push_str(&format!(
-            "receipts kept since {}; those from before name no basis and no author\n",
+            "receipts kept since {}; one taken then of a commit witnessed before keeps the agent's id, with basis unknown and no snapshot\n",
             since.format("%Y-%m-%d %H:%M:%S UTC")
         ));
     }
@@ -1335,7 +1381,6 @@ mod tests {
             serde_json::from_value(serde_json::json!({"state": "estimated", "count": 3})).unwrap();
         let later = AuthorshipCoverage {
             unreceipted: unknown,
-            oldest_retained: None,
             ..coverage.clone()
         };
         let said = receipts_said(
@@ -1347,7 +1392,12 @@ mod tests {
         );
         assert!(said.contains("basis unknown"), "{said}");
         assert!(said.contains("lack a receipt is not known"), "{said}");
-        assert!(said.contains("the project holds no receipt"), "{said}");
+        assert!(
+            said.contains("keeps the agent's id, with basis unknown and no snapshot"),
+            "{said}"
+        );
+        // An empty page of a project that holds receipts on other pages or
+        // refs, and an empty project, each said as what it is.
         let past = receipts_said(
             &ProjectId::from("p"),
             "refs/heads/feature/x",
@@ -1356,14 +1406,31 @@ mod tests {
             &coverage,
         );
         assert!(past.contains("no receipts on this page"), "{past}");
+        assert!(past.contains("oldest retained receipt"), "{past}");
+        let empty = AuthorshipCoverage {
+            pruned_through: None,
+            oldest_retained: None,
+            seed_skipped: 0,
+            page_may_miss: false,
+            unreceipted: Unreceipted::Counted { count: 0 },
+            ..coverage.clone()
+        };
+        let none = receipts_said(
+            &ProjectId::from("p"),
+            "refs/heads/feature/x",
+            &[],
+            None,
+            &empty,
+        );
+        assert!(none.contains("no receipts on this page"), "{none}");
+        assert!(none.contains("the project holds no receipt"), "{none}");
     }
 
-    /// A pull request number is read in the repository of the project read:
-    /// the same number names another branch in another repository, and a
-    /// project named by id must be this checkout's.
+    /// `gh` reads a pull request in the repository it is given: the same
+    /// number names another branch in another repository.
     #[cfg(unix)]
     #[test]
-    fn a_pull_request_is_read_in_its_project_s_repository() {
+    fn a_pull_request_is_read_in_the_repository_given() {
         use std::os::unix::fs::PermissionsExt as _;
         let tmp = tempfile::tempdir().unwrap();
         let gh = tmp.path().join("gh");
@@ -1379,15 +1446,9 @@ mod tests {
                 format!("{{\"headRefName\": \"{branch}\"}}"),
             )
             .unwrap();
-            let (dir, project) = pr_repository(Some(repo.to_str().unwrap())).unwrap();
-            assert_eq!(project, repo.to_str().unwrap());
-            seen.push(pr_branch(gh, &dir, 7).unwrap());
+            seen.push(pr_branch(gh, &repo, 7).unwrap());
         }
         assert_eq!(seen, vec!["feature/one", "feature/two"]);
-        let error = pr_repository(Some("not-this-checkout"))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("not not-this-checkout"), "{error}");
     }
 
     /// A start is a time or a duration ago; one too far back for a time
