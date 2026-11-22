@@ -201,7 +201,9 @@ impl Table {
             }
             // Still too wide with everything optional gone and everything
             // else at its least: a table cannot be this narrow.
-            if total(&shown, &widths) > room {
+            // (A table with no rows has only its heading to show, and
+            // shows it at any width: a block a row of nothing is nothing.)
+            if total(&shown, &widths) > room && !self.rows.is_empty() {
                 return self.stacked(&cells, caps);
             }
         }
@@ -556,6 +558,8 @@ AD-3
     fn empty_tables_are_what_they_are() {
         let empty = Table::new(vec![Column::identity("CARD"), Column::always("TITLE")]);
         assert_eq!(empty.render(caps(Some(80), false)), "CARD   TITLE\n");
+        // Too narrow for its heading: still its heading, never nothing.
+        assert_eq!(empty.render(caps(Some(5), false)), "CARD   TITLE\n");
         assert_eq!(Table::default().render(caps(Some(0), false)), "\n");
         for width in 0..40 {
             let _ = agents().render(caps(Some(width), true));

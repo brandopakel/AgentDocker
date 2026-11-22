@@ -3079,6 +3079,11 @@ async fn run() -> Result<()> {
                     BTreeMap::new()
                 }
             };
+            // One moment for everything this command says: the table's
+            // states and times and the detail under it are worked out at
+            // the same instant, so the detail cannot contradict a row
+            // that was printed a moment before it.
+            let now = chrono::Utc::now();
             print_agents(
                 &Fleet {
                     agents: &agents,
@@ -3088,27 +3093,22 @@ async fn run() -> Result<()> {
                     tokens: &tokens,
                     restarts: &restarts,
                 },
+                now,
                 Printed {
                     caps,
                     unread: &unread,
                 },
             )?;
             if input_details {
-                let now = chrono::Utc::now();
-                for agent in &agents {
-                    let blocked = agentdocker_core::readiness::provider_issue(agent, sources);
-                    if let Some(issue) =
-                        agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
-                    {
-                        if caps.human {
-                            // For a person: a name is somebody's data and
-                            // cannot break the line it is said on.
-                            for line in format::recipient_lines(&issue) {
-                                eprintln!("{}", out::text::shown(&line));
-                            }
-                        } else {
-                            format::recipient_readiness(&issue);
+                for issue in readiness_details(&agents, sources, now) {
+                    if caps.human {
+                        // For a person: what is said of an agent cannot
+                        // break the line it is said on.
+                        for line in format::recipient_lines(&issue) {
+                            eprintln!("{}", out::text::shown(&line));
                         }
+                    } else {
+                        format::recipient_readiness(&issue);
                     }
                 }
             }
@@ -6878,9 +6878,29 @@ struct AgentTable {
     set_back: usize,
 }
 
-fn print_agents(fleet: &Fleet<'_>, printed: Printed<'_>) -> Result<()> {
+/// What `ps --input-details` says under its table: each agent that
+/// cannot be told something now, at the same `now` the table was made at.
+fn readiness_details(
+    agents: &[AgentRecord],
+    input_sources: &[AgentRecord],
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<agentdocker_core::RecipientReadiness> {
+    agents
+        .iter()
+        .filter_map(|agent| {
+            let blocked = agentdocker_core::readiness::provider_issue(agent, input_sources);
+            agentdocker_core::RecipientReadiness::for_agent(agent, now, blocked)
+        })
+        .collect()
+}
+
+fn print_agents(
+    fleet: &Fleet<'_>,
+    now: chrono::DateTime<chrono::Utc>,
+    printed: Printed<'_>,
+) -> Result<()> {
     let Printed { caps, unread } = printed;
-    let table = agent_table(fleet, chrono::Utc::now(), caps.human);
+    let table = agent_table(fleet, now, caps.human);
     if !caps.human {
         // What a script reads: every column, nothing set back, the same
         // bytes at a terminal as in a pipe.
@@ -8321,6 +8341,70 @@ mod ps_table_tests {
         assert_eq!(cell(&later, 1, "STATUS"), "not connected");
         assert_eq!(later.tones[1], Tone::Attention);
         assert_eq!(cell(&later, 1, "CREATED"), "4h ago");
+    }
+
+    /// The table and the detail under it are of one moment. A receiver
+    /// heard from thirty seconds ago is receiving, and nothing is said
+    /// of it underneath; the same record ninety seconds on has gone quiet
+    /// in the table and in the detail alike. Worked out at two clocks,
+    /// a row could say receiving above a detail that says it is not.
+    #[test]
+    fn the_table_and_the_detail_are_of_one_moment() {
+        use agentdocker_core::input::{
+            AdapterContact, AdapterKind, InputDelivery, InputReceipt, ReceivedInput,
+        };
+        let birth = "2026-01-02T03:00:00Z";
+        let mut receiver = record("aaaa", "writer", birth);
+        receiver.process_started_at = Some(at(birth));
+        for adapter in [AdapterKind::Mcp, AdapterKind::Hooks] {
+            receiver.adapter_contacts.insert(
+                adapter,
+                AdapterContact {
+                    process_started_at: at(birth),
+                    observed_at: at(birth),
+                },
+            );
+        }
+        receiver.input_delivery = Some(InputDelivery {
+            process_started_at: at(birth),
+            paused: false,
+            pause_reason: None,
+            reported_at: at(birth),
+            received: Some(ReceivedInput {
+                messages: vec!["earlier-message".to_owned().into()],
+                receipt: InputReceipt::ClaudeChannel,
+            }),
+            received_at: Some(at(birth)),
+            typing_until: None,
+        });
+        let agents = [receiver];
+        let both = |now: &str| {
+            let made = table(&agents, &BTreeMap::new(), now, true);
+            (
+                cell(&made, 0, "INPUT").to_owned(),
+                readiness_details(&agents, &agents, at(now)),
+            )
+        };
+        let (input, detail) = both("2026-01-02T03:00:30Z");
+        assert_eq!(input, "Receiving messages");
+        assert!(detail.is_empty(), "{detail:?}");
+        let (input, detail) = both("2026-01-02T03:01:30Z");
+        assert_eq!(input, "Not heard from recently");
+        assert_eq!(detail.len(), 1);
+        assert_eq!(
+            detail[0].label(),
+            input,
+            "the row and its detail say one thing"
+        );
+        // Second by second across the edge, the two never part.
+        for second in 0..120 {
+            let now = (at(birth) + chrono::Duration::seconds(second)).to_rfc3339();
+            let (input, detail) = both(&now);
+            match detail.first() {
+                None => assert_eq!(input, "Receiving messages", "{second}s"),
+                Some(detail) => assert_eq!(detail.label(), input, "{second}s"),
+            }
+        }
     }
 
     /// An ended agent whose restart answer was read against another run

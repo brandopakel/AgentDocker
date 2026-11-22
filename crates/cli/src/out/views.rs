@@ -187,7 +187,13 @@ pub fn agents(
             last.faint = at >= set_back;
         }
     }
-    let mut out = table.render(caps);
+    // Nothing matched: said, at any width, rather than a heading over
+    // nothing (or, on a terminal too narrow for the heading, nothing).
+    let mut out = if table.rows.is_empty() {
+        "no agents\n".to_owned()
+    } else {
+        table.render(caps)
+    };
     if !unread.is_empty() {
         out.push_str(&paint(
             &format!(
@@ -821,6 +827,25 @@ bbbbbbbbbbbb   reviewer   app       main     fcfd61e   codex         -       exi
         );
         assert!(table.lines().next().unwrap().contains("PID"), "{table}");
         assert!(table.contains("5151") && table.contains("6262"), "{table}");
+    }
+
+    /// A listing that matched nobody says so at any width: on a terminal
+    /// too narrow for the table's heading it used to say nothing at all.
+    #[test]
+    fn no_agents_is_said_at_any_width() {
+        for width in [Some(20), Some(80), Some(200), None] {
+            assert_eq!(
+                agents(&PS, Vec::new(), &[], 0, &[], caps(width, true)),
+                "no agents\n",
+                "{width:?}"
+            );
+        }
+        let unread = ["the day's tokens"];
+        let said = agents(&PS, Vec::new(), &[], 0, &unread, caps(Some(20), false));
+        assert!(
+            said.starts_with("no agents\ncould not be read: the day's tokens"),
+            "{said}"
+        );
     }
 
     /// What could not be read is said: an empty column whose answer did
