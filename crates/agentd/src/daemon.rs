@@ -2215,13 +2215,11 @@ impl Daemon {
         } else {
             None
         };
-        // Boxed: `handle_healthy` is one match over every request the
-        // protocol has, so the future it returns is as large as the
-        // biggest arm plus everything the match holds live across an
-        // await. Left inline it lands on the caller's stack, and every
-        // caller that awaits a `handle` inside its own async fn pays for
-        // it again — which overflows a thread stack once the protocol is
-        // big enough. On the heap it costs one allocation per request.
+        // Boxed: `handle_healthy`'s future holds the route it awaits, and
+        // left inline it lands on the caller's stack, which every caller
+        // that awaits a `handle` inside its own async fn pays for again.
+        // On the heap it costs one allocation per request, and the route
+        // it sends the request to one more.
         let control = !admitted;
         let (response, settled) = ADMISSION
             .scope(
@@ -2336,80 +2334,207 @@ impl Daemon {
         let _ = ADMISSION.try_with(|admission| admission.borrow_mut().place = Some(place));
     }
 
-    /// Answer a request on a healthy daemon. The match over every request
-    /// is cut into routes of a few dozen arms each, tried in turn, each one
-    /// boxed: a debug build gives an async function's frame a slot for each
-    /// of its arms' values at once, and one match over all of them made a
-    /// frame of over a megabyte that every request, the deepest included,
-    /// ran inside. Each route handles what it matches and leaves anything
-    /// else in `rest` for the next.
+    /// Answer a request on a healthy daemon. The arms over every request
+    /// are cut into routes of a few dozen each, and this match, which names
+    /// every variant (so one with no route fails to compile), sends each to
+    /// its own, boxed: a debug build gives an async function's frame a slot
+    /// for each of its arms' values at once, and one match over all of them
+    /// made a frame of over a megabyte that every request, the deepest
+    /// included, ran inside.
     async fn handle_healthy(
         self: &Arc<Self>,
         request: Request,
         authorized: Option<acting::Authorized>,
     ) -> Response {
         let mut authorized = authorized;
-        let mut rest = Some(request);
-        if let Some(request) = rest.take() {
-            let response = routed(|| self.route_1(request, &mut rest)).await;
-            if rest.is_none() {
-                return response;
+        match request {
+            request @ (Request::RecordEmission { .. }
+            | Request::BuildImage { .. }
+            | Request::Images
+            | Request::Observe { .. }
+            | Request::Stale { .. }
+            | Request::Reads { .. }
+            | Request::Checkpoint { .. }
+            | Request::Resume { .. }
+            | Request::Checkpoints { .. }
+            | Request::Handoff { .. }
+            | Request::Handoffs { .. }
+            | Request::Import { .. }
+            | Request::Validate { .. }
+            | Request::Validations { .. }
+            | Request::WorktreeCreate { .. }
+            | Request::WorktreeDiff { .. }
+            | Request::WorktreeRemove { .. }
+            | Request::WorktreeRemoveNamed { .. }
+            | Request::ReviewBranch { .. }
+            | Request::MergeBranch { .. }
+            | Request::Commit { .. }
+            | Request::ReportCommit { .. }
+            | Request::Integrate { .. }
+            | Request::Authenticate { .. }
+            | Request::GrantAccess { .. }
+            | Request::RevokeAccess { .. }
+            | Request::Usage { .. }
+            | Request::Ping
+            | Request::DaemonProcess
+            | Request::Run { .. }) => routed(|| self.route_1(request, &mut authorized)).await,
+            request @ (Request::RunContainer { .. }
+            | Request::RestartContainer { .. }
+            | Request::Register { .. }
+            | Request::SessionAttach { .. }
+            | Request::ResumeSession { .. }
+            | Request::Deregister { .. }
+            | Request::Discover
+            | Request::Runtimes
+            | Request::Adopt { .. }
+            | Request::Stop { .. }
+            | Request::Remove { .. }
+            | Request::List { .. }
+            | Request::Inspect { .. }
+            | Request::Restarts { .. }
+            | Request::Heartbeat { .. }
+            | Request::Report { .. }
+            | Request::ReportActivity { .. }
+            | Request::Role { .. }
+            | Request::RoleAssign { .. }
+            | Request::Rename { .. }
+            | Request::ReportAdapter { .. }
+            | Request::ReportInput { .. }
+            | Request::ReportProvider { .. }
+            | Request::ResumeProvider { .. }
+            | Request::BindInput { .. }
+            | Request::UpgradeController { .. }
+            | Request::UnbindInput { .. }
+            | Request::RetryController { .. }) => {
+                routed(|| self.route_2(request, &mut authorized)).await
             }
+            request @ (Request::ResumeInput { .. }
+            | Request::DeliveryQueue { .. }
+            | Request::Changes { .. }
+            | Request::Overlap { .. }
+            | Request::Shutdown
+            | Request::Reload
+            | Request::Send { .. }
+            | Request::Me { .. }
+            | Request::OpenSecretReview { .. }
+            | Request::SecretReviews { .. }
+            | Request::AnswerSecretReview { .. }
+            | Request::CancelSecretReview { .. }
+            | Request::PollSecretReview { .. }
+            | Request::Ask { .. }
+            | Request::PostQuestion { .. }
+            | Request::CancelQuestion { .. }
+            | Request::Answer { .. }
+            | Request::Questions { .. }
+            | Request::Activity { .. }
+            | Request::Waiting) => routed(|| self.route_3(request)).await,
+            request @ (Request::TaskCreate { .. }
+            | Request::TaskCreateMany { .. }
+            | Request::TaskGet { .. }
+            | Request::TaskPull { .. }
+            | Request::TaskMove { .. }
+            | Request::TaskUpdate { .. }
+            | Request::TaskArchive { .. }
+            | Request::Rules { .. }) => routed(|| self.route_4(request)).await,
+            request @ (Request::RuleCreate { .. }
+            | Request::RuleUpdate { .. }
+            | Request::RuleDelete { .. }
+            | Request::TaskStart { .. }
+            | Request::Tags { .. }
+            | Request::TagSave { .. }
+            | Request::TagDelete { .. }
+            | Request::RoleCatalog { .. }
+            | Request::RoleSave { .. }
+            | Request::RoleDelete { .. }
+            | Request::Crew { .. }
+            | Request::CrewSave { .. }
+            | Request::CrewAccept { .. }
+            | Request::TaskSearch { .. }
+            | Request::Plans { .. }
+            | Request::PlanGet { .. }
+            | Request::PlanSave { .. }
+            | Request::MemoryAdd { .. }
+            | Request::MemorySearch { .. }
+            | Request::MemoryProfile { .. }) => routed(|| self.route_5(request)).await,
+            request @ (Request::Brief { .. }
+            | Request::MemoryForget { .. }
+            | Request::MemoryRetire { .. }
+            | Request::Files { .. }
+            | Request::FilePut { .. }
+            | Request::FileGet { .. }
+            | Request::FileLink { .. }
+            | Request::FileDelete { .. }
+            | Request::TaskUnarchive { .. }
+            | Request::TaskArchiveLane { .. }
+            | Request::TaskComment { .. }
+            | Request::TaskCommentEdit { .. }
+            | Request::TaskCommentDelete { .. }
+            | Request::Boards { .. }
+            | Request::BoardCreate { .. }
+            | Request::BoardUpdate { .. }
+            | Request::Tasks { .. }
+            | Request::Pause { .. }
+            | Request::ResumeProject { .. }
+            | Request::Pauses
+            | Request::ContestOpen { .. }
+            | Request::ContestEnter { .. }
+            | Request::ContestSubmit { .. }) => routed(|| self.route_6(request)).await,
+            request @ (Request::Contests { .. }
+            | Request::ContestClose { .. }
+            | Request::Inbox { .. }
+            | Request::PeekInput { .. }
+            | Request::AckInbox { .. }
+            | Request::ProviderInbox { .. }) => routed(|| self.route_7(request)).await,
+            request @ (Request::Claim { .. }
+            | Request::Renew { .. }
+            | Request::Release { .. }
+            | Request::ReleaseResource { .. }
+            | Request::ReleaseAll { .. }
+            | Request::RequestRelease { .. }
+            | Request::RespondRelease { .. }
+            | Request::JournalAdd { .. }
+            | Request::Journal { .. }
+            | Request::Channels { .. }
+            | Request::Conversations { .. }
+            | Request::History { .. }
+            | Request::Delivery { .. }
+            | Request::Thread { .. }
+            | Request::MarkRead { .. }) => routed(|| self.route_8(request)).await,
+            request @ (Request::SearchMessages { .. }
+            | Request::ChannelOpen { .. }
+            | Request::ChannelInvite { .. }
+            | Request::ChannelClose { .. }
+            | Request::ChannelPrune { .. }
+            | Request::ReviewRequest { .. }
+            | Request::Review { .. }
+            | Request::CodeVerdict { .. }
+            | Request::ReviewGate { .. }
+            | Request::SupersedeVerdict { .. }
+            | Request::Verdicts { .. }
+            | Request::Authorship { .. }
+            | Request::RecordGateRun { .. }
+            | Request::GateRuns { .. }
+            | Request::JournalPrune { .. }
+            | Request::CheckpointPrune { .. }
+            | Request::Vacuum { .. }
+            | Request::Leases { .. }
+            | Request::WebhookDeliveries { .. }
+            | Request::Subscribe { .. }
+            | Request::Events { .. }
+            | Request::ResumeEvents { .. }
+            | Request::Logs { .. }
+            | Request::Attach { .. }
+            | Request::AttachInput { .. }
+            | Request::AttachResize { .. }) => routed(|| self.route_9(request)).await,
         }
-        if let Some(request) = rest.take() {
-            let response = routed(|| self.route_2(request, &mut authorized, &mut rest)).await;
-            if rest.is_none() {
-                return response;
-            }
-        }
-        if let Some(request) = rest.take() {
-            let response = routed(|| self.route_3(request, &mut rest)).await;
-            if rest.is_none() {
-                return response;
-            }
-        }
-        if let Some(request) = rest.take() {
-            let response = routed(|| self.route_4(request, &mut rest)).await;
-            if rest.is_none() {
-                return response;
-            }
-        }
-        if let Some(request) = rest.take() {
-            let response = routed(|| self.route_5(request, &mut rest)).await;
-            if rest.is_none() {
-                return response;
-            }
-        }
-        if let Some(request) = rest.take() {
-            let response = routed(|| self.route_6(request, &mut rest)).await;
-            if rest.is_none() {
-                return response;
-            }
-        }
-        if let Some(request) = rest.take() {
-            let response = routed(|| self.route_7(request, &mut rest)).await;
-            if rest.is_none() {
-                return response;
-            }
-        }
-        if let Some(request) = rest.take() {
-            let response = routed(|| self.route_8(request, &mut rest)).await;
-            if rest.is_none() {
-                return response;
-            }
-        }
-        if let Some(request) = rest.take() {
-            let response = routed(|| self.route_9(request, &mut rest)).await;
-            if rest.is_none() {
-                return response;
-            }
-        }
-        Response::error(ErrorCode::Internal, "a request no route takes")
     }
 
-    /// Requests of the 1st route ([`Self::handle_healthy`]); any other is
-    /// left in `rest`.
-    async fn route_1(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+    /// The requests of route 1 ([`Self::handle_healthy`]).
+    async fn route_1(
+        self: &Arc<Self>,
+        request: Request,
+        authorized: &mut Option<acting::Authorized>,
+    ) -> Response {
         match request {
             Request::RecordEmission { agent, emission } => self.record_emission(&agent, emission),
             Request::BuildImage { spec } => self.build_image(spec).await,
@@ -2511,7 +2636,7 @@ impl Daemon {
             } => {
                 // The owner the socket authenticated the report for, beside
                 // the request; an in-process caller has none.
-                let session = match authorized {
+                let session = match authorized.take() {
                     Some(acting::Authorized::ReportOwner(owner)) => Some(owner),
                     _ => None,
                 };
@@ -2567,20 +2692,20 @@ impl Daemon {
                 }
             }
             Request::Run { spec } => self.run(spec).await,
-            other => {
-                *rest = Some(other);
-                Response::Ok
-            }
+            // `handle_healthy` sends a request only to the route that names
+            // it.
+            _ => Response::error(
+                ErrorCode::Internal,
+                "a request sent to a route that does not answer it",
+            ),
         }
     }
 
-    /// Requests of the 2nd route ([`Self::handle_healthy`]); any other is
-    /// left in `rest`.
+    /// The requests of route 2 ([`Self::handle_healthy`]).
     async fn route_2(
         self: &Arc<Self>,
         request: Request,
         authorized: &mut Option<acting::Authorized>,
-        rest: &mut Option<Request>,
     ) -> Response {
         match request {
             Request::RunContainer {
@@ -2728,16 +2853,17 @@ impl Daemon {
             Request::RetryController { agent } => {
                 lock(&self.state).retry_controller(&agent, Utc::now())
             }
-            other => {
-                *rest = Some(other);
-                Response::Ok
-            }
+            // `handle_healthy` sends a request only to the route that names
+            // it.
+            _ => Response::error(
+                ErrorCode::Internal,
+                "a request sent to a route that does not answer it",
+            ),
         }
     }
 
-    /// Requests of the 3rd route ([`Self::handle_healthy`]); any other is
-    /// left in `rest`.
-    async fn route_3(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+    /// The requests of route 3 ([`Self::handle_healthy`]).
+    async fn route_3(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::ResumeInput {
                 agent,
@@ -2860,16 +2986,17 @@ impl Daemon {
                 all,
             } => self.activity(agent, project, all).await,
             Request::Waiting => self.waiting(),
-            other => {
-                *rest = Some(other);
-                Response::Ok
-            }
+            // `handle_healthy` sends a request only to the route that names
+            // it.
+            _ => Response::error(
+                ErrorCode::Internal,
+                "a request sent to a route that does not answer it",
+            ),
         }
     }
 
-    /// Requests of the 4th route ([`Self::handle_healthy`]); any other is
-    /// left in `rest`.
-    async fn route_4(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+    /// The requests of route 4 ([`Self::handle_healthy`]).
+    async fn route_4(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::TaskCreate {
                 from,
@@ -3019,16 +3146,17 @@ impl Daemon {
             ),
             Request::TaskArchive { agent, task } => self.task_archive(&agent, &task),
             Request::Rules { project, board } => self.rules(project, board).await,
-            other => {
-                *rest = Some(other);
-                Response::Ok
-            }
+            // `handle_healthy` sends a request only to the route that names
+            // it.
+            _ => Response::error(
+                ErrorCode::Internal,
+                "a request sent to a route that does not answer it",
+            ),
         }
     }
 
-    /// Requests of the 5th route ([`Self::handle_healthy`]); any other is
-    /// left in `rest`.
-    async fn route_5(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+    /// The requests of route 5 ([`Self::handle_healthy`]).
+    async fn route_5(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::RuleCreate {
                 from,
@@ -3180,16 +3308,17 @@ impl Daemon {
                 max_chars,
                 as_of,
             } => self.memory_profile(from, project, max_chars, as_of).await,
-            other => {
-                *rest = Some(other);
-                Response::Ok
-            }
+            // `handle_healthy` sends a request only to the route that names
+            // it.
+            _ => Response::error(
+                ErrorCode::Internal,
+                "a request sent to a route that does not answer it",
+            ),
         }
     }
 
-    /// Requests of the 6th route ([`Self::handle_healthy`]); any other is
-    /// left in `rest`.
-    async fn route_6(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+    /// The requests of route 6 ([`Self::handle_healthy`]).
+    async fn route_6(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::Brief { from, project } => self.work_brief(&from, project.as_deref()).await,
             Request::MemoryForget { from, memory } => self.memory_forget(&from, &memory),
@@ -3337,16 +3466,17 @@ impl Daemon {
                 validation,
                 score,
             } => self.contest_submit(&agent, &contest, &validation, score),
-            other => {
-                *rest = Some(other);
-                Response::Ok
-            }
+            // `handle_healthy` sends a request only to the route that names
+            // it.
+            _ => Response::error(
+                ErrorCode::Internal,
+                "a request sent to a route that does not answer it",
+            ),
         }
     }
 
-    /// Requests of the 7th route ([`Self::handle_healthy`]); any other is
-    /// left in `rest`.
-    async fn route_7(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+    /// The requests of route 7 ([`Self::handle_healthy`]).
+    async fn route_7(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::Contests {
                 contest,
@@ -3471,16 +3601,17 @@ impl Daemon {
                     Err(error) => *error,
                 }
             }
-            other => {
-                *rest = Some(other);
-                Response::Ok
-            }
+            // `handle_healthy` sends a request only to the route that names
+            // it.
+            _ => Response::error(
+                ErrorCode::Internal,
+                "a request sent to a route that does not answer it",
+            ),
         }
     }
 
-    /// Requests of the 8th route ([`Self::handle_healthy`]); any other is
-    /// left in `rest`.
-    async fn route_8(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+    /// The requests of route 8 ([`Self::handle_healthy`]).
+    async fn route_8(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::Claim {
                 agent,
@@ -3628,16 +3759,17 @@ impl Daemon {
                 through,
                 reader,
             } => self.mark_read(conversation, through, reader),
-            other => {
-                *rest = Some(other);
-                Response::Ok
-            }
+            // `handle_healthy` sends a request only to the route that names
+            // it.
+            _ => Response::error(
+                ErrorCode::Internal,
+                "a request sent to a route that does not answer it",
+            ),
         }
     }
 
-    /// Requests of the 9th route ([`Self::handle_healthy`]); any other is
-    /// left in `rest`.
-    async fn route_9(self: &Arc<Self>, request: Request, rest: &mut Option<Request>) -> Response {
+    /// The requests of route 9 ([`Self::handle_healthy`]).
+    async fn route_9(self: &Arc<Self>, request: Request) -> Response {
         match request {
             Request::SearchMessages {
                 query,
@@ -3784,10 +3916,12 @@ impl Daemon {
             | Request::AttachResize { .. } => {
                 Response::error(ErrorCode::Internal, "streaming request routed as unary")
             }
-            other => {
-                *rest = Some(other);
-                Response::Ok
-            }
+            // `handle_healthy` sends a request only to the route that names
+            // it.
+            _ => Response::error(
+                ErrorCode::Internal,
+                "a request sent to a route that does not answer it",
+            ),
         }
     }
 
