@@ -2440,7 +2440,13 @@ impl Daemon {
                 branch,
                 agent,
             } => {
-                self.report_commit(checkout, token, head, branch, agent)
+                // The owner the socket authenticated the report for, beside
+                // the request; an in-process caller has none.
+                let session = match authorized {
+                    Some(acting::Authorized::ReportOwner(owner)) => Some(owner),
+                    _ => None,
+                };
+                self.report_commit(checkout, token, head, branch, agent, session)
                     .await
             }
             Request::Integrate {

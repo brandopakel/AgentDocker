@@ -385,6 +385,54 @@ impl State {
         owners
     }
 
+    /// A report's commit, kept in the hold that writes it once what was
+    /// found before git was read still holds: the daemon is not making the
+    /// commit itself, the checkout's witness is the one checked (a worktree
+    /// replaced at the same path since is another witness, with another
+    /// token), and the agent is still one of its owners. The snapshot is
+    /// that agent's record as it is in this hold.
+    pub(super) fn record_report(
+        &mut self,
+        checkout: &Path,
+        token: &SecretText,
+        worktree: &WitnessedWorktree,
+        mut authorship: Authorship,
+    ) -> Response {
+        if self.committing.contains(checkout) {
+            return not_recorded("the daemon is making this commit, and records it itself");
+        }
+        match self.witnessed(checkout, token) {
+            Ok(current) if current == *worktree => {}
+            Ok(_) | Err(_) => {
+                return Response::error(
+                    ErrorCode::Conflict,
+                    "the worktree's witness changed while the report was checked; nothing was recorded",
+                );
+            }
+        }
+        let who = authorship.agent.clone();
+        if !self.worktree_owners(worktree).contains(&who) {
+            return Response::error(
+                ErrorCode::Conflict,
+                "who holds the worktree changed while the report was checked; nothing was recorded",
+            );
+        }
+        authorship.author = self.registry.get(&who).map(AuthorSnapshot::of);
+        if let Some(error) = self.write_failure() {
+            return error;
+        }
+        let branch = authorship.branch.clone();
+        match self.record_authorship(&authorship) {
+            Ok(added) => Response::CommitWitnessed {
+                recorded: true,
+                agent: Some(who),
+                branch: Some(branch),
+                note: (!added).then(|| "already recorded".to_owned()),
+            },
+            Err(response) => *response,
+        }
+    }
+
     /// Keep `authorship`, with its event when it is new: whether it was.
     pub(super) fn record_authorship(
         &mut self,
@@ -553,6 +601,7 @@ impl Daemon {
         head: String,
         branch: Option<String>,
         agent: Option<String>,
+        session: Option<AgentId>,
     ) -> Response {
         let checkout = project::canonical(&checkout);
         let head = head.trim().to_owned();
@@ -565,7 +614,9 @@ impl Daemon {
                 "a report names the full commit id HEAD is at",
             );
         }
-        let session_named = agent.is_some();
+        // Named by its session only when the socket authenticated the report
+        // as sent from inside that owner's session; never from the request.
+        let session_named = session.is_some();
         let (worktree, who) = {
             let mut state = lock(&self.state);
             if state.committing.contains(&checkout) {
@@ -576,12 +627,19 @@ impl Daemon {
                 Err(response) => return *response,
             };
             let owners = state.worktree_owners(&worktree);
-            let who = match agent {
+            // The owner the socket authenticated, else one a caller of the
+            // daemon's own names in the request (the socket clears it),
+            // else the first owner: each must be an owner.
+            let named = match (session, agent) {
+                (Some(owner), _) => Some(owner),
+                (None, Some(named)) => match state.resolve(&named) {
+                    Ok(id) => Some(id),
+                    Err(response) => return *response,
+                },
+                (None, None) => None,
+            };
+            let who = match named {
                 Some(named) => {
-                    let named = match state.resolve(&named) {
-                        Ok(id) => id,
-                        Err(response) => return *response,
-                    };
                     if !owners.contains(&named) {
                         return Response::error(
                             ErrorCode::Forbidden,
@@ -627,7 +685,7 @@ impl Daemon {
         let Some(branch) = now_ref.filter(|r| r.starts_with("refs/heads/")) else {
             return not_recorded("HEAD is detached, on no branch");
         };
-        let mut authorship = Authorship {
+        let authorship = Authorship {
             project: worktree.project.clone(),
             agent: who.clone(),
             branch: branch.clone(),
@@ -647,31 +705,38 @@ impl Daemon {
         if let Err(reason) = authorship.check() {
             return Response::error(ErrorCode::Invalid, reason);
         }
+        lock(&self.state).record_report(&checkout, &token, &worktree, authorship)
+    }
+
+    /// The project a receipts read names: a path as any project selector
+    /// is; an id, or a unique prefix of one, among the projects agents work
+    /// in and those receipts are kept for, which outlive the records that
+    /// named them; else the caller's own.
+    async fn receipts_project(
+        self: &Arc<Self>,
+        agent: Option<&str>,
+        project: Option<String>,
+    ) -> Result<ProjectId, Box<Response>> {
+        let Some(selector) = project else {
+            return self.verdict_project(agent, None).await;
+        };
+        if Path::new(&selector).is_absolute() {
+            return self.verdict_project(agent, Some(selector)).await;
+        }
         let mut state = lock(&self.state);
-        // What was found before git was read must still hold.
-        if state.committing.contains(&checkout) {
-            return not_recorded("the daemon is making this commit, and records it itself");
-        }
-        if !state.worktree_owners(&worktree).contains(&who) {
-            return Response::error(
-                ErrorCode::Conflict,
-                "who holds the worktree changed while the report was checked; nothing was recorded",
-            );
-        }
-        // Who the agent is, from its record as checked in this hold.
-        authorship.author = state.registry.get(&who).map(AuthorSnapshot::of);
-        if let Some(error) = state.write_failure() {
-            return error;
-        }
-        match state.record_authorship(&authorship) {
-            Ok(added) => Response::CommitWitnessed {
-                recorded: true,
-                agent: Some(who),
-                branch: Some(branch),
-                note: (!added).then(|| "already recorded".to_owned()),
-            },
-            Err(response) => *response,
-        }
+        let mut known = state.registry.project_ids();
+        let Some(kept) = state.store_read("receipt projects", |store| store.receipt_projects())
+        else {
+            return Err(Box::new(state.storage_failure().unwrap_or_else(|| {
+                Response::error(
+                    ErrorCode::StorageUnavailable,
+                    "the projects receipts are kept for could not be read",
+                )
+            })));
+        };
+        known.extend(kept);
+        agentdocker_core::registry::resolve_project_among(known, &selector)
+            .map_err(|err| Box::new(registry_error(err)))
     }
 
     /// A branch's retained receipts in the caller's project (or the one
@@ -688,7 +753,7 @@ impl Daemon {
         limit: Option<usize>,
     ) -> Response {
         use agentdocker_core::gate::{AuthorshipCoverage, RECEIPTS_PER_PAGE, Unreceipted};
-        let project = match self.verdict_project(agent, project).await {
+        let project = match self.receipts_project(agent, project).await {
             Ok(project) => project,
             Err(response) => return *response,
         };
@@ -737,6 +802,7 @@ impl Daemon {
                 retained,
                 capture_since: page.capture_since,
                 pruned_through: page.pruned_through,
+                oldest_retained: page.oldest_retained,
                 seed_skipped: page.seed_skipped,
                 page_may_miss: AuthorshipCoverage::page_may_miss(page.pruned_through, after),
                 unreceipted,
@@ -745,16 +811,18 @@ impl Daemon {
     }
 
     /// Authenticate a hook's report as sent from inside the session of one
-    /// of the worktree's owners, and name that owner in it, so that no
-    /// other agent can make a commit somebody else's. A refusal, or a final
-    /// answer, when it is not to be handled. Who made the commit is never
-    /// the client's to say. With the person check off, and for the daemon's
-    /// own callers, the handler names the worktree's first owner.
+    /// of the worktree's owners, so that no other agent can make a commit
+    /// somebody else's: that owner, carried beside the request (never in
+    /// it) to the write, which names it with basis `hook_session`. A
+    /// refusal, or a final answer, when it is not to be handled. Who made
+    /// the commit is never the client's to say: the request's own `agent`
+    /// is cleared. With the person check off, and for the daemon's own
+    /// callers, the handler names the worktree's first owner.
     pub(crate) async fn authenticate_report(
         self: &Arc<Self>,
         peer: Option<person::Peer>,
         request: &mut Request,
-    ) -> Option<Response> {
+    ) -> Result<Option<acting::Authorized>, Box<Response>> {
         let Request::ReportCommit {
             checkout,
             token,
@@ -762,23 +830,23 @@ impl Daemon {
             ..
         } = request
         else {
-            return None;
+            return Ok(None);
         };
         *agent = None;
         if !self.person_check || peer.is_some_and(|(pid, _)| pid == std::process::id()) {
-            return None;
+            return Ok(None);
         }
         let checkout = project::canonical(checkout);
         let (owners, agents) = {
             let mut state = lock(&self.state);
             if state.committing.contains(&checkout) {
-                return Some(not_recorded(
+                return Err(Box::new(not_recorded(
                     "the daemon is making this commit, and records it itself",
-                ));
+                )));
             }
             let worktree = match state.witnessed(&checkout, token) {
                 Ok(worktree) => worktree,
-                Err(response) => return Some(*response),
+                Err(response) => return Err(response),
             };
             let owners: Vec<AgentRecord> = state
                 .worktree_owners(&worktree)
@@ -786,9 +854,9 @@ impl Daemon {
                 .filter_map(|id| state.registry.get(id).cloned())
                 .collect();
             if owners.is_empty() {
-                return Some(not_recorded(
+                return Err(Box::new(not_recorded(
                     "no live agent is the worktree's: neither the one it was made for nor a holder of it",
-                ));
+                )));
             }
             let agents: HashMap<u32, (DateTime<Utc>, AgentId)> = state
                 .registry
@@ -799,12 +867,12 @@ impl Daemon {
             (owners, agents)
         };
         let refuse = |why: &str| {
-            Some(Response::error(
+            Err(Box::new(Response::error(
                 ErrorCode::Forbidden,
                 format!(
                     "a commit is recorded only as reported from inside the session of the agent it names, and {why}"
                 ),
-            ))
+            )))
         };
         let Some((sender, Some(sender_born))) = peer else {
             return refuse("the process that sent it cannot be identified");
@@ -827,8 +895,7 @@ impl Daemon {
                 person::own_cli,
             ) {
                 tasks::verdicts::Author::Reviewer => {
-                    *agent = Some(owner.id.to_string());
-                    return None;
+                    return Ok(Some(acting::Authorized::ReportOwner(owner.id.clone())));
                 }
                 tasks::verdicts::Author::Other(reason) => why = reason,
             }

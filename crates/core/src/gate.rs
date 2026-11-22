@@ -600,8 +600,12 @@ pub struct AuthorshipCoverage {
     /// be gone, on any ref.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pruned_through: Option<u64>,
-    /// How many of the project's commits witnessed before capture began
-    /// were past the bound and got no receipt.
+    /// When the project's oldest retained receipt (its lowest `seq`, on any
+    /// ref) was kept; absent when the project holds none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_retained: Option<DateTime<Utc>>,
+    /// How many of the project's rows the first seed left out, past the
+    /// bound (a commit among them reported again since may have one now).
     #[serde(default, skip_serializing_if = "is_zero")]
     pub seed_skipped: u64,
     /// Whether receipts on this page may be missing: the project's bound
@@ -640,7 +644,8 @@ pub enum Unreceipted {
     AtLeast {
         count: u64,
     },
-    /// The look ran out of its budget: unknown.
+    /// Not known: the look ran out of its budget, or a newer daemon said
+    /// something this one does not read.
     #[serde(other)]
     Unknown,
 }

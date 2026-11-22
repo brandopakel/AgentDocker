@@ -17,6 +17,7 @@ pub(crate) struct ReceiptPage {
     pub next: Option<u64>,
     pub capture_since: Option<DateTime<Utc>>,
     pub pruned_through: Option<u64>,
+    pub oldest_retained: Option<DateTime<Utc>>,
     pub seed_skipped: u64,
 }
 
@@ -193,7 +194,8 @@ impl Store {
 
     /// `branch`'s receipts in `project` after `after` in their order, at
     /// most `limit`, with where the next page starts and the project's
-    /// bounds.
+    /// bounds. A cursor past every order SQLite can hold reads as the end,
+    /// never as a fault.
     pub(crate) fn receipts(
         &self,
         project: &ProjectId,
@@ -213,8 +215,8 @@ impl Store {
                 params![
                     project.as_str(),
                     branch,
-                    i64::try_from(after)?,
-                    i64::try_from(limit + 1)?
+                    i64::try_from(after).unwrap_or(i64::MAX),
+                    i64::try_from(limit.saturating_add(1)).unwrap_or(i64::MAX)
                 ],
                 |row| {
                     Ok((
@@ -262,15 +264,41 @@ impl Store {
             .optional()?
             .map(|text| time(&text))
             .transpose()?;
+        let oldest_retained = self
+            .conn
+            .query_row(
+                "SELECT at FROM authorship_history WHERE project = ?1 ORDER BY seq LIMIT 1",
+                [project.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|text| time(&text))
+            .transpose()?;
         Ok(ReceiptPage {
             receipts,
             next,
             capture_since,
+            oldest_retained,
             pruned_through: (pruned_through > 0)
                 .then(|| u64::try_from(pruned_through))
                 .transpose()?,
             seed_skipped: u64::try_from(seed_skipped)?,
         })
+    }
+
+    /// The projects receipts are kept for, which outlive the records that
+    /// named them.
+    pub(crate) fn receipt_projects(&self) -> Result<Vec<ProjectId>> {
+        let mut statement = self
+            .conn
+            .prepare_cached("SELECT DISTINCT project FROM authorship_history")?;
+        let projects = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(projects
+            .iter()
+            .map(|project| ProjectId::from(project.as_str()))
+            .collect())
     }
 
     /// How many of `branch`'s rows in `project` have no receipt, counted to
@@ -811,6 +839,26 @@ mod tests {
                     .with_timezone(&Utc)
             )
         );
+        // One slot over a tie at the cut (one commit at one time on two
+        // refs): the later ref is kept, the other left out and counted.
+        let tied = Store::in_memory().unwrap();
+        tied.conn
+            .execute_batch(
+                "DELETE FROM meta WHERE key IN ('authorship_receipts_seeded', 'authorship_receipts_since');
+                 INSERT INTO authorship (project, commit_id, branch, agent, witness, at) VALUES
+                  ('p', '4444444444444444444444444444444444444444', 'refs/heads/a', 'x', 'hook', '2023-11-14T22:13:20+00:00'),
+                  ('p', '4444444444444444444444444444444444444444', 'refs/heads/b', 'x', 'hook', '2023-11-14T22:13:20+00:00');",
+            )
+            .unwrap();
+        Store::seed_receipts(&tied.conn, 1, now).unwrap();
+        let (a, b) = (
+            page(&tied, "refs/heads/a", 0, 10),
+            page(&tied, "refs/heads/b", 0, 10),
+        );
+        assert_eq!(
+            (a.receipts.len(), b.receipts.len(), b.seed_skipped),
+            (0, 1, 1)
+        );
         // Never again: a row added since stays without a receipt.
         store
             .conn
@@ -851,6 +899,17 @@ mod tests {
         let resumed = page(&store, "refs/heads/x", 2, 2);
         assert_eq!(seqs(&resumed), vec![4, 5]);
         assert_eq!(resumed.pruned_through, Some(3), "past the cursor at 2");
-        assert!(page(&store, "refs/heads/z", 0, 2).receipts.is_empty());
+        // An empty ref still says when the project's oldest retained
+        // receipt was kept, though another ref holds it.
+        let empty = page(&store, "refs/heads/z", 0, 2);
+        assert!(empty.receipts.is_empty());
+        assert_eq!(empty.oldest_retained, Some(resumed.receipts[0].at));
+        assert_eq!(
+            page(&store, "refs/heads/x", u64::MAX, 2).receipts.len(),
+            0,
+            "a cursor past every order is the end"
+        );
+        let none = Store::in_memory().unwrap();
+        assert_eq!(page(&none, "refs/heads/x", 0, 2).oldest_retained, None);
     }
 }

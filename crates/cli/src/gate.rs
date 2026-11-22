@@ -154,8 +154,12 @@ fn parse_findings(text: &str) -> Result<Findings, String> {
 }
 
 fn tool(argv: &[&str]) -> Result<String> {
+    tool_in(&std::env::current_dir()?, argv)
+}
+
+fn tool_in(dir: &Path, argv: &[&str]) -> Result<String> {
     let argv: Vec<String> = argv.iter().map(|&a| a.to_owned()).collect();
-    let output = agentdocker_host::command::run(&std::env::current_dir()?, &argv, TOOL_TIMEOUT)
+    let output = agentdocker_host::command::run(dir, &argv, TOOL_TIMEOUT)
         .with_context(|| format!("cannot run {}", argv[0]))?;
     ensure!(
         output.success,
@@ -220,6 +224,68 @@ fn pull_request(target: &str) -> Option<u64> {
         .parse()
         .ok()
         .filter(|n| *n > 0)
+}
+
+/// Where a pull request number is read, and the project a read of it is
+/// then of. A number names another change in every repository, so the two
+/// are one: a project named by its root (an absolute path) is read there;
+/// otherwise in this checkout, which must then be the project named.
+fn pr_repository(named: Option<&str>) -> Result<(PathBuf, String)> {
+    match named {
+        Some(root) if Path::new(root).is_absolute() => Ok((PathBuf::from(root), root.to_owned())),
+        Some(other) => {
+            let here = checkout_root()?;
+            let id = agentdocker_host::project::discover(&here).id();
+            ensure!(
+                id.as_str().starts_with(other),
+                "a pull request number is read in this checkout's repository, which is project {id}, not {other}: run this from {other}'s checkout, pass its root as --project, or name the branch"
+            );
+            Ok((here, other.to_owned()))
+        }
+        None => {
+            let here = checkout_root()?;
+            let root = here.display().to_string();
+            Ok((here, root))
+        }
+    }
+}
+
+/// The branch pull request `number` is of, as `gh` reads it in `dir`.
+fn pr_branch(gh: &str, dir: &Path, number: u64) -> Result<String> {
+    let found = tool_in(
+        dir,
+        &[
+            gh,
+            "pr",
+            "view",
+            &number.to_string(),
+            "--json",
+            "headRefName",
+        ],
+    )?;
+    let found: serde_json::Value =
+        serde_json::from_str(&found).context("`gh pr view` gave no pull request")?;
+    Ok(found["headRefName"]
+        .as_str()
+        .context("the pull request names no branch")?
+        .to_owned())
+}
+
+/// The branch a read names, and its project: a pull request's branch in
+/// the repository it is read in, else the branch as given.
+async fn read_target(
+    client: &Client,
+    target: &str,
+    named: Option<String>,
+    agent: &str,
+) -> Result<(String, Option<String>)> {
+    match pull_request(target) {
+        Some(number) => {
+            let (dir, project) = pr_repository(named.as_deref())?;
+            Ok((pr_branch("gh", &dir, number)?, Some(project)))
+        }
+        None => Ok((target.to_owned(), project(client, named, agent).await?)),
+    }
 }
 
 /// The branch and commit a gate is asked about.
@@ -463,13 +529,16 @@ pub struct VerdictsArgs {
 /// kept of its reviewer's model.
 pub async fn verdicts(client: &Client, args: VerdictsArgs) -> Result<()> {
     let agent = sender::resolve(client, args.agent).await?;
-    let branch = match pull_request(&args.target) {
-        Some(_) => branch_and_head(&args.target, None)?.0,
-        None => args.target.clone(),
-    };
+    let (branch, project) = read_target(
+        client,
+        &args.target,
+        args.project,
+        agent.as_deref().unwrap_or(HUMAN),
+    )
+    .await?;
     let Response::Verdicts { verdicts, retained } = client
         .call(&Request::Verdicts {
-            project: project(client, args.project, agent.as_deref().unwrap_or(HUMAN)).await?,
+            project,
             agent,
             branch: branch.clone(),
         })
@@ -524,13 +593,16 @@ pub struct AuthorshipArgs {
 /// and the full ref, and what they cannot establish.
 pub async fn authorship(client: &Client, args: AuthorshipArgs) -> Result<()> {
     let agent = sender::resolve(client, args.agent).await?;
-    let branch = match pull_request(&args.target) {
-        Some(_) => branch_and_head(&args.target, None)?.0,
-        None => args.target.clone(),
-    };
+    let (branch, project) = read_target(
+        client,
+        &args.target,
+        args.project,
+        agent.as_deref().unwrap_or(HUMAN),
+    )
+    .await?;
     let response = client
         .call(&Request::Authorship {
-            project: project(client, args.project, agent.as_deref().unwrap_or(HUMAN)).await?,
+            project,
             agent,
             branch,
             after: args.after,
@@ -577,7 +649,7 @@ fn receipts_said(
     use agentdocker_core::gate::{Basis, Unreceipted};
     let mut out = format!("{} in project {project}\n", shown(branch));
     if receipts.is_empty() {
-        out.push_str("no receipt retained on this ref\n");
+        out.push_str("no receipts on this page\n");
     }
     for receipt in receipts {
         let how = match receipt.basis {
@@ -586,7 +658,7 @@ fn receipts_said(
             Basis::HookOwner => {
                 "reported unauthenticated; its worktree, not shown to be its commit"
             }
-            Basis::Unknown => "named before the basis was kept",
+            Basis::Unknown => "basis unknown",
         };
         let who = match &receipt.author {
             Some(author) => {
@@ -603,7 +675,7 @@ fn receipts_said(
                     shown(&author.runtime)
                 )
             }
-            None => format!("{} (not captured)", receipt.agent.short()),
+            None => format!("agent {} (no snapshot kept)", receipt.agent.short()),
         };
         out.push_str(&format!(
             "#{} {} by {who} at {}: {}, {how}\n",
@@ -631,9 +703,16 @@ fn receipts_said(
             "the project's bound has pruned receipts through #{pruned}, on any ref\n"
         ));
     }
+    match coverage.oldest_retained {
+        Some(oldest) => out.push_str(&format!(
+            "the project's oldest retained receipt, on any ref, was kept at {}\n",
+            oldest.format("%Y-%m-%d %H:%M:%S UTC")
+        )),
+        None => out.push_str("the project holds no receipt\n"),
+    }
     if coverage.seed_skipped > 0 {
         out.push_str(&format!(
-            "{} commits witnessed before receipts were kept were past the bound and have none\n",
+            "{} rows were left out when receipts were first taken, past the bound\n",
             coverage.seed_skipped
         ));
     }
@@ -651,7 +730,7 @@ fn receipts_said(
             "at least {count} commits recorded as witnessed on this ref have no receipt, for a cause that cannot be told\n"
         )),
         Unreceipted::Unknown => out.push_str(
-            "whether commits recorded as witnessed on this ref lack a receipt is unknown: the look ran out of time\n",
+            "whether commits recorded as witnessed on this ref lack a receipt is not known\n",
         ),
     }
     out
@@ -1214,6 +1293,7 @@ mod tests {
             retained: 20_000,
             capture_since: Some(at),
             pruned_through: Some(4),
+            oldest_retained: Some(at),
             seed_skipped: 2,
             page_may_miss: true,
             unreceipted: Unreceipted::Unknown,
@@ -1233,16 +1313,81 @@ mod tests {
             "#5 aaaaaaaa by writ\\u{202e}er (codex, configured openai/model-a)",
             "reported from its own session",
             "reported unauthenticated; its worktree, not shown to be its commit",
-            "(not captured)",
+            "agent agent-1-id (no snapshot kept)",
             "more after #6 (--after 6)",
             "do not by themselves identify a change's commits",
             "pruned receipts through #4",
-            "2 commits witnessed before receipts were kept",
+            "2 rows were left out when receipts were first taken",
+            "oldest retained receipt, on any ref, was kept at 2023-11-14 22:13:20 UTC",
             "this page may be missing receipts",
-            "is unknown: the look ran out of time",
+            "lack a receipt is not known",
         ] {
             assert!(said.contains(expected), "{expected:?} in {said}");
         }
+        // Words a newer daemon wrote read as unknown and are said so; an
+        // empty page past earlier receipts says it is this page that is.
+        let newer: AuthorshipReceipt = serde_json::from_value(serde_json::json!({
+            "seq": 9, "commit": "b".repeat(40), "agent": "agent-2", "witness": "hook",
+            "basis": "attested", "at": at,
+        }))
+        .unwrap();
+        let unknown: Unreceipted =
+            serde_json::from_value(serde_json::json!({"state": "estimated", "count": 3})).unwrap();
+        let later = AuthorshipCoverage {
+            unreceipted: unknown,
+            oldest_retained: None,
+            ..coverage.clone()
+        };
+        let said = receipts_said(
+            &ProjectId::from("p"),
+            "refs/heads/feature/x",
+            &[newer],
+            None,
+            &later,
+        );
+        assert!(said.contains("basis unknown"), "{said}");
+        assert!(said.contains("lack a receipt is not known"), "{said}");
+        assert!(said.contains("the project holds no receipt"), "{said}");
+        let past = receipts_said(
+            &ProjectId::from("p"),
+            "refs/heads/feature/x",
+            &[],
+            None,
+            &coverage,
+        );
+        assert!(past.contains("no receipts on this page"), "{past}");
+    }
+
+    /// A pull request number is read in the repository of the project read:
+    /// the same number names another branch in another repository, and a
+    /// project named by id must be this checkout's.
+    #[cfg(unix)]
+    #[test]
+    fn a_pull_request_is_read_in_its_project_s_repository() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = tmp.path().join("gh");
+        std::fs::write(&gh, "#!/bin/sh\ncat \"$PWD/pr.json\"\n").unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let gh = gh.to_str().unwrap();
+        let mut seen = Vec::new();
+        for (name, branch) in [("one", "feature/one"), ("two", "feature/two")] {
+            let repo = tmp.path().join(name);
+            std::fs::create_dir_all(&repo).unwrap();
+            std::fs::write(
+                repo.join("pr.json"),
+                format!("{{\"headRefName\": \"{branch}\"}}"),
+            )
+            .unwrap();
+            let (dir, project) = pr_repository(Some(repo.to_str().unwrap())).unwrap();
+            assert_eq!(project, repo.to_str().unwrap());
+            seen.push(pr_branch(gh, &dir, 7).unwrap());
+        }
+        assert_eq!(seen, vec!["feature/one", "feature/two"]);
+        let error = pr_repository(Some("not-this-checkout"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not not-this-checkout"), "{error}");
     }
 
     /// A start is a time or a duration ago; one too far back for a time

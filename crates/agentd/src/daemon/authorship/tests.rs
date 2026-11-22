@@ -951,6 +951,8 @@ async fn a_receipt_says_how_its_agent_was_named_and_who_it_was() {
         daemon.handle(report_of(&wt)).await,
         Response::CommitWitnessed { recorded: true, .. }
     ));
+    // A caller of the daemon's own naming the agent in the request is
+    // still not authenticated: named as the worktree's owner.
     git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "two"]);
     let Request::ReportCommit {
         checkout,
@@ -964,7 +966,13 @@ async fn a_receipt_says_how_its_agent_was_named_and_who_it_was() {
     };
     assert!(matches!(
         daemon
-            .report_commit(checkout, token, head, branch, Some(writer.id.to_string()))
+            .handle(Request::ReportCommit {
+                checkout,
+                token,
+                head,
+                branch,
+                agent: Some(writer.id.to_string()),
+            })
             .await,
         Response::CommitWitnessed { recorded: true, .. }
     ));
@@ -984,7 +992,7 @@ async fn a_receipt_says_how_its_agent_was_named_and_who_it_was() {
     assert_eq!(project, writer.project.as_ref().unwrap().id());
     assert_eq!(
         receipts.iter().map(|r| r.basis).collect::<Vec<_>>(),
-        vec![Basis::HookOwner, Basis::HookSession]
+        vec![Basis::HookOwner, Basis::HookOwner]
     );
     let author = receipts[0].author.as_ref().unwrap();
     assert_eq!(
@@ -1127,6 +1135,146 @@ async fn a_pruned_receipt_never_frees_its_author_to_review() {
     .expect("refused");
     assert_eq!(code, ErrorCode::Forbidden, "{message}");
     assert!(message.contains("committed to"), "{message}");
+}
+
+/// A cursor past every order SQLite can hold is the end of the ref, never a
+/// store fault; and a project whose last record is forgotten is still read
+/// by the id an earlier page named, its prefixes still checked.
+#[tokio::test]
+async fn a_receipts_read_survives_an_extreme_cursor_and_a_forgotten_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let daemon = open(&tmp);
+    let repo = tmp.path().join("repo");
+    repository(&repo, "feature/mine");
+    let writer = register(&daemon, "writer", &repo).await;
+    let project = writer.project.as_ref().unwrap().id();
+    std::fs::write(repo.join("work.txt"), "x\n").unwrap();
+    git_in(&repo, &["add", "."]);
+    assert!(matches!(
+        daemon
+            .handle(Request::Commit {
+                agent: writer.id.to_string(),
+                message: "mine".into(),
+                all: false,
+                push: false,
+            })
+            .await,
+        Response::Committed { .. }
+    ));
+    let read = |after: Option<u64>, project: Option<String>| Request::Authorship {
+        agent: Some(writer.id.to_string()),
+        project,
+        branch: "feature/mine".into(),
+        after,
+        limit: None,
+    };
+    let Response::Authorship { receipts, next, .. } =
+        daemon.handle(read(Some(u64::MAX), None)).await
+    else {
+        panic!("no answer")
+    };
+    assert!(receipts.is_empty() && next.is_none());
+    assert!(lock(&daemon.state).storage_error.is_none());
+    let Response::Authorship { receipts, .. } = daemon.handle(read(None, None)).await else {
+        panic!("no answer")
+    };
+    assert_eq!(receipts.len(), 1, "and the next read is served");
+    // The project's last record forgotten: read by its id and a prefix.
+    // Removal takes a record that is no longer live.
+    lock(&daemon.state)
+        .registry
+        .get_mut(&writer.id)
+        .unwrap()
+        .status = AgentStatus::Exited { code: Some(0) };
+    let removed = daemon
+        .handle(Request::Remove {
+            agent: writer.id.to_string(),
+        })
+        .await;
+    assert!(!matches!(removed, Response::Error { .. }), "{removed:?}");
+    assert!(lock(&daemon.state).registry.get(&writer.id).is_none());
+    for selector in [project.to_string(), project.as_str()[..8].to_owned()] {
+        let answer = daemon
+            .handle(Request::Authorship {
+                agent: Some(HUMAN.into()),
+                project: Some(selector.clone()),
+                branch: "feature/mine".into(),
+                after: None,
+                limit: None,
+            })
+            .await;
+        let Response::Authorship { receipts, .. } = answer else {
+            panic!("{selector}: {answer:?}")
+        };
+        assert_eq!(receipts.len(), 1, "{selector}");
+    }
+}
+
+/// A worktree replaced at the same path while a report's git read was in
+/// flight is another witness: the report is not kept, though the former
+/// creator is still live.
+#[tokio::test]
+async fn a_report_over_a_replaced_witness_is_not_kept() {
+    if hooks_path_everywhere() {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let daemon = open(&tmp);
+    let (cli, _) = logging_cli(tmp.path());
+    *lock(&daemon.witness_cli) = Some(cli);
+    let repo = tmp.path().join("repo");
+    repository(&repo, "main");
+    let former = register(&daemon, "former", &repo).await;
+    let (wt, _) = create_worktree(&daemon, &former.id, &tmp.path().join("wt"), "feature/w").await;
+    git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "one"]);
+    let Request::ReportCommit {
+        checkout,
+        token,
+        head,
+        ..
+    } = report_of(&wt)
+    else {
+        unreachable!()
+    };
+    let checkout = project::canonical(&checkout);
+    // What the report found before its git read.
+    let found = lock(&daemon.state).witnessed(&checkout, &token).unwrap();
+    // Replaced at the same path, for someone else, with another token.
+    let later = register(&daemon, "later", &repo).await;
+    let replaced = WitnessedWorktree {
+        agent: later.id.clone(),
+        token_hash: "another".into(),
+        created_at: Utc::now(),
+        ..found.clone()
+    };
+    let event = Event::new(
+        EventKind::WorktreeWitnessed {
+            agent: replaced.agent.clone(),
+            path: replaced.path.clone(),
+        },
+        replaced.created_at,
+    );
+    lock(&daemon.state)
+        .store
+        .witness_worktree(&replaced, &event)
+        .unwrap();
+    let authorship = Authorship {
+        project: found.project.clone(),
+        agent: former.id.clone(),
+        branch: "refs/heads/feature/w".into(),
+        commit: head,
+        witness: Witness::Hook,
+        basis: agentdocker_core::gate::Basis::HookOwner,
+        author: None,
+        at: Utc::now(),
+    };
+    let answer = lock(&daemon.state).record_report(&checkout, &token, &found, authorship);
+    assert!(
+        matches!(&answer, Response::Error { code: ErrorCode::Conflict, message, .. }
+            if message.contains("witness changed")),
+        "{answer:?}"
+    );
+    assert!(kept(&daemon, &former.id).is_empty());
 }
 
 #[tokio::test]
@@ -1306,6 +1454,17 @@ touch "$DONE"; sleep 60"#,
             .map(|a| (a.branch.as_str(), a.commit.as_str(), a.witness))
             .collect::<Vec<_>>(),
         [("refs/heads/feature/o", mine.as_str(), Witness::Hook)]
+    );
+    // Authenticated as sent from inside the owner's session: named by it.
+    let project = owner.project.as_ref().unwrap().id();
+    let receipts = lock(&daemon.state)
+        .store
+        .receipts(&project, "refs/heads/feature/o", 0, 10)
+        .unwrap()
+        .receipts;
+    assert_eq!(
+        receipts.iter().map(|r| r.basis).collect::<Vec<_>>(),
+        [agentdocker_core::gate::Basis::HookSession]
     );
     assert_eq!(
         std::fs::read_to_string(&marker).unwrap(),
