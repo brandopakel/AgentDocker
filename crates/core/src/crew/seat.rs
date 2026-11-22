@@ -339,8 +339,11 @@ impl Seat {
     /// cleaned. For a start that made a run, the run the record shows
     /// must be positively that run: with another run under the same
     /// agent id, or one that cannot be told, nothing is cleaned. A start
-    /// that never made a run has only what it reserved to clean (its
-    /// worktree), which is named by the reservation and needs no run.
+    /// that never made a run, being short of the running stage, has only
+    /// what it reserved to clean (its worktree), which is named by the
+    /// reservation and needs no run. A start at the running stage or
+    /// later with no run written down has no evidence of what is its
+    /// own, and nothing of it is cleaned.
     ///
     /// A start that is still live has no cleanup to admit: that is what
     /// keeps a cleanup and a release from both being let at the same
@@ -356,7 +359,13 @@ impl Seat {
                     && current.end.is_some()
                     && !current.released()
                     && !current.uncertain
-                    && (current.run.is_none() || evidence.run == Run::Same)
+                    && match &current.run {
+                        // A run was made: it must be the one seen now.
+                        Some(_) => evidence.run == Run::Same,
+                        // None was, and none could have been: only what
+                        // the reservation names is there to clean.
+                        None => current.stage < Stage::Running,
+                    }
             })
     }
 }
@@ -671,9 +680,15 @@ pub enum Recovered {
     /// set out for: another has taken its place. Nothing is written,
     /// nothing is installed, and the reply is dropped.
     Stale,
+    /// The owner's saved exit is this run's and is on the record
+    /// already: a commit that was made and not acknowledged. The owner
+    /// is acknowledged and its report retired, and no second exit is
+    /// written. (What the start itself still needs is `exit_owed`'s.)
+    Acknowledge,
     /// There is nothing for this reply to do: what it would have done
-    /// is done already (the exit is on the record), or is no longer
-    /// owed (the start ended and its cleanup is finished).
+    /// is done already (the run has ended and the reply is about a
+    /// live one), or is no longer owed (the start ended and its cleanup
+    /// is finished).
     Nothing,
     /// This daemon lost the authority to write while the recovery ran:
     /// the same, until it is given back.
@@ -705,6 +720,12 @@ pub fn recovered(
     if start.released() {
         return Recovered::Leave;
     }
+    // An ended start that owes nothing is done with: no reply, whatever
+    // it says, changes that or casts doubt on it, so nothing that waits
+    // behind it is held up by an answer that came late.
+    if start.end.is_some() && !start.cleanup_owed && !start.uncertain {
+        return Recovered::Nothing;
+    }
     // What is seen now must still be this start's own run: the registry
     // can have moved to another run under the same agent id while the
     // answer was on its way, and an answer about the first is no leave
@@ -712,36 +733,35 @@ pub fn recovered(
     if start.uncertain || answer == Reattached::Unidentified || !agrees(start, evidence) {
         return Recovered::Uncertain;
     }
-    let install = !evidence.relay;
-    if start.end.is_some() {
-        // An ended start: only what it still owes, and only while it
-        // owes it.
+    // The run has ended, by the record. An owner that still holds its
+    // exit report is acknowledged; a reply about a live run is about
+    // the past, and installs and stops nothing.
+    if evidence.record == Record::Ended {
         return match answer {
-            _ if !start.cleanup_owed => Recovered::Nothing,
-            Reattached::Exited => Recovered::CommitExit(Exit::AlreadyEnded),
-            Reattached::Unactivated => Recovered::EndUnactivated,
-            _ => Recovered::RelayStop { install },
+            Reattached::Exited => Recovered::Acknowledge,
+            _ => Recovered::Nothing,
         };
     }
-    if evidence.record == Record::Ended {
-        // The exit is on the record already, whatever the owner said
-        // before it was: committing it to the start is `exit_owed`'s.
-        return Recovered::Nothing;
+    // An owner that says the child was never let run, of a start whose
+    // activation is written down, contradicts what is proved: nothing
+    // is claimed, ended start or not.
+    if answer == Reattached::Unactivated && start.stage >= Stage::Activated {
+        return Recovered::Uncertain;
     }
+    let install = !evidence.relay;
+    let exit = match &start.end {
+        Some(_) => Exit::AlreadyEnded,
+        None if start.stopping => Exit::Cancelled,
+        None if start.stage == Stage::Complete => Exit::Ordinary,
+        None => Exit::Failed,
+    };
     match answer {
-        Reattached::Exited if start.stopping => Recovered::CommitExit(Exit::Cancelled),
-        Reattached::Exited if start.stage == Stage::Complete => {
-            Recovered::CommitExit(Exit::Ordinary)
-        }
-        Reattached::Exited => Recovered::CommitExit(Exit::Failed),
-        // An owner that says the child was never let run, of a start
-        // whose activation is already written down, contradicts what is
-        // proved: nothing is claimed.
-        Reattached::Unactivated if start.stage >= Stage::Activated => Recovered::Uncertain,
+        Reattached::Exited => Recovered::CommitExit(exit),
         Reattached::Unactivated => Recovered::EndUnactivated,
-        // A stop asked of the team, or an ordinary stop of the session
-        // that shows only on its record, wins over going on.
-        _ if start.stopping || evidence.record == Record::Stopping => {
+        // An ended start's live run is the cleanup it owes; a stop asked
+        // of the team, or an ordinary stop of the session that shows
+        // only on its record, wins over going on.
+        _ if start.end.is_some() || start.stopping || evidence.record == Record::Stopping => {
             Recovered::RelayStop { install }
         }
         _ => Recovered::Resume { install },
@@ -1879,8 +1899,19 @@ mod tests {
             recovered(Some(&failed), expected, Reattached::Exited, seen),
             Recovered::CommitExit(Exit::AlreadyEnded)
         );
+        // Never let run, said of an ended start whose activation is
+        // written down: as little believed as of a live one.
         assert_eq!(
             recovered(Some(&failed), expected, Reattached::Unactivated, seen),
+            Recovered::Uncertain
+        );
+        let mut early = start(Stage::Running);
+        early.end = Some(End::Failed {
+            why: "its owner went away".into(),
+        });
+        early.cleanup_owed = true;
+        assert_eq!(
+            recovered(Some(&seat(early)), expected, Reattached::Unactivated, seen),
             Recovered::EndUnactivated
         );
     }
@@ -2032,16 +2063,26 @@ mod tests {
                 Recovered::RelayStop { install: !relay }
             );
         }
-        // Overtaken by an exit already on the record: nothing for the
-        // reply to do; writing the exit to the start is the next
-        // request's, as the kind of exit it is.
-        for answer in answers {
+        // Overtaken by an exit already on the record: a reply about a
+        // live run does nothing; an owner still holding the exit's
+        // report is acknowledged. Writing the exit to the start is the
+        // next request's, as the kind of exit it is.
+        for answer in [Reattached::Activated, Reattached::Unactivated] {
             assert_eq!(
                 recovered(Some(&going), expected, answer, orphan(Record::Ended)),
                 Recovered::Nothing,
                 "{answer:?}"
             );
         }
+        assert_eq!(
+            recovered(
+                Some(&going),
+                expected,
+                Reattached::Exited,
+                orphan(Record::Ended)
+            ),
+            Recovered::Acknowledge
+        );
         assert_eq!(
             exit_owed(Some(&going), orphan(Record::Ended)),
             Some(Exit::Failed)
@@ -2251,6 +2292,240 @@ mod tests {
         ] {
             assert_eq!(release(Some(&unresolved), evidence), Err(RELEASE_STARTING));
         }
+    }
+
+    /// An ended start is held to the same evidence as a live one. With
+    /// a cleanup still owed and its run still running, a reply that the
+    /// run lives stops it: that is the cleanup. Once the registry shows
+    /// that run ended, the same late reply stops and installs nothing.
+    /// A reply that the run was never let run is not believed of a start
+    /// whose activation is written. And an ended start that owes
+    /// nothing is done with: a late reply that could not identify its
+    /// owner casts no doubt on it, and what waits behind it is promoted.
+    #[test]
+    fn an_ended_start_is_held_to_what_is_seen_and_what_it_still_owes() {
+        let id = StartId::from("start-one");
+        let run = RunId::from("run-one");
+        let expected = Expected {
+            start: &id,
+            run: &run,
+        };
+        let mut failed = start(Stage::Activated);
+        failed.end = Some(End::Failed {
+            why: "its cards could not be read".into(),
+        });
+        failed.cleanup_owed = true;
+        let owing = seat(failed.clone());
+        // Genuinely owing and still running.
+        for relay in [true, false] {
+            let running = Evidence {
+                relay,
+                ..orphan(Record::Running)
+            };
+            assert_eq!(
+                recovered(Some(&owing), expected, Reattached::Activated, running),
+                Recovered::RelayStop { install: !relay }
+            );
+        }
+        // The matching exit reached the record before the old answer.
+        let ended = orphan(Record::Ended);
+        assert_eq!(
+            recovered(Some(&owing), expected, Reattached::Activated, ended),
+            Recovered::Nothing,
+            "nothing is installed on a run that has ended"
+        );
+        assert_eq!(
+            recovered(Some(&owing), expected, Reattached::Unactivated, ended),
+            Recovered::Nothing
+        );
+        // Contradicting durable activation.
+        assert_eq!(
+            recovered(
+                Some(&owing),
+                expected,
+                Reattached::Unactivated,
+                orphan(Record::Running)
+            ),
+            Recovered::Uncertain
+        );
+        // Settled: nothing owed. No reply does anything or casts doubt.
+        failed.cleanup_owed = false;
+        let mut settled = seat(failed);
+        settled.wanted = Some(wanted(2));
+        for answer in [
+            Reattached::Activated,
+            Reattached::Unactivated,
+            Reattached::Exited,
+            Reattached::Unidentified,
+        ] {
+            for record in [Record::Running, Record::Ended] {
+                assert_eq!(
+                    recovered(Some(&settled), expected, answer, orphan(record)),
+                    Recovered::Nothing,
+                    "{answer:?} {record:?}"
+                );
+            }
+        }
+        assert_eq!(
+            admit(Some(&settled), orphan(Record::Ended)),
+            Admit::Promote,
+            "what waits is not held up"
+        );
+        // While it still owes, an owner that cannot be identified is a
+        // reason for doubt, as for a live start.
+        assert_eq!(
+            recovered(
+                Some(&owing),
+                expected,
+                Reattached::Unidentified,
+                orphan(Record::Running)
+            ),
+            Recovered::Uncertain
+        );
+    }
+
+    /// An exit is committed once and acknowledged for as long as its
+    /// owner holds the report. The owner says the run exited: the exit
+    /// is committed. The daemon is interrupted before it acknowledges;
+    /// on the retry the same owner says the same, and the record already
+    /// shows it: the owner is acknowledged and its report retired, with
+    /// no second exit. A commit that was refused left the record as it
+    /// was, and the retry commits. The same report offered against
+    /// another run under the agent's id is not acknowledged at all.
+    #[test]
+    fn a_saved_exit_is_committed_once_and_acknowledged_until_it_is_retired() {
+        let id = StartId::from("start-one");
+        let run = RunId::from("run-one");
+        let expected = Expected {
+            start: &id,
+            run: &run,
+        };
+        for (stage, exit) in [
+            (Stage::Activated, Exit::Failed),
+            (Stage::Complete, Exit::Ordinary),
+        ] {
+            let seat = seat(start(stage));
+            let before = orphan(Record::Running);
+            assert_eq!(
+                recovered(Some(&seat), expected, Reattached::Exited, before),
+                Recovered::CommitExit(exit)
+            );
+            // The commit was refused: nothing changed, and the retry is
+            // the same commit, not an acknowledgement of one never made.
+            assert_eq!(
+                recovered(Some(&seat), expected, Reattached::Exited, before),
+                Recovered::CommitExit(exit)
+            );
+            // The commit was made and the acknowledgement was not.
+            let after = orphan(Record::Ended);
+            assert_eq!(
+                recovered(Some(&seat), expected, Reattached::Exited, after),
+                Recovered::Acknowledge,
+                "{stage:?}: acknowledged, not committed again"
+            );
+            // And again, as often as the owner still asks.
+            assert_eq!(
+                recovered(Some(&seat), expected, Reattached::Exited, after),
+                Recovered::Acknowledge
+            );
+            // The start's own end is the next request's to write.
+            assert_eq!(exit_owed(Some(&seat), after), Some(exit));
+            // Another run under the same agent id: not this report's.
+            for now in [Run::Other, Run::Unproven] {
+                assert_eq!(
+                    recovered(
+                        Some(&seat),
+                        expected,
+                        Reattached::Exited,
+                        Evidence { run: now, ..after }
+                    ),
+                    Recovered::Uncertain,
+                    "{now:?}"
+                );
+            }
+            // A reply about a live run, to the same ended record.
+            assert_eq!(
+                recovered(Some(&seat), expected, Reattached::Activated, after),
+                Recovered::Nothing
+            );
+        }
+        // An ended start that still owes its cleanup acknowledges the
+        // same way.
+        let mut ended = start(Stage::Activated);
+        ended.end = Some(End::Cancelled {
+            why: "stopped".into(),
+        });
+        ended.cleanup_owed = true;
+        let ended = seat(ended);
+        assert_eq!(
+            recovered(
+                Some(&ended),
+                expected,
+                Reattached::Exited,
+                orphan(Record::Running)
+            ),
+            Recovered::CommitExit(Exit::AlreadyEnded)
+        );
+        assert_eq!(
+            recovered(
+                Some(&ended),
+                expected,
+                Reattached::Exited,
+                orphan(Record::Ended)
+            ),
+            Recovered::Acknowledge
+        );
+    }
+
+    /// A start with no run written down is cleaned by its reservation
+    /// only where it could not have made one. A later-stage start that
+    /// was stored and reads back with its run missing has no evidence
+    /// of what is its own, and nothing of it is cleaned, whatever the
+    /// registry shows.
+    #[test]
+    fn a_missing_run_is_a_reservation_only_before_running() {
+        let id = StartId::from("start-one");
+        let cancelled = End::Cancelled {
+            why: "stopped".into(),
+        };
+        for stage in STAGES {
+            let mut ended = start(stage);
+            ended.end = Some(cancelled.clone());
+            ended.cleanup_owed = true;
+            // As stored by something that never wrote its run.
+            let mut stored = serde_json::to_value(&ended).unwrap();
+            stored.as_object_mut().unwrap().remove("run");
+            let runless: Start = serde_json::from_value(stored).unwrap();
+            assert_eq!(runless.run, None);
+            let seat = seat(runless);
+            for now in [Run::Same, Run::Other, Run::Unproven] {
+                for record in [Record::None, Record::Running, Record::Ended] {
+                    let evidence = Evidence {
+                        run: now,
+                        ..orphan(record)
+                    };
+                    assert_eq!(
+                        seat.may_clean(&id, evidence),
+                        stage < Stage::Running,
+                        "{stage:?} {now:?} {record:?}"
+                    );
+                }
+            }
+        }
+        // With its run written, a later-stage start is cleaned on a
+        // positive match and not otherwise.
+        let mut ended = start(Stage::Complete);
+        ended.end = Some(cancelled);
+        ended.cleanup_owed = true;
+        let seat = seat(ended);
+        assert!(seat.may_clean(&id, orphan(Record::Ended)));
+        assert!(!seat.may_clean(
+            &id,
+            Evidence {
+                run: Run::Other,
+                ..orphan(Record::Ended)
+            }
+        ));
     }
 
     /// A release is given only for a run that is this start's, let run
