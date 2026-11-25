@@ -14,6 +14,7 @@
 //! name a person reads. Taking `writer` out and adding another `writer`
 //! makes a new member: nothing of the old one follows the name.
 
+pub mod earlier;
 pub mod seat;
 
 use std::collections::BTreeSet;
