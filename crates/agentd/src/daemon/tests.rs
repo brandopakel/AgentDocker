@@ -16469,3 +16469,65 @@ fn a_request_through_the_dispatcher_fits_a_small_stack() {
         .join()
         .unwrap();
 }
+
+/// Every request the dispatch sends to a route has its arm there, and every
+/// arm is sent: the match over the routes names every variant, which the
+/// compiler checks, but a route answers one it has no arm for with an
+/// internal error, which it does not.
+#[test]
+fn every_request_is_sent_to_the_route_that_answers_it() {
+    fn names(text: &str) -> Vec<String> {
+        text.split("Request::")
+            .skip(1)
+            .map(|rest| {
+                rest.chars()
+                    .take_while(|c| c.is_ascii_alphanumeric())
+                    .collect()
+            })
+            .collect()
+    }
+    let source = include_str!("../daemon.rs");
+    let dispatch = source
+        .split_once("    async fn handle_healthy(")
+        .unwrap()
+        .1
+        .split_once("        match request {")
+        .unwrap()
+        .1
+        .split_once("\n    }\n")
+        .unwrap()
+        .0;
+    let mut routes = 0;
+    let mut sent = 0;
+    for part in dispatch.split("request @ (").skip(1) {
+        let (patterns, call) = part.split_once("self.route_").unwrap();
+        let number: String = call.chars().take_while(char::is_ascii_digit).collect();
+        let mut dispatched = names(patterns);
+        let body = source
+            .split_once(&format!("    async fn route_{number}("))
+            .unwrap()
+            .1
+            .split_once("        match request {")
+            .unwrap()
+            .1
+            .split_once("\n    }\n")
+            .unwrap()
+            .0;
+        // An arm's patterns stand at the match's own indentation; what it
+        // does is deeper, or after its arrow.
+        let mut answered: Vec<String> = body
+            .lines()
+            .filter(|line| {
+                line.strip_prefix("            ")
+                    .is_some_and(|rest| rest.starts_with("Request::") || rest.starts_with("| "))
+            })
+            .flat_map(|line| names(line.split("=>").next().unwrap()))
+            .collect();
+        dispatched.sort();
+        answered.sort();
+        assert_eq!(dispatched, answered, "route {number}");
+        routes += 1;
+        sent += dispatched.len();
+    }
+    assert!(routes > 1 && sent > 100, "{routes} routes, {sent} requests");
+}

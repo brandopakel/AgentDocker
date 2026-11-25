@@ -907,9 +907,6 @@ fn a_chained_copy_of_ours_never_loops() {
     );
 }
 
-/// The daemon's own commit in a witnessed worktree runs the hook too; the
-/// report it sends while the commit is in flight records nothing, and the
-/// commit path records the commit once, as the agent's that asked.
 fn read_authorship(agent: &AgentId, branch: &str) -> Request {
     Request::Authorship {
         agent: Some(agent.to_string()),
@@ -1292,6 +1289,9 @@ async fn a_report_over_a_replaced_witness_is_not_kept() {
     assert!(kept(&daemon, &former.id).is_empty());
 }
 
+/// The daemon's own commit in a witnessed worktree runs the hook too; the
+/// report it sends while the commit is in flight records nothing, and the
+/// commit path records the commit once, as the agent's that asked.
 #[tokio::test]
 async fn the_daemon_s_own_commit_in_a_witnessed_worktree_is_recorded_once() {
     if hooks_path_everywhere() {

@@ -1,10 +1,10 @@
 //! Where `agentdocker authorship` and `agentdocker verdicts` read a pull
 //! request number: in the repository of the project read, as the daemon
-//! names that project, whatever the working directory or `GH_REPO` say.
-//! The daemon here is a fake that records each request and answers from a
-//! list; `gh` is a fake that reads the pull request from `pr.json` in the
-//! directory it runs in, and answers a branch of its own when `GH_REPO`
-//! reaches it.
+//! names that project, whatever the working directory, `GH_REPO` or Git's
+//! own variables say. The daemon here is a fake that records each request
+//! and answers from a list; `gh` is a fake that reads the pull request from
+//! `pr.json` in the directory it runs in, and answers a branch of its own
+//! when `GH_REPO`, `GIT_DIR` or `GIT_WORK_TREE` reaches it.
 #![cfg(unix)]
 
 use std::collections::BTreeMap;
@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use agentdocker_core::gate::{AuthorshipCoverage, Unreceipted};
 use agentdocker_core::project::{ProjectRef, ProjectSource};
-use agentdocker_core::{AgentRecord, AgentSpec, ProjectId, Response};
+use agentdocker_core::{AgentRecord, AgentSpec, AgentStatus, ProjectId, Response};
 use serde_json::{Value, json};
 
 /// Answer each request in turn from `answers`, and hand back the requests
@@ -58,8 +58,13 @@ fn serve(socket: &Path, answers: Vec<Value>) -> std::thread::JoinHandle<Vec<Valu
     })
 }
 
+/// Git in `dir`, in no repository the environment names.
 fn git(dir: &Path, args: &[&str]) {
-    let status = Command::new("git")
+    let mut command = Command::new("git");
+    for name in agentdocker_host::project::REPOSITORY_ENV {
+        command.env_remove(name);
+    }
+    let status = command
         .args(["-c", "user.email=t@example.invalid", "-c", "user.name=T"])
         .args(["-c", "commit.gpgsign=false"])
         .args(args)
@@ -69,18 +74,36 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(status.success(), "git {args:?}");
 }
 
-/// A committed repository whose pull request 7 is `branch`; its project's
-/// id, its repository's fingerprint, as the daemon gives it.
-fn repository(dir: &Path, branch: &str) -> String {
-    std::fs::create_dir_all(dir).unwrap();
-    git(dir, &["init", "-q", "-b", "main"]);
-    git(dir, &["commit", "-q", "--allow-empty", "-m", "first"]);
+/// What pull request 7 is in the repository at `dir`.
+fn pull_request(dir: &Path, branch: &str) {
     std::fs::write(
         dir.join("pr.json"),
         format!("{{\"headRefName\": \"{branch}\"}}"),
     )
     .unwrap();
+}
+
+fn fingerprint(dir: &Path) -> String {
     agentdocker_host::project::fingerprint(dir, Duration::from_secs(10)).expect("a fingerprint")
+}
+
+/// A committed repository whose pull request 7 is `branch`; its project's
+/// id, its repository's fingerprint, as the daemon gives it. Its root
+/// commit is its own: two that differed in nothing, made within a second of
+/// each other, would be one commit and so one project.
+fn repository(dir: &Path, branch: &str) -> String {
+    std::fs::create_dir_all(dir).unwrap();
+    git(dir, &["init", "-q", "-b", "main"]);
+    git(dir, &["commit", "-q", "--allow-empty", "-m", branch]);
+    pull_request(dir, branch);
+    fingerprint(dir)
+}
+
+/// Another clone of `from`, whose own pull request 7 is `branch`.
+fn clone(from: &Path, to: &Path, branch: &str) {
+    let (from, parent) = (from.to_str().unwrap(), to.parent().unwrap());
+    git(parent, &["clone", "-q", from, to.to_str().unwrap()]);
+    pull_request(to, branch);
 }
 
 /// An agent of the project at `root`, as the daemon records it.
@@ -126,38 +149,47 @@ fn receipts(project: &str) -> Value {
 }
 
 struct Setting {
-    _tmp: tempfile::TempDir,
+    root: PathBuf,
     here: PathBuf,
+    here_id: String,
     there: PathBuf,
     there_id: String,
     bin: PathBuf,
     sockets: PathBuf,
+    _tmp: tempfile::TempDir,
 }
 
-/// Two committed repositories whose pull request 7 names different
-/// branches, a working directory in the first, and the fake `gh`.
+/// Two projects whose pull request 7 names different branches, and the
+/// fake `gh`.
 fn setting() -> Setting {
     let tmp = tempfile::Builder::new()
         .prefix("ad-pr-")
         .tempdir_in("/tmp")
         .unwrap();
-    let here = tmp.path().join("here");
-    let there = tmp.path().join("there");
-    repository(&here, "feature/a");
+    let root = tmp.path().canonicalize().unwrap();
+    let here = root.join("here");
+    let there = root.join("there");
+    let here_id = repository(&here, "feature/a");
     let there_id = repository(&there, "feature/b");
-    let bin = tmp.path().join("bin");
+    assert_ne!(here_id, there_id, "two projects");
+    let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let gh = bin.join("gh");
     std::fs::write(
         &gh,
-        "#!/bin/sh\n[ -n \"$GH_REPO\" ] && { echo '{\"headRefName\": \"from-gh-repo\"}'; exit 0; }\ncat \"$PWD/pr.json\"\n",
+        "#!/bin/sh\n\
+         [ -n \"$GH_REPO\" ] && { echo '{\"headRefName\": \"from-gh-repo\"}'; exit 0; }\n\
+         [ -n \"$GIT_DIR$GIT_WORK_TREE\" ] && { echo '{\"headRefName\": \"from-git-env\"}'; exit 0; }\n\
+         cat \"$PWD/pr.json\"\n",
     )
     .unwrap();
     std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let sockets = tmp.path().join("s");
+    let sockets = root.join("s");
     std::fs::create_dir_all(&sockets).unwrap();
     Setting {
+        root,
         here,
+        here_id,
         there,
         there_id,
         bin,
@@ -166,10 +198,17 @@ fn setting() -> Setting {
     }
 }
 
-/// The command from `setting.here`, its `GH_REPO` naming another
-/// repository, the fake `gh` first on its `PATH`, against a fake daemon
-/// answering `answers`: its output and the requests it sent.
-fn run(setting: &Setting, name: &str, args: &[&str], answers: Vec<Value>) -> (Output, Vec<Value>) {
+/// The command run in `cwd`, as a hook might run it: `GH_REPO` naming
+/// another repository and `GIT_DIR` the one it is not in, the fake `gh`
+/// first on its `PATH`, against a fake daemon answering `answers`. Its
+/// output and the requests it sent.
+fn run(
+    setting: &Setting,
+    name: &str,
+    cwd: &Path,
+    args: &[&str],
+    answers: Vec<Value>,
+) -> (Output, Vec<Value>) {
     let socket = setting.sockets.join(format!("{name}.sock"));
     let daemon = serve(&socket, answers);
     let mut command = Command::new(env!("CARGO_BIN_EXE_agentdocker"));
@@ -183,11 +222,17 @@ fn run(setting: &Setting, name: &str, args: &[&str], answers: Vec<Value>) -> (Ou
         setting.bin.display(),
         std::env::var("PATH").unwrap_or_default()
     );
+    let elsewhere = if cwd.starts_with(&setting.there) {
+        &setting.here
+    } else {
+        &setting.there
+    };
     let output = command
         .args(args)
-        .current_dir(&setting.here)
+        .current_dir(cwd)
         .env("PATH", path)
         .env("GH_REPO", "someone/elsewhere")
+        .env("GIT_DIR", elsewhere.join(".git"))
         .env("AGENTDOCKER_HOME", setting.sockets.join(name))
         .env("AGENTDOCKER_SOCKET", &socket)
         .env("AGENTDOCKER_NO_AUTOSTART", "1")
@@ -196,9 +241,33 @@ fn run(setting: &Setting, name: &str, args: &[&str], answers: Vec<Value>) -> (Ou
     (output, daemon.join().expect("the fake daemon served"))
 }
 
+fn agents(records: Vec<AgentRecord>) -> Value {
+    answer(Response::Agents {
+        agents: records,
+        aliases: BTreeMap::new(),
+    })
+}
+
+fn ended(mut record: AgentRecord) -> AgentRecord {
+    record.status = AgentStatus::Exited { code: Some(0) };
+    record
+}
+
+fn named(project: &str) -> [&str; 7] {
+    [
+        "authorship",
+        "7",
+        "--as",
+        "agent-b",
+        "--project",
+        project,
+        "--json",
+    ]
+}
+
 /// An agent of the other project, asking from this checkout with no
 /// project named: its own project's pull request and receipts, for both
-/// commands, never this checkout's and never `GH_REPO`'s.
+/// commands, never this checkout's, `GH_REPO`'s or `GIT_DIR`'s.
 #[test]
 fn an_agent_s_pull_request_is_read_in_its_own_project() {
     let setting = setting();
@@ -218,6 +287,7 @@ fn an_agent_s_pull_request_is_read_in_its_own_project() {
         let (output, requests) = run(
             &setting,
             command,
+            &setting.here,
             &[command, "7", "--as", "agent-b", "--json"],
             vec![agent.clone(), read],
         );
@@ -232,6 +302,41 @@ fn an_agent_s_pull_request_is_read_in_its_own_project() {
             "{command}"
         );
     }
+    // Its root now holds another repository: nothing is read there.
+    let moved = answer(Response::Agent {
+        agent: record(&setting.here, &setting.there_id),
+    });
+    let (output, requests) = run(
+        &setting,
+        "moved",
+        &setting.there,
+        &["authorship", "7", "--as", "agent-b", "--json"],
+        vec![moved],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(requests.len(), 1, "no read: {requests:?}");
+}
+
+/// The person, with no project named: this checkout's project and pull
+/// request, whatever repository the environment names.
+#[test]
+fn the_person_s_pull_request_is_read_in_this_checkout() {
+    let setting = setting();
+    // Below its root, where Git, told of another repository, would answer
+    // the directory itself.
+    let below = setting.here.join("below");
+    std::fs::create_dir_all(&below).unwrap();
+    let (output, requests) = run(
+        &setting,
+        "person",
+        &below,
+        &["authorship", "7", "--as", "user", "--json"],
+        vec![receipts(&setting.here_id)],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(requests.len(), 1, "{requests:?}");
+    assert_eq!(requests[0]["branch"], "feature/a");
+    assert_eq!(requests[0]["project"], setting.here.to_str().unwrap());
 }
 
 /// A project named by its full id or a unique prefix is the daemon's to
@@ -240,24 +345,14 @@ fn an_agent_s_pull_request_is_read_in_its_own_project() {
 #[test]
 fn a_named_project_s_pull_request_is_read_in_its_root() {
     let setting = setting();
-    let agents = answer(Response::Agents {
-        agents: vec![record(&setting.there, &setting.there_id)],
-        aliases: BTreeMap::new(),
-    });
+    let listed = agents(vec![record(&setting.there, &setting.there_id)]);
     for selector in [setting.there_id.clone(), setting.there_id[..8].to_owned()] {
         let (output, requests) = run(
             &setting,
             &format!("named-{}", selector.len()),
-            &[
-                "authorship",
-                "7",
-                "--as",
-                "agent-b",
-                "--project",
-                &selector,
-                "--json",
-            ],
-            vec![agents.clone(), receipts(&setting.there_id)],
+            &setting.here,
+            &named(&selector),
+            vec![listed.clone(), receipts(&setting.there_id)],
         );
         assert!(output.status.success(), "{selector}: {output:?}");
         assert_eq!(requests[0]["op"], "list", "{requests:?}");
@@ -268,15 +363,8 @@ fn a_named_project_s_pull_request_is_read_in_its_root() {
     let (output, requests) = run(
         &setting,
         "ambiguous",
-        &[
-            "authorship",
-            "7",
-            "--as",
-            "agent-b",
-            "--project",
-            "a",
-            "--json",
-        ],
+        &setting.here,
+        &named("a"),
         vec![json!({
             "type": "error",
             "code": "ambiguous",
@@ -289,4 +377,87 @@ fn a_named_project_s_pull_request_is_read_in_its_root() {
         String::from_utf8_lossy(&output.stderr).contains("ambiguous"),
         "{output:?}"
     );
+}
+
+/// Clones of one repository are one project, with a pull request 7 of its
+/// own in each. From one of them its own is read, whichever record is
+/// listed first; from outside both, neither is guessed and no read is sent.
+#[test]
+fn a_project_of_several_clones_is_read_in_the_caller_s_or_not_at_all() {
+    let setting = setting();
+    let fork = setting.root.join("a-fork");
+    clone(&setting.there, &fork, "feature/of-the-fork");
+    assert_eq!(fingerprint(&fork), setting.there_id, "one project");
+    let listed = agents(vec![
+        ended(record(&fork, &setting.there_id)),
+        record(&setting.there, &setting.there_id),
+    ]);
+    for (cwd, branch) in [
+        (&setting.there, "feature/b"),
+        (&fork, "feature/of-the-fork"),
+    ] {
+        let (output, requests) = run(
+            &setting,
+            branch.rsplit('/').next().unwrap(),
+            cwd,
+            &named(&setting.there_id),
+            vec![listed.clone(), receipts(&setting.there_id)],
+        );
+        assert!(output.status.success(), "{branch}: {output:?}");
+        assert_eq!(requests[1]["branch"], branch);
+        assert_eq!(requests[1]["project"], setting.there_id.as_str());
+    }
+    let (output, requests) = run(
+        &setting,
+        "outside",
+        &setting.here,
+        &named(&setting.there_id),
+        vec![listed],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(requests.len(), 1, "no read: {requests:?}");
+    let said = String::from_utf8_lossy(&output.stderr).into_owned();
+    for expected in [
+        fork.to_str().unwrap(),
+        setting.there.to_str().unwrap(),
+        "--project",
+    ] {
+        assert!(said.contains(expected), "{expected} in {said}");
+    }
+}
+
+/// A root a record gives that is gone, or that now holds another
+/// repository, is not the project's: the one that still is, is read.
+#[test]
+fn a_root_that_is_no_longer_the_project_s_is_passed_over() {
+    let setting = setting();
+    let gone = setting.root.join("a-gone");
+    let taken = setting.root.join("a-taken");
+    repository(&taken, "feature/of-another");
+    for (name, stale) in [("gone", &gone), ("taken", &taken)] {
+        let (output, requests) = run(
+            &setting,
+            name,
+            &setting.here,
+            &named(&setting.there_id),
+            vec![
+                agents(vec![
+                    ended(record(stale, &setting.there_id)),
+                    record(&setting.there, &setting.there_id),
+                ]),
+                receipts(&setting.there_id),
+            ],
+        );
+        assert!(output.status.success(), "{name}: {output:?}");
+        assert_eq!(requests[1]["branch"], "feature/b", "{name}");
+    }
+    let (output, requests) = run(
+        &setting,
+        "none-left",
+        &setting.here,
+        &named(&setting.there_id),
+        vec![agents(vec![ended(record(&gone, &setting.there_id))])],
+    );
+    assert!(!output.status.success(), "{output:?}");
+    assert_eq!(requests.len(), 1, "no read: {requests:?}");
 }

@@ -603,9 +603,10 @@ impl Daemon {
 
     /// A commit a witnessed worktree's hook reported: the token must be the
     /// worktree's, HEAD and the ref it is on must be what git says now, and
-    /// it is recorded as `agent`'s — whom the socket's authentication found
-    /// the sender's session to be — or, without that, as the worktree's
-    /// first owner. A detached HEAD, or a commit the daemon is making
+    /// it is recorded as `session`'s — whom the socket's authentication
+    /// found the sender's session to be — else as `agent`'s, an owner of
+    /// the worktree a caller of the daemon's own names, checked as one,
+    /// else as its first owner's. A detached HEAD, or a commit the daemon is making
     /// itself (its `commit` records that), records nothing.
     pub(super) async fn report_commit(
         &self,

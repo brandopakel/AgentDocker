@@ -179,11 +179,38 @@ pub(crate) fn resolve(base: &Path, path: &str) -> PathBuf {
     }
 }
 
+/// The variables that say which repository Git works in, as
+/// `git rev-parse --local-env-vars` lists them. Git exports some of them to
+/// its hooks, and one inherited takes precedence over the directory a
+/// command runs in: what is asked of a directory is asked without them.
+pub const REPOSITORY_ENV: [&str; 15] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_COUNT",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
 /// The repository's oldest root commit — the smallest hash when unrelated
 /// histories were merged, so the answer is stable. `None` when `git` is
-/// missing, the repository has no commits, or `timeout` passes first.
+/// missing, the repository has no commits, or `timeout` passes first. It is
+/// `root`'s own, whatever repository the environment names.
 pub fn fingerprint(root: &Path, timeout: Duration) -> Option<String> {
-    let mut child = Command::new("git")
+    let mut command = Command::new("git");
+    for name in REPOSITORY_ENV {
+        command.env_remove(name);
+    }
+    let mut child = command
         .arg("-C")
         .arg(root)
         .args(["rev-list", "--max-parents=0", "HEAD"])

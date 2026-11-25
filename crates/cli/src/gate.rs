@@ -154,12 +154,27 @@ fn parse_findings(text: &str) -> Result<Findings, String> {
 }
 
 fn tool(argv: &[&str]) -> Result<String> {
-    tool_in(&std::env::current_dir()?, argv)
+    tool_with(&std::env::current_dir()?, argv, &[])
 }
 
-fn tool_in(dir: &Path, argv: &[&str]) -> Result<String> {
+/// What `argv` says of the repository `dir` is in, whatever repository the
+/// environment names: Git's own variables and `GH_REPO` are not inherited.
+fn tool_of(dir: &Path, argv: &[&str]) -> Result<String> {
+    let removed: Vec<(&str, Option<&std::ffi::OsStr>)> = agentdocker_host::project::REPOSITORY_ENV
+        .into_iter()
+        .chain(["GH_REPO"])
+        .map(|name| (name, None))
+        .collect();
+    tool_with(dir, argv, &removed)
+}
+
+fn tool_with(
+    dir: &Path,
+    argv: &[&str],
+    environment: &[(&str, Option<&std::ffi::OsStr>)],
+) -> Result<String> {
     let argv: Vec<String> = argv.iter().map(|&a| a.to_owned()).collect();
-    let output = agentdocker_host::command::run(dir, &argv, TOOL_TIMEOUT)
+    let output = agentdocker_host::command::run_with_env(dir, &argv, TOOL_TIMEOUT, environment)
         .with_context(|| format!("cannot run {}", argv[0]))?;
     ensure!(
         output.success,
@@ -182,13 +197,24 @@ pub(crate) fn commit(reference: &str) -> Result<String> {
     .with_context(|| format!("{reference} is not a commit this checkout knows"))
 }
 
-/// This checkout's root, for a project when none is named.
+/// This checkout's root, for a project when none is named: of the
+/// directory this runs in, whatever repository the environment names.
 fn checkout_root() -> Result<PathBuf> {
-    Ok(PathBuf::from(tool(&[
-        "git",
-        "rev-parse",
-        "--show-toplevel",
-    ])?))
+    Ok(PathBuf::from(tool_of(
+        &std::env::current_dir()?,
+        &["git", "rev-parse", "--show-toplevel"],
+    )?))
+}
+
+/// The project `root` is in as it is now, by the daemon's own rule (the
+/// repository's oldest root commit, else the root's path) and read afresh:
+/// a path may hold another repository than when a record named it.
+fn project_now(root: &Path) -> agentdocker_core::ProjectId {
+    let mut project = agentdocker_host::project::discover(root);
+    if project.source == agentdocker_core::ProjectSource::Git {
+        project.fingerprint = agentdocker_host::project::fingerprint(&project.root, TOOL_TIMEOUT);
+    }
+    project.id()
 }
 
 /// The project to send: the one named, else none when an agent asks (the
@@ -230,8 +256,10 @@ fn pull_request(target: &str) -> Option<u64> {
 /// the root its number is read in. A number names another change in every
 /// repository, so the two are one: a project named by its root (an
 /// absolute path) is read there; one named by id or prefix is the daemon's
-/// to resolve, and read in the root its records give; with none named, the
-/// asking agent's own project, or for the person this checkout.
+/// to resolve, and read in this checkout when it is the project's, else in
+/// the one root its records give that still is (clones share an id, so
+/// there may be several, and none is guessed); with none named, the asking
+/// agent's own project, or for the person this checkout.
 async fn pr_project(
     client: &Client,
     named: Option<String>,
@@ -240,7 +268,7 @@ async fn pr_project(
     use agentdocker_core::HUMAN_RUNTIME;
     let unknown = |project: &str| {
         format!(
-            "no record here gives project {project}'s repository, where the pull request number would be read: name the branch, or pass the project's root as --project"
+            "no record here gives project {project}'s repository as it is now, where the pull request number would be read: name the branch, or pass the project's root as --project"
         )
     };
     match named {
@@ -256,11 +284,33 @@ async fn pr_project(
             else {
                 bail!("the daemon did not resolve project {selector}");
             };
-            let project = agents
-                .iter()
-                .find_map(|record| record.project.clone())
-                .with_context(|| unknown(&selector))?;
-            Ok((project.root.clone(), project.id().to_string()))
+            let named: Vec<agentdocker_core::ProjectRef> = agents
+                .into_iter()
+                .filter_map(|record| record.project)
+                .collect();
+            let id = named.first().with_context(|| unknown(&selector))?.id();
+            if let Ok(here) = checkout_root()
+                && project_now(&here) == id
+            {
+                return Ok((here, id.to_string()));
+            }
+            let roots: std::collections::BTreeSet<PathBuf> =
+                named.into_iter().map(|project| project.root).collect();
+            let mut roots: Vec<PathBuf> = roots
+                .into_iter()
+                .filter(|root| root.is_dir() && project_now(root) == id)
+                .collect();
+            ensure!(
+                roots.len() < 2,
+                "project {id} has several repositories here, and a pull request number names another change in each: pass one as --project, run this from one, or name the branch ({})",
+                roots
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let root = roots.pop().with_context(|| unknown(&selector))?;
+            Ok((root, id.to_string()))
         }
         None => {
             let record = if agent == HUMAN {
@@ -279,7 +329,12 @@ async fn pr_project(
             match record.filter(|record| record.spec.runtime != HUMAN_RUNTIME) {
                 Some(record) => {
                     let project = record.project.with_context(|| unknown("of the asker"))?;
-                    Ok((project.root.clone(), project.id().to_string()))
+                    let id = project.id();
+                    ensure!(
+                        project.root.is_dir() && project_now(&project.root) == id,
+                        unknown(id.as_str())
+                    );
+                    Ok((project.root, id.to_string()))
                 }
                 None => {
                     let here = checkout_root()?;
@@ -292,15 +347,12 @@ async fn pr_project(
 }
 
 /// The branch pull request `number` is of, as `gh` reads it in `dir`, the
-/// repository chosen for the read: `GH_REPO`, which would read it in
-/// another, is unset for it.
+/// repository chosen for the read, whatever `GH_REPO` or Git's own
+/// variables name.
 fn pr_branch(gh: &str, dir: &Path, number: u64) -> Result<String> {
-    let found = tool_in(
+    let found = tool_of(
         dir,
         &[
-            "env",
-            "-u",
-            "GH_REPO",
             gh,
             "pr",
             "view",
