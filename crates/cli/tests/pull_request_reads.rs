@@ -13,6 +13,8 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use agentdocker_core::gate::{AuthorshipCoverage, Unreceipted};
@@ -20,9 +22,16 @@ use agentdocker_core::project::{ProjectRef, ProjectSource};
 use agentdocker_core::{AgentRecord, AgentSpec, AgentStatus, ProjectId, Response};
 use serde_json::{Value, json};
 
-/// Answer each request in turn from `answers`, and hand back the requests
-/// as they were read; every wait is bounded.
-fn serve(socket: &Path, answers: Vec<Value>) -> std::thread::JoinHandle<Vec<Value>> {
+/// Answer each request in turn from `answers` until they run out or the
+/// command is `done`, and hand back the requests as they were read; every
+/// wait is bounded. A command that must send no further request is served
+/// an answer for one all the same, so that one it sends is seen here rather
+/// than failing for want of a daemon.
+fn serve(
+    socket: &Path,
+    answers: Vec<Value>,
+    done: Arc<AtomicBool>,
+) -> std::thread::JoinHandle<Vec<Value>> {
     let listener = UnixListener::bind(socket).unwrap();
     listener.set_nonblocking(true).unwrap();
     std::thread::spawn(move || {
@@ -33,7 +42,7 @@ fn serve(socket: &Path, answers: Vec<Value>) -> std::thread::JoinHandle<Vec<Valu
                 match listener.accept() {
                     Ok((stream, _)) => break stream,
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        if std::time::Instant::now() >= deadline {
+                        if done.load(Ordering::SeqCst) || std::time::Instant::now() >= deadline {
                             return requests;
                         }
                         std::thread::sleep(Duration::from_millis(10));
@@ -210,7 +219,8 @@ fn run(
     answers: Vec<Value>,
 ) -> (Output, Vec<Value>) {
     let socket = setting.sockets.join(format!("{name}.sock"));
-    let daemon = serve(&socket, answers);
+    let done = Arc::new(AtomicBool::new(false));
+    let daemon = serve(&socket, answers, done.clone());
     let mut command = Command::new(env!("CARGO_BIN_EXE_agentdocker"));
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("AGENTDOCKER_") {
@@ -238,6 +248,7 @@ fn run(
         .env("AGENTDOCKER_NO_AUTOSTART", "1")
         .output()
         .unwrap();
+    done.store(true, Ordering::SeqCst);
     (output, daemon.join().expect("the fake daemon served"))
 }
 
@@ -311,7 +322,7 @@ fn an_agent_s_pull_request_is_read_in_its_own_project() {
         "moved",
         &setting.there,
         &["authorship", "7", "--as", "agent-b", "--json"],
-        vec![moved],
+        vec![moved, receipts(&setting.there_id)],
     );
     assert!(!output.status.success(), "{output:?}");
     assert_eq!(requests.len(), 1, "no read: {requests:?}");
@@ -365,11 +376,14 @@ fn a_named_project_s_pull_request_is_read_in_its_root() {
         "ambiguous",
         &setting.here,
         &named("a"),
-        vec![json!({
-            "type": "error",
-            "code": "ambiguous",
-            "message": "project reference a is ambiguous",
-        })],
+        vec![
+            json!({
+                "type": "error",
+                "code": "ambiguous",
+                "message": "project reference a is ambiguous",
+            }),
+            receipts(&setting.there_id),
+        ],
     );
     assert!(!output.status.success(), "{output:?}");
     assert_eq!(requests.len(), 1, "no read after the refusal: {requests:?}");
@@ -412,7 +426,7 @@ fn a_project_of_several_clones_is_read_in_the_caller_s_or_not_at_all() {
         "outside",
         &setting.here,
         &named(&setting.there_id),
-        vec![listed],
+        vec![listed, receipts(&setting.there_id)],
     );
     assert!(!output.status.success(), "{output:?}");
     assert_eq!(requests.len(), 1, "no read: {requests:?}");
@@ -456,7 +470,10 @@ fn a_root_that_is_no_longer_the_project_s_is_passed_over() {
         "none-left",
         &setting.here,
         &named(&setting.there_id),
-        vec![agents(vec![ended(record(&gone, &setting.there_id))])],
+        vec![
+            agents(vec![ended(record(&gone, &setting.there_id))]),
+            receipts(&setting.there_id),
+        ],
     );
     assert!(!output.status.success(), "{output:?}");
     assert_eq!(requests.len(), 1, "no read: {requests:?}");
