@@ -938,7 +938,7 @@ impl Daemon {
     /// quiet, take off judgments whose screen moved on or can no longer be
     /// read, and say which quiet screens are due to be asked about.
     async fn read_screens(self: &Arc<Self>, setup: &Setup) -> (Pass, Vec<Due>) {
-        let terminals: HashMap<AgentId, supervisor::Session> = lock(&self.sessions).clone();
+        let terminals: HashMap<AgentId, supervisor::Session> = self.terminals();
         let socket_of = lock(&self.judge).herdr_socket_of.clone();
         let now = Utc::now();
         let mut candidates: Vec<Candidate> = {
@@ -4241,7 +4241,7 @@ mod tests {
         let agent = showing(&daemon, &dir, "managed", DIALOG).await;
         daemon.judge_once().await;
         assert!(record(&daemon, &agent).judged.is_some());
-        let session = lock(&daemon.sessions).remove(&agent).unwrap();
+        let session = daemon.take_terminal_for_test(&agent).unwrap();
         daemon.judge_once().await;
         daemon.judge_once().await;
         assert!(record(&daemon, &agent).judged.is_none());
@@ -4249,7 +4249,7 @@ mod tests {
             clearings(&mut events),
             [(agent.clone(), UNREADABLE.to_owned())]
         );
-        lock(&daemon.sessions).insert(agent.clone(), session);
+        daemon.put_terminal_for_test(&agent, session);
         stop(&daemon, &agent).await;
     }
 

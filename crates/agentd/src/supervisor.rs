@@ -36,7 +36,7 @@ use nix::unistd::Pid;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::{broadcast, mpsc, watch};
 
-use crate::daemon::Daemon;
+use crate::daemon::{Daemon, Ended, Supervision};
 use crate::owner::Launch;
 
 /// How long an owner may take to bind its socket and report the prepared
@@ -247,6 +247,93 @@ impl Session {
             .unwrap_or_else(|| broadcast::channel(1).1);
         drop(history);
         (seen, live)
+    }
+}
+
+/// A run built by hand with the far end of its owner connection, for a
+/// test of what a supervision does: as a launch leaves it before it is let
+/// go (nothing activated, so its supervision stops it and ends at once),
+/// or activated, as a reattachment finds it.
+#[cfg(test)]
+pub(crate) async fn spawned_for_test(
+    owner: SessionOwner,
+    pid: u32,
+    started_at: chrono::DateTime<Utc>,
+    activated: bool,
+) -> (Spawned, Stream) {
+    let (stream, peer) = agentdocker_host::ipc::pair().await.unwrap();
+    let (reader, writer) = stream.into_split();
+    let (control, stop) = watch::channel(None);
+    let spawned = Spawned {
+        pid,
+        process_started_at: started_at,
+        owner,
+        link: OwnerLink::Detached,
+        controller: Controller {
+            reader: BufReader::new(reader),
+            writer,
+            partial: Vec::new(),
+        },
+        launch_error: (!activated).then(|| "command could not be launched".into()),
+        launch_ending: (!activated).then_some(agentdocker_core::RunEnd::NeverStarted),
+        activated,
+        control,
+        stop,
+        session: None,
+        keystrokes: None,
+        resizes: None,
+        output: None,
+        scrollback: None,
+        relayed: 0,
+    };
+    (spawned, peer)
+}
+
+#[cfg(test)]
+impl Spawned {
+    /// With a terminal of its own, as a run that was given one has.
+    pub(crate) fn with_session_for_test(mut self, session: Session) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// With its owner a child process of this one, as a launch's is.
+    pub(crate) fn with_owner_process_for_test(mut self, owner: std::process::Child) -> Self {
+        self.link = OwnerLink::Process(owner);
+        self
+    }
+}
+
+/// The commands an owner was sent, read from the far end of its
+/// connection until it closes or goes quiet.
+#[cfg(test)]
+pub(crate) async fn sent_for_test(peer: Stream) -> Vec<OwnerCommand> {
+    let (reader, _writer) = peer.into_split();
+    let mut reader = BufReader::new(reader);
+    let mut partial = Vec::new();
+    let mut sent = Vec::new();
+    while let Ok(Ok(Some(frame))) = tokio::time::timeout(
+        Duration::from_millis(500),
+        read_frame(&mut reader, &mut partial, 64 * 1024),
+    )
+    .await
+    {
+        sent.push(serde_json::from_str(&frame).unwrap());
+    }
+    sent
+}
+
+#[cfg(test)]
+impl Session {
+    /// A terminal nothing is behind, for a test that only asks whose it is.
+    pub(crate) fn for_test() -> Self {
+        Session {
+            output: broadcast::channel(1).0.downgrade(),
+            input: mpsc::channel(1).0,
+            resize: mpsc::channel(1).0,
+            scrollback: Arc::default(),
+            size: Arc::new(std::sync::Mutex::new((80, 24))),
+        }
     }
 }
 
@@ -546,31 +633,108 @@ pub(crate) async fn acknowledge_recovered_exit(home: std::path::PathBuf, report:
             return;
         }
     }
-    // The owner holds this stable lock through socket cleanup. Acquiring it
-    // both waits for retirement and excludes a newer owner while comparing
-    // and removing the old generation's report. Never unlink the lock itself.
+    retire_report(&home, &report).await;
+}
+
+/// Remove a run's exit report, and no other's. The owner holds the id's
+/// stable lock through its socket cleanup, so taking it both waits for that
+/// owner to retire and excludes a newer one while the report is compared
+/// and removed: a report a later run of the same agent id left is not this
+/// one's to remove. Never unlink the lock itself.
+pub(crate) async fn retire_report(home: &Path, report: &ExitReport) {
+    // The owner's lock is beside its socket's path on every platform, a
+    // pipe's endpoint having no place on disk to be beside.
+    let lock_path =
+        agentdocker_core::session::socket_path(home, &report.agent).with_extension("lock");
+    let exit = exit_path(home, &report.agent);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        match agentdocker_host::lock::try_exclusive(&socket.with_extension("lock")) {
-            Ok(Some(_held)) => {
-                let exit = exit_path(&home, &report.agent);
-                if read_exit_file(
-                    &exit,
-                    &report.agent,
-                    &report.owner,
-                    report.child.pid,
-                    report.child.started_at,
-                ) == Some(report.clone())
-                {
-                    let _ = std::fs::remove_file(exit);
+        // An existing lock only: one a sweep has removed is not put back,
+        // and with it gone there is no owner's file left here to compare.
+        match agentdocker_host::lock::try_exclusive_existing(&lock_path) {
+            Ok(Some(held)) => match remove_report_under(&held, &lock_path, &exit, report) {
+                Some(_) => return,
+                // The lock was won on a file the name no longer has (a
+                // stopping daemon's sweep unlinked it between the open and
+                // the lock), or its name could not be checked: it excludes
+                // nobody, so it is taken again, after a pause.
+                None if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
                 }
-                return;
-            }
-            Ok(None) if tokio::time::Instant::now() < deadline => {
+                None => return,
+            },
+            // Whoever holds the lock, there is nothing to wait for once
+            // the report is no longer there to remove.
+            Ok(None) if is_report(&exit, report) && tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
             _ => return,
         }
+    }
+}
+
+/// The exit file still holds this very report.
+fn is_report(exit: &Path, report: &ExitReport) -> bool {
+    read_exit_file(
+        exit,
+        &report.agent,
+        &report.owner,
+        report.child.pid,
+        report.child.started_at,
+    )
+    .as_ref()
+        == Some(report)
+}
+
+/// The lock that was taken is on the file its name has now. A lock is on
+/// a file, not on a name: one won on a file unlinked between its open and
+/// its lock excludes nobody who opens the name afterwards, a new owner
+/// among them, and is no leave to remove anything.
+fn holds_name(held: &agentdocker_host::lock::Lock, lock_path: &Path) -> bool {
+    held.is_at(lock_path).unwrap_or(false)
+}
+
+/// Under the id's lock: remove the exit file if it still holds `report`.
+/// `None` when the lock held is not the one the name has now, in which
+/// case nothing was compared or removed; otherwise whether it was removed.
+fn remove_report_under(
+    held: &agentdocker_host::lock::Lock,
+    lock_path: &Path,
+    exit: &Path,
+    report: &ExitReport,
+) -> Option<bool> {
+    if !holds_name(held, lock_path) {
+        return None;
+    }
+    let ours = is_report(exit, report);
+    if ours {
+        let _ = std::fs::remove_file(exit);
+    }
+    Some(ours)
+}
+
+/// Under the id's lock: remove the id's socket. Nothing is removed when
+/// the lock held is not the one the name has now.
+#[cfg(unix)]
+fn remove_socket_under(
+    held: &agentdocker_host::lock::Lock,
+    lock_path: &Path,
+    socket: &Path,
+) -> bool {
+    holds_name(held, lock_path) && std::fs::remove_file(socket).is_ok()
+}
+
+/// Remove the agent id's socket when no owner serves on it. An owner holds
+/// the id's stable lock for as long as it lives and removes its own socket
+/// under it; this takes what an owner that died left, and leaves alone the
+/// socket of a later run's owner, which holds the lock.
+#[cfg(unix)]
+fn remove_unowned_socket(home: &Path, agent: &AgentId) {
+    let socket = socket_path(home, agent);
+    let lock_path = socket.with_extension("lock");
+    // An existing lock only: one a sweep has removed is not put back.
+    if let Ok(Some(held)) = agentdocker_host::lock::try_exclusive_existing(&lock_path) {
+        remove_socket_under(&held, &lock_path, &socket);
     }
 }
 
@@ -840,10 +1004,15 @@ async fn relay_until_exit(
 /// Relay between the owner and the daemon until the exit is recorded.
 pub fn supervise(
     daemon: Arc<Daemon>,
-    id: AgentId,
+    supervision: Supervision,
     mut spawned: Spawned,
 ) -> tokio::task::JoinHandle<()> {
+    // Counted before the task exists, so a shutdown that looks between the
+    // two finds it; and to the task's last line, its tidying included.
+    let at_work = daemon.supervising();
     tokio::spawn(async move {
+        let _at_work = at_work;
+        let id = supervision.agent.clone();
         let outcome = if !spawned.activated {
             // The launch record never became durable: tell the owner to deny
             // exec now rather than at its own deadline; reaping the link
@@ -867,27 +1036,40 @@ pub fn supervise(
             let mut resizes = spawned.resizes.take();
             relay_until_exit(&daemon, &id, &mut spawned, &mut keystrokes, &mut resizes).await
         };
-        daemon.end_session(&id);
-        let status = match outcome {
+        // Everything from here names this supervision, not the agent id: a
+        // relaunch, a restart or another receiver may hold the id by now,
+        // and its terminal, control, record, files and restart are not this
+        // one's to end. (Its own terminal goes with its control, when the
+        // end is recorded.)
+        let mut retired = None;
+        let ended = match outcome {
             Outcome::Exited(report) => {
-                let status = exit_status(&report);
                 // Durable first, then acknowledged: an exit the store did not
                 // keep stays in the exit file for a daemon that can keep it,
                 // and with it the evidence of how it ended.
-                if daemon.mark_ended_durably(&id, status.clone(), exit_ending(&report)) {
-                    let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
-                    let _ = std::fs::remove_file(exit_path(&daemon.home, &id));
-                } else {
-                    tracing::warn!(agent = %id, "exit not recorded durably; the owner's exit report is kept");
+                let ended =
+                    daemon.end_supervised(&supervision, exit_status(&report), exit_ending(&report));
+                match ended {
+                    // An exit of a run the record no longer carries has
+                    // nowhere to be written: its owner is let go as well.
+                    Ended::Recorded { .. } | Ended::Superseded { same_run: false } => {
+                        let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
+                        retired = Some(report);
+                    }
+                    Ended::NotWritten => {
+                        tracing::warn!(agent = %id, "exit not recorded durably; the owner's exit report is kept");
+                    }
+                    Ended::Superseded { same_run: true } => {
+                        tracing::debug!(agent = %id, "another receiver holds this run; its exit is that one's to record");
+                    }
                 }
-                status
+                ended
             }
             Outcome::Failed {
                 reason,
                 ending,
                 owner_waits,
             } => {
-                let status = AgentStatus::Failed { reason };
                 // Durable first, then acknowledged, as an exit is. A command
                 // that could not be executed left an exit report the owner
                 // waits to have acknowledged, holding the id's lock while it
@@ -898,16 +1080,35 @@ pub fn supervise(
                 // failure the store did not keep acknowledges nothing, so the
                 // report waits for a daemon that can keep it. An owner whose
                 // command never ran ignores the acknowledgement.
-                if daemon.mark_ended_durably(&id, status.clone(), ending) {
-                    if owner_waits {
-                        let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
+                let ended =
+                    daemon.end_supervised(&supervision, AgentStatus::Failed { reason }, ending);
+                match ended {
+                    Ended::Recorded { .. } | Ended::Superseded { same_run: false } => {
+                        if owner_waits {
+                            let _ = spawned.controller.send(&OwnerCommand::Acknowledge).await;
+                        }
                     }
-                } else if owner_waits {
-                    tracing::warn!(agent = %id, "launch failure not recorded durably; the owner's report is not acknowledged");
+                    Ended::NotWritten if owner_waits => {
+                        tracing::warn!(agent = %id, "launch failure not recorded durably; the owner's report is not acknowledged");
+                    }
+                    Ended::NotWritten | Ended::Superseded { same_run: true } => {}
                 }
-                status
+                ended
             }
         };
+        // Another receiver serves this very run: its owner is that
+        // receiver's now, to acknowledge in its own time. The owner is not
+        // killed for outliving this supervision, and nothing of its is
+        // tidied; a child handle is still waited for, off to the side, so
+        // no zombie is left when it does go.
+        if ended == (Ended::Superseded { same_run: true }) {
+            if let OwnerLink::Process(mut child) = spawned.link {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            return;
+        }
         // The owner finishes on its own once acknowledged; reap it here so
         // no zombie outlives the supervision that started it.
         match spawned.link {
@@ -933,11 +1134,27 @@ pub fn supervise(
             }
             OwnerLink::Detached => {}
         }
+        // The owner is gone, or going: its report is removed under the
+        // id's lock, compared first, and its socket only where no owner
+        // holds that lock.
+        if let Some(report) = retired {
+            retire_report(&daemon.home, &report).await;
+        }
         #[cfg(unix)]
-        let _ = std::fs::remove_file(socket_path(&daemon.home, &id));
+        remove_unowned_socket(&daemon.home, &id);
         // After the exit is recorded, so a reader of the event stream
-        // sees the agent end before it sees it start again.
-        daemon.consider_restart(&id, &status);
+        // sees the agent end before it sees it start again. Only for the
+        // ending this supervision recorded or found: a run that came and
+        // went since is restarted, or not, on its own ending.
+        // And on the ending the record holds, which is not this
+        // supervision's own word where the end was found already written.
+        if let Ended::Recorded {
+            finished_at,
+            status,
+        } = ended
+        {
+            daemon.consider_restart_of(&id, &status, finished_at);
+        }
     })
 }
 
@@ -1252,6 +1469,76 @@ mod tests {
         }
     }
 
+    /// A lock is on a file, not on a name. One taken on a lock file that
+    /// was unlinked and replaced since (a stopping daemon's sweep, then a
+    /// new owner) excludes nobody, and under it nothing is removed: not
+    /// the socket the new owner serves on, and not an exit report. Under
+    /// the lock the name has now, both are.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_on_a_replaced_file_is_no_leave_to_remove_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("agent.lock");
+        let socket = dir.path().join("agent.sock");
+        let exit = dir.path().join("agent.exit");
+        let now = Utc::now();
+        let report = ExitReport {
+            agent: AgentId::generate(),
+            owner: SessionOwner {
+                pid: 4242,
+                started_at: now,
+            },
+            child: ChildIdentity {
+                pid: 4243,
+                started_at: now,
+                tty: false,
+            },
+            code: Some(0),
+            signal: None,
+            log_flushed: true,
+            at: now,
+            never_ran: None,
+        };
+        let write = || {
+            std::fs::write(&socket, b"").unwrap();
+            std::fs::write(&exit, serde_json::to_vec(&report).unwrap()).unwrap();
+        };
+        write();
+        // The descriptor a cleanup opened before the sweep.
+        let obsolete = agentdocker_host::lock::try_exclusive(&lock_path)
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(&lock_path).unwrap();
+        // The new owner's lock, on the file the name has now.
+        let current = agentdocker_host::lock::try_exclusive(&lock_path)
+            .unwrap()
+            .expect("a new file under the old name is free to lock");
+        assert!(!holds_name(&obsolete, &lock_path));
+        assert!(holds_name(&current, &lock_path));
+
+        assert!(!remove_socket_under(&obsolete, &lock_path, &socket));
+        assert_eq!(
+            remove_report_under(&obsolete, &lock_path, &exit, &report),
+            None
+        );
+        assert!(socket.exists() && exit.exists(), "nothing was removed");
+
+        // Another generation's report under the right lock: compared, kept.
+        let mut other = report.clone();
+        other.owner.pid = 5000;
+        assert_eq!(
+            remove_report_under(&current, &lock_path, &exit, &other),
+            Some(false)
+        );
+        assert!(exit.exists());
+        assert_eq!(
+            remove_report_under(&current, &lock_path, &exit, &report),
+            Some(true)
+        );
+        assert!(remove_socket_under(&current, &lock_path, &socket));
+        assert!(!socket.exists() && !exit.exists());
+    }
+
     /// A launch that fails before activation is recorded, with its owner's
     /// proof of how it ended, before its owner is acknowledged: at the
     /// acknowledgement the store holds the failure and its event. A store
@@ -1312,7 +1599,10 @@ mod tests {
                 scrollback: None,
                 relayed: 0,
             };
-            let supervision = supervise(daemon.clone(), id.clone(), spawned);
+            // Installed first, as every launch does before it supervises.
+            let supervising = daemon.supervision_of(&id, &spawned);
+            daemon.install(&supervising, spawned.control.clone(), None, false);
+            let supervision = supervise(daemon.clone(), supervising, spawned);
             let (reader, _writer) = peer.into_split();
             let mut reader = BufReader::new(reader);
             let mut partial = Vec::new();
