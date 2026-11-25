@@ -250,14 +250,16 @@ impl Session {
     }
 }
 
-/// A run as a launch leaves it before it is let go: an owner connection
-/// with nothing activated, built by hand with the far end of that
-/// connection, for a test of what a supervision does at its end.
+/// A run built by hand with the far end of its owner connection, for a
+/// test of what a supervision does: as a launch leaves it before it is let
+/// go (nothing activated, so its supervision stops it and ends at once),
+/// or activated, as a reattachment finds it.
 #[cfg(test)]
-pub(crate) async fn unactivated_for_test(
+pub(crate) async fn spawned_for_test(
     owner: SessionOwner,
     pid: u32,
     started_at: chrono::DateTime<Utc>,
+    activated: bool,
 ) -> (Spawned, Stream) {
     let (stream, peer) = agentdocker_host::ipc::pair().await.unwrap();
     let (reader, writer) = stream.into_split();
@@ -272,9 +274,9 @@ pub(crate) async fn unactivated_for_test(
             writer,
             partial: Vec::new(),
         },
-        launch_error: Some("command could not be launched".into()),
-        launch_ending: Some(agentdocker_core::RunEnd::NeverStarted),
-        activated: false,
+        launch_error: (!activated).then(|| "command could not be launched".into()),
+        launch_ending: (!activated).then_some(agentdocker_core::RunEnd::NeverStarted),
+        activated,
         control,
         stop,
         session: None,
@@ -285,6 +287,21 @@ pub(crate) async fn unactivated_for_test(
         relayed: 0,
     };
     (spawned, peer)
+}
+
+#[cfg(test)]
+impl Spawned {
+    /// With a terminal of its own, as a run that was given one has.
+    pub(crate) fn with_session_for_test(mut self, session: Session) -> Self {
+        self.session = Some(session);
+        self
+    }
+
+    /// With its owner a child process of this one, as a launch's is.
+    pub(crate) fn with_owner_process_for_test(mut self, owner: std::process::Child) -> Self {
+        self.link = OwnerLink::Process(owner);
+        self
+    }
 }
 
 /// The commands an owner was sent, read from the far end of its
@@ -625,36 +642,78 @@ pub(crate) async fn acknowledge_recovered_exit(home: std::path::PathBuf, report:
 /// and removed: a report a later run of the same agent id left is not this
 /// one's to remove. Never unlink the lock itself.
 pub(crate) async fn retire_report(home: &Path, report: &ExitReport) {
-    let socket = endpoint(home, &report.agent);
+    let lock_path = endpoint(home, &report.agent).with_extension("lock");
     let exit = exit_path(home, &report.agent);
-    let ours = |exit: &Path| {
-        read_exit_file(
-            exit,
-            &report.agent,
-            &report.owner,
-            report.child.pid,
-            report.child.started_at,
-        )
-        .as_ref()
-            == Some(report)
-    };
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        match agentdocker_host::lock::try_exclusive(&socket.with_extension("lock")) {
-            Ok(Some(_held)) => {
-                if ours(&exit) {
-                    let _ = std::fs::remove_file(exit);
-                }
-                return;
-            }
+        match agentdocker_host::lock::try_exclusive(&lock_path) {
+            Ok(Some(held)) => match remove_report_under(&held, &lock_path, &exit, report) {
+                Some(_) => return,
+                // The lock was won on a file the name no longer has (a
+                // stopping daemon's sweep unlinked it between the open and
+                // the lock): it excludes nobody, so it is taken again.
+                None if tokio::time::Instant::now() < deadline => {}
+                None => return,
+            },
             // Whoever holds the lock, there is nothing to wait for once
             // the report is no longer there to remove.
-            Ok(None) if ours(&exit) && tokio::time::Instant::now() < deadline => {
+            Ok(None) if is_report(&exit, report) && tokio::time::Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(25)).await;
             }
             _ => return,
         }
     }
+}
+
+/// The exit file still holds this very report.
+fn is_report(exit: &Path, report: &ExitReport) -> bool {
+    read_exit_file(
+        exit,
+        &report.agent,
+        &report.owner,
+        report.child.pid,
+        report.child.started_at,
+    )
+    .as_ref()
+        == Some(report)
+}
+
+/// The lock that was taken is on the file its name has now. A lock is on
+/// a file, not on a name: one won on a file unlinked between its open and
+/// its lock excludes nobody who opens the name afterwards, a new owner
+/// among them, and is no leave to remove anything.
+fn holds_name(held: &agentdocker_host::lock::Lock, lock_path: &Path) -> bool {
+    held.is_at(lock_path).unwrap_or(false)
+}
+
+/// Under the id's lock: remove the exit file if it still holds `report`.
+/// `None` when the lock held is not the one the name has now, in which
+/// case nothing was compared or removed; otherwise whether it was removed.
+fn remove_report_under(
+    held: &agentdocker_host::lock::Lock,
+    lock_path: &Path,
+    exit: &Path,
+    report: &ExitReport,
+) -> Option<bool> {
+    if !holds_name(held, lock_path) {
+        return None;
+    }
+    let ours = is_report(exit, report);
+    if ours {
+        let _ = std::fs::remove_file(exit);
+    }
+    Some(ours)
+}
+
+/// Under the id's lock: remove the id's socket. Nothing is removed when
+/// the lock held is not the one the name has now.
+#[cfg(unix)]
+fn remove_socket_under(
+    held: &agentdocker_host::lock::Lock,
+    lock_path: &Path,
+    socket: &Path,
+) -> bool {
+    holds_name(held, lock_path) && std::fs::remove_file(socket).is_ok()
 }
 
 /// Remove the agent id's socket when no owner serves on it. An owner holds
@@ -664,8 +723,9 @@ pub(crate) async fn retire_report(home: &Path, report: &ExitReport) {
 #[cfg(unix)]
 fn remove_unowned_socket(home: &Path, agent: &AgentId) {
     let socket = socket_path(home, agent);
-    if let Ok(Some(_held)) = agentdocker_host::lock::try_exclusive(&socket.with_extension("lock")) {
-        let _ = std::fs::remove_file(socket);
+    let lock_path = socket.with_extension("lock");
+    if let Ok(Some(held)) = agentdocker_host::lock::try_exclusive(&lock_path) {
+        remove_socket_under(&held, &lock_path, &socket);
     }
 }
 
@@ -966,17 +1026,16 @@ pub fn supervise(
         // Everything from here names this supervision, not the agent id: a
         // relaunch, a restart or another receiver may hold the id by now,
         // and its terminal, control, record, files and restart are not this
-        // one's to end.
-        daemon.end_session(&supervision);
+        // one's to end. (Its own terminal goes with its control, when the
+        // end is recorded.)
         let mut retired = None;
-        let (status, ended) = match outcome {
+        let ended = match outcome {
             Outcome::Exited(report) => {
-                let status = exit_status(&report);
                 // Durable first, then acknowledged: an exit the store did not
                 // keep stays in the exit file for a daemon that can keep it,
                 // and with it the evidence of how it ended.
                 let ended =
-                    daemon.end_supervised(&supervision, status.clone(), exit_ending(&report));
+                    daemon.end_supervised(&supervision, exit_status(&report), exit_ending(&report));
                 match ended {
                     // An exit of a run the record no longer carries has
                     // nowhere to be written: its owner is let go as well.
@@ -991,14 +1050,13 @@ pub fn supervise(
                         tracing::debug!(agent = %id, "another receiver holds this run; its exit is that one's to record");
                     }
                 }
-                (status, ended)
+                ended
             }
             Outcome::Failed {
                 reason,
                 ending,
                 owner_waits,
             } => {
-                let status = AgentStatus::Failed { reason };
                 // Durable first, then acknowledged, as an exit is. A command
                 // that could not be executed left an exit report the owner
                 // waits to have acknowledged, holding the id's lock while it
@@ -1009,7 +1067,8 @@ pub fn supervise(
                 // failure the store did not keep acknowledges nothing, so the
                 // report waits for a daemon that can keep it. An owner whose
                 // command never ran ignores the acknowledgement.
-                let ended = daemon.end_supervised(&supervision, status.clone(), ending);
+                let ended =
+                    daemon.end_supervised(&supervision, AgentStatus::Failed { reason }, ending);
                 match ended {
                     Ended::Recorded { .. } | Ended::Superseded { same_run: false } => {
                         if owner_waits {
@@ -1021,9 +1080,22 @@ pub fn supervise(
                     }
                     Ended::NotWritten | Ended::Superseded { same_run: true } => {}
                 }
-                (status, ended)
+                ended
             }
         };
+        // Another receiver serves this very run: its owner is that
+        // receiver's now, to acknowledge in its own time. The owner is not
+        // killed for outliving this supervision, and nothing of its is
+        // tidied; a child handle is still waited for, off to the side, so
+        // no zombie is left when it does go.
+        if ended == (Ended::Superseded { same_run: true }) {
+            if let OwnerLink::Process(mut child) = spawned.link {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+            }
+            return;
+        }
         // The owner finishes on its own once acknowledged; reap it here so
         // no zombie outlives the supervision that started it.
         match spawned.link {
@@ -1061,7 +1133,13 @@ pub fn supervise(
         // sees the agent end before it sees it start again. Only for the
         // ending this supervision recorded or found: a run that came and
         // went since is restarted, or not, on its own ending.
-        if let Ended::Recorded { finished_at } = ended {
+        // And on the ending the record holds, which is not this
+        // supervision's own word where the end was found already written.
+        if let Ended::Recorded {
+            finished_at,
+            status,
+        } = ended
+        {
             daemon.consider_restart_of(&id, &status, finished_at);
         }
     })
@@ -1383,6 +1461,76 @@ mod tests {
     /// acknowledgement the store holds the failure and its event. A store
     /// that cannot keep it acknowledges nothing, so the owner's report
     /// waits in its exit file for a daemon that can.
+    /// A lock is on a file, not on a name. One taken on a lock file that
+    /// was unlinked and replaced since (a stopping daemon's sweep, then a
+    /// new owner) excludes nobody, and under it nothing is removed: not
+    /// the socket the new owner serves on, and not an exit report. Under
+    /// the lock the name has now, both are.
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_on_a_replaced_file_is_no_leave_to_remove_anything() {
+        let dir = tempfile::tempdir().unwrap();
+        let lock_path = dir.path().join("agent.lock");
+        let socket = dir.path().join("agent.sock");
+        let exit = dir.path().join("agent.exit");
+        let now = Utc::now();
+        let report = ExitReport {
+            agent: AgentId::generate(),
+            owner: SessionOwner {
+                pid: 4242,
+                started_at: now,
+            },
+            child: ChildIdentity {
+                pid: 4243,
+                started_at: now,
+                tty: false,
+            },
+            code: Some(0),
+            signal: None,
+            log_flushed: true,
+            at: now,
+            never_ran: None,
+        };
+        let write = || {
+            std::fs::write(&socket, b"").unwrap();
+            std::fs::write(&exit, serde_json::to_vec(&report).unwrap()).unwrap();
+        };
+        write();
+        // The descriptor a cleanup opened before the sweep.
+        let obsolete = agentdocker_host::lock::try_exclusive(&lock_path)
+            .unwrap()
+            .unwrap();
+        std::fs::remove_file(&lock_path).unwrap();
+        // The new owner's lock, on the file the name has now.
+        let current = agentdocker_host::lock::try_exclusive(&lock_path)
+            .unwrap()
+            .expect("a new file under the old name is free to lock");
+        assert!(!holds_name(&obsolete, &lock_path));
+        assert!(holds_name(&current, &lock_path));
+
+        assert!(!remove_socket_under(&obsolete, &lock_path, &socket));
+        assert_eq!(
+            remove_report_under(&obsolete, &lock_path, &exit, &report),
+            None
+        );
+        assert!(socket.exists() && exit.exists(), "nothing was removed");
+
+        // Another generation's report under the right lock: compared, kept.
+        let mut other = report.clone();
+        other.owner.pid = 5000;
+        assert_eq!(
+            remove_report_under(&current, &lock_path, &exit, &other),
+            Some(false)
+        );
+        assert!(exit.exists());
+        assert_eq!(
+            remove_report_under(&current, &lock_path, &exit, &report),
+            Some(true)
+        );
+        assert!(remove_socket_under(&current, &lock_path, &socket));
+        assert!(!socket.exists() && !exit.exists());
+    }
+
     #[tokio::test]
     async fn a_failed_activation_is_durable_before_its_owner_is_acknowledged() {
         use agentdocker_core::RunEnd;
@@ -1440,7 +1588,7 @@ mod tests {
             };
             // Installed first, as every launch does before it supervises.
             let supervising = daemon.supervision_of(&id, &spawned);
-            daemon.install(&supervising, spawned.control.clone());
+            daemon.install(&supervising, spawned.control.clone(), None, false);
             let supervision = supervise(daemon.clone(), supervising, spawned);
             let (reader, _writer) = peer.into_split();
             let mut reader = BufReader::new(reader);

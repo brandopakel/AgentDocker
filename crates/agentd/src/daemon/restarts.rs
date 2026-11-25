@@ -26,6 +26,37 @@ use super::markers::PendingRestart;
 use super::*;
 use agentdocker_core::agent::restart_delay;
 
+/// What came of one attempt to start an agent again ([`Daemon::restart_now`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Attempt {
+    /// The attempt is over, whatever came of it: its marker is released.
+    Done,
+    /// A transfer refused admission: the pending task tries again.
+    Refused,
+    /// The record has another ending than the one this restart was
+    /// scheduled for. Nothing was done, and the marker there is now is
+    /// that ending's own.
+    Superseded,
+}
+
+impl State {
+    /// Take off the marker of the restart scheduled for `ending`, and say
+    /// so. A marker set since for a later ending under the same id stays:
+    /// it is another task's.
+    pub(super) fn release_restart(&mut self, id: &AgentId, ending: Option<chrono::DateTime<Utc>>) {
+        if self
+            .restart_endings
+            .get(id)
+            .is_some_and(|scheduled| *scheduled != ending)
+        {
+            return;
+        }
+        self.pending_restarts.remove(id);
+        self.restart_endings.remove(id);
+        self.publish_restart(id);
+    }
+}
+
 impl Daemon {
     /// An agent has exited. Start it again if it asked to be.
     ///
@@ -82,7 +113,18 @@ impl Daemon {
                 return;
             }
             let record = record.clone();
-            if state.pending_restarts.contains_key(id) {
+            // One restart waits per ending. One already waiting for this
+            // ending is the one. One waiting for an earlier ending under
+            // the same id (a run that was relaunched and ended while the
+            // earlier delay ran) is not this run's: this ending gets its
+            // own delay, and the earlier task finds on waking that it was
+            // replaced.
+            if state.pending_restarts.contains_key(id)
+                && state
+                    .restart_endings
+                    .get(id)
+                    .is_none_or(|ending| *ending == record.finished_at)
+            {
                 return;
             }
             // Installed and said in one hold, before its task exists, so
@@ -98,9 +140,13 @@ impl Daemon {
                 id.clone(),
                 agentdocker_core::restart::Phase::Delay { attempt, due },
             );
+            state.restart_endings.insert(id.clone(), record.finished_at);
             state.publish_restart(id);
             record
         };
+        // The ending this restart is for, carried through the wait, the
+        // attempt and the release of its marker.
+        let ending = record.finished_at;
         let elapsed = record
             .finished_at
             .and_then(|at| (Utc::now() - at).to_std().ok())
@@ -111,7 +157,7 @@ impl Daemon {
         // — it would hold its SQLite handle and its socket open long
         // after everything else had let go, which is exactly what a
         // leak check catches.
-        let pending = PendingRestart::held(self, id.clone());
+        let pending = PendingRestart::held(self, id.clone(), ending);
         let daemon = Arc::downgrade(self);
         let id = id.clone();
         tokio::spawn(async move {
@@ -123,20 +169,28 @@ impl Daemon {
                         return;
                     };
                     daemon.fail_point("restart");
-                    if daemon.restart_now(&id, delay).await {
-                        let status = {
-                            let mut state = lock(&daemon.state);
-                            state.pending_restarts.remove(&id);
-                            state.publish_restart(&id);
-                            state.registry.get(&id).map(|record| record.status.clone())
-                        };
-                        pending.released();
-                        // A failed spawn can need another policy attempt. A
-                        // running child will arrange its own on durable exit.
-                        if let Some(status) = status {
-                            daemon.consider_restart(&id, &status);
+                    match daemon.restart_now(&id, delay, ending).await {
+                        Attempt::Done => {
+                            let status = {
+                                let mut state = lock(&daemon.state);
+                                state.release_restart(&id, ending);
+                                state.registry.get(&id).map(|record| record.status.clone())
+                            };
+                            pending.released();
+                            // A failed spawn can need another policy attempt. A
+                            // running child will arrange its own on durable exit.
+                            if let Some(status) = status {
+                                daemon.consider_restart(&id, &status);
+                            }
+                            return;
                         }
-                        return;
+                        // Another run ended under this id since: its own
+                        // restart waits its own delay, under its own marker.
+                        Attempt::Superseded => {
+                            pending.released();
+                            return;
+                        }
+                        Attempt::Refused => {}
                     }
                 }
                 // A transfer refusal applies nothing. Keep the pending job
@@ -176,19 +230,31 @@ impl Daemon {
         }
     }
 
-    /// Start it again, under the same id. False means a transfer refused
-    /// admission and the pending task must retry; true finishes this attempt.
-    async fn restart_now(self: &Arc<Self>, id: &AgentId, waited: std::time::Duration) -> bool {
-        let _admitted = match self.admit_restart(id) {
+    /// Start it again, under the same id, for the ending the restart was
+    /// scheduled for. [`Attempt::Refused`] means a transfer refused
+    /// admission and the pending task must retry; [`Attempt::Done`]
+    /// finishes this attempt; [`Attempt::Superseded`] means the record has
+    /// another ending now, and nothing was done.
+    pub(super) async fn restart_now(
+        self: &Arc<Self>,
+        id: &AgentId,
+        waited: std::time::Duration,
+        ending: Option<chrono::DateTime<Utc>>,
+    ) -> Attempt {
+        let _admitted = match self.admit_restart(id, ending) {
             Ok(admitted) => admitted,
             Err(error) => {
-                return !matches!(
+                return if matches!(
                     *error,
                     Response::Error {
                         code: ErrorCode::Transferring,
                         ..
                     }
-                );
+                ) {
+                    Attempt::Refused
+                } else {
+                    Attempt::Done
+                };
             }
         };
         // Re-read under the lock: the wait is long enough for somebody
@@ -196,6 +262,9 @@ impl Daemon {
         let record = {
             let state = lock(&self.state);
             match state.registry.get(id) {
+                // The run that ended when this was scheduled is not the
+                // one that has ended now: this deadline is not its.
+                Some(record) if record.finished_at != ending => return Attempt::Superseded,
                 Some(record)
                     if state.storage_error.is_none()
                         && !record.status.is_live()
@@ -206,7 +275,7 @@ impl Daemon {
                 {
                     record.clone()
                 }
-                _ => return true,
+                _ => return Attempt::Done,
             }
         };
         let attempt = record.restarts + 1;
@@ -222,13 +291,15 @@ impl Daemon {
                 let pid = spawned.pid;
                 let started_at = Some(spawned.process_started_at);
                 let supervising = self.supervision_of(id, &spawned);
-                if let Some(session) = spawned.session.clone() {
-                    self.open_session(&supervising, session);
-                }
                 let persisted = {
                     let mut state = lock(&self.state);
                     // The supervisor owns this child even if its durable transition fails.
-                    state.install(&supervising, spawned.control.clone());
+                    state.install(
+                        &supervising,
+                        spawned.control.clone(),
+                        spawned.session.clone(),
+                        false,
+                    );
                     let current = state.registry.get(id).cloned();
                     if state.run_refusal(&record).is_some() {
                         false
@@ -256,7 +327,7 @@ impl Daemon {
                             },
                             Utc::now(),
                         );
-                        state.transition(
+                        let committed = state.transition(
                             "restart completion",
                             event,
                             |store, event| store.agent_transition(&running, event),
@@ -266,7 +337,11 @@ impl Daemon {
                                     .get_mut(id)
                                     .expect("restart identity retained") = running.clone();
                             },
-                        ) == Persisted::Committed
+                        ) == Persisted::Committed;
+                        if committed {
+                            state.written(&supervising);
+                        }
+                        committed
                     } else {
                         false
                     }
@@ -296,14 +371,14 @@ impl Daemon {
                 {
                     let mut state = lock(&self.state);
                     if state.storage_error.is_some() {
-                        return true;
+                        return Attempt::Done;
                     }
                     let Some(mut failed) = state.registry.get(id).cloned().filter(|current| {
                         !current.status.is_live()
                             && current.spec.restart == record.spec.restart
                             && current.restarts == record.restarts
                     }) else {
-                        return true;
+                        return Attempt::Done;
                     };
                     failed.restarts = attempt;
                     // This attempt's own failure: whatever ended the run
@@ -336,12 +411,12 @@ impl Daemon {
                         },
                     );
                     if committed != Persisted::Committed {
-                        return true;
+                        return Attempt::Done;
                     }
                 }
             }
         }
-        true
+        Attempt::Done
     }
 
     /// An agent stopped on purpose stays stopped. Clearing the policy on
@@ -393,6 +468,14 @@ impl Daemon {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ending the record holds, as a restart scheduled for it carries.
+    fn ended(daemon: &Daemon, id: &AgentId) -> Option<chrono::DateTime<Utc>> {
+        lock(&daemon.state)
+            .registry
+            .get(id)
+            .and_then(|record| record.finished_at)
+    }
 
     #[tokio::test]
     async fn restart_due_during_transfer_runs_once_after_abort_or_takeover() {
@@ -513,7 +596,11 @@ mod tests {
             Response::Agent { .. }
         ));
         daemon
-            .restart_now(&previous.id, std::time::Duration::ZERO)
+            .restart_now(
+                &previous.id,
+                std::time::Duration::ZERO,
+                ended(&daemon, &previous.id),
+            )
             .await;
         let (current, durable) = {
             let state = lock(&daemon.state);
@@ -572,7 +659,11 @@ mod tests {
         )
         .unwrap();
         daemon
-            .restart_now(&record.id, std::time::Duration::ZERO)
+            .restart_now(
+                &record.id,
+                std::time::Duration::ZERO,
+                ended(&daemon, &record.id),
+            )
             .await;
         daemon.stop_all().await;
         assert!(!marker.exists());
@@ -624,7 +715,11 @@ mod tests {
             state.store.reject_event_for_test("agent_restarted");
         }
         daemon
-            .restart_now(&previous.id, std::time::Duration::ZERO)
+            .restart_now(
+                &previous.id,
+                std::time::Duration::ZERO,
+                ended(&daemon, &previous.id),
+            )
             .await;
         let (controlled, durable, current, failed) = {
             let state = lock(&daemon.state);
@@ -865,7 +960,11 @@ mod tests {
         )
         .unwrap();
         daemon
-            .restart_now(&record.id, std::time::Duration::ZERO)
+            .restart_now(
+                &record.id,
+                std::time::Duration::ZERO,
+                ended(&daemon, &record.id),
+            )
             .await;
         let (current, answer) = {
             let mut state = lock(&daemon.state);

@@ -217,6 +217,10 @@ impl Daemon {
                         .registry
                         .get_mut(&record.id)
                         .expect("relaunched record retained") = record.clone();
+                    // A new start under this id: whatever an earlier run's
+                    // supervision left installed is not its, and must not
+                    // be taken for the installation of this start.
+                    state.supervised.remove(&record.id);
                 },
             );
             match state.write_failure() {
@@ -256,13 +260,15 @@ impl Daemon {
                 let pid = spawned.pid;
                 let process_started_at = Some(spawned.process_started_at);
                 let supervising = self.supervision_of(&record.id, &spawned);
-                if let Some(session) = spawned.session.clone() {
-                    self.open_session(&supervising, session);
-                }
                 let mut admission_error = None;
                 let updated = {
                     let mut state = lock(&self.state);
-                    state.install(&supervising, spawned.control.clone());
+                    state.install(
+                        &supervising,
+                        spawned.control.clone(),
+                        spawned.session.clone(),
+                        false,
+                    );
                     let candidate = state
                         .registry
                         .get(&record.id)
@@ -299,6 +305,7 @@ impl Daemon {
                             },
                         );
                         if committed == Persisted::Committed {
+                            state.written(&supervising);
                             Some(running)
                         } else {
                             None

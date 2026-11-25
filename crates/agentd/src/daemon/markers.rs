@@ -76,14 +76,23 @@ impl Drop for StartingCard {
 pub(in crate::daemon) struct PendingRestart {
     daemon: Weak<Daemon>,
     id: Option<AgentId>,
+    /// The ending the marker was set for: a marker set since, for a later
+    /// ending under the same id, is another task's.
+    ending: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl PendingRestart {
-    /// Take over the release of a marker its caller has just set.
-    pub(in crate::daemon) fn held(daemon: &Arc<Daemon>, id: AgentId) -> Self {
+    /// Take over the release of a marker its caller has just set, for the
+    /// ending it set it for.
+    pub(in crate::daemon) fn held(
+        daemon: &Arc<Daemon>,
+        id: AgentId,
+        ending: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
         Self {
             daemon: Arc::downgrade(daemon),
             id: Some(id),
+            ending,
         }
     }
 
@@ -100,8 +109,7 @@ impl Drop for PendingRestart {
             // Removed and said in one hold: a task that ended without
             // releasing leaves no restart scheduled, and readers learn so.
             let mut state = lock(&daemon.state);
-            state.pending_restarts.remove(&id);
-            state.publish_restart(&id);
+            state.release_restart(&id, self.ending);
         }
     }
 }

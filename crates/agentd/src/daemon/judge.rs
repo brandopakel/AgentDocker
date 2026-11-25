@@ -4241,7 +4241,7 @@ mod tests {
         let agent = showing(&daemon, &dir, "managed", DIALOG).await;
         daemon.judge_once().await;
         assert!(record(&daemon, &agent).judged.is_some());
-        let session = lock(&daemon.sessions).remove(&agent).unwrap();
+        let session = daemon.take_terminal_for_test(&agent).unwrap();
         daemon.judge_once().await;
         daemon.judge_once().await;
         assert!(record(&daemon, &agent).judged.is_none());
@@ -4249,7 +4249,7 @@ mod tests {
             clearings(&mut events),
             [(agent.clone(), UNREADABLE.to_owned())]
         );
-        lock(&daemon.sessions).insert(agent.clone(), session);
+        daemon.put_terminal_for_test(&agent, session);
         stop(&daemon, &agent).await;
     }
 
