@@ -363,13 +363,22 @@ fn a_named_project_s_pull_request_is_read_in_its_root() {
             &format!("named-{}", selector.len()),
             &setting.here,
             &named(&selector),
-            vec![listed.clone(), receipts(&setting.there_id)],
+            vec![
+                listed.clone(),
+                agents(vec![record(&setting.here, &setting.here_id)]),
+                receipts(&setting.there_id),
+            ],
         );
         assert!(output.status.success(), "{selector}: {output:?}");
         assert_eq!(requests[0]["op"], "list", "{requests:?}");
         assert_eq!(requests[0]["project"], selector.as_str());
-        assert_eq!(requests[1]["branch"], "feature/b", "{selector}");
-        assert_eq!(requests[1]["project"], setting.there_id.as_str());
+        assert_eq!(
+            requests[1]["project"],
+            setting.here.to_str().unwrap(),
+            "whose this directory is, is the daemon's to say"
+        );
+        assert_eq!(requests[2]["branch"], "feature/b", "{selector}");
+        assert_eq!(requests[2]["project"], setting.there_id.as_str());
     }
     let (output, requests) = run(
         &setting,
@@ -395,13 +404,16 @@ fn a_named_project_s_pull_request_is_read_in_its_root() {
 
 /// Clones of one repository are one project, with a pull request 7 of its
 /// own in each. From one of them its own is read, whichever record is
-/// listed first; from outside both, neither is guessed and no read is sent.
+/// listed first and whether or not a record names it; from outside, none is
+/// guessed and no read is sent.
 #[test]
 fn a_project_of_several_clones_is_read_in_the_caller_s_or_not_at_all() {
     let setting = setting();
     let fork = setting.root.join("a-fork");
     clone(&setting.there, &fork, "feature/of-the-fork");
     assert_eq!(fingerprint(&fork), setting.there_id, "one project");
+    let unnamed = setting.root.join("unnamed");
+    clone(&setting.there, &unnamed, "feature/of-no-record");
     let listed = agents(vec![
         ended(record(&fork, &setting.there_id)),
         record(&setting.there, &setting.there_id),
@@ -409,27 +421,33 @@ fn a_project_of_several_clones_is_read_in_the_caller_s_or_not_at_all() {
     for (cwd, branch) in [
         (&setting.there, "feature/b"),
         (&fork, "feature/of-the-fork"),
+        (&unnamed, "feature/of-no-record"),
     ] {
         let (output, requests) = run(
             &setting,
             branch.rsplit('/').next().unwrap(),
             cwd,
             &named(&setting.there_id),
-            vec![listed.clone(), receipts(&setting.there_id)],
+            // The daemon says the directory is the same project's.
+            vec![listed.clone(), listed.clone(), receipts(&setting.there_id)],
         );
         assert!(output.status.success(), "{branch}: {output:?}");
-        assert_eq!(requests[1]["branch"], branch);
-        assert_eq!(requests[1]["project"], setting.there_id.as_str());
+        assert_eq!(requests[2]["branch"], branch);
+        assert_eq!(requests[2]["project"], setting.there_id.as_str());
     }
     let (output, requests) = run(
         &setting,
         "outside",
         &setting.here,
         &named(&setting.there_id),
-        vec![listed, receipts(&setting.there_id)],
+        vec![
+            listed,
+            agents(vec![record(&setting.here, &setting.here_id)]),
+            receipts(&setting.there_id),
+        ],
     );
     assert!(!output.status.success(), "{output:?}");
-    assert_eq!(requests.len(), 1, "no read: {requests:?}");
+    assert_eq!(requests.len(), 2, "no read: {requests:?}");
     let said = String::from_utf8_lossy(&output.stderr).into_owned();
     for expected in [
         fork.to_str().unwrap(),
@@ -448,6 +466,7 @@ fn a_root_that_is_no_longer_the_project_s_is_passed_over() {
     let gone = setting.root.join("a-gone");
     let taken = setting.root.join("a-taken");
     repository(&taken, "feature/of-another");
+    let here = agents(vec![record(&setting.here, &setting.here_id)]);
     for (name, stale) in [("gone", &gone), ("taken", &taken)] {
         let (output, requests) = run(
             &setting,
@@ -459,11 +478,12 @@ fn a_root_that_is_no_longer_the_project_s_is_passed_over() {
                     ended(record(stale, &setting.there_id)),
                     record(&setting.there, &setting.there_id),
                 ]),
+                here.clone(),
                 receipts(&setting.there_id),
             ],
         );
         assert!(output.status.success(), "{name}: {output:?}");
-        assert_eq!(requests[1]["branch"], "feature/b", "{name}");
+        assert_eq!(requests[2]["branch"], "feature/b", "{name}");
     }
     let (output, requests) = run(
         &setting,
@@ -472,9 +492,162 @@ fn a_root_that_is_no_longer_the_project_s_is_passed_over() {
         &named(&setting.there_id),
         vec![
             agents(vec![ended(record(&gone, &setting.there_id))]),
+            here,
             receipts(&setting.there_id),
         ],
     );
     assert!(!output.status.success(), "{output:?}");
-    assert_eq!(requests.len(), 1, "no read: {requests:?}");
+    assert_eq!(requests.len(), 2, "no read: {requests:?}");
+}
+
+/// A repository that only took another's history in is not that project's
+/// checkout: the daemon says whose the directory is, and the named
+/// project's own root is read.
+#[test]
+fn a_repository_that_took_a_history_in_is_not_its_project_s() {
+    let setting = setting();
+    git(
+        &setting.here,
+        &["fetch", "-q", setting.there.to_str().unwrap(), "main"],
+    );
+    git(
+        &setting.here,
+        &[
+            "merge",
+            "-q",
+            "--allow-unrelated-histories",
+            "-m",
+            "in",
+            "FETCH_HEAD",
+        ],
+    );
+    let (output, requests) = run(
+        &setting,
+        "took-in",
+        &setting.here,
+        &named(&setting.there_id),
+        vec![
+            agents(vec![record(&setting.there, &setting.there_id)]),
+            agents(vec![record(&setting.here, &setting.here_id)]),
+            receipts(&setting.there_id),
+        ],
+    );
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(requests[2]["branch"], "feature/b");
+}
+
+/// A repository is its project's through what moves the oldest root of
+/// whatever is checked out: an orphan branch, a shallow clone deepened, an
+/// unrelated history merged in, and a first commit made after the daemon
+/// first saw it. Read for the agent whose project it is, with no project
+/// named, and by the project's id from its own checkout.
+#[test]
+fn a_repository_stays_its_project_s_whatever_its_head_comes_to() {
+    let setting = setting();
+    let recorded = |root: &Path, fingerprint: Option<&str>| {
+        let mut record = record(root, fingerprint.unwrap_or_default());
+        record.project.as_mut().unwrap().fingerprint = fingerprint.map(str::to_owned);
+        record
+    };
+    let mut repositories: Vec<(&str, PathBuf, Option<String>)> = Vec::new();
+
+    let unborn = setting.root.join("unborn");
+    std::fs::create_dir_all(&unborn).unwrap();
+    git(&unborn, &["init", "-q", "-b", "main"]);
+    git(
+        &unborn,
+        &["commit", "-q", "--allow-empty", "-m", "born later"],
+    );
+    repositories.push(("unborn", unborn, None));
+
+    let orphan = setting.root.join("orphan");
+    let id = repository(&orphan, "replaced below");
+    git(&orphan, &["checkout", "-q", "--orphan", "pages"]);
+    git(
+        &orphan,
+        &["commit", "-q", "--allow-empty", "-m", "a root of its own"],
+    );
+    repositories.push(("orphan", orphan, Some(id)));
+
+    let long = setting.root.join("long");
+    repository(&long, "the oldest");
+    git(
+        &long,
+        &["commit", "-q", "--allow-empty", "-m", "the newest"],
+    );
+    let deepened = setting.root.join("deepened");
+    git(
+        &setting.root,
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &format!("file://{}", long.display()),
+            deepened.to_str().unwrap(),
+        ],
+    );
+    let id = fingerprint(&deepened);
+    git(&deepened, &["fetch", "-q", "--unshallow"]);
+    assert_ne!(fingerprint(&deepened), id, "its oldest root moved");
+    repositories.push(("deepened", deepened, Some(id)));
+
+    let merged = setting.root.join("merged");
+    let id = repository(&merged, "merged into");
+    git(
+        &merged,
+        &["fetch", "-q", setting.there.to_str().unwrap(), "main"],
+    );
+    git(
+        &merged,
+        &[
+            "merge",
+            "-q",
+            "--allow-unrelated-histories",
+            "-m",
+            "in",
+            "FETCH_HEAD",
+        ],
+    );
+    repositories.push(("merged", merged, Some(id)));
+
+    for (name, root, fingerprint) in repositories {
+        let branch = format!("feature/of-{name}");
+        pull_request(&root, &branch);
+        let record = recorded(&root, fingerprint.as_deref());
+        let project = record.project.as_ref().unwrap().id().to_string();
+        for command in ["authorship", "verdicts"] {
+            let read = match command {
+                "verdicts" => answer(Response::Verdicts {
+                    verdicts: Vec::new(),
+                    retained: 2000,
+                }),
+                _ => receipts(&project),
+            };
+            let (output, requests) = run(
+                &setting,
+                &format!("{name}-{command}"),
+                &root,
+                &[command, "7", "--as", "agent-b", "--json"],
+                vec![
+                    answer(Response::Agent {
+                        agent: record.clone(),
+                    }),
+                    read,
+                ],
+            );
+            assert!(output.status.success(), "{name} {command}: {output:?}");
+            assert_eq!(requests[1]["branch"], branch.as_str(), "{name} {command}");
+        }
+        let listed = agents(vec![record]);
+        let (output, requests) = run(
+            &setting,
+            &format!("{name}-named"),
+            &root,
+            &named(&project),
+            vec![listed.clone(), listed, receipts(&project)],
+        );
+        assert!(output.status.success(), "{name} named: {output:?}");
+        assert_eq!(requests[2]["branch"], branch.as_str(), "{name} named");
+    }
 }

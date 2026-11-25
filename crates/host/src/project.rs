@@ -179,15 +179,17 @@ pub(crate) fn resolve(base: &Path, path: &str) -> PathBuf {
     }
 }
 
-/// The variables that say which repository Git works in, as
-/// `git rev-parse --local-env-vars` lists them. Git exports some of them to
-/// its hooks, and one inherited takes precedence over the directory a
-/// command runs in: what is asked of a directory is asked without them.
-pub const REPOSITORY_ENV: [&str; 15] = [
+/// The variables that say which repository Git works in: what
+/// `git rev-parse --local-env-vars` lists, less the two that say how Git
+/// behaves and not where (`GIT_CONFIG_PARAMETERS`, `GIT_CONFIG_COUNT`),
+/// which Git itself keeps on entering a submodule and which may be what
+/// lets it read the directory at all (`safe.directory`). Git exports some
+/// of these to its hooks, and one inherited takes precedence over the
+/// directory a command runs in: what is asked of a directory is asked
+/// without them.
+pub const REPOSITORY_ENV: [&str; 13] = [
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_CONFIG",
-    "GIT_CONFIG_PARAMETERS",
-    "GIT_CONFIG_COUNT",
     "GIT_OBJECT_DIRECTORY",
     "GIT_DIR",
     "GIT_WORK_TREE",

@@ -157,15 +157,20 @@ fn tool(argv: &[&str]) -> Result<String> {
     tool_with(&std::env::current_dir()?, argv, &[])
 }
 
-/// What `argv` says of the repository `dir` is in, whatever repository the
-/// environment names: Git's own variables and `GH_REPO` are not inherited.
-fn tool_of(dir: &Path, argv: &[&str]) -> Result<String> {
-    let removed: Vec<(&str, Option<&std::ffi::OsStr>)> = agentdocker_host::project::REPOSITORY_ENV
+/// The environment a command is run in to be asked of the directory it
+/// runs in, whatever repository this one's names: Git's own variables that
+/// name one and `GH_REPO` are not inherited.
+fn outside() -> Vec<(&'static str, Option<&'static std::ffi::OsStr>)> {
+    agentdocker_host::project::REPOSITORY_ENV
         .into_iter()
         .chain(["GH_REPO"])
         .map(|name| (name, None))
-        .collect();
-    tool_with(dir, argv, &removed)
+        .collect()
+}
+
+/// What `argv` says of the repository `dir` is in ([`outside`]).
+fn tool_of(dir: &Path, argv: &[&str]) -> Result<String> {
+    tool_with(dir, argv, &outside())
 }
 
 fn tool_with(
@@ -206,15 +211,65 @@ fn checkout_root() -> Result<PathBuf> {
     )?))
 }
 
-/// The project `root` is in as it is now, by the daemon's own rule (the
-/// repository's oldest root commit, else the root's path) and read afresh:
-/// a path may hold another repository than when a record named it.
-fn project_now(root: &Path) -> agentdocker_core::ProjectId {
-    let mut project = agentdocker_host::project::discover(root);
-    if project.source == agentdocker_core::ProjectSource::Git {
-        project.fingerprint = agentdocker_host::project::fingerprint(&project.root, TOOL_TIMEOUT);
-    }
-    project.id()
+/// Whether the repository at `dir` holds `fingerprint`'s commit, for a
+/// project that has one: what tells a path that holds another repository
+/// now. Not whether it is still the oldest root of what is checked out,
+/// which an orphan branch, a deepened clone or a merged history moves
+/// within one repository. Nothing is walked and nothing fetched.
+fn holds(dir: &Path, fingerprint: Option<&str>) -> bool {
+    fingerprint.is_none_or(|commit| {
+        let mut environment = outside();
+        environment.push(("GIT_NO_LAZY_FETCH", Some(std::ffi::OsStr::new("1"))));
+        !commit.is_empty()
+            && commit.bytes().all(|b| b.is_ascii_hexdigit())
+            && tool_with(
+                dir,
+                &["git", "cat-file", "-e", &format!("{commit}^{{commit}}")],
+                &environment,
+            )
+            .is_ok()
+    })
+}
+
+/// Whether `project`'s root, as the daemon recorded it, still is its: a
+/// root of its own there, with the commit the project is known by.
+fn still_there(project: &agentdocker_core::ProjectRef) -> bool {
+    project.root.is_dir()
+        && agentdocker_host::project::discover(&project.root).root == project.root
+        && holds(&project.root, project.fingerprint.as_deref())
+}
+
+/// This checkout, when the daemon says the directory is project `id`'s and
+/// the repository in it still holds what the project is known by. It may be
+/// a clone no record names, and a repository that only took that history in
+/// is another project by the daemon's word, which is asked for.
+async fn own_checkout(
+    client: &Client,
+    id: &agentdocker_core::ProjectId,
+    named: &[agentdocker_core::ProjectRef],
+) -> Option<PathBuf> {
+    let here = checkout_root().ok()?;
+    let Response::Agents { agents, .. } = client
+        .call(&Request::List {
+            all: true,
+            project: Some(here.display().to_string()),
+            labels: Default::default(),
+        })
+        .await
+        .ok()?
+    else {
+        return None;
+    };
+    let project = agents
+        .into_iter()
+        .filter_map(|record| record.project)
+        .find(|project| project.id() == *id)?;
+    let root = agentdocker_host::project::discover(&here).root;
+    let is = match &project.fingerprint {
+        Some(commit) => holds(&here, Some(commit)),
+        None => named.iter().any(|project| project.root == root),
+    };
+    is.then_some(here)
 }
 
 /// The project to send: the one named, else none when an agent asks (the
@@ -289,17 +344,16 @@ async fn pr_project(
                 .filter_map(|record| record.project)
                 .collect();
             let id = named.first().with_context(|| unknown(&selector))?.id();
-            if let Ok(here) = checkout_root()
-                && project_now(&here) == id
-            {
+            if let Some(here) = own_checkout(client, &id, &named).await {
                 return Ok((here, id.to_string()));
             }
-            let roots: std::collections::BTreeSet<PathBuf> =
-                named.into_iter().map(|project| project.root).collect();
-            let mut roots: Vec<PathBuf> = roots
-                .into_iter()
-                .filter(|root| root.is_dir() && project_now(root) == id)
+            let mut roots: Vec<PathBuf> = named
+                .iter()
+                .filter(|project| still_there(project))
+                .map(|project| project.root.clone())
                 .collect();
+            roots.sort();
+            roots.dedup();
             ensure!(
                 roots.len() < 2,
                 "project {id} has several repositories here, and a pull request number names another change in each: pass one as --project, run this from one, or name the branch ({})",
@@ -330,10 +384,7 @@ async fn pr_project(
                 Some(record) => {
                     let project = record.project.with_context(|| unknown("of the asker"))?;
                     let id = project.id();
-                    ensure!(
-                        project.root.is_dir() && project_now(&project.root) == id,
-                        unknown(id.as_str())
-                    );
+                    ensure!(still_there(&project), unknown(id.as_str()));
                     Ok((project.root, id.to_string()))
                 }
                 None => {
