@@ -290,6 +290,31 @@ pub(crate) enum Ended {
     Superseded { same_run: bool },
 }
 
+/// What a scheduled restart was told when it asked to go on
+/// ([`Daemon::admit_restart`]).
+pub(crate) enum RestartAdmission {
+    Admitted(InFlight),
+    /// The record has another ending than the one the restart was
+    /// scheduled for: nothing was moved.
+    Superseded,
+    Refused(Box<Response>),
+}
+
+/// A supervision at work, counted from its start to the last thing it
+/// tidies ([`Daemon::supervising`]). The end of a run is recorded, and its
+/// control taken out, before its owner is acknowledged and reaped and its
+/// report and socket are removed: shutdown waits for these too before it
+/// sweeps the session directory.
+pub(crate) struct Supervising(Arc<Daemon>);
+
+impl Drop for Supervising {
+    fn drop(&mut self) {
+        self.0
+            .supervisions
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// What became of one attempt to end a run ([`State::end_run`]).
 #[must_use]
 pub(super) enum RunEnded {
@@ -471,6 +496,9 @@ pub struct Daemon {
     /// The next [`Install`], counted outside the state lock: a supervision
     /// is named before anything of it is installed.
     installs: std::sync::atomic::AtomicU64,
+    /// Supervisions at work, their tidying after a recorded end included
+    /// ([`Supervising`]).
+    supervisions: std::sync::atomic::AtomicUsize,
     /// One scan at a time: the tick and an on-demand `discover` must not
     /// interleave scans. A flag and notification allow callers to join a
     /// pending scan without holding any lock across async work.
@@ -1310,6 +1338,13 @@ impl Daemon {
         }
     }
 
+    /// Count a supervision as at work until what this returns is dropped.
+    pub(crate) fn supervising(self: &Arc<Self>) -> Supervising {
+        self.supervisions
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Supervising(self.clone())
+    }
+
     /// The supervision of what was just spawned or reattached.
     pub(crate) fn supervision_of(
         &self,
@@ -1468,10 +1503,17 @@ impl Daemon {
         // Successful live handover returns from serve() before stop_all();
         // successor-owned sessions never reach this shutdown sweep.
         // Recording an exit removes its supervision entry before the owner
-        // receives the acknowledgement and releases its lock. Wait within the
-        // same shutdown budget for that retirement, then sweep once it is safe.
-        // Held locks and unacknowledged exit reports remain protected.
-        while sweep_sessions(&self.home) {
+        // receives the acknowledgement and releases its lock, and before
+        // the supervision, once the owner has gone, removes the exit
+        // report it acknowledged. Wait within the same shutdown budget for
+        // both: supervisions still tidying first (a sweep that ran ahead of
+        // one would find its report there, take it for unacknowledged and
+        // leave it with its lock and the directory), then owners still
+        // holding their locks. Held locks and unacknowledged exit reports
+        // remain protected.
+        while self.supervisions.load(std::sync::atomic::Ordering::SeqCst) > 0
+            || sweep_sessions(&self.home)
+        {
             if tokio::time::Instant::now() >= deadline {
                 warn!("session owners did not finish retirement; held files retained");
                 break;
@@ -2121,6 +2163,7 @@ impl Daemon {
             watcher_attach: watch::channel(WatcherLink::Off).0,
             restricted: Mutex::new(RestrictedEndpoint::Starting),
             installs: std::sync::atomic::AtomicU64::new(1),
+            supervisions: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -2438,16 +2481,25 @@ impl Daemon {
         self: &Arc<Self>,
         id: &AgentId,
         ending: Option<DateTime<Utc>>,
-    ) -> Result<InFlight, Box<Response>> {
+    ) -> RestartAdmission {
         use agentdocker_core::restart::Phase;
         let mut state = lock(&self.state);
         if let Some(error) = state.storage_failure() {
-            return Err(Box::new(error));
+            return RestartAdmission::Refused(Box::new(error));
+        }
+        // Compared in the hold that admits, before any phase moves: a
+        // record at another ending than the one this restart was scheduled
+        // for is not this attempt's to start, nor is the marker there
+        // (its own or a later ending's) its to call starting or refused.
+        if state
+            .registry
+            .get(id)
+            .is_some_and(|record| record.finished_at != ending)
+        {
+            return RestartAdmission::Superseded;
         }
         // The marker there is this attempt's only while it is for the
-        // ending this restart was scheduled for: one set since, for a
-        // later ending under the same id, is not said to be starting or
-        // refused on this attempt's account.
+        // ending this restart was scheduled for.
         let own = state
             .restart_endings
             .get(id)
@@ -2460,7 +2512,7 @@ impl Daemon {
                 };
                 state.publish_restart(id);
             }
-            return Err(Box::new(error));
+            return RestartAdmission::Refused(Box::new(error));
         }
         state.in_flight += 1;
         if let Some(phase) = state.pending_restarts.get_mut(id).filter(|_| own) {
@@ -2469,7 +2521,7 @@ impl Daemon {
             };
             state.publish_restart(id);
         }
-        Ok(InFlight(self.clone()))
+        RestartAdmission::Admitted(InFlight(self.clone()))
     }
 
     /// The wait is over and the request will write again: take a place

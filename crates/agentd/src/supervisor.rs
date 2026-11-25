@@ -642,17 +642,25 @@ pub(crate) async fn acknowledge_recovered_exit(home: std::path::PathBuf, report:
 /// and removed: a report a later run of the same agent id left is not this
 /// one's to remove. Never unlink the lock itself.
 pub(crate) async fn retire_report(home: &Path, report: &ExitReport) {
-    let lock_path = endpoint(home, &report.agent).with_extension("lock");
+    // The owner's lock is beside its socket's path on every platform, a
+    // pipe's endpoint having no place on disk to be beside.
+    let lock_path =
+        agentdocker_core::session::socket_path(home, &report.agent).with_extension("lock");
     let exit = exit_path(home, &report.agent);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        match agentdocker_host::lock::try_exclusive(&lock_path) {
+        // An existing lock only: one a sweep has removed is not put back,
+        // and with it gone there is no owner's file left here to compare.
+        match agentdocker_host::lock::try_exclusive_existing(&lock_path) {
             Ok(Some(held)) => match remove_report_under(&held, &lock_path, &exit, report) {
                 Some(_) => return,
                 // The lock was won on a file the name no longer has (a
                 // stopping daemon's sweep unlinked it between the open and
-                // the lock): it excludes nobody, so it is taken again.
-                None if tokio::time::Instant::now() < deadline => {}
+                // the lock), or its name could not be checked: it excludes
+                // nobody, so it is taken again, after a pause.
+                None if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(25)).await;
+                }
                 None => return,
             },
             // Whoever holds the lock, there is nothing to wait for once
@@ -724,7 +732,8 @@ fn remove_socket_under(
 fn remove_unowned_socket(home: &Path, agent: &AgentId) {
     let socket = socket_path(home, agent);
     let lock_path = socket.with_extension("lock");
-    if let Ok(Some(held)) = agentdocker_host::lock::try_exclusive(&lock_path) {
+    // An existing lock only: one a sweep has removed is not put back.
+    if let Ok(Some(held)) = agentdocker_host::lock::try_exclusive_existing(&lock_path) {
         remove_socket_under(&held, &lock_path, &socket);
     }
 }
@@ -998,7 +1007,11 @@ pub fn supervise(
     supervision: Supervision,
     mut spawned: Spawned,
 ) -> tokio::task::JoinHandle<()> {
+    // Counted before the task exists, so a shutdown that looks between the
+    // two finds it; and to the task's last line, its tidying included.
+    let at_work = daemon.supervising();
     tokio::spawn(async move {
+        let _at_work = at_work;
         let id = supervision.agent.clone();
         let outcome = if !spawned.activated {
             // The launch record never became durable: tell the owner to deny
@@ -1456,11 +1469,6 @@ mod tests {
         }
     }
 
-    /// A launch that fails before activation is recorded, with its owner's
-    /// proof of how it ended, before its owner is acknowledged: at the
-    /// acknowledgement the store holds the failure and its event. A store
-    /// that cannot keep it acknowledges nothing, so the owner's report
-    /// waits in its exit file for a daemon that can.
     /// A lock is on a file, not on a name. One taken on a lock file that
     /// was unlinked and replaced since (a stopping daemon's sweep, then a
     /// new owner) excludes nobody, and under it nothing is removed: not
@@ -1531,6 +1539,11 @@ mod tests {
         assert!(!socket.exists() && !exit.exists());
     }
 
+    /// A launch that fails before activation is recorded, with its owner's
+    /// proof of how it ended, before its owner is acknowledged: at the
+    /// acknowledgement the store holds the failure and its event. A store
+    /// that cannot keep it acknowledges nothing, so the owner's report
+    /// waits in its exit file for a daemon that can.
     #[tokio::test]
     async fn a_failed_activation_is_durable_before_its_owner_is_acknowledged() {
         use agentdocker_core::RunEnd;

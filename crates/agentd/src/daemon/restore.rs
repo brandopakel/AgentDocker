@@ -1547,6 +1547,281 @@ mod tests {
         }
     }
 
+    /// A restart's timer wakes to a record at another ending than the one
+    /// it was scheduled for: relaunched and running, ended some way its
+    /// policy does not restart, or failed again before a spawn (where no
+    /// supervision asks for anything). It starts nothing, and it takes its
+    /// own marker off, so nothing goes on saying "about to be restarted".
+    /// The third is then scheduled by the daemon's own look, which is not
+    /// put off by a marker for an ending that is past.
+    #[tokio::test]
+    async fn a_restart_overtaken_before_its_timer_leaves_no_marker_behind() {
+        enum Then {
+            Running,
+            EndedForGood,
+            FailedBeforeItsSpawn,
+        }
+        for then in [
+            Then::Running,
+            Then::EndedForGood,
+            Then::FailedBeforeItsSpawn,
+        ] {
+            let dir = TempDir::new().unwrap();
+            let owner = an_owner(0);
+            let (daemon, id) = holding(&dir, &owner);
+            let failed = AgentStatus::Exited { code: Some(1) };
+            let first = Some(Utc::now());
+            {
+                let mut state = lock(&daemon.state);
+                let record = state.registry.get_mut(&id).unwrap();
+                record.status = failed.clone();
+                record.finished_at = first;
+            }
+            // The first restart: a fifth of a second away.
+            daemon.consider_restart(&id, &failed);
+            assert!(lock(&daemon.state).restart_waits(&id, first));
+            // The session is relaunched meanwhile.
+            let second = first.map(|at| at + chrono::Duration::seconds(1));
+            let (status, restarts) = {
+                let mut state = lock(&daemon.state);
+                let record = state.registry.get_mut(&id).unwrap();
+                match then {
+                    Then::Running => {
+                        record.status = AgentStatus::Running;
+                        record.finished_at = None;
+                    }
+                    Then::EndedForGood => {
+                        record.status = AgentStatus::Exited { code: Some(0) };
+                        record.spec.restart = agentdocker_core::RestartPolicy::No;
+                        record.finished_at = second;
+                    }
+                    Then::FailedBeforeItsSpawn => {
+                        record.status = AgentStatus::Failed {
+                            reason: "its checkout could not be watched".into(),
+                        };
+                        record.finished_at = second;
+                        // Many attempts in, so its own restart, once
+                        // scheduled, outlasts the test.
+                        record.restarts = 8;
+                    }
+                }
+                (record.status.clone(), record.restarts)
+            };
+            // The timer wakes and lets its marker go.
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while lock(&daemon.state).pending_restarts.contains_key(&id) {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("the overtaken restart takes its marker off");
+            {
+                let state = lock(&daemon.state);
+                assert!(state.restart_endings.is_empty());
+                let record = state.registry.get(&id).unwrap();
+                assert_eq!(record.status, status, "nothing was started");
+                assert_eq!(record.restarts, restarts);
+            }
+            if matches!(then, Then::FailedBeforeItsSpawn) {
+                daemon.resume_restarts();
+                let mut state = lock(&daemon.state);
+                assert!(
+                    state.restart_waits(&id, second),
+                    "its own restart is scheduled"
+                );
+                state.release_restart(&id, second);
+            } else {
+                daemon.resume_restarts();
+                assert!(lock(&daemon.state).pending_restarts.is_empty());
+            }
+        }
+    }
+
+    /// A marker for an ending that is past does not put off the restart of
+    /// the ending the record holds, even before the earlier timer wakes.
+    #[tokio::test]
+    async fn the_daemons_own_look_is_not_put_off_by_an_earlier_endings_marker() {
+        let dir = TempDir::new().unwrap();
+        let owner = an_owner(0);
+        let (daemon, id) = holding(&dir, &owner);
+        let failed = AgentStatus::Exited { code: Some(1) };
+        let first = Some(Utc::now());
+        let second = first.map(|at| at + chrono::Duration::seconds(1));
+        {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&id).unwrap();
+            record.status = failed.clone();
+            // Many attempts in, so both delays outlast the test.
+            record.restarts = 8;
+            record.finished_at = first;
+        }
+        daemon.consider_restart(&id, &failed);
+        lock(&daemon.state)
+            .registry
+            .get_mut(&id)
+            .unwrap()
+            .finished_at = second;
+        assert!(!lock(&daemon.state).restart_waits(&id, second));
+        daemon.resume_restarts();
+        let mut state = lock(&daemon.state);
+        assert!(state.restart_waits(&id, second));
+        state.release_restart(&id, second);
+    }
+
+    /// A restart is for one ending after its spawn as before it. The spawn
+    /// takes time; here the session is relaunched under the id while it
+    /// runs, and is starting again, or has failed again, when the
+    /// restart's child comes back. Nothing is installed over the newer
+    /// start, nothing of the record is written, and the child is stopped.
+    /// A spawn that failed instead writes nothing over the newer ending.
+    #[tokio::test]
+    async fn a_restart_that_was_overtaken_during_its_spawn_touches_nothing_of_the_newer_start() {
+        for failed_again in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let owner = an_owner(0);
+            let (daemon, id) = holding(&dir, &owner);
+            let first = Some(Utc::now());
+            let scheduled_for = {
+                let mut state = lock(&daemon.state);
+                let record = state.registry.get_mut(&id).unwrap();
+                record.status = AgentStatus::Exited { code: Some(1) };
+                record.finished_at = first;
+                record.clone()
+            };
+            // Relaunched while the restart's spawn runs.
+            relaunched(&daemon, &id);
+            let second = first.map(|at| at + chrono::Duration::seconds(1));
+            if failed_again {
+                let mut state = lock(&daemon.state);
+                let record = state.registry.get_mut(&id).unwrap();
+                record.status = AgentStatus::Failed {
+                    reason: "its checkout could not be watched".into(),
+                };
+                record.finished_at = second;
+            }
+            let before = lock(&daemon.state).registry.get(&id).cloned().unwrap();
+            // The restart's child comes back from its spawn.
+            let child = an_owner(2);
+            let (spawned, peer) =
+                supervisor::spawned_for_test(child.clone(), child.pid, child.started_at, false)
+                    .await;
+            daemon.restarted(&scheduled_for, first, spawned).await;
+            assert_eq!(
+                supervisor::sent_for_test(peer).await.first(),
+                Some(&OwnerCommand::Stop { force: true }),
+                "the restart's child is stopped"
+            );
+            {
+                let state = lock(&daemon.state);
+                assert_eq!(
+                    state.registry.get(&id),
+                    Some(&before),
+                    "failed_again={failed_again}: the newer start is as it was"
+                );
+                assert!(
+                    state.control(&id).is_none(),
+                    "nothing of the restart's is installed"
+                );
+            }
+            // Its spawn failing instead: the newer ending is not written over.
+            daemon.restart_failed(&scheduled_for, first, "no such program".into());
+            assert_eq!(lock(&daemon.state).registry.get(&id), Some(&before));
+        }
+        // Still at the ending it was scheduled for: a failed spawn is the
+        // record's, and counted.
+        let dir = TempDir::new().unwrap();
+        let owner = an_owner(0);
+        let (daemon, id) = holding(&dir, &owner);
+        let first = Some(Utc::now());
+        let scheduled_for = {
+            let mut state = lock(&daemon.state);
+            let record = state.registry.get_mut(&id).unwrap();
+            record.status = AgentStatus::Exited { code: Some(1) };
+            record.finished_at = first;
+            record.clone()
+        };
+        daemon.restart_failed(&scheduled_for, first, "no such program".into());
+        let after = lock(&daemon.state).registry.get(&id).cloned().unwrap();
+        assert_eq!(after.restarts, 1);
+        assert!(matches!(after.status, AgentStatus::Failed { .. }));
+        daemon.clear_restart(&id);
+    }
+
+    /// A stopping daemon leaves nothing in the session directory, with a
+    /// supervision still tidying when it comes to sweep. The owner here is
+    /// a child process that has written its exit report and let its lock
+    /// go, and takes a moment more to exit; its supervision has recorded
+    /// the end and waits to reap it before it removes the report. The
+    /// shutdown waits for that: a sweep that ran first would find the
+    /// report there, take it for unacknowledged, and leave it with its
+    /// lock and the directory.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_stopping_daemon_waits_for_a_supervision_that_is_still_tidying() {
+        use agentdocker_core::session::{exit_path, sessions_dir, socket_path};
+        let dir = TempDir::new().unwrap();
+        let owner = an_owner(0);
+        let (daemon, id) = holding(&dir, &owner);
+        lock(&daemon.state)
+            .registry
+            .get_mut(&id)
+            .unwrap()
+            .spec
+            .restart = agentdocker_core::RestartPolicy::No;
+        // The owner's files: its socket, its lock (let go already) and its
+        // exit report.
+        let socket = socket_path(&daemon.home, &id);
+        let lock_path = socket.with_extension("lock");
+        let exit = exit_path(&daemon.home, &id);
+        std::fs::create_dir_all(socket.parent().unwrap()).unwrap();
+        std::fs::write(&socket, b"").unwrap();
+        std::fs::write(&lock_path, b"").unwrap();
+        let report = ExitReport {
+            agent: id.clone(),
+            owner: owner.clone(),
+            child: ChildIdentity {
+                pid: owner.pid,
+                started_at: owner.started_at,
+                tty: false,
+            },
+            code: Some(0),
+            signal: None,
+            log_flushed: true,
+            at: Utc::now(),
+            never_ran: None,
+        };
+        std::fs::write(&exit, serde_json::to_vec(&report).unwrap()).unwrap();
+        // The owner process, a second from gone.
+        let process = std::process::Command::new("sleep")
+            .arg("1")
+            .spawn()
+            .unwrap();
+        let (spawned, peer) =
+            supervisor::spawned_for_test(owner.clone(), owner.pid, owner.started_at, true).await;
+        let spawned = spawned.with_owner_process_for_test(process);
+        let supervising = daemon.supervision_of(&id, &spawned);
+        daemon.install(&supervising, spawned.control.clone(), None, true);
+        supervisor::supervise(daemon.clone(), supervising, spawned);
+        // The connection goes with the owner; the report says how it ended.
+        drop(peer);
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while daemon.is_live(&id) {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the exit is recorded");
+        assert!(exit.exists(), "the report waits for the owner to be reaped");
+
+        daemon.stop_all().await;
+        assert!(!exit.exists(), "the report was retired before the sweep");
+        assert!(!lock_path.exists() && !socket.exists());
+        assert!(
+            !sessions_dir(&daemon.home).exists(),
+            "nothing is left behind"
+        );
+    }
+
     #[tokio::test]
     async fn an_exit_the_store_cannot_keep_leaves_the_owner_report_in_place() {
         failed_live_exit(false).await;

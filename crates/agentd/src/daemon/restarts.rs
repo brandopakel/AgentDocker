@@ -40,6 +40,19 @@ pub(super) enum Attempt {
 }
 
 impl State {
+    /// A restart is scheduled for this ending of the agent.
+    pub(super) fn restart_waits(
+        &self,
+        id: &AgentId,
+        ending: Option<chrono::DateTime<Utc>>,
+    ) -> bool {
+        self.pending_restarts.contains_key(id)
+            && self
+                .restart_endings
+                .get(id)
+                .is_none_or(|scheduled| *scheduled == ending)
+    }
+
     /// Take off the marker of the restart scheduled for `ending`, and say
     /// so. A marker set since for a later ending under the same id stays:
     /// it is another task's.
@@ -119,12 +132,7 @@ impl Daemon {
             // earlier delay ran) is not this run's: this ending gets its
             // own delay, and the earlier task finds on waking that it was
             // replaced.
-            if state.pending_restarts.contains_key(id)
-                && state
-                    .restart_endings
-                    .get(id)
-                    .is_none_or(|ending| *ending == record.finished_at)
-            {
+            if state.restart_waits(id, record.finished_at) {
                 return;
             }
             // Installed and said in one hold, before its task exists, so
@@ -184,12 +192,14 @@ impl Daemon {
                             }
                             return;
                         }
-                        // Another run ended under this id since: its own
-                        // restart waits its own delay, under its own marker.
-                        Attempt::Superseded => {
-                            pending.released();
-                            return;
-                        }
+                        // The record is at another ending than this one's:
+                        // relaunched and running, ended some way its policy
+                        // does not restart, failed before a spawn, or ended
+                        // again with a restart of its own waiting. Nothing
+                        // is started on this deadline, and the guard, let
+                        // go here, takes off this restart's marker if it is
+                        // still the one there and leaves a later one.
+                        Attempt::Superseded => return,
                         Attempt::Refused => {}
                     }
                 }
@@ -220,7 +230,9 @@ impl Daemon {
                             .spec
                             .restart
                             .restarts(&record.status, record.restarts)
-                        && !state.pending_restarts.contains_key(&record.id)
+                        // Only a restart waiting for this very ending: a
+                        // marker left by an earlier one says nothing of it.
+                        && !state.restart_waits(&record.id, record.finished_at)
                 })
                 .map(|record| (record.id.clone(), record.status.clone()))
                 .collect()
@@ -242,8 +254,9 @@ impl Daemon {
         ending: Option<chrono::DateTime<Utc>>,
     ) -> Attempt {
         let _admitted = match self.admit_restart(id, ending) {
-            Ok(admitted) => admitted,
-            Err(error) => {
+            RestartAdmission::Admitted(admitted) => admitted,
+            RestartAdmission::Superseded => return Attempt::Superseded,
+            RestartAdmission::Refused(error) => {
                 return if matches!(
                     *error,
                     Response::Error {
@@ -287,27 +300,59 @@ impl Daemon {
             "restarting"
         );
         match supervisor::spawn(self, &record).await {
-            Ok(mut spawned) => {
-                let pid = spawned.pid;
-                let started_at = Some(spawned.process_started_at);
-                let supervising = self.supervision_of(id, &spawned);
-                let persisted = {
-                    let mut state = lock(&self.state);
-                    // The supervisor owns this child even if its durable transition fails.
+            Ok(spawned) => self.restarted(&record, ending, spawned).await,
+            Err(err) => {
+                warn!(agent = %id.short(), %err, "restart failed");
+                self.restart_failed(&record, ending, format!("{err:#}"));
+            }
+        }
+        Attempt::Done
+    }
+
+    /// What a restart does with the child it spawned for `record`'s
+    /// ending. The spawn takes time, and a session can be relaunched under
+    /// the id, or fail again, while it runs: so whether this child is the
+    /// record's next run is decided under the lock before anything is
+    /// installed. Where the record is still at the ending the restart was
+    /// scheduled for, the child is installed, committed as its run and let
+    /// go. Where it is not (live again, or at another ending), nothing is
+    /// installed over the newer start and nothing of the record is
+    /// written: the child is stopped and seen to its end under a
+    /// supervision that holds nothing of the agent's.
+    pub(super) async fn restarted(
+        self: &Arc<Self>,
+        record: &AgentRecord,
+        ending: Option<chrono::DateTime<Utc>>,
+        mut spawned: supervisor::Spawned,
+    ) {
+        let id = &record.id;
+        let attempt = record.restarts + 1;
+        let pid = spawned.pid;
+        let started_at = Some(spawned.process_started_at);
+        let supervising = self.supervision_of(id, &spawned);
+        let persisted = {
+            let mut state = lock(&self.state);
+            let current = state.registry.get(id).cloned().filter(|current| {
+                !current.status.is_live()
+                    && current.finished_at == ending
+                    && current.spec.restart == record.spec.restart
+                    && current.restarts == record.restarts
+            });
+            match current {
+                None => false,
+                Some(mut running) => {
+                    // The supervisor owns this child even if its durable
+                    // transition fails: installed for this start, which is
+                    // on no record until the commit below.
                     state.install(
                         &supervising,
                         spawned.control.clone(),
                         spawned.session.clone(),
                         false,
                     );
-                    let current = state.registry.get(id).cloned();
-                    if state.run_refusal(&record).is_some() {
+                    if state.run_refusal(record).is_some() {
                         false
-                    } else if let Some(mut running) = current.filter(|current| {
-                        !current.status.is_live()
-                            && current.spec.restart == record.spec.restart
-                            && current.restarts == record.restarts
-                    }) {
+                    } else {
                         running.pid = Some(pid);
                         running.process_started_at = started_at;
                         running.process_group = Some(pid);
@@ -342,81 +387,82 @@ impl Daemon {
                             state.written(&supervising);
                         }
                         committed
-                    } else {
-                        false
-                    }
-                };
-                let activation_failed = if persisted {
-                    spawned.activate("restarted").await.is_err()
-                } else {
-                    false
-                };
-                if !persisted || activation_failed {
-                    spawned.control.send_replace(Some(true));
-                }
-                let supervision = supervisor::supervise(self.clone(), supervising, spawned);
-                if !persisted || activation_failed {
-                    let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
-                }
-            }
-            Err(err) => {
-                warn!(agent = %id.short(), %err, "restart failed");
-                // Count the attempt even though it did not start: a
-                // command that cannot be spawned would otherwise be
-                // retried forever under `on-failure`, which is the one
-                // thing the limit exists to prevent.
-                let status = AgentStatus::Failed {
-                    reason: format!("restart failed: {err:#}"),
-                };
-                {
-                    let mut state = lock(&self.state);
-                    if state.storage_error.is_some() {
-                        return Attempt::Done;
-                    }
-                    let Some(mut failed) = state.registry.get(id).cloned().filter(|current| {
-                        !current.status.is_live()
-                            && current.spec.restart == record.spec.restart
-                            && current.restarts == record.restarts
-                    }) else {
-                        return Attempt::Done;
-                    };
-                    failed.restarts = attempt;
-                    // This attempt's own failure: whatever ended the run
-                    // before is not how this one ended.
-                    failed.end_run(status.clone(), None);
-                    failed.finished_at = Some(Utc::now());
-                    let now = Utc::now();
-                    let mut events = vec![Event::new(
-                        EventKind::AgentExited {
-                            agent: id.clone(),
-                            status: status.clone(),
-                            ending: None,
-                        },
-                        now,
-                    )];
-                    // The failed attempt that spends the policy says so with
-                    // its ending.
-                    events.extend(
-                        super::restarts_exhausted(&failed).map(|kind| Event::new(kind, now)),
-                    );
-                    let committed = state.commit(
-                        "failed restart",
-                        events,
-                        |store, events| store.agent_exit(&failed, &[], &[], &[], events),
-                        |state, _, ()| {
-                            *state
-                                .registry
-                                .get_mut(id)
-                                .expect("restart identity retained") = failed.clone();
-                        },
-                    );
-                    if committed != Persisted::Committed {
-                        return Attempt::Done;
                     }
                 }
             }
+        };
+        let activation_failed = if persisted {
+            spawned.activate("restarted").await.is_err()
+        } else {
+            false
+        };
+        if !persisted || activation_failed {
+            spawned.control.send_replace(Some(true));
         }
-        Attempt::Done
+        let supervision = supervisor::supervise(self.clone(), supervising, spawned);
+        if !persisted || activation_failed {
+            let _ = tokio::time::timeout(SUPERVISION_STOP_TIMEOUT, supervision).await;
+        }
+    }
+
+    /// A restart's spawn failed. The attempt is counted and its failure
+    /// written as the record's ending, while the record is still at the
+    /// ending the restart was scheduled for: a run that began or ended
+    /// under the id meanwhile keeps its own.
+    pub(super) fn restart_failed(
+        self: &Arc<Self>,
+        record: &AgentRecord,
+        ending: Option<chrono::DateTime<Utc>>,
+        why: String,
+    ) {
+        let id = &record.id;
+        let attempt = record.restarts + 1;
+        // Count the attempt even though it did not start: a command that
+        // cannot be spawned would otherwise be retried forever under
+        // `on-failure`, which is the one thing the limit exists to prevent.
+        let status = AgentStatus::Failed {
+            reason: format!("restart failed: {why}"),
+        };
+        let mut state = lock(&self.state);
+        if state.storage_error.is_some() {
+            return;
+        }
+        let Some(mut failed) = state.registry.get(id).cloned().filter(|current| {
+            !current.status.is_live()
+                && current.finished_at == ending
+                && current.spec.restart == record.spec.restart
+                && current.restarts == record.restarts
+        }) else {
+            return;
+        };
+        failed.restarts = attempt;
+        // This attempt's own failure: whatever ended the run before is not
+        // how this one ended.
+        failed.end_run(status.clone(), None);
+        failed.finished_at = Some(Utc::now());
+        let now = Utc::now();
+        let mut events = vec![Event::new(
+            EventKind::AgentExited {
+                agent: id.clone(),
+                status: status.clone(),
+                ending: None,
+            },
+            now,
+        )];
+        // The failed attempt that spends the policy says so with its
+        // ending.
+        events.extend(super::restarts_exhausted(&failed).map(|kind| Event::new(kind, now)));
+        let _ = state.commit(
+            "failed restart",
+            events,
+            |store, events| store.agent_exit(&failed, &[], &[], &[], events),
+            |state, _, ()| {
+                *state
+                    .registry
+                    .get_mut(id)
+                    .expect("restart identity retained") = failed.clone();
+            },
+        );
     }
 
     /// An agent stopped on purpose stays stopped. Clearing the policy on
