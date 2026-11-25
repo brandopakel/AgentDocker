@@ -309,6 +309,7 @@ pub(crate) fn acting_agent(request: &mut Request) -> Option<&mut String> {
         | R::ReviewGate { .. }
         | R::GateRuns { .. }
         | R::Verdicts { .. }
+        | R::Authorship { .. }
         | R::AttachInput { .. }
         | R::AttachResize { .. }
         | R::JournalPrune { .. }
@@ -901,6 +902,10 @@ pub(crate) enum Authorized {
     Person,
     /// What the sender may name, as the kernel said it.
     Named(Box<Named>),
+    /// A commit report the socket found sent from inside this owner's
+    /// session ([`Daemon::authenticate_report`]): the commit is named by
+    /// that session. Nothing a client sends says so.
+    ReportOwner(AgentId),
 }
 
 impl Authorized {

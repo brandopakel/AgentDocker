@@ -154,8 +154,32 @@ fn parse_findings(text: &str) -> Result<Findings, String> {
 }
 
 fn tool(argv: &[&str]) -> Result<String> {
+    tool_with(&std::env::current_dir()?, argv, &[])
+}
+
+/// The environment a command is run in to be asked of the directory it
+/// runs in, whatever repository this one's names: Git's own variables that
+/// name one and `GH_REPO` are not inherited.
+fn outside() -> Vec<(&'static str, Option<&'static std::ffi::OsStr>)> {
+    agentdocker_host::project::REPOSITORY_ENV
+        .into_iter()
+        .chain(["GH_REPO"])
+        .map(|name| (name, None))
+        .collect()
+}
+
+/// What `argv` says of the repository `dir` is in ([`outside`]).
+fn tool_of(dir: &Path, argv: &[&str]) -> Result<String> {
+    tool_with(dir, argv, &outside())
+}
+
+fn tool_with(
+    dir: &Path,
+    argv: &[&str],
+    environment: &[(&str, Option<&std::ffi::OsStr>)],
+) -> Result<String> {
     let argv: Vec<String> = argv.iter().map(|&a| a.to_owned()).collect();
-    let output = agentdocker_host::command::run(&std::env::current_dir()?, &argv, TOOL_TIMEOUT)
+    let output = agentdocker_host::command::run_with_env(dir, &argv, TOOL_TIMEOUT, environment)
         .with_context(|| format!("cannot run {}", argv[0]))?;
     ensure!(
         output.success,
@@ -178,13 +202,74 @@ pub(crate) fn commit(reference: &str) -> Result<String> {
     .with_context(|| format!("{reference} is not a commit this checkout knows"))
 }
 
-/// This checkout's root, for a project when none is named.
+/// This checkout's root, for a project when none is named: of the
+/// directory this runs in, whatever repository the environment names.
 fn checkout_root() -> Result<PathBuf> {
-    Ok(PathBuf::from(tool(&[
-        "git",
-        "rev-parse",
-        "--show-toplevel",
-    ])?))
+    Ok(PathBuf::from(tool_of(
+        &std::env::current_dir()?,
+        &["git", "rev-parse", "--show-toplevel"],
+    )?))
+}
+
+/// Whether the repository at `dir` holds `fingerprint`'s commit, for a
+/// project that has one: what tells a path that holds another repository
+/// now. Not whether it is still the oldest root of what is checked out,
+/// which an orphan branch, a deepened clone or a merged history moves
+/// within one repository. Nothing is walked and nothing fetched.
+fn holds(dir: &Path, fingerprint: Option<&str>) -> bool {
+    fingerprint.is_none_or(|commit| {
+        let mut environment = outside();
+        environment.push(("GIT_NO_LAZY_FETCH", Some(std::ffi::OsStr::new("1"))));
+        !commit.is_empty()
+            && commit.bytes().all(|b| b.is_ascii_hexdigit())
+            && tool_with(
+                dir,
+                &["git", "cat-file", "-e", &format!("{commit}^{{commit}}")],
+                &environment,
+            )
+            .is_ok()
+    })
+}
+
+/// Whether `project`'s root, as the daemon recorded it, still is its: a
+/// root of its own there, with the commit the project is known by.
+fn still_there(project: &agentdocker_core::ProjectRef) -> bool {
+    project.root.is_dir()
+        && agentdocker_host::project::discover(&project.root).root == project.root
+        && holds(&project.root, project.fingerprint.as_deref())
+}
+
+/// This checkout, when the daemon says the directory is project `id`'s and
+/// the repository in it still holds what the project is known by. It may be
+/// a clone no record names, and a repository that only took that history in
+/// is another project by the daemon's word, which is asked for.
+async fn own_checkout(
+    client: &Client,
+    id: &agentdocker_core::ProjectId,
+    named: &[agentdocker_core::ProjectRef],
+) -> Option<PathBuf> {
+    let here = checkout_root().ok()?;
+    let Response::Agents { agents, .. } = client
+        .call(&Request::List {
+            all: true,
+            project: Some(here.display().to_string()),
+            labels: Default::default(),
+        })
+        .await
+        .ok()?
+    else {
+        return None;
+    };
+    let project = agents
+        .into_iter()
+        .filter_map(|record| record.project)
+        .find(|project| project.id() == *id)?;
+    let root = agentdocker_host::project::discover(&here).root;
+    let is = match &project.fingerprint {
+        Some(commit) => holds(&here, Some(commit)),
+        None => named.iter().any(|project| project.root == root),
+    };
+    is.then_some(here)
 }
 
 /// The project to send: the one named, else none when an agent asks (the
@@ -220,6 +305,136 @@ fn pull_request(target: &str) -> Option<u64> {
         .parse()
         .ok()
         .filter(|n| *n > 0)
+}
+
+/// The project a read of a pull request is of, as the daemon names it, and
+/// the root its number is read in. A number names another change in every
+/// repository, so the two are one: a project named by its root (an
+/// absolute path) is read there; one named by id or prefix is the daemon's
+/// to resolve, and read in this checkout when it is the project's, else in
+/// the one root its records give that still is (clones share an id, so
+/// there may be several, and none is guessed); with none named, the asking
+/// agent's own project, or for the person this checkout.
+async fn pr_project(
+    client: &Client,
+    named: Option<String>,
+    agent: &str,
+) -> Result<(PathBuf, String)> {
+    use agentdocker_core::HUMAN_RUNTIME;
+    let unknown = |project: &str| {
+        format!(
+            "no record here gives project {project}'s repository as it is now, where the pull request number would be read: name the branch, or pass the project's root as --project"
+        )
+    };
+    match named {
+        Some(root) if Path::new(&root).is_absolute() => Ok((PathBuf::from(&root), root)),
+        Some(selector) => {
+            let Response::Agents { agents, .. } = client
+                .call(&Request::List {
+                    all: true,
+                    project: Some(selector.clone()),
+                    labels: Default::default(),
+                })
+                .await?
+            else {
+                bail!("the daemon did not resolve project {selector}");
+            };
+            let named: Vec<agentdocker_core::ProjectRef> = agents
+                .into_iter()
+                .filter_map(|record| record.project)
+                .collect();
+            let id = named.first().with_context(|| unknown(&selector))?.id();
+            if let Some(here) = own_checkout(client, &id, &named).await {
+                return Ok((here, id.to_string()));
+            }
+            let mut roots: Vec<PathBuf> = named
+                .iter()
+                .filter(|project| still_there(project))
+                .map(|project| project.root.clone())
+                .collect();
+            roots.sort();
+            roots.dedup();
+            ensure!(
+                roots.len() < 2,
+                "project {id} has several repositories here, and a pull request number names another change in each: pass one as --project, run this from one, or name the branch ({})",
+                roots
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            let root = roots.pop().with_context(|| unknown(&selector))?;
+            Ok((root, id.to_string()))
+        }
+        None => {
+            let record = if agent == HUMAN {
+                None
+            } else {
+                match client
+                    .call(&Request::Inspect {
+                        agent: agent.to_owned(),
+                    })
+                    .await?
+                {
+                    Response::Agent { agent } => Some(agent),
+                    _ => bail!("the daemon did not say who is asking"),
+                }
+            };
+            match record.filter(|record| record.spec.runtime != HUMAN_RUNTIME) {
+                Some(record) => {
+                    let project = record.project.with_context(|| unknown("of the asker"))?;
+                    let id = project.id();
+                    ensure!(still_there(&project), unknown(id.as_str()));
+                    Ok((project.root, id.to_string()))
+                }
+                None => {
+                    let here = checkout_root()?;
+                    let root = here.display().to_string();
+                    Ok((here, root))
+                }
+            }
+        }
+    }
+}
+
+/// The branch pull request `number` is of, as `gh` reads it in `dir`, the
+/// repository chosen for the read, whatever `GH_REPO` or Git's own
+/// variables name.
+fn pr_branch(gh: &str, dir: &Path, number: u64) -> Result<String> {
+    let found = tool_of(
+        dir,
+        &[
+            gh,
+            "pr",
+            "view",
+            &number.to_string(),
+            "--json",
+            "headRefName",
+        ],
+    )?;
+    let found: serde_json::Value =
+        serde_json::from_str(&found).context("`gh pr view` gave no pull request")?;
+    Ok(found["headRefName"]
+        .as_str()
+        .context("the pull request names no branch")?
+        .to_owned())
+}
+
+/// The branch a read names, and its project: a pull request's branch in
+/// its project's repository, else the branch as given.
+async fn read_target(
+    client: &Client,
+    target: &str,
+    named: Option<String>,
+    agent: &str,
+) -> Result<(String, Option<String>)> {
+    match pull_request(target) {
+        Some(number) => {
+            let (dir, project) = pr_project(client, named, agent).await?;
+            Ok((pr_branch("gh", &dir, number)?, Some(project)))
+        }
+        None => Ok((target.to_owned(), project(client, named, agent).await?)),
+    }
 }
 
 /// The branch and commit a gate is asked about.
@@ -463,13 +678,16 @@ pub struct VerdictsArgs {
 /// kept of its reviewer's model.
 pub async fn verdicts(client: &Client, args: VerdictsArgs) -> Result<()> {
     let agent = sender::resolve(client, args.agent).await?;
-    let branch = match pull_request(&args.target) {
-        Some(_) => branch_and_head(&args.target, None)?.0,
-        None => args.target.clone(),
-    };
+    let (branch, project) = read_target(
+        client,
+        &args.target,
+        args.project,
+        agent.as_deref().unwrap_or(HUMAN),
+    )
+    .await?;
     let Response::Verdicts { verdicts, retained } = client
         .call(&Request::Verdicts {
-            project: project(client, args.project, agent.as_deref().unwrap_or(HUMAN)).await?,
+            project,
             agent,
             branch: branch.clone(),
         })
@@ -497,6 +715,174 @@ pub async fn verdicts(client: &Client, args: VerdictsArgs) -> Result<()> {
         "(only retained verdicts are listed: a project keeps at most {retained}, so an absent round proves nothing)"
     );
     Ok(())
+}
+
+#[derive(clap::Args, Debug)]
+pub struct AuthorshipArgs {
+    /// Asker; defaults to this agent's identity, or `user` in a human terminal.
+    #[arg(long = "as", env = "AGENTDOCKER_AGENT_ID")]
+    agent: Option<String>,
+    /// A pull request (`#402` or `402`, read with `gh`) or a branch.
+    target: String,
+    /// Project id, root or unique prefix (default: the asker's, or this checkout's).
+    #[arg(long, value_name = "ID|PATH")]
+    project: Option<String>,
+    /// Start after this receipt (the `next` a page printed).
+    #[arg(long)]
+    after: Option<u64>,
+    /// At most this many receipts (up to 200).
+    #[arg(long)]
+    limit: Option<usize>,
+    /// Print the page as JSON.
+    #[arg(long)]
+    json: bool,
+}
+
+/// A branch's retained receipts, oldest first, labelled with the project
+/// and the full ref, and what they cannot establish.
+pub async fn authorship(client: &Client, args: AuthorshipArgs) -> Result<()> {
+    let agent = sender::resolve(client, args.agent).await?;
+    let (branch, project) = read_target(
+        client,
+        &args.target,
+        args.project,
+        agent.as_deref().unwrap_or(HUMAN),
+    )
+    .await?;
+    let response = client
+        .call(&Request::Authorship {
+            project,
+            agent,
+            branch,
+            after: args.after,
+            limit: args.limit,
+        })
+        .await?;
+    let Response::Authorship {
+        project,
+        branch,
+        receipts,
+        next,
+        coverage,
+    } = response
+    else {
+        bail!("the daemon did not list the branch's receipts");
+    };
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "project": project, "branch": branch, "receipts": receipts,
+                "next": next, "coverage": coverage,
+            }))?
+        );
+        return Ok(());
+    }
+    print!(
+        "{}",
+        receipts_said(&project, &branch, &receipts, next, &coverage)
+    );
+    Ok(())
+}
+
+/// A page of receipts as lines: the project and ref it is of, a line per
+/// receipt, and what the page cannot establish.
+fn receipts_said(
+    project: &agentdocker_core::ProjectId,
+    branch: &str,
+    receipts: &[agentdocker_core::gate::AuthorshipReceipt],
+    next: Option<u64>,
+    coverage: &agentdocker_core::gate::AuthorshipCoverage,
+) -> String {
+    use crate::out::text::shown;
+    use agentdocker_core::gate::{Basis, Unreceipted};
+    let mut out = format!("{} in project {project}\n", shown(branch));
+    if receipts.is_empty() {
+        out.push_str("no receipts on this page\n");
+    }
+    for receipt in receipts {
+        let how = match receipt.basis {
+            Basis::DaemonCommit => "made by the daemon for it",
+            Basis::HookSession => "reported from its own session",
+            Basis::HookOwner => {
+                "reported unauthenticated; its worktree, not shown to be its commit"
+            }
+            Basis::Unknown => "basis unknown",
+        };
+        let who = match &receipt.author {
+            Some(author) => {
+                let configured = author.configured.as_ref().map_or_else(String::new, |c| {
+                    format!(
+                        ", configured {}/{}",
+                        shown(c.provider.as_deref().unwrap_or("?")),
+                        shown(c.model.as_deref().unwrap_or("?"))
+                    )
+                });
+                format!(
+                    "{} ({}{configured})",
+                    shown(&author.name),
+                    shown(&author.runtime)
+                )
+            }
+            None => format!("agent {} (no snapshot kept)", receipt.agent.short()),
+        };
+        out.push_str(&format!(
+            "#{} {} by {who} at {}: {}, {how}\n",
+            receipt.seq,
+            short(&receipt.commit),
+            receipt.at.format("%Y-%m-%d %H:%M:%S UTC"),
+            shown(&receipt.witness),
+        ));
+    }
+    if let Some(next) = next {
+        out.push_str(&format!("more after #{next} (--after {next})\n"));
+    }
+    out.push_str(&format!(
+        "(a project keeps its newest {} receipts; a ref's receipts do not by themselves identify a change's commits, since a branch reused, force-pushed or named alike in a fork can put others under it; a configured model is what the record asked for, not what wrote the change)\n",
+        coverage.retained
+    ));
+    if let Some(since) = coverage.capture_since {
+        out.push_str(&format!(
+            "receipts kept since {}; one taken then of a commit witnessed before keeps the agent's id, with basis unknown and no snapshot\n",
+            since.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
+    }
+    if let Some(pruned) = coverage.pruned_through {
+        out.push_str(&format!(
+            "the project's bound has pruned receipts through #{pruned}, on any ref\n"
+        ));
+    }
+    match coverage.oldest_retained {
+        Some(oldest) => out.push_str(&format!(
+            "the project's oldest retained receipt, on any ref, was kept at {}\n",
+            oldest.format("%Y-%m-%d %H:%M:%S UTC")
+        )),
+        None => out.push_str("the project holds no receipt\n"),
+    }
+    if coverage.seed_skipped > 0 {
+        out.push_str(&format!(
+            "{} rows were left out when receipts were first taken, past the bound\n",
+            coverage.seed_skipped
+        ));
+    }
+    if coverage.page_may_miss {
+        out.push_str("this page may be missing receipts the bound pruned\n");
+    }
+    match coverage.unreceipted {
+        Unreceipted::Counted { count: 0 } => out.push_str(
+            "every commit still recorded as witnessed on this ref has a receipt (which does not show capture was continuous)\n",
+        ),
+        Unreceipted::Counted { count } => out.push_str(&format!(
+            "{count} commits recorded as witnessed on this ref have no receipt, for a cause that cannot be told\n"
+        )),
+        Unreceipted::AtLeast { count } => out.push_str(&format!(
+            "at least {count} commits recorded as witnessed on this ref have no receipt, for a cause that cannot be told\n"
+        )),
+        Unreceipted::Unknown => out.push_str(
+            "whether commits recorded as witnessed on this ref lack a receipt is not known\n",
+        ),
+    }
+    out
 }
 
 /// One round: its order, word, commit, reviewer, counts and model evidence.
@@ -1025,6 +1411,147 @@ mod tests {
             evidence: None,
             superseded: Vec::new(),
         })
+    }
+
+    /// A page of receipts names the project and the full ref, says how each
+    /// agent was named and who it was (escaped), and what the page cannot
+    /// establish.
+    #[test]
+    fn receipts_say_who_wrote_them_and_what_they_cannot_establish() {
+        use agentdocker_core::gate::*;
+        let at = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let receipt = |seq, basis, author| AuthorshipReceipt {
+            seq,
+            commit: "a".repeat(40),
+            agent: AgentId::from("agent-1-id"),
+            witness: "hook".into(),
+            basis,
+            author,
+            at,
+        };
+        let author = AuthorSnapshot {
+            name: "writ\u{202e}er".into(),
+            runtime: "codex".into(),
+            configured: Some(agentdocker_core::evidence::Configured {
+                provider: Some("openai".into()),
+                model: Some("model-a".into()),
+            }),
+            session: None,
+        };
+        let coverage = AuthorshipCoverage {
+            retained: 20_000,
+            capture_since: Some(at),
+            pruned_through: Some(4),
+            oldest_retained: Some(at),
+            seed_skipped: 2,
+            page_may_miss: true,
+            unreceipted: Unreceipted::Unknown,
+        };
+        let said = receipts_said(
+            &ProjectId::from("p"),
+            "refs/heads/feature/x",
+            &[
+                receipt(5, Basis::HookSession, Some(author)),
+                receipt(6, Basis::HookOwner, None),
+            ],
+            Some(6),
+            &coverage,
+        );
+        for expected in [
+            "refs/heads/feature/x in project p",
+            "#5 aaaaaaaa by writ\\u{202e}er (codex, configured openai/model-a)",
+            "reported from its own session",
+            "reported unauthenticated; its worktree, not shown to be its commit",
+            "agent agent-1-id (no snapshot kept)",
+            "more after #6 (--after 6)",
+            "do not by themselves identify a change's commits",
+            "pruned receipts through #4",
+            "2 rows were left out when receipts were first taken",
+            "oldest retained receipt, on any ref, was kept at 2023-11-14 22:13:20 UTC",
+            "this page may be missing receipts",
+            "lack a receipt is not known",
+        ] {
+            assert!(said.contains(expected), "{expected:?} in {said}");
+        }
+        // Words a newer daemon wrote read as unknown and are said so; an
+        // empty page past earlier receipts says it is this page that is.
+        let newer: AuthorshipReceipt = serde_json::from_value(serde_json::json!({
+            "seq": 9, "commit": "b".repeat(40), "agent": "agent-2", "witness": "hook",
+            "basis": "attested", "at": at,
+        }))
+        .unwrap();
+        let unknown: Unreceipted =
+            serde_json::from_value(serde_json::json!({"state": "estimated", "count": 3})).unwrap();
+        let later = AuthorshipCoverage {
+            unreceipted: unknown,
+            ..coverage.clone()
+        };
+        let said = receipts_said(
+            &ProjectId::from("p"),
+            "refs/heads/feature/x",
+            &[newer],
+            None,
+            &later,
+        );
+        assert!(said.contains("basis unknown"), "{said}");
+        assert!(said.contains("lack a receipt is not known"), "{said}");
+        assert!(
+            said.contains("keeps the agent's id, with basis unknown and no snapshot"),
+            "{said}"
+        );
+        // An empty page of a project that holds receipts on other pages or
+        // refs, and an empty project, each said as what it is.
+        let past = receipts_said(
+            &ProjectId::from("p"),
+            "refs/heads/feature/x",
+            &[],
+            None,
+            &coverage,
+        );
+        assert!(past.contains("no receipts on this page"), "{past}");
+        assert!(past.contains("oldest retained receipt"), "{past}");
+        let empty = AuthorshipCoverage {
+            pruned_through: None,
+            oldest_retained: None,
+            seed_skipped: 0,
+            page_may_miss: false,
+            unreceipted: Unreceipted::Counted { count: 0 },
+            ..coverage.clone()
+        };
+        let none = receipts_said(
+            &ProjectId::from("p"),
+            "refs/heads/feature/x",
+            &[],
+            None,
+            &empty,
+        );
+        assert!(none.contains("no receipts on this page"), "{none}");
+        assert!(none.contains("the project holds no receipt"), "{none}");
+    }
+
+    /// `gh` reads a pull request in the repository it is given: the same
+    /// number names another branch in another repository.
+    #[cfg(unix)]
+    #[test]
+    fn a_pull_request_is_read_in_the_repository_given() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let gh = tmp.path().join("gh");
+        std::fs::write(&gh, "#!/bin/sh\ncat \"$PWD/pr.json\"\n").unwrap();
+        std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let gh = gh.to_str().unwrap();
+        let mut seen = Vec::new();
+        for (name, branch) in [("one", "feature/one"), ("two", "feature/two")] {
+            let repo = tmp.path().join(name);
+            std::fs::create_dir_all(&repo).unwrap();
+            std::fs::write(
+                repo.join("pr.json"),
+                format!("{{\"headRefName\": \"{branch}\"}}"),
+            )
+            .unwrap();
+            seen.push(pr_branch(gh, &repo, 7).unwrap());
+        }
+        assert_eq!(seen, vec!["feature/one", "feature/two"]);
     }
 
     /// A start is a time or a duration ago; one too far back for a time

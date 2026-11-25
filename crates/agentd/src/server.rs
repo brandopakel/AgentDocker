@@ -201,7 +201,7 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             write(&mut writer, &refusal).await?;
             continue;
         }
-        let authorized = match daemon.authorize_registration(peer, &request).await {
+        let mut authorized = match daemon.authorize_registration(peer, &request).await {
             Ok(authorized) => authorized,
             Err(refusal) => {
                 write(&mut writer, &refusal).await?;
@@ -213,9 +213,13 @@ async fn handle(daemon: Arc<Daemon>, stream: Stream) -> io::Result<()> {
             write(&mut writer, &refusal).await?;
             continue;
         }
-        if let Some(answer) = daemon.authenticate_report(peer, &mut request).await {
-            write(&mut writer, &answer).await?;
-            continue;
+        match daemon.authenticate_report(peer, &mut request).await {
+            Err(answer) => {
+                write(&mut writer, &answer).await?;
+                continue;
+            }
+            Ok(Some(owner)) => authorized = Some(owner),
+            Ok(None) => {}
         }
         // Streaming requests own the connection until it closes.
         match request {

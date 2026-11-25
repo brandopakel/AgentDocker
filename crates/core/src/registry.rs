@@ -41,6 +41,31 @@ pub struct Registry {
     provider_blocks_dirty: BTreeSet<AgentId>,
 }
 
+/// `reference` as one of `ids` exactly, else as the unique one it is a
+/// prefix of: ambiguous when it prefixes several, not found when none.
+pub fn resolve_project_among(
+    mut ids: Vec<ProjectId>,
+    reference: &str,
+) -> Result<ProjectId, RegistryError> {
+    if reference.is_empty() {
+        return Err(RegistryError::ProjectNotFound(reference.to_owned()));
+    }
+    ids.sort();
+    ids.dedup();
+    if ids.iter().any(|id| id.as_str() == reference) {
+        return Ok(ProjectId::from(reference));
+    }
+    let by_prefix: Vec<&ProjectId> = ids
+        .iter()
+        .filter(|id| id.as_str().starts_with(reference))
+        .collect();
+    match by_prefix.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(RegistryError::ProjectNotFound(reference.to_owned())),
+        _ => Err(RegistryError::ProjectAmbiguous(reference.to_owned())),
+    }
+}
+
 impl Registry {
     pub fn new() -> Self {
         Self::default()
@@ -404,28 +429,15 @@ impl Registry {
     /// Turn a project reference — a full id or a unique prefix — into the
     /// id of a project some agent (live or finished) works in.
     pub fn resolve_project(&self, reference: &str) -> Result<ProjectId, RegistryError> {
-        if reference.is_empty() {
-            return Err(RegistryError::ProjectNotFound(reference.to_owned()));
-        }
-        let mut ids: Vec<ProjectId> = self
-            .agents
+        resolve_project_among(self.project_ids(), reference)
+    }
+
+    /// The projects some agent works in.
+    pub fn project_ids(&self) -> Vec<ProjectId> {
+        self.agents
             .values()
             .filter_map(|a| a.project.as_ref().map(ProjectRef::id))
-            .collect();
-        ids.sort();
-        ids.dedup();
-        if ids.iter().any(|id| id.as_str() == reference) {
-            return Ok(ProjectId::from(reference));
-        }
-        let by_prefix: Vec<&ProjectId> = ids
-            .iter()
-            .filter(|id| id.as_str().starts_with(reference))
-            .collect();
-        match by_prefix.as_slice() {
-            [one] => Ok((*one).clone()),
-            [] => Err(RegistryError::ProjectNotFound(reference.to_owned())),
-            _ => Err(RegistryError::ProjectAmbiguous(reference.to_owned())),
-        }
+            .collect()
     }
 
     /// Update status and the derived timestamps. Returns the updated record.

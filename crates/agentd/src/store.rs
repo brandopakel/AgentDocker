@@ -324,6 +324,25 @@ CREATE TABLE IF NOT EXISTS authorship (
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS authorship_branch ON authorship (project, branch, agent);
 CREATE INDEX IF NOT EXISTS authorship_agent ON authorship (agent);
+CREATE TABLE IF NOT EXISTS authorship_history (
+    seq       INTEGER PRIMARY KEY AUTOINCREMENT,
+    project   TEXT NOT NULL,
+    branch    TEXT NOT NULL,
+    commit_id TEXT NOT NULL,
+    agent     TEXT NOT NULL,
+    witness   TEXT NOT NULL,
+    basis     TEXT NOT NULL,
+    author    TEXT,
+    at        TEXT NOT NULL,
+    UNIQUE (project, branch, commit_id)
+);
+CREATE INDEX IF NOT EXISTS authorship_history_project ON authorship_history (project, seq);
+CREATE INDEX IF NOT EXISTS authorship_history_branch ON authorship_history (project, branch, seq);
+CREATE TABLE IF NOT EXISTS authorship_history_bounds (
+    project        TEXT PRIMARY KEY,
+    pruned_through INTEGER NOT NULL DEFAULT 0,
+    seed_skipped   INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS topic_messages (
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,
     message_id TEXT NOT NULL UNIQUE,
@@ -390,6 +409,10 @@ pub struct Store {
     /// counts as passed.
     #[cfg(test)]
     pub(crate) evidence_stages: std::cell::Cell<Option<usize>>,
+    /// For tests: the receipts a project keeps, in place of
+    /// `RECEIPTS_PER_PROJECT`.
+    #[cfg(test)]
+    pub(crate) receipt_cap: std::cell::Cell<Option<usize>>,
 }
 
 /// A journal query; see [`Store::journal`].
@@ -1236,6 +1259,11 @@ impl Store {
             [],
         )?;
         crate::startup_checkpoint("store_migrations_ready");
+        Self::seed_receipts(
+            &conn,
+            agentdocker_core::gate::RECEIPTS_PER_PROJECT,
+            Utc::now(),
+        )?;
         let had_fts: bool = conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='journal_fts')",
             [],
@@ -1326,6 +1354,8 @@ impl Store {
             read_capacity: std::cell::Cell::new(agentdocker_core::config::READ_SET_CAPACITY),
             #[cfg(test)]
             evidence_stages: std::cell::Cell::new(None),
+            #[cfg(test)]
+            receipt_cap: std::cell::Cell::new(None),
         })
     }
 

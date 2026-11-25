@@ -237,8 +237,9 @@ impl State {
 impl Daemon {
     /// What answered the reviewer's own session, in a hold of its own and
     /// one bounded snapshot of the store, its deadline started with the
-    /// hold: the window from its stated start, else where its previous
-    /// verdict on this branch ended its read, else its record's start; the
+    /// hold: the window from its stated start, else its previous verdict's
+    /// `captured_at` on this branch (fixed when that capture began; that
+    /// verdict's time when it kept none), else its record's start; the
     /// retention cutoff and the collector's facts as the same snapshot had
     /// them; and the reviewer's own usage from the later of the window's
     /// start and the cutoff. A read that cannot be made or finished is
@@ -407,7 +408,7 @@ impl Daemon {
     }
 
     /// The project a verdict or a gate names, else the caller's own.
-    async fn verdict_project(
+    pub(in crate::daemon) async fn verdict_project(
         self: &Arc<Self>,
         agent: Option<&str>,
         project: Option<String>,

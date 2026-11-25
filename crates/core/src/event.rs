@@ -335,6 +335,10 @@ pub enum EventKind {
         branch: String,
         commit: String,
         witness: crate::gate::Witness,
+        /// How the agent was named; `unknown` from a daemon before it was
+        /// kept.
+        #[serde(default)]
+        basis: crate::gate::Basis,
     },
     /// An agent committed its checkout through the daemon.
     Committed {

@@ -239,9 +239,9 @@ impl Snapshot<'_> {
     /// The latest verdict of `kind` that `by` gave on `branch` in
     /// `project`, by the order verdicts are given in (`seq`, then time,
     /// then id; a verdict kept before `seq` reads as 0): its id, its place,
-    /// and the boundary it gives a next window (where its own capture
-    /// ended, else its time). Only those fields are read, never a whole
-    /// verdict.
+    /// and the boundary it gives a next window (its `captured_at`, fixed
+    /// when its capture began, else its time). Only those fields are read,
+    /// never a whole verdict.
     pub(crate) fn predecessor(
         &self,
         kind: &str,

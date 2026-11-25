@@ -479,7 +479,175 @@ pub struct Authorship {
     /// The full id of the commit.
     pub commit: String,
     pub witness: Witness,
+    /// How the daemon came to name `agent`.
+    #[serde(default)]
+    pub basis: Basis,
+    /// Who `agent` was when the commit was recorded, from its record as
+    /// validated in the hold that wrote it; absent when not captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<AuthorSnapshot>,
     pub at: DateTime<Utc>,
+}
+
+/// How many receipts of witnessed commits a project keeps
+/// ([`AuthorshipReceipt`]). The review gate never reads them: it reads the
+/// authorship rows, which no bound prunes.
+pub const RECEIPTS_PER_PROJECT: usize = 20_000;
+
+/// How many receipts one read of a branch returns at most.
+pub const RECEIPTS_PER_PAGE: usize = 200;
+
+/// How the daemon came to name a commit's agent.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Basis {
+    /// The daemon made the commit, asked by the agent (`commit`).
+    DaemonCommit,
+    /// The worktree's hook reported it, and the daemon authenticated the
+    /// report as sent from inside that agent's session (its process
+    /// ancestry): the agent it names is the one whose session committed.
+    HookSession,
+    /// The hook reported it unauthenticated (the person check off, or a
+    /// caller of the daemon's own), and the daemon named the worktree's
+    /// owner: whose worktree it was, not who committed or whose model wrote
+    /// the change.
+    HookOwner,
+    /// Recorded before the basis was kept, or a word a newer build wrote.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+impl Basis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Basis::DaemonCommit => "daemon_commit",
+            Basis::HookSession => "hook_session",
+            Basis::HookOwner => "hook_owner",
+            Basis::Unknown => "unknown",
+        }
+    }
+
+    /// The word as stored; one this build does not know is `unknown`.
+    pub fn parse(text: &str) -> Basis {
+        match text {
+            "daemon_commit" => Basis::DaemonCommit,
+            "hook_session" => Basis::HookSession,
+            "hook_owner" => Basis::HookOwner,
+            _ => Basis::Unknown,
+        }
+    }
+}
+
+/// Who an agent was when a commit of its was recorded, as its record said
+/// then: its name, its runtime, the provider and model its record was
+/// configured with, and its provider session. Configuration at capture,
+/// never an observation of the model that wrote the change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorSnapshot {
+    pub name: String,
+    pub runtime: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configured: Option<crate::evidence::Configured>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+}
+
+impl AuthorSnapshot {
+    pub fn of(record: &crate::AgentRecord) -> AuthorSnapshot {
+        AuthorSnapshot {
+            name: record.spec.name.clone(),
+            runtime: record.spec.runtime.clone(),
+            configured: (record.spec.provider.is_some() || record.spec.model.is_some()).then(
+                || crate::evidence::Configured {
+                    provider: record.spec.provider.clone(),
+                    model: record.spec.model.clone(),
+                },
+            ),
+            session: record.spec.labels.get("session_id").cloned(),
+        }
+    }
+}
+
+/// One retained receipt of a witnessed commit: its place in the order
+/// receipts were kept (`seq`, increasing, with gaps, one order across
+/// projects), what was witnessed and how, and who the agent was.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorshipReceipt {
+    pub seq: u64,
+    pub commit: String,
+    pub agent: AgentId,
+    /// The witness as recorded (`commit`, `hook`).
+    pub witness: String,
+    pub basis: Basis,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<AuthorSnapshot>,
+    pub at: DateTime<Utc>,
+}
+
+/// What a read of a branch's receipts cannot establish. A ref's receipts
+/// do not by themselves identify a change's commits: a branch reused,
+/// force-pushed, or of the same name in a fork can put others under it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuthorshipCoverage {
+    /// How many receipts a project keeps.
+    pub retained: usize,
+    /// When this daemon began keeping receipts; those from before carry
+    /// basis `unknown` and no snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture_since: Option<DateTime<Utc>>,
+    /// The latest `seq` the project's bound pruned: receipts up to it may
+    /// be gone, on any ref.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pruned_through: Option<u64>,
+    /// When the project's oldest retained receipt (its lowest `seq`, on any
+    /// ref) was kept; absent when the project holds none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oldest_retained: Option<DateTime<Utc>>,
+    /// How many of the project's rows the first seed left out, past the
+    /// bound (a commit among them reported again since may have one now).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub seed_skipped: u64,
+    /// Whether receipts on this page may be missing: the project's bound
+    /// has pruned past where the page starts. A cursor alone never shows
+    /// that every witness after it was read.
+    #[serde(default)]
+    pub page_may_miss: bool,
+    /// Witnessed commits on this ref, still in the authorship rows, whose
+    /// receipt is not retained, for a cause that cannot be told (pruned, a
+    /// daemon that kept none, a record forgotten meanwhile). A zero never
+    /// certifies that capture was continuous.
+    pub unreceipted: Unreceipted,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
+}
+
+impl AuthorshipCoverage {
+    /// Whether a page starting after `after` may miss receipts: the
+    /// project's bound has pruned past where it starts.
+    pub fn page_may_miss(pruned_through: Option<u64>, after: u64) -> bool {
+        pruned_through.is_some_and(|pruned| pruned > after)
+    }
+}
+
+/// How many witnessed commits lack a receipt, as far as a bounded look
+/// could tell.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Unreceipted {
+    Counted {
+        count: u64,
+    },
+    /// At least this many; the look stopped there.
+    AtLeast {
+        count: u64,
+    },
+    /// Not known: the look ran out of its budget, or a newer daemon said
+    /// something this one does not read.
+    #[serde(other)]
+    Unknown,
 }
 
 impl Authorship {
@@ -1591,9 +1759,16 @@ mod tests {
             branch: branch.to_owned(),
             commit: commit.to_owned(),
             witness: Witness::Hook,
+            basis: Basis::Unknown,
+            author: None,
             at,
         };
         assert!(authored("refs/heads/feature/mine", A).check().is_ok());
+        // A page may miss receipts only where the bound pruned past it.
+        assert!(!AuthorshipCoverage::page_may_miss(None, 0));
+        assert!(AuthorshipCoverage::page_may_miss(Some(3), 0));
+        assert!(AuthorshipCoverage::page_may_miss(Some(3), 2));
+        assert!(!AuthorshipCoverage::page_may_miss(Some(3), 3));
         for (branch, commit) in [
             ("feature/mine", A),
             ("refs/tags/feature/mine", A),
